@@ -1,5 +1,5 @@
 {
- "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved by the reviewer at its head 5183950, CLEAN, never armed, because it was approved before the arm job existed.",
+ "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved by the reviewer at its head 5183950, CLEAN, never armed, because it was approved before the arm job existed. The veto-window cases (fleet-ops#9605 follow-up) put the approved head behind a `veto-window: <sha> closes <time>` comment and set `now` against it; a nish3451 comment starting with veto, or the label nish-veto, makes it stuck.",
  "base": {
   "pr": {
    "number": 9486,
@@ -32,7 +32,8 @@
     "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
    }
   ],
-  "red": []
+  "red": [],
+  "now": "2026-10-12T12:00:00Z"
  },
  "cases": [
   {
@@ -376,6 +377,449 @@
     "pr": {
      "mergeable": "UNKNOWN"
     }
+   }
+  },
+  {
+   "id": "veto-window-open-is-left-alone",
+   "want": "wait",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-window-passed-arms",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-window-closes-this-second-arms",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T12:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-comment-by-nish-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "nish3451"
+      },
+      "body": "veto: not this week",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-comment-after-window-passed-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "nish3451"
+      },
+      "body": "Veto",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-label-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ],
+    "pr": {
+     "labels": [
+      {
+       "name": "nish-veto"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "veto-label-after-window-passed-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ],
+    "pr": {
+     "labels": [
+      {
+       "name": "nish-veto"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "comment-that-only-mentions-veto-does-not-stop-it",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "nish3451"
+      },
+      "body": "looks fine, no veto from me",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-comment-by-someone-else-does-not-stop-it",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "someone-else"
+      },
+      "body": "veto",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-window-of-an-older-head-does-not-arm-the-new-one",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: fd39de101a4bfe1a3f74923f62e9f22601081626 closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "edited-veto-window-comment-is-not-trusted",
+   "want": "wait",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:05:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "veto-window-comment-by-a-person-is-ignored",
+   "want": "arm",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "someone-else"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "unreadable-close-time-waits",
+   "want": "wait",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes soon\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
+   }
+  },
+  {
+   "id": "window-open-but-conflicting-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-13T08:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ],
+    "pr": {
+     "mergeable": "CONFLICTING"
+    }
+   }
+  },
+  {
+   "id": "window-comment-without-approval-gets-review",
+   "want": "review",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "veto-window: 5183950e39f0a8063720918870dd0f6ce448401e closes 2026-10-12T11:00:00Z\n\nThis change is root-run host config on the veto window.",
+      "created_at": "2026-10-12T08:00:00Z",
+      "updated_at": "2026-10-12T08:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-2"
+     }
+    ]
    }
   }
  ]

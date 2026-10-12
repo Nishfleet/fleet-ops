@@ -159,7 +159,15 @@ The rules still in force:
   a model family other than the judge's and Claude's, and both must approve; if
   either blocks, its blockers go to the agent as fix-it items. The same run then
   arms the PR (agent.yml `arm`, App token, `--match-head-commit`), so no person
-  is asked at any step. Nish's typed comment or app review stays an optional
+  is asked at any step. One class does not arm at once: root-run host config that
+  does not confine the agents (`veto_window` in risky-paths.json, tier B of
+  fleet-ops#9605; the confining units, the merge guard, the scanners, the jail
+  tests, credentials and seat files stay in `.github/CODEOWNERS`, tier A). Its
+  approval is a comment whose first line is `veto-window: <sha> closes <time>`
+  (24 hours on), plus a `needs-nish-decision` issue assigned to Nish. The hourly
+  sweep arms the head only after that time and with no veto (a nish3451 comment
+  starting with `veto`, or the label `nish-veto`); `hold-risky` and the
+  `coordinator-approval` queue check refuse the PR before then, approved or not. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
   agent-authored PRs self-land green. The in-session held-PR approver loop (a

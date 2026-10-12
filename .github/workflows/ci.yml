@@ -721,7 +721,7 @@ jobs:
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
           run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' 'wait) continue' '(HTTP (404|410)' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
           done
           bad=0
@@ -730,7 +730,7 @@ jobs:
           done
           [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
           while IFS= read -r c; do
-            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red, now}' config/stuck-pr-cases.json)
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
@@ -950,17 +950,20 @@ jobs:
           label=$(yq '.jobs.hold-risky.env.LABEL' .github/workflows/agent-dispatch.yml)
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$label" = needs-coordinator ]
           jq -e '.paths["*"] | length > 0' config/risky-paths.json >/dev/null
+          jq -e '(.veto_window.hours | type == "number" and . > 0 and . == floor) and (.veto_window.paths | length > 0 and all(type == "string"))' config/risky-paths.json >/dev/null
           bad=0
           while IFS= read -r c; do
             cfg=$(jq -c --argjson c "$c" 'if ($c | has("paths")) then {paths: $c.paths} else . end' config/risky-paths.json)
             got=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$prog" <<<"$c")
             [ "$(jq -r .risky <<<"$got")" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.cases[]' config/risky-paths.json)
+          v=$(jq -r '.veto_window.paths as $p | .veto_cases[] | select((. as $c | $p | any(. as $re | $c.file | test($re; "i"))) != .want) | "veto case \(.file): want \(.want)"' config/risky-paths.json)
+          [ -z "$v" ] || { echo "$v"; bad=1; }
           approved=$(yq '.jobs.hold-risky.env.APPROVAL' .github/workflows/agent-dispatch.yml)
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
+            got=$(jq -r --argjson cfg "$(jq -c . config/risky-paths.json)" --arg now "$(jq -r '.now // "2026-10-12T12:00:00Z"' <<<"$c")" --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments, repo, files, labels}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
@@ -995,10 +998,10 @@ jobs:
             *disablePullRequestAutoMerge*) touch "$STATE/disarmed" ;;
             *dequeuePullRequest*) touch "$STATE/dequeued" ;;
             *"/labels"*) touch "$STATE/labelled" ;;
-            *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/files?"*) if [ -n "${VW:-}" ]; then echo '{"f":"rootfs/etc/audit/rules.d/60-fleet.rules","p":null,"patch":"@@ -1 +1 @@\n+x"}'; elif [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
             *"-X POST"*"/reviews"*) echo "$args" > "$STATE/approved" ;;
-            *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
+            *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}"; [ -z "${VW:-}" ] || echo "{\"user\":{\"login\":\"github-actions[bot]\"},\"body\":\"veto-window: $SHA closes $([ "$VW" = open ] && echo 2099 || echo 2000)-01-01T00:00:00Z\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
             *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\",\"repo\":{\"full_name\":\"$([ "${SAFE:-}" = fork ] && echo someone/fork || echo Nishfleet/0509)\"}},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
@@ -1011,9 +1014,10 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
           bad=0
-          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)
-          while IFS='|' read -r name fail approve safe held code; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
+          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)|veto window of a fleet-ops PR on a veto path (open, closed)
+          while IFS='|' read -r name fail approve safe held code vw; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe VW=$vw
+            GITHUB_REPOSITORY=Nishfleet/0509; [ -z "$vw" ] || GITHUB_REPOSITORY=Nishfleet/fleet-ops
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
@@ -1039,6 +1043,8 @@ jobs:
           approved-control||1||no|0
           safe-control|||1|no|0
           safe-fork-pr|||fork|no|0
+          veto-window-open||1||yes|0|open
+          veto-window-closed||1||no|0|closed
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
@@ -1062,20 +1068,20 @@ jobs:
           has() { [[ " $1 " == *" $2 "* ]]; }
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
-            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo "{\"f\":\"$([ -n "${VWIN:-}" ] && echo rootfs/etc/audit/rules.d/60-fleet.rules || echo .github/workflows/deploy-production.yml)\",\"p\":null,\"patch\":\"@@ -1 +1 @@\\n+x\"}"; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
-              if has "$APPROVED" "$n"; then s=$(sha "$n"); [ -z "${STALE:-}" ] || s=$(sha 999); echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $s\",\"created_at\":\"t\",\"updated_at\":\"t\"}"; fi ;;
+              if has "$APPROVED" "$n"; then s=$(sha "$n"); [ -z "${STALE:-}" ] || s=$(sha 999); echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $s\",\"created_at\":\"t\",\"updated_at\":\"t\"}"; [ -z "${VWIN:-}" ] || echo "{\"user\":{\"login\":\"github-actions[bot]\"},\"body\":\"veto-window: $s closes $([ "$VWIN" = open ] && echo 2099 || echo 2000)-01-01T00:00:00Z\",\"created_at\":\"t\",\"updated_at\":\"t\"}"; fi ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|veto window of the risky PRs, which then touch a veto path (open, closed, veto-comment)
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want vwin; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail VWIN=$vwin
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -1097,6 +1103,9 @@ jobs:
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
+          veto-window-open|7|Add x (#7)|7||7|||1|open
+          veto-window-closed|7|Add x (#7)|7||7|||0|closed
+          veto-window-open-ahead-in-group|8|a (#7);b (#8)|7||7|||1|open
           CASES
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
@@ -1145,6 +1154,7 @@ jobs:
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$args" > "$STATE/approved" ;;
+            "issue create "*) echo "$args" > "$STATE/issue" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$args token=$k" >> "$STATE/merge" ;;
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
@@ -1153,12 +1163,13 @@ jobs:
                 rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;;
                 "") echo app/routes/home.tsx ;;
                 1) echo .github/workflows/new.yml ;;
+                veto) echo rootfs/etc/audit/rules.d/60-fleet.rules ;;
                 *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;;
               esac ;;
             *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
-              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+              echo "{\"number\":7,\"title\":\"Tune the audit rules\",\"html_url\":\"https://github.com/Nishfleet/fleet-ops/pull/7\",\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1266,13 +1277,16 @@ jobs:
             m=$(tr '\n' ' ' < "$STATE/models" | sed 's/ $//')
             problem=
             [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
-            [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
-            if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
+            [ "$got" = "${approved/veto/no}" ] || problem="approved=$got (want $approved)"
+            # A veto-window head is approved and noticed, never armed: one needs-nish-decision issue for nish3451 and a first comment line with the head and the close time.
+            notice=no; [ ! -f "$STATE/issue" ] || { grep -q needs-nish-decision "$STATE/issue" && grep -q nish3451 "$STATE/issue" && head -n 1 "$STATE/comments" | grep -qE "^veto-window: $SHA closes 20[0-9-]{8}T[0-9:]{8}Z\$" && notice=veto; }
+            [ "$notice" = "${approved/yes/no}" ] || problem="$problem veto notice=$notice (want ${approved/yes/no})"
+            if [ "$approved" != no ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
-            if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
+            if [ "$approved" != no ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
+            ! grep -v 'nish-veto' "$STATE/comments" | grep -qiwE 'person|tap review|nish|nish3451' || problem="$problem comment asks a person"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
@@ -1288,6 +1302,8 @@ jobs:
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 senior
           guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 senior
+          veto-path-both-approve-notice-no-arm|veto|approve|0.95|clean|clean_ok||veto|0|claude-opus-5-5 senior
+          veto-path-second-blocks|veto|approve|0.95|clean|blocked_b||no|0|claude-opus-5-5 senior
           prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 senior
           prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 senior
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
@@ -1880,9 +1896,9 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
               --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
               { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile f "$RUNNER_TEMP/facts.json" \
+              '$f[0] + {sha: $sha, statuses: $s, comments: $m}' |
+              jq -r --argjson cfg "$cfg" --arg now "$(date -u +%FT%TZ)" --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
             else

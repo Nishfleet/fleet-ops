@@ -1,11 +1,62 @@
-# No-glue lock (fleet-ops#8459): scripts, wrappers and script dirs need Nish's review to merge.
-# Push rulesets are refused on public repos, so this uses CODEOWNERS + require_code_owner_review.
-*.sh @nish3451
-*.py @nish3451
-*.bash @nish3451
-*.zsh @nish3451
-/bin/ @nish3451
-/scripts/ @nish3451
-**/bin/ @nish3451
-**/scripts/ @nish3451
+# fleet-ops#9605 (Nish said yes on 2026-10-12, see that issue): the two
+# automated reviewers approve worker code (.py, .sh, bin/, scripts/). New
+# scripts are still refused by the `ci` check (.semgrep/no-glue.yml), and any
+# edit under .github/ needs both automated reviews (config/risky-paths.json
+# "guard"). Nish's review stays on the files below: the safety rules and their
+# scanners, the tests that prove the agent jail, deny lists, the units that
+# confine agents, seat keys and credentials. Public repos refuse push rulesets,
+# so this uses CODEOWNERS + require_code_owner_review.
+#
+# Tier B moved to the veto window (fleet-ops#9605 follow-up): root-run host
+# config that does not confine the agents (the sysctl hardening file, the audit
+# rules, ansible/host.yml and ansible/update.yml, and the systemd units named in
+# "veto_window" in config/risky-paths.json) merges by itself 24 hours after the
+# reviewers approve, unless Nish vetoes (a comment starting with "veto", or the
+# label nish-veto). Tier A stays here because these files are the checks on the
+# agents themselves: an agent-run pipeline must never approve a change to the
+# rules that judge it, to the sandbox it runs in, or to the keys it could use.
+# A new unit under rootfs/etc/systemd/system/ is tier A until it is named in the
+# unowned exceptions below AND in "veto_window".
+
+# The merge guard and its review prompt.
+/config/risky-paths.json @nish3451
+/prompts/risky-review.md @nish3451
+# The no-glue rule and the secret and private-detail scanners, with their ignore files.
+/.semgrep/ @nish3451
+/.semgrepignore @nish3451
+/.gitleaksignore @nish3451
+/.github/gitleaks-private-detail.toml @nish3451
+# Tests that prove the worker jail hides every login and that App tokens are minted safely.
+/tests/test_claude_lanes.py @nish3451
+/tests/github_app_stub.py @nish3451
+# Agent deny lists and permission policy.
+/rootfs/etc/claude-code/ @nish3451
+# Root-run host config that confines the agents or the network: firewall,
+# privilege, and every unit that sandboxes or limits an agent, a runner or its
+# login (agent.slice, claude.slice, actions.runner.*, hermes-*/sandbox.conf,
+# anything with Sandbox, Protect*, ReadOnlyPaths, InaccessiblePaths, User= or
+# CapabilityBoundingSet, the user-1000 slice limits, the Claude login directory).
+/rootfs/etc/nftables.conf @nish3451
+/rootfs/etc/polkit-1/ @nish3451
+/rootfs/etc/systemd/system/ @nish3451
+# Tier B units: a path with no owner has none, and the last matching line wins.
+/rootfs/etc/systemd/system/fleet-host-config.service
+/rootfs/etc/systemd/system/fleet-host-config.timer
+/rootfs/etc/systemd/system/fleet-update.service
+/rootfs/etc/systemd/system/fleet-update.timer
+/rootfs/etc/systemd/system/fleet-unit-failed@.service
+/rootfs/etc/systemd/system/restic-r2-backup.service.d/10-size-guard.conf
+/rootfs/etc/systemd/system/restic-r2-locked-copy.service.d/10-needs-backup.conf
+/rootfs/etc/systemd/system/tailscaled.service.d/50-restart-always.conf
+/rootfs/etc/systemd/system/session-.scope.d/50-interactive-cpu-priority.conf
+/rootfs/etc/systemd/system/system.slice.d/50-memory-protect.conf
+/rootfs/etc/systemd/system/hermes-gateway.service.d/60-clean-sigterm.conf
+/rootfs/etc/systemd/system/hermes-gateway.service.d/70-oom-protect.conf
+/rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf
+/rootfs/etc/systemd/system/claude-remote-control.service.d/selfheal.conf
+# Seat keys and credentials.
+/credentials/ @nish3451
+**/*seat*.conf @nish3451
+*.env @nish3451
+# This file.
 /.github/CODEOWNERS @nish3451

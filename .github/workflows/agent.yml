@@ -871,6 +871,7 @@ jobs:
     # the arm job's, as the worker App.
     permissions:
       pull-requests: write
+      issues: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -961,9 +962,13 @@ jobs:
           # is asked: the job fails and a re-run reads it again.
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
           jq -e '(.guard | type) == "array" and (.guard | length) > 0' <<<"$cfg" >/dev/null 2>&1 || retry "the guard list could not be read"
-          hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
+          hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | ($cfg.guard + ($cfg.veto_window.paths // [])) as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
           guard=false
           [ "$hits" = 0 ] || guard=true
+          # fleet-ops#9605 follow-up: a head on a veto_window path is guard (above), but its approval starts a window for Nish's veto instead of arming.
+          vw=0 close=
+          [ "$REPO" != Nishfleet/fleet-ops ] || vw=$(jq -Rs --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | [$f[] | select(. as $x | any(($cfg.veto_window.paths // [])[]; . as $re | $x | test($re; "i")))] | length' < "$RUNNER_TEMP/files.txt")
+          [ "$vw" = 0 ] || close=$(date -u -d "+$(jq -er '.veto_window.hours | select(type == "number" and . > 0)' <<<"$cfg") hours" +%Y-%m-%dT%H:%M:%SZ) || retry "the veto window could not be read"
           gh api -H 'Accept: application/vnd.github.diff' "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/diff.txt"
           if [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]; then
             say "reviewer: $SHA blocked. The diff is over 250 KB, too large to review whole. Split it into smaller PRs."
@@ -1077,8 +1082,14 @@ jobs:
           if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
-            echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
+            # The notice goes first, so a failed one approves nothing; the sweep arms the head once the window closes.
+            lead=
+            if [ "$vw" != 0 ]; then
+              gh issue create -R "$REPO" --label needs-nish-decision --assignee nish3451 --title "Veto window closes $close: PR #$PR" --body "$(jq -r '"PR #\(.number) \"\(.title)\" (\(.html_url)) merges by itself at '"$close"' unless you stop it: comment veto on the PR, or add the label nish-veto."' <<<"$pr")"
+              lead="veto-window: $SHA closes $close"$'\n\nThis change merges after that time unless a comment starting with veto, or the label nish-veto, stops it.\n\n'
+            fi
+            approve; say "$(printf '%scoordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$lead" "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            [ "$vw" != 0 ] || echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi

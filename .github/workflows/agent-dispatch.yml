@@ -378,6 +378,10 @@ jobs:
       # approver's comment, never edited (updated_at == created_at, so an old
       # comment cannot be edited onto a new sha), with a line exactly
       # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+      # A PR in fleet-ops on a $cfg "veto_window" path (input: repo, files, labels too)
+      # is approved only after the close time in github-actions[bot]'s unedited
+      # `veto-window: <sha> closes <time>` comment, and never with the label
+      # nish-veto or a nish3451 comment starting with veto. Unreadable: held.
       APPROVAL: |
         . as $in
         | ($who | split(" ") | map(select(length > 0))) as $approvers
@@ -389,7 +393,16 @@ jobs:
             | any($approvers[]; . == $l)
               and .created_at != null and .updated_at == .created_at
               and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
+        | (($cfg.veto_window.paths? // null) as $vp
+          | if (($in.repo // "") | ascii_downcase) != "nishfleet/fleet-ops" then false
+            elif ($vp | type) != "array" then true
+            elif all(($in.files // [])[]; . as $f | any($vp[]; . as $re | $f | test($re; "i")) | not) then false
+            else [($in.comments // [])[] | select(.body != null)] as $cs
+              | ([$cs[] | select(.user.login == "github-actions[bot]" and .updated_at == .created_at) | .body | split("\n")[0] | rtrimstr("\r")
+                  | select(startswith("veto-window: \($in.sha) closes ")) | ltrimstr("veto-window: \($in.sha) closes ") | try fromdateiso8601 catch infinite] | max) as $close
+              | any(($in.labels // [])[]; . == "nish-veto") or any($cs[]; .user.login == "nish3451" and (.body | test("^\\s*veto"; "i")))
+                or $close == null or $close > ($now | fromdateiso8601) end) as $held
+        | ($by_status or $by_comment) and ($held | not)
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
@@ -446,9 +459,9 @@ jobs:
             --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
             echo "::warning::hold-risky: comments read failed for #$PR; not approved"
           else
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile f "$RUNNER_TEMP/facts.json" \
+              '$f[0] + {sha: $sha, statuses: $s, comments: $m}' |
+              jq -r --argjson cfg "$cfg" --arg now "$(date -u +%FT%TZ)" --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
           fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
@@ -857,12 +870,16 @@ jobs:
           APPROVERS: nish3451 github-actions[bot]
           # stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
           # comments (API objects), red: names of failed required checks on the
-          # head}. Out: {class, reason, url}. class is arm, review or stuck.
+          # head, now: UTC ISO time}. Out: {class, reason, url}. class is arm,
+          # wait (veto window open), review or stuck.
           # Only verdicts on the CURRENT head count, in the words agent.yml's
           # review job writes. Nothing arms without a reviewer or approver
           # approval of that head: an unreviewed head, held or not, is sent to
           # the review job, the same one hold-risky starts. A conflict or a red
-          # check is stuck whatever the review said. Each review the sweep asks
+          # check is stuck whatever the review said, and so is a veto (label
+          # nish-veto, or a nish3451 comment starting with veto). An approved head
+          # with a `veto-window: <sha> closes <time>` comment waits for that time,
+          # then arms; hold-risky is the gate. Each review the sweep asks
           # for leaves a `stuck-review: <sha>` comment, so after three asks
           # with no verdict (a review job that died before it wrote one) the
           # head is stuck, not reviewed again every hour.
@@ -878,8 +895,11 @@ jobs:
             | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
             | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
             | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
-            | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
+            | ([$bot[] | select(.updated_at == .created_at) | .lines[0] | select(startswith("veto-window: \($sha) closes ")) | ltrimstr("veto-window: \($sha) closes ") | try fromdateiso8601 catch infinite] | max) as $close
+            | if any(.pr.labels[]?; .name == "nish-veto") or any($cs[]; .user.login == "nish3451" and (.body | test("^\\s*veto"; "i"))) then {class: "stuck", reason: "Nish vetoed", url: ""}
+              elif .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
+              elif ($ok | length) > 0 and $close != null and $close > (.now | fromdateiso8601) then {class: "wait", reason: "the veto window is open", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
               elif ($no | length) > 0 then {class: "stuck", reason: "the reviewer did not approve \($s7)", url: ($no[-1].html_url // "")}
               elif ($asked | length) >= 3 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries", url: ($asked[-1].html_url // "")}
@@ -892,7 +912,7 @@ jobs:
           # A draft is its author saying "not yet"; Dependabot PRs follow the
           # repo's own Dependabot rules. Everything else open is meant to land.
           list() {
-            gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
+            gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt,labels |
               jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
                 and (.author.login | test("dependabot") | not) and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)'
           }
@@ -943,11 +963,12 @@ jobs:
               echo "::warning::#$n: checks or comments unreadable, skipped"
               errs=$((errs + 1)); continue
             fi
-            v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" \
-              '{pr: $pr, comments: $comments, red: $red}' | jq -c --arg who "$APPROVERS" "$STUCK")
+            v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" --arg now "$(date -u +%FT%TZ)" \
+              '{pr: $pr, comments: $comments, red: $red, now: $now}' | jq -c --arg who "$APPROVERS" "$STUCK")
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
+              wait) continue ;;
               arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
                 # Four paid reviews a sweep at most; the rest wait an hour.
