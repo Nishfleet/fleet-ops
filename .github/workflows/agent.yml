@@ -127,7 +127,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, cap runs, then claim.
@@ -412,6 +411,12 @@ jobs:
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
+          # Plain git, local edits kept (no reset, clean or checkout -B); a failed switch fails the step.
+          if [ "$MISS" != true ]; then
+            [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
+            git -C "$dir" fetch -v origin
+            git -C "$dir" switch "$REF"
+          fi
           # Static text, the marker line, then the target id: the id is the only
           # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
@@ -504,8 +509,6 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = devin ]; then
-            # --chdir puts the worker directory on the bwrap command line,
-            # which is what the Gate's lane count reads.
             mark devin
             for model in swe-2-max swe-2-high; do
               rc=0
@@ -518,7 +521,6 @@ jobs:
             # ends here; after a fallthrough, the Router wall must judge the
             # lane that actually ran.
             if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
-              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
               if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
               else ENGINE=pi
               fi
@@ -529,8 +531,7 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = opencode ]; then
-            # --dir puts the worker directory on the bwrap command line; --auto
-            # approves what the worker needs outside it (prompts, gh, the repo).
+            # --auto approves what the worker needs outside --dir (prompts, gh, the repo).
             mark opencode
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
@@ -633,7 +634,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Router wall
         id: wall
         # A router seat wall or a Devin capacity refusal is infra, not a bad
