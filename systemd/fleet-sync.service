@@ -61,7 +61,8 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     timer, so it is stopped first (`-` ignores the exit once it is gone); the rm then
 #     drops its live links and installed prompt dir. Delete both lines once every host has deployed this.
 ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
+ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload

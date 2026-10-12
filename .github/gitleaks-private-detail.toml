@@ -45,3 +45,9 @@ keywords = ["account"]
 [[allowlists]]
 description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
+
+[[allowlists]]
+description = "The pre-existing prometheus-reload retirement line in fleet-sync, touched by an earlier commit of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)systemd/fleet-sync\.service$''']
+regexes = ['''fleet-prometheus-reload\.path''']
