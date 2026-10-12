@@ -35,3 +35,5 @@ AKIA[0-9A-Z]{16}
 ://
 \]\(
 [A-Za-z0-9-]+\.(com|net|org|io|dev|app|ai|co|in|me|so|xyz|cloud)([/:]|$|[[:space:]])
+(^|[[:space:](])'[^']{8,}'([[:space:]).,;:]|$)
+`[^`]{40,}`
