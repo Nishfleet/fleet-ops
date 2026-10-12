@@ -1313,7 +1313,7 @@ jobs:
         # The candidate fetch (Jev key, GitHub search token) runs here, outside
         # the jail, before the model starts. The model's bwrap jail hides both,
         # Nish's gh login, the Cloudflare tokens, the seat files, the App key and
-        # the router master key (it reads outsider text, fleet-ops#9274); pi gets
+        # litellm-master-key.env (it reads outsider text, fleet-ops#9274); pi gets
         # a 2-hour $5 virtual key for worker-capable and senior only, bound where
         # pi reads its router key (fleet-ops#9634). Nothing the model leaves is
         # trusted: after each attempt only its edition JSON is taken (a regular
@@ -1326,9 +1326,9 @@ jobs:
         run: |
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
-          admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; trap 'admin -d "{\"key_aliases\":[\"$key_alias\"]}" http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 2h"' EXIT
           router_key="$RUNNER_TEMP/router-key.env"; (umask 077; admin -d "{\"models\":[\"worker-capable\",\"senior\"],\"duration\":\"2h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
-          trap 'admin -d "{\"key_aliases\":[\"$key_alias\"]}" http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 2h"' EXIT; echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"
+          echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
