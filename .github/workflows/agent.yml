@@ -466,7 +466,7 @@ jobs:
             # path below.
             unset CLAUDE_CODE_OAUTH_TOKEN
             claude_seats=$HOME/.config/fleet-ops/seats # gitleaks:allow
-            claude_tok_of() { sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "$claude_seats/claude-seat-$1.env" 2>/dev/null | head -n 1 | tr -d '\r' || true; }
+            claude_tok_of() { sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "$claude_seats/claude-seat-$1.env" 2>/dev/null | head -n 1 | tr -d "\r \"'" || true; }
             claude_auth=login
             claude_tok=$(claude_tok_of "$claude_seat")
             if [ -n "$claude_tok" ]; then
@@ -519,7 +519,7 @@ jobs:
               fi
               rc=0
               (
-                if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg"; fi
+                if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; fi
                 echo "$packet" | $claude_jail --chdir "$dir" -- \
                   claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
                   --strict-mcp-config --disable-slash-commands --setting-sources project,local \
@@ -543,9 +543,11 @@ jobs:
             claude_try "$claude_tok"
             # A seat whose token was revoked or has expired fails every job on it, so
             # one auth failure (not a rate limit) retries once with the other seat's
-            # token, before any fallthrough to another engine. No token on the other
+            # token, before any fallthrough to another engine, and only while nothing is pushed
+            # (the model's own closing text can mention a 401; a run that did work is not redone).
+            # The CLI also strips its credentials from the Bash tool's environment. No token on the other
             # seat, or a second failure, ends as a failed run.
-            if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail; then
+            if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
               claude_tok=$(claude_tok_of "$claude_other")
               if [ -n "$claude_tok" ]; then
                 echo "::add-mask::$claude_tok"

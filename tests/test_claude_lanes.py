@@ -52,6 +52,7 @@ n=${!var:-0}
 for ((k=0; k<n; k++)); do echo "100$k bwrap --dev-bind / / -- $eng --chdir /w/agent-worktrees/issue-x-$k"; done
 """
 GH = """#!/bin/bash
+case "$*" in *compare/main*) echo "${AHEAD:-0}"; exit 0 ;; esac
 q=
 while [ $# -gt 0 ]; do [ "$1" = --jq ] && q=$2; shift; done
 case "$*$q" in *) ;; esac
@@ -64,7 +65,7 @@ shift
 exec "$@"
 """
 CLAUDE = """#!/bin/bash
-{ echo "claude $*"; echo "CCD=${CLAUDE_CONFIG_DIR-unset}"; echo "TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset}"; echo "CCDFILES=$(ls -A "$CLAUDE_CONFIG_DIR" 2>/dev/null | wc -l)"; } >> "$STATE/claude.log"
+{ echo "claude $*"; echo "CCD=${CLAUDE_CONFIG_DIR-unset}"; echo "TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset}"; echo "SCRUB=${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-unset}"; echo "CCDFILES=$(ls -A "$CLAUDE_CONFIG_DIR" 2>/dev/null | wc -l)"; } >> "$STATE/claude.log"
 cat > "$STATE/claude.stdin"
 # CLAUDE_BAD_TOKENS: tokens the API has revoked; claude answers them with an auth error.
 for bad in $CLAUDE_BAD_TOKENS; do
@@ -271,7 +272,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens=""):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0"):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -315,6 +316,7 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "LIVE_cursor_agent": str(cursor_live),
         "RUNNER_NAME": runner_name,
         "CLAUDE_BAD_TOKENS": bad_tokens,
+        "AHEAD": ahead,
     }
     paths = [home / SEATS_REL / f"claude-seat-{x}.env" for x in "ab"] + [home / ".local/share/claude-seat-backup", home / ".claude-max", home / ".claude-other-seat", seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"]
     env["PROBE_PATHS"] = " ".join(map(str, paths))
@@ -761,6 +763,25 @@ def test_revoked_token_retries_once_with_the_other_seats_token(tmp_path, name, s
     assert claude.count("CCDFILES=0") == 2
     assert not list((tmp_path / "runner-tmp").glob("claude-config*"))
     assert _tok_env(seat) not in bwrap and _tok_env(other) not in bwrap and _tok_env(other) not in r.stderr
+
+
+def test_auth_failure_after_work_was_pushed_does_not_rerun_the_packet(tmp_path):
+    # the closing text can mention a 401 on a run that did real work: no second run
+    r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env("a"), ahead="2")
+    assert r.returncode == 1
+    assert _tokens_tried(claude) == [_tok_env("a")] and "retrying" not in r.stdout
+
+
+def test_token_run_scrubs_the_tool_environment_and_the_file_may_quote_the_value(tmp_path):
+    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", tok_a=f'RAW:CLAUDE_CODE_OAUTH_TOKEN="{_tok_env("a")}" \n')
+    assert r.returncode == 0, r.stderr
+    assert f"TOK={_tok_env('a')}" in claude and "SCRUB=1" in claude
+
+
+def test_login_run_leaves_the_scrub_setting_alone(tmp_path):
+    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1")
+    assert r.returncode == 0, r.stderr
+    assert "SCRUB=unset" in claude
 
 
 def test_revoked_token_with_no_token_on_the_other_seat_fails_the_run(tmp_path):
