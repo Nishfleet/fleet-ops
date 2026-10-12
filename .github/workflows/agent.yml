@@ -1326,7 +1326,7 @@ jobs:
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
-          dkey=$(sed -n 's/^LITELLM_INISH_DAILY_KEY=//p' "$HOME/.config/fleet-ops/seats/inish-daily.env")
+          dkey=$(sed -n 's/^LITELLM_INISH_DAILY_KEY=//p' "$HOME/.config/fleet-ops/seats/inish-daily.env") # gitleaks:allow
           [ -n "$dkey" ] || { echo "::error::LITELLM_INISH_DAILY_KEY missing from seats/inish-daily.env"; exit 1; }
           echo "::add-mask::$dkey"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
