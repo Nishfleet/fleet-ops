@@ -135,12 +135,9 @@ The rules still in force:
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092), or a GitHub `Approve` review by nish3451 whose
-  `commit_id` is that head (one tap in the app, fleet-ops#9505; a `[bot]` review
-  never counts, a later change request revokes). That review re-arms with no
-  second step: `approval-signal.yml` (PR-head code, no permissions) uploads the
-  PR number, and the `workflow_run` it triggers runs `hold-risky` from the base
-  branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
+  status on it (0509#7092). A person's Approve review counts toward the
+  ruleset's required review, not toward this gate, and there is no relay that
+  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:

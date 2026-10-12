@@ -22,12 +22,12 @@ on:
         required: false
         default: ''
       arm_pr:
-        description: risky PR number whose head carries an approver's approval and is not armed (agent-dispatch arm-approved)
+        description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
         type: string
         required: false
         default: ''
       arm_sha:
-        description: head sha hold-risky saw approved; the arm uses --match-head-commit with exactly this sha
+        description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
         type: string
         required: false
         default: ''
@@ -1088,13 +1088,11 @@ jobs:
             if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
           fi
-  # Arms an approved head: the review job's own approval in the same run, or a
-  # person's approval that hold-risky confirmed (fleet-ops#9505). hold-risky
-  # already confirmed the approval of this exact head for the second; this job
-  # only arms, as the worker App, and re-reads the PR so a head that moved or a
-  # PR that closed since is left alone. --match-head-commit makes the arm
-  # itself refuse a moved head, and a later approval is read again by
-  # hold-risky when the arm fires auto_merge_enabled.
+  # Arms an approved head: the review job's own approval in the same run, or
+  # one the hourly sweep found (stuck-arm). This job only arms, as the worker
+  # App, and re-reads the PR so a head that moved or a PR that closed since is
+  # left alone. --match-head-commit makes the arm itself refuse a moved head,
+  # and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
     if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
@@ -1149,7 +1147,7 @@ jobs:
           # orchestrator job does, but only when this same run's review job just
           # approved this exact head (REVIEWED, from the review job's output).
           # No comment or dispatch input can switch it on. Any other arm, including
-          # a person's approval relayed through arm_pr, keeps the App token. A
+          # the sweep's arm_pr, keeps the App token. A
           # failed read of the file list fails the step; it never falls to the
           # wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
