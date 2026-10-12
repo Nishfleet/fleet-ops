@@ -682,6 +682,25 @@ jobs:
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
         run: |
+          # One issue as JSON for the sweep. Returns 0 with the JSON on stdout,
+          # 3 for an issue that is gone (HTTP 404 or 410), and 1 for any other
+          # failure, after printing gh's own error. Measured 2026-10-12 with gh
+          # 2.93.0 on deleted fleet-ops issue 9502: exit 1, stdout the error
+          # body {"message":"This issue was deleted",...,"status":"410"},
+          # stderr "gh: This issue was deleted (HTTP 410)". Either one marks
+          # the issue gone, so a gh that stops printing the body still skips.
+          # Any other read fault stays fatal, so a real API fault is never
+          # mistaken for a deleted issue (fleet-ops#9553).
+          issue_json() {
+            local out err rc=0
+            err=$(mktemp)
+            out=$(gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err") || rc=$?
+            if [ "$rc" = 0 ]; then printf '%s\n' "$out"; rm -f "$err"; return 0; fi
+            if [[ $(jq -r '.status // empty' <<<"$out" 2>/dev/null) =~ ^(404|410)$ ]] || grep -qE '\(HTTP (404|410)\)' "$err"; then
+              rm -f "$err"; return 3
+            fi
+            echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
+          }
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below still re-checks agent-ready
@@ -799,9 +818,22 @@ jobs:
                   v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
                   ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
                   jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
-                  verdict=$(jq -nc --argjson pr "$v" \
-                    --argjson issue "$(gh api "repos/$GITHUB_REPOSITORY/issues/$n")" \
-                    --argjson comments "$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments)" \
+                  # A claim PR outlives its issue when the issue is deleted:
+                  # gh api answers 410 and gh issue view cannot resolve the
+                  # number at all, so its empty comments went straight into
+                  # --argjson and aborted the whole sweep with exit 1, so no
+                  # dispatch ran that pass (fleet-ops#9553). The issue cannot
+                  # come back, so skip the PR; any other read failure is still
+                  # fatal, so a real API fault is never mistaken for a
+                  # deleted issue.
+                  rc=0; issue=$(issue_json "$n") || rc=$?
+                  case $rc in
+                    0) ;;
+                    3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
+                    *) exit 1 ;;
+                  esac
+                  comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
+                  verdict=$(jq -nc --argjson pr "$v" --argjson issue "$issue" --argjson comments "$comments" \
                     '{pr: $pr, issue: $issue, comments: $comments}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
@@ -823,7 +855,23 @@ jobs:
               prs='[]'
             fi
           fi
-          refs=$(for n in $nums; do gh api "repos/$GITHUB_REPOSITORY/issues/$n"; done |
+          # Same gone-issue skip (issue_json) as the red-PR loop above, for the other place
+          # the sweep resolves numbers one at a time: a dispatched issue
+          # deleted between the listing and this read, or a hand-typed
+          # workflow_dispatch issue that names one. The loop runs in this
+          # shell, not a pipeline, so a read fault that is not a gone issue
+          # still aborts the sweep instead of quietly shrinking the queue.
+          pages=''
+          for n in $nums; do
+            rc=0; i=$(issue_json "$n") || rc=$?
+            case $rc in
+              0) ;;
+              3) echo "#$n: issue gone, skipping" >&2; continue ;;
+              *) exit 1 ;;
+            esac
+            pages="$pages$i"$'\n'
+          done
+          refs=$(printf '%s' "$pages" |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
@@ -855,6 +903,268 @@ jobs:
       pull-requests: write
     with:
       ref: ${{ matrix.ref }}
+  # Any open PR that has waited over an hour, on any branch (2026-10-11: 53
+  # fleet PRs idle and unarmed, 40 of them not claim branches, which every
+  # path above skips; approved heads from before the arm job existed, #9486
+  # #9509, were never armed; reviewer blocks on session PRs had no owner).
+  # Each PR gets one verdict from STUCK below: arm a head a reviewer or
+  # approver approved, send an unreviewed head to the review job, or hand a
+  # stuck one to its owner. Nothing is armed without an approval of its exact
+  # head, and hold-risky still re-reads it on auto_merge_enabled.
+  # updatedAt moves on every push, comment, label and review, so a PR anyone
+  # touched in the last hour is left alone.
+  stuck-prs:
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    # issues: write posts the rework note on a claim issue; pull-requests:
+    # write posts the stuck-review marker. checks and statuses read each
+    # head's state; actions: read is `gh run view`
+    # for a claim issue's live run. All within what every caller stub grants.
+    permissions:
+      issues: write
+      pull-requests: write
+      checks: read
+      statuses: read
+      actions: read
+    outputs:
+      review: ${{ steps.find.outputs.review }}
+      arm: ${{ steps.find.outputs.arm }}
+      rework: ${{ steps.find.outputs.rework }}
+      file: ${{ steps.find.outputs.file }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Logins whose unedited `coordinator-approval: <sha>` comment counts,
+          # hold-risky's APPROVERS.
+          APPROVERS: nish3451 github-actions[bot]
+          # stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
+          # comments (API objects), red: names of failed required checks on the
+          # head}. Out: {class, reason, url}. class is arm, review or stuck.
+          # Only verdicts on the CURRENT head count, in the words agent.yml's
+          # review job writes. Nothing arms without a reviewer or approver
+          # approval of that head: an unreviewed head, held or not, is sent to
+          # the review job, the same one hold-risky starts. A conflict or a red
+          # check is stuck whatever the review said. Each review the sweep asks
+          # for leaves a `stuck-review: <sha>` comment, so after three asks
+          # with no verdict (a review job that died before it wrote one) the
+          # head is stuck, not reviewed again every hour.
+          # config/stuck-pr-cases.json runs this program in CI.
+          STUCK: |
+            .pr.headRefOid as $sha
+            | $sha[0:7] as $s7
+            | ($who | split(" ") | map(select(length > 0))) as $approvers
+            | [(.comments // [])[] | select(.body != null) | . + {lines: [.body | split("\n")[] | rtrimstr("\r")]}] as $cs
+            | [$cs[] | select((.user.login // "") as $l | any($approvers[]; . == $l)
+                and .created_at != null and .updated_at == .created_at
+                and any(.lines[]; . == "coordinator-approval: \($sha)"))] as $ok
+            | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
+            | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
+            | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
+            | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
+              elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
+              elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
+              elif ($no | length) > 0 then {class: "stuck", reason: "the reviewer did not approve \($s7)", url: ($no[-1].html_url // "")}
+              elif ($asked | length) >= 3 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries", url: ($asked[-1].html_url // "")}
+              else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
+        run: |
+          set -euo pipefail
+          cutoff=$(( $(date +%s) - 3600 ))
+          queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
+            --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
+          # A draft is its author saying "not yet"; Dependabot PRs follow the
+          # repo's own Dependabot rules. Everything else open is meant to land.
+          list() {
+            gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
+              jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
+                and (.author.login | test("dependabot") | not) and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)'
+          }
+          cands=$(list)
+          # The bulk list says UNKNOWN until GitHub recomputes a PR after a
+          # push to main, and a per-PR read starts that (fleet-ops#8557). Start
+          # them all, wait once, list again: a per-PR wait would take minutes
+          # with dozens of PRs open. A PR still UNKNOWN is judged as it reads,
+          # and the next sweep sees its conflict.
+          unknown=$(jq -r '.[] | select(.mergeable == "UNKNOWN") | .number' <<<"$cands")
+          if [ -n "$unknown" ]; then
+            for n in $unknown; do gh pr view "$n" -R "$GITHUB_REPOSITORY" --json mergeable >/dev/null || true; done
+            sleep 20
+            cands=$(list)
+          fi
+          review='[]' arm='[]' rework='[]' file='[]' seen=0 errs=0
+          add() { jq -c --argjson x "$2" --argjson cap "${3:-20}" '. + [$x] | .[:$cap]' <<<"$1"; }
+          # PR heads an open stuck-PR issue already reports (agent.yml's stuck
+          # job writes `stuck-pr: #<pr> <sha>` in the body or a comment), so a
+          # reported head takes no slot below.
+          reported=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"stuck-pr:" in:body' --json body,comments \
+            --jq '[.[] | .body, .comments[].body | split("\n")[] | select(startswith("stuck-pr: #"))] | unique')
+          open_reports=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"Stuck PR" in:title' --json title --jq '[.[] | select(.title | startswith("Stuck PR #"))] | length')
+          slots=$(( open_reports >= 3 ? 0 : 3 - open_reports ))
+          [ "$slots" -le 2 ] || slots=2
+          while IFS= read -r p; do
+            seen=$((seen + 1))
+            n=$(jq -r .number <<<"$p"); ref=$(jq -r .headRefName <<<"$p"); sha=$(jq -r .headRefOid <<<"$p")
+            # Red required checks, read as agent.yml's arm step reads them.
+            # With --json gh exits 0 even when a check failed (0509#7319,
+            # 2026-10-11: two red, exit 0); exit 8 is "some pending", and
+            # --jq still printed the red names.
+            q='[.[] | select(.bucket == "fail") | .name]'
+            rc=0; red=$(gh pr checks "$n" -R "$GITHUB_REPOSITORY" --required --json name,bucket --jq "$q" 2>&1) || rc=$?
+            if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then
+              case ${red,,} in
+                *"no required checks reported"*)
+                  rc=0; red=$(gh pr checks "$n" -R "$GITHUB_REPOSITORY" --json name,bucket --jq "$q" 2>&1) || rc=$?
+                  if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then case ${red,,} in *"no checks reported"*) red='[]' ;; *) red= ;; esac; fi ;;
+                *"no checks reported"*) red='[]' ;;
+                *) red= ;;
+              esac
+            fi
+            # One unreadable PR is skipped, never fatal to the sweep (the
+            # fleet-ops#9553 lesson); every PR unreadable fails it below.
+            if ! jq -e 'type == "array"' <<<"$red" >/dev/null 2>&1 ||
+              ! comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" | jq -sc 'add // []'); then
+              echo "::warning::#$n: checks or comments unreadable, skipped"
+              errs=$((errs + 1)); continue
+            fi
+            v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" \
+              '{pr: $pr, comments: $comments, red: $red}' | jq -c --arg who "$APPROVERS" "$STUCK")
+            class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
+            echo "#$n $ref: $class, $reason"
+            case $class in
+              arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
+              review)
+                # Four paid reviews a sweep at most; the rest wait an hour.
+                # The marker comment is what STUCK counts toward its cap of
+                # three asks per head, and it moves updatedAt, so the head
+                # waits a full hour before the next ask.
+                if [ "$(jq length <<<"$review")" -lt 4 ]; then
+                  gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over an hour with no review verdict on its head, so the sweep asked for one.' "$sha")"
+                  review=$(add "$review" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')" 4)
+                fi
+                continue ;;
+            esac
+            # Stuck. A claim PR whose issue is open goes back to its worker,
+            # unless the issue is parked (someone already owns it), blocked,
+            # or its newest run is still live. Every other PR is filed for
+            # the orchestrator by agent.yml's stuck job.
+            if [[ $ref =~ ^claim/issue-([0-9]+)$ ]]; then
+              i=${BASH_REMATCH[1]}
+              if issue=$(gh api "repos/$GITHUB_REPOSITORY/issues/$i" 2>"$RUNNER_TEMP/issue.err"); then
+                if [ "$(jq -r .state <<<"$issue")" = open ]; then
+                  if jq -e '(.issue_dependencies_summary.blocked_by // 0) != 0 or
+                    any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"))' <<<"$issue" >/dev/null; then
+                    echo "#$n: issue #$i is parked or blocked, its owner has it"; continue
+                  fi
+                  bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body]') || { errs=$((errs + 1)); continue; }
+                  note="rework: PR #$n at ${sha:0:7} has waited over an hour"
+                  if jq -e --arg x "$note" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
+                    echo "#$n: issue #$i already has this rework note"; continue
+                  fi
+                  last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
+                  if [[ $last =~ actions/runs/([0-9]+) ]]; then
+                    case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
+                      queued|in_progress|requested|waiting|pending) echo "#$n: issue #$i run live, skip"; continue ;;
+                    esac
+                  fi
+                  gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$note: $reason.${url:+ $url} Fix it on $ref and push; a new head gets a fresh review."
+                  # An agent-ready issue is already in the list job's refs.
+                  jq -e 'any(.labels[].name; . == "agent-ready")' <<<"$issue" >/dev/null || rework=$(add "$rework" "$(jq -nc --arg r "$ref" '$r')")
+                  continue
+                fi
+              elif ! grep -qE '\(HTTP (404|410)\)' "$RUNNER_TEMP/issue.err"; then
+                echo "::warning::#$n: issue #$i unreadable, skipped"; errs=$((errs + 1)); continue
+              fi
+            fi
+            if jq -e --arg l "stuck-pr: #$n $sha" 'index($l)' <<<"$reported" >/dev/null; then
+              echo "#$n: already reported at ${sha:0:7}"; continue
+            fi
+            # At most three stuck-PR issues open per repo, two new a sweep: the
+            # orchestrate job keeps one run and one waiting per repo, cancels
+            # any older waiting run, and stops at its daily cap, so a burst of
+            # labels would leave most issues with no run (18 at once in
+            # fleet-ops on 2026-10-11). The rest go out as the orchestrator
+            # closes these.
+            file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
+          done < <(jq -c '.[]' <<<"$cands")
+          echo "waiting over an hour: $seen, unreadable: $errs"
+          echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
+          {
+            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
+          } >> "$GITHUB_OUTPUT"
+          [ "$seen" = 0 ] || [ "$errs" -lt "$seen" ] || { echo "::error::every waiting PR was unreadable"; exit 1; }
+  # These jobs run inside the sweep's concurrency group, so they bound how long
+  # a sweep holds it: at most 4 reviews, 2 at a time, each under agent.yml's
+  # 20-minute review timeout, is 40 minutes on top of stuck-prs. A sweep started
+  # meanwhile waits as the one pending run and starts when this one ends; it is
+  # not dropped, so the next hourly start still finds every PR.
+  stuck-review:
+    needs: stuck-prs
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        x: ${{ fromJSON(needs.stuck-prs.outputs.review) }}
+    # See review-risky: a caller job must grant what the called workflow's other jobs request.
+    permissions:
+      pull-requests: write
+      issues: write
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    with:
+      review_pr: ${{ matrix.x.pr }}
+      review_sha: ${{ matrix.x.sha }}
+  stuck-arm:
+    needs: stuck-prs
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'
+    strategy:
+      fail-fast: false
+      # An arm takes seconds, but on a [self-hosted, agent] slot a worker could use.
+      max-parallel: 4
+      matrix:
+        x: ${{ fromJSON(needs.stuck-prs.outputs.arm) }}
+    permissions:
+      pull-requests: write
+      issues: write
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    with:
+      arm_pr: ${{ matrix.x.pr }}
+      arm_sha: ${{ matrix.x.sha }}
+  stuck-rework:
+    needs: stuck-prs
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      matrix:
+        ref: ${{ fromJSON(needs.stuck-prs.outputs.rework) }}
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    with:
+      ref: ${{ matrix.ref }}
+  stuck-file:
+    needs: stuck-prs
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        x: ${{ fromJSON(needs.stuck-prs.outputs.file) }}
+    permissions:
+      pull-requests: write
+      issues: write
+    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
+    with:
+      stuck_pr: ${{ matrix.x.pr }}
+      stuck_sha: ${{ matrix.x.sha }}
+      stuck_reason: ${{ matrix.x.reason }}
+      stuck_url: ${{ matrix.x.url }}
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
   # not-by-merge (0509 09-23: #4297 #4268 #4212 #4211 sat open until hand-closed),
   # so those PRs blocked the queue noise for days. Close the open claim PR and
