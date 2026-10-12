@@ -1871,9 +1871,9 @@ jobs:
           set -euo pipefail
           t=$(mktemp -d)
           yq '.jobs.ratchet.steps[] | select(.id == "count") | .run' .github/workflows/ci.yml > "$t/count.sh"
-          git init -q "$t/r" && cd "$t/r" && mkdir -p .github/workflows && seq 9 > .github/workflows/a.yml && echo x > README
+          git init -q "$t/r" && cd "$t/r" && mkdir -p .github/workflows bin && seq 9 | tee .github/workflows/a.yml > bin/b && echo x > README
           git add -A && git -c user.name=t -c user.email=t@t commit -qm base
-          for c in 'seq 5 >> .github/workflows/a.yml;1' 'sed -i 1,3d .github/workflows/a.yml;0' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'echo y >> README;0'; do
+          for c in 'seq 5 >> .github/workflows/a.yml;1' 'seq 5 >> bin/b;1' 'sed -i 1,3d .github/workflows/a.yml;0' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'echo y >> README;0'; do
             eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t
             rc=0; BASE=HEAD~1 HEAD=HEAD bash "$t/count.sh" >/dev/null || rc=$?
             git reset -q --hard HEAD~1
