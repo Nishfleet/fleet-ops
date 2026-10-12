@@ -19,18 +19,13 @@
   surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
   only for those classes or irreversible work — present the plan and begin
   everything else (fleet-ops#6610).
-- **Stock first, no glue.** Before you write any persistent script, wrapper, hook,
-  poller, retry loop, or more than about 30 lines of workflow shell, find the
-  stock feature that does the job: GitHub built-ins (rulesets, merge queue,
-  auto-merge, concurrency, timeout-minutes, CODEOWNERS, required reviews), the
-  tool's own flags, or systemd and LiteLLM built-ins. Name it in the PR body as
-  `stock: <feature>`. If the issue itself asks for hand-rolled logic and a stock
-  feature exists, build the stock version and say so. If nothing stock fits, the
-  PR body says `built: <repo + official extension point>` and gives the search
-  you did; with no official extension point either, stop and comment on the
-  issue. Reason: the audit behind fleet-ops#9614 found 17 of 25 recent fleet-ops
-  PRs looked like glue, because no instruction said to look for the built-in
-  first.
+- **Stock first, no glue** (`prompts/worker.md`, "Stock first, no glue";
+  fleet-ops#9614): before you write any persistent script, wrapper, hook,
+  poller, retry loop or more than about 30 lines of workflow shell, find the
+  stock feature that does the job and name it in the PR body as
+  `stock: <feature>`, or `built: <repo + official extension point>` with the
+  search when nothing stock fits. This is the pointer, not a second copy: the
+  reason and the full wording live in `prompts/worker.md`.
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
