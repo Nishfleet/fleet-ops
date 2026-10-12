@@ -525,9 +525,9 @@ def test_production_config_keeps_the_fallthrough_shape():
 
     A parked row only helps if the group has another row: worker-capable and
     worker-cheap each need at least one order-2 overflow row (order filtering is
-    applied after the cooldown filter in v1.98.0 router.py, proven by
-    tests/test_router_order2_overflow.py) and router_settings.fallbacks must
-    carry the worker net both ways so a parked lane is left, not retried.
+    applied after the cooldown filter in v1.98.0 router.py) and
+    router_settings.fallbacks must carry the worker net both ways so a parked
+    lane is left, not retried.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
     rows = config["model_list"]
