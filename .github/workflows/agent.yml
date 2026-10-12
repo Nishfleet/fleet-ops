@@ -915,45 +915,32 @@ jobs:
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # Blocker lines of a review: the line starts with the word blocker or blockers
-          # (with or without markup) and its text after that is not a none-variant.
-          # blk_re finds a line that starts with the word; a slash after it ("blocker/risk/nit,
-          # one line each", a header the model echoes) is not a finding. none_re is a line whose
-          # text after the word is only a none-variant: none, none found, no blockers, nothing,
-          # n/a, nil, a dash, with optional markup before and punctuation after, or with a sentence
-          # of explanation after a full stop or dash ("Blockers: none. The diff only adds a job.").
-          # Both patterns are
-          # case-insensitive and are the only copies: grep reads them here and jq reads the same
-          # strings in the already-reviewed check. none_re is anchored at both ends, so a line with
-          # other words straight after the variant ("blocker: none of the callers check the token") still blocks.
-          # Dropping a none line never approves by itself: the judge must still be 90% sure, and
-          # a guard PR's second reviewer must still end on APPROVE.
-          tick=$(printf '\140')
-          blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
-          none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
-          blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
+          # Both verdicts are typed Jev decisions on a review's text, never a pattern over it.
+          # judge <review> sets ok (approve at p >= 0.9), pct and how; it fails when Jev gives no answer.
+          judge() {
+            local body resp
+            body=$(jq -nc --arg item "$1" '{model: "jev-latest",
+              state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
+              questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
+                criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
+            resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
+            jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1 || return 1
+            choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
+            p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
+            pct=$(jq -rn --argjson p "$p" '$p * 100 | floor')
+            ok=false how=blocked
+            if [ "$choice" = approve ]; then
+              if jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then ok=true how=approved; else how="not approved (only ${pct}% sure; approval needs 90%)"; fi
+            fi
+          }
+          unjudged() { say "reviewer: $SHA could not be judged, because the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed: approved, not approved or blocked.
-          # The older hold comment and the "could not be judged" comment carry
-          # no verdict, so those heads are reviewed. The review then posts a
-          # verdict, which ends it: one review per head, not one per event. The
-          # verdict phrases end in a full stop, as the comments below write them.
-          # Each phrase must START a line of a comment by github-actions[bot]: the
-          # hold comment quotes the approval line inside a sentence, and that is
-          # not a verdict. A blocked verdict whose only blocker lines say "none"
-          # was a misread of the review (see blockers_of), so it does not count
-          # and the head is reviewed again, but only until five such verdicts
-          # stand on it, so a head that keeps getting one does not pay for a
-          # review per event. The pages are read as one list (jq -s).
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
-            def blockers: [.[] | select(test($blk; "i"))];
-            [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
-              | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
-              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
-                elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
-                else "other" end] as $k
-            | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
+          # Only a verdict comment counts as reviewed (approved, not approved or blocked), so the
+          # hold comment and the "could not be judged" comment leave the head to be reviewed:
+          # one review per head, not one per event. The phrase must START a line of a comment by
+          # github-actions[bot]. The pages are read as one list (jq -s).
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]") | .body | split("\n")[] | select(startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.") or startswith("reviewer: " + $sha + " blocked."))] | length')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
           # The guard list decides how much review the head needs. If it cannot
@@ -1020,73 +1007,42 @@ jobs:
             --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" \
             < "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
-          body=$(jq -nc --arg item "$review" '{model: "jev-latest",
-            state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
-            questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
-              criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
-          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
-          if [ -z "${review//[[:space:]]/}" ] || ! jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; then
-            say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."
-            exit 0
-          fi
-          choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
-          p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
-          # A review text can be steered by the diff it reads, so a line that
-          # looks like the approval line is dropped from everything posted.
+          judge "$review" || unjudged
+          ok1=$ok pct1=$pct how1=$how choice1=$choice
+          # A review text can be steered by the diff it reads, so a line that looks like the approval line is dropped from everything posted.
           shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
           text=$(printf '%s' "$shown" | head -c 3500)
           bytes=$(printf '%s' "$shown" | wc -c)
-          if [ "$bytes" -gt 3500 ]; then
-            text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$(blockers_of "$shown")" "$text")
-          fi
-          judge_ok=false
-          if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then judge_ok=true; fi
-          pct=$(jq -rn --argjson p "$p" '$p * 100 | floor')
+          [ "$bytes" -le 3500 ] || text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated).\n\n%s' "$bytes" "$text")
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
-            if [ "$judge_ok" = true ]; then
+            if [ "$ok1" = true ]; then
               approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
-            elif [ "$choice" = approve ]; then
-              say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
+            elif [ "$choice1" = approve ]; then
+              say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct1" "$text")"
             else
               say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
             fi
             exit 0
           fi
-          # This head edits the merge guard or a workflow. It is approved only
-          # when the judge is at least 90% sure with no blocker line AND an
-          # independent second reviewer of a different model family answers
-          # APPROVE with no blocker line. The second reviewer reads the same
-          # diff and context as the first; its instruction is appended after
-          # them by this workflow, so the diff cannot supply it.
-          [ -z "$(blockers_of "$shown")" ] || judge_ok=false
-          {
-            cat "$RUNNER_TEMP/diff.txt"
-            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are the second, independent reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
-          } > "$RUNNER_TEMP/second-in.txt"
-          second=
-          for _try in 1 2; do
-            second=$(pi --print --no-context-files --no-tools --no-session \
-              --append-system-prompt "$HOME/AGENTS.md" \
-              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-              --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
-            [ -z "${second//[[:space:]]/}" ] || break
-          done
+          # This head edits the merge guard or a workflow. It is approved only when the
+          # judge approves the first review AND the judge approves the review of an
+          # independent second reviewer of a different model family. The second reviewer
+          # reads the same diff and context as the first.
+          second=$(pi --print --no-context-files --no-tools --no-session \
+            --append-system-prompt "$HOME/AGENTS.md" \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+            --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/diff.txt") || second=
           [ -n "${second//[[:space:]]/}" ] || retry "the second reviewer gave no answer"
-          second_shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$second" || true)
-          second_text=$(printf '%s' "$second_shown" | head -c 3500)
-          last=$(grep -vE '^[[:space:]]*$' <<<"$second_shown" | tail -n 1 || true)
-          second_ok=false
-          if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
+          judge "$second" || unjudged
+          second_text=$(printf '%s' "$second" | grep -viE '^[[:space:]]*coordinator-approval:' | head -c 3500 || true)
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
-          if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+          if [ "$ok1" = true ] && [ "$ok" = true ]; then
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure) approved the first review and again approved the review of a second reviewer from a different family (%s, %s seat). CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct1" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
-            if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
-            if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
-            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
+            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nFirst review (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$how1" "$([ "$ok1" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$how" "$([ "$ok" = true ] || printf '%s' "$second_text")")"
           fi
   # Arms an approved head: the review job's own approval in the same run, or
   # one the hourly sweep found (stuck-arm). This job only arms, as the worker
