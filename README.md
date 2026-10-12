@@ -771,8 +771,7 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 It is built so a fooled model cannot do harm, not so it is asked not to.
 
 - The model runs in a bwrap jail: the system is read-only, `/home` is an empty
-  tmpfs, and only the session logs, steering files and the repos' `.git`
-  directories are bound back read-only. The gh login, the Cloudflare tokens, the
+  tmpfs, and only the session logs and steering files are bound back read-only. The gh login, the Cloudflare tokens, the
   seat files, the App key and the other Claude logins are not there.
 - It has no GitHub token. A later step in the unit files at most three
   follow-up issues using the worker App's issues-only installation token

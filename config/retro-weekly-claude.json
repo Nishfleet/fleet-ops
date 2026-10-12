@@ -15,10 +15,7 @@
       "Bash(ls:*)",
       "Bash(date:*)",
       "Bash(stat:*)",
-      "Bash(du:*)",
-      "Bash(git --git-dir=*/workspaces/products/*/.git show:*)",
-      "Bash(git --git-dir=*/workspaces/products/*/.git log:*)",
-      "Bash(git --git-dir=*/workspaces/products/*/.git ls-tree:*)"
+      "Bash(du:*)"
     ],
     "deny": [
       "Read(~/.claude/.credentials.json)",
