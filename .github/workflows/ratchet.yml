@@ -29,7 +29,7 @@ jobs:
             (cd "$t" && eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t && got=$(net HEAD~1 HEAD) && git reset -q --hard HEAD~1 && [ "$got" = "${c##*;}" ]) || { echo "self-test '${c%;*}' failed"; exit 1; }
           done
           f=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}; f=${f%@*}
-          old=$(git show "$(git merge-base "$BASE" "$HEAD"):$f" 2>/dev/null | yq -o=json -I=0 '.jobs.ratchet' || true)
+          old=$(git show "$BASE:$f" 2>/dev/null | yq -o=json -I=0 '.jobs.ratchet' || true)
           case "$old" in *ratchet.yml@*) [ "$old" = "$(yq -o=json -I=0 '.jobs.ratchet' "$f")" ] || { echo "::error::ratchet: this PR edits the ratchet job in $f. A PR does not change the rule it is judged by."; exit 1; };; esac
           n=$(net "$BASE" "$HEAD")
           echo "ratchet: net added lines under .github/workflows, .github/actions, scripts, bin: $n"
