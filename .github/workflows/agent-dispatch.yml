@@ -305,11 +305,10 @@ jobs:
   # on fleet-ops main, read by URL so every caller repo uses the same copy; an
   # unreadable list holds every PR. A risky PR whose CURRENT head sha has no
   # approval from an approver loses its arm, leaves the merge queue and gets
-  # the label. Approval is either a PR comment with the line
-  # `coordinator-approval: <full head sha>` (unedited), or a
-  # coordinator-approval=success commit status on that sha. The comment path
-  # exists because cloud sessions get 403 on POST /statuses. Both name one
-  # sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
+  # the label. Approval is a PR comment with the line
+  # `coordinator-approval: <full head sha>` (unedited; no commit status, cloud
+  # sessions get 403 on POST /statuses), or on a "human" path nish3451's APPROVED
+  # review of that sha. Both name one sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
   # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
   # and APPROVAL below against every case in config/risky-paths.json.
   hold-risky:
@@ -325,13 +324,12 @@ jobs:
       cancel-in-progress: false
     # pull-requests: write labels the PR and disables auto-merge. contents:
     # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
-    # like arming does). statuses: read and pull-requests (which covers a PR's
-    # issue comments) read the approval. Nothing here checks out code, so
+    # like arming does). pull-requests (which covers a PR's issue comments
+    # and reviews) reads the approval. Nothing here checks out code, so
     # contents: write never meets PR head code.
     permissions:
       contents: write
       pull-requests: write
-      statuses: read
     env:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
@@ -371,25 +369,27 @@ jobs:
            + ($hits | unique | .[:10] | map("path \(.)"))
            + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+      # stdin: {sha, comments, repo, files}: the head sha, the PR's comments and
+      # reviews, its files. An approver's comment, never edited (updated_at ==
+      # created_at, so an old comment cannot be edited onto a new sha), with a
+      # line exactly "CONTEXT: <sha>" for the full 40-hex head sha approves. On
+      # a fleet-ops PR touching a $cfg "human" path (unreadable list or no files
+      # count) only nish3451's latest review counts, APPROVED on the head.
       APPROVAL: |
         . as $in
         | ($who | split(" ") | map(select(length > 0))) as $approvers
-        | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
-        | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
         | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
         | ($full and any(($in.comments // [])[];
             (.user.login // "") as $l
             | any($approvers[]; . == $l)
               and .created_at != null and .updated_at == .created_at
               and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
+        | (($cfg.human? // null) as $h
+          | (($in.repo // "") | ascii_downcase) == "nishfleet/fleet-ops"
+            and (($h | type) != "array" or ($in.files // [] | length) == 0 or any($in.files[]; . as $f | any($h[]; . as $re | $f | test($re; "i"))))) as $human
+        | ([($in.comments // [])[] | select(.user.login == "nish3451" and (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED")))] | last
+            | .state == "APPROVED" and .commit_id == $in.sha) as $by_review
+        | if $human then $by_review else $by_comment end
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
@@ -397,7 +397,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         # Fails closed: a read that fails (the PR, its files, the path list,
-        # its statuses or comments, the merge state) never skips the hold. It
+        # its comments or reviews, the merge state) never skips the hold. It
         # counts as risky or not approved, gets a ::warning:: naming the read,
         # and the label, disarm and dequeue still run. The job only goes red
         # when it cannot confirm the PR is disarmed and out of the queue.
@@ -435,20 +435,17 @@ jobs:
           echo "hold-risky: #$PR at $sha: $verdict"
           # Not risky: the merge list says these merge on green checks (as before), so the review the ruleset now requires on every PR is given here, for a same-repo head only; a fork PR waits for a person. The API refuses a commit_id that is no longer the head (HTTP 422, checked 2026-10-12), so a push after the read gets no approval. The repo setting "Allow GitHub Actions to create and approve pull requests" is on.
           jq -e .risky <<<"$verdict" >/dev/null || { [ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ] || gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
-          # Either approval read failing means not approved, even if the other
-          # read alone would approve.
           approved=false
           if [ "$sha" = unknown ]; then
             echo "::warning::hold-risky: no head sha for #$PR; not approved"
-          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt"; then
-            echo "::warning::hold-risky: statuses read failed for $sha; not approved"
-          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
-            --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
-            echo "::warning::hold-risky: comments read failed for #$PR; not approved"
+          elif ! { gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
+            --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' &&
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[] | {user: {login: .user.login}, state, commit_id}'; } > "$RUNNER_TEMP/comments.txt"; then
+            echo "::warning::hold-risky: comments or reviews read failed for #$PR; not approved"
           else
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            approved=$(jq -n --arg sha "$sha" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile f "$RUNNER_TEMP/facts.json" \
+              '$f[0] + {sha: $sha, comments: $m}' |
+              jq -r --argjson cfg "$cfg" --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
           fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
