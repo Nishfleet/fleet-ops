@@ -3,6 +3,9 @@
 # since requested changes on it. The ruleset dismisses stale reviews on push, so a new
 # head starts unapproved. Auto-merge, armed when the PR is opened, waits for this check
 # like any other. Approvers: the review job's identity (agent.yml, GITHUB_TOKEN) and nish3451.
+# A review written with GITHUB_TOKEN fires no pull_request_review, so `refresh` re-runs the
+# head's check when the agent-dispatch run that wrote the review ends. A PR that edits this
+# file edits a workflow, so the review job asks two reviewers of different families.
 name: coordinator-approval
 on:
   pull_request:
@@ -10,6 +13,9 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
   merge_group:
+  workflow_run:
+    workflows: [agent-dispatch]
+    types: [completed]
 permissions: {}
 concurrency:
   group: coordinator-approval-${{ github.event.pull_request.number || github.ref }}
@@ -17,6 +23,7 @@ concurrency:
 jobs:
   coordinator-approval:
     name: coordinator-approval
+    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -25,7 +32,7 @@ jobs:
       # A queue entry only forms for a PR that already passed this check and the ruleset's review.
       - if: github.event_name == 'merge_group'
         run: echo "coordinator-approval is enforced on the pull request; the queue entry passes."
-      - if: github.event_name != 'merge_group'
+      - if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
@@ -39,3 +46,16 @@ jobs:
               | group_by(.user.login) | map(last)
               | any(.[]; .state == "APPROVED" and (.user.login as $l | $who | split(" ") | index($l)))' ||
             { echo "::error::coordinator-approval: no approving review from $APPROVERS on $sha"; exit 1; }
+  refresh:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - run: |
+          id=$(gh run list -R "$GITHUB_REPOSITORY" -w coordinator-approval.yml -c "$SHA" -e pull_request -L 1 --json databaseId --jq '.[0].databaseId // empty')
+          [ -z "$id" ] || { gh run watch "$id" -R "$GITHUB_REPOSITORY" > /dev/null || true; gh run rerun "$id" -R "$GITHUB_REPOSITORY"; }
