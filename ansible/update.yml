@@ -77,10 +77,12 @@
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
     # Each runs as nish with its own stdin; a failure is reported at the end,
-    # never skipped quietly. devin update has no --yes flag and exits 130 on an
-    # empty stdin, because it asks for confirmation, so it answers "y" (the
-    # same thing `echo y | devin update` does, fleet-ops#9262). Every other
-    # updater here ignores stdin.
+    # never skipped quietly. devin is updated by its official installer, the
+    # same script that installed it (the version dir's `distribution` file
+    # says curl-bash): `devin update` asks for confirmation on a terminal and
+    # exits 130 without one, even with "y" on stdin. The installer verifies
+    # the bundle's sha256 and needs no terminal. Every updater here ignores
+    # stdin.
     tool_updates:
       - argv: [npm, update, --global]
         stdin: ""
@@ -92,8 +94,8 @@
         stdin: ""
       - argv: [cursor-agent, update]
         stdin: ""
-      - argv: [devin, update]
-        stdin: "y\n"
+      - argv: [bash, -o, pipefail, -c, "curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
+        stdin: ""
       - argv: [uv, self, update]
         stdin: ""
       - argv: [uv, tool, upgrade, --all]
@@ -387,6 +389,10 @@
 
         # No --yes: a plugin whose update needs a new marketplace command
         # fails here (and in the final assert) instead of being accepted blind.
+        # Only marketplace installs (they carry installedAt) can update.
+        # Plugins loaded with --plugin-dir (scope "session") or from
+        # ~/.claude/skills/ have no marketplace, and `claude plugin update`
+        # refuses them by design.
         - name: Update every installed Claude Code plugin
           become: true
           become_user: nish
@@ -394,7 +400,7 @@
           ansible.builtin.shell:
             cmd: >-
               set -o pipefail;
-              claude plugin list --json | jq -r '.[].id' |
+              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
               xargs -r -n1 claude plugin update
             executable: /bin/bash
           timeout: 600
@@ -455,13 +461,13 @@
           ansible.builtin.systemd_service:
             name: "{{ item }}"
             state: started
-          loop: "{{ (runners_stopped | default({'results': []})).results | map(attribute='item') | list }}"
+          loop: "{{ (runners_stopped | default({})).results | default([]) | map(attribute='item') | list }}"
           ignore_errors: true
 
         - name: Restart the work timers this run stopped
           ansible.builtin.command:
             argv: [systemctl, --user, --machine=nish@.host, start, "{{ item }}"]
-          loop: "{{ (timers_stopped | default({'results': []})).results | map(attribute='item.item') | list }}"
+          loop: "{{ (timers_stopped | default({})).results | default([]) | map(attribute='item.item') | list }}"
           ignore_errors: true
 
         - name: Resume and check as nish (GitHub CLI)
@@ -474,7 +480,7 @@
             - name: Clear the dispatch pause flag where this run set it
               ansible.builtin.command:
                 argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
-              loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
               register: dispatch_resumed
               # A blip in the API must not leave a queue paused for a week.
               until: dispatch_resumed is succeeded
@@ -490,7 +496,7 @@
             - name: Read the pause flag back on each repo this run paused
               ansible.builtin.command:
                 argv: [gh, api, "repos/{{ item }}/actions/variables/{{ pause_variable }}", --jq, .value]
-              loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
               register: dispatch_flag_after
               changed_when: false
               failed_when: dispatch_flag_after.rc != 0 and 'HTTP 404' not in dispatch_flag_after.stderr
@@ -499,9 +505,9 @@
             - name: Name every repo whose dispatch is still paused
               ansible.builtin.set_fact:
                 dispatch_still_paused: >-
-                  {{ ((dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
-                     + (dispatch_flag_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
-                     + (dispatch_flag_after | default({'results': []})).results | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 'true') | map(attribute='item') | list)
+                  {{ ((dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({})).results | default([]) | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 'true') | map(attribute='item') | list)
                      | unique }}
 
             # Only once every flag is clear: a still-paused repo keeps the
@@ -516,7 +522,7 @@
             - name: Sweep each queue now, so waiting work starts at once
               ansible.builtin.command:
                 argv: [gh, workflow, run, agent-dispatch.yml, --repo, "{{ item }}"]
-              loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
               register: sweeps
               ignore_errors: true
 
@@ -531,7 +537,7 @@
                 argv: [gh, run, list, --repo, "{{ item }}", --workflow, agent-dispatch.yml, --event, workflow_dispatch,
                        --limit, "1", --json, "status,conclusion",
                        --jq, 'if length == 0 then "no sweep run" elif .[0].status == "completed" then (.[0].conclusion // "no-conclusion") else "accepted: " + .[0].status end']
-              loop: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
               register: sweep_result
               until: sweep_result.stdout != 'no sweep run'
               retries: 20
@@ -653,9 +659,9 @@
           ansible.builtin.debug:
             msg:
               dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
-              stale_pause_cleared: "{{ (stale_cleared | default({'results': []})).results | map(attribute='item') | list }}"
-              dispatch_paused: "{{ (dispatch_paused | default({'results': []})).results | map(attribute='item.item') | list }}"
-              runners_restarted: "{{ (runners_stopped | default({'results': []})).results | length }}"
+              stale_pause_cleared: "{{ (stale_cleared | default({})).results | default([]) | map(attribute='item') | list }}"
+              dispatch_paused: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              runners_restarted: "{{ (runners_stopped | default({})).results | default([]) | length }}"
               apt_upgrade: "{{ (apt_upgrade | default({})).stdout_lines | default([]) | select('match', '^(Inst|Setting up) ') | list }}"
               apt_autoremove: "{{ (apt_autoremove | default({})).stdout_lines | default([]) | select('match', '^Removing ') | list }}"
               needrestart: "{{ (needrestart_run | default({})).stdout_lines | default([]) }}"
@@ -670,10 +676,10 @@
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
-              versions_before: "{{ (versions_before | default({'results': []})).results | map(attribute='stdout') | map('default', '') | list }}"
-              versions_after: "{{ (versions_after | default({'results': []})).results | map(attribute='stdout') | map('default', '') | list }}"
-              sweeps: "{{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }}"
-              runners_online: "{{ (online | default({'results': []})).results | map(attribute='stdout') | list }}"
+              versions_before: "{{ (versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
+              versions_after: "{{ (versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
+              sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
+              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
@@ -681,17 +687,17 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - "(tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
-              - "(versions_after | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
               - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
-              - "(dispatch_resumed | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
-              - "(sweep_result | default({'results': []})).results | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
-              - "(online | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
+              - "(online | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not (runners_up | default({})).failed | default(false)"
               - "failed_system.stdout_lines | length == 0"
               - "failed_user.stdout_lines | length == 0"
@@ -701,10 +707,10 @@
               {{ 'DISPATCH STILL PAUSED (FLEET_DISPATCH_PAUSED is not cleared) on: ' ~ (dispatch_still_paused | default(['unknown, the resume block did not finish']) | join(', '))
                  ~ '. Clear it with gh variable set FLEET_DISPATCH_PAUSED --body false --repo <repo>. '
                  if (dispatch_still_paused | default(['unknown']) | length > 0) else '' }}fleet-update finished with problems (runners resumed). Failed tools:
-              {{ (tool_results | default({'results': []})).results | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
+              {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
               pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
-              sweeps: {{ (sweep_result | default({'results': []})).results | map(attribute='stdout') | list }};
+              sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};
               Remote Control: {{ rc_state.stdout }}

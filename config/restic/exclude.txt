@@ -1,0 +1,108 @@
+# Restic backup exclude patterns (--exclude-file), fleet-ops#9360.
+# Patterns are matched against the full path.
+#
+# Short on purpose: this file only drops things INSIDE an included directory
+# (include.txt is the real list), plus the root-only files under /etc that
+# restic cannot read when the unit runs as an unprivileged user.
+#
+# A path that must never be backed up belongs by being absent from
+# include.txt, not here. A cache that a kept directory drags in belongs here.
+
+# --- Junk inside included directories -----------------------------------
+
+# Browser profiles and their automation profiles (regenerated per session).
+/home/nish/.config/google-chrome-headless
+/home/nish/.config/google-chrome
+/home/nish/.config/google-chrome-for-testing
+/home/nish/.config/google-chrome-for-testing-headless
+/home/nish/.config/chromium
+/home/nish/.config/chrome-canary
+
+# Syncthing's own database: it is a cache of what Syncthing can re-resync.
+/home/nish/.config/syncthing
+
+# Opencode session/cache store.
+/home/nish/.config/opencode
+
+# Session transcripts and logs. The durable memory is the vault
+# (_system/agent-memory) and the searchable index is leviathan's, both of
+# which are kept; the transcripts are derived data.
+/home/nish/.pi/agent/sessions
+
+# Pi agent's own npm cache.
+/home/nish/.pi/agent/npm
+
+# Hermes tool trees: the agent is a git repo with a remote, and tools/,
+# cache/, installs/, node/, bin/, lsp/ and logs/ are re-downloaded or
+# rebuilt. What hermes cannot rebuild (state.db, its WAL, state-snapshots,
+# skills, kanban.db, shared-state.db, backups/) is kept.
+/home/nish/.hermes/hermes-agent
+/home/nish/.hermes/tools
+/home/nish/.hermes/cache
+/home/nish/.hermes/installs
+/home/nish/.hermes/node
+/home/nish/.hermes/bin
+/home/nish/.hermes/lsp
+/home/nish/.hermes/logs
+
+# Grafana plugins are installed from the plugin catalog; the state is not.
+/home/nish/.local/share/fleet-grafana/plugins
+
+# Go build and tool caches (--exclude-caches also covers the tagged ones).
+/home/nish/.cache/go-build
+
+# Node and package caches.
+/home/nish/node_modules
+/home/nish/.npm
+/home/nish/.cache/npm
+/home/nish/.cache/bun
+/home/nish/.cache/pnpm
+
+# Python caches.
+/home/nish/__pycache__
+/home/nish/**/__pycache__
+
+# Rust cargo cache.
+/home/nish/.cargo/registry
+/home/nish/.cargo/git
+
+# Temporary and scratch files.
+/home/nish/.tmp
+/home/nish/tmp
+/home/nish/scratch
+/var/tmp
+/tmp
+
+# --- Root-only files under /etc -----------------------------------------
+#
+# The live unit runs as root, so it reads all of /etc. These are excluded on
+# purpose, not because they are unreadable:
+
+# Local root password hashes and equivalent. A leaked backup is an offline
+# cracking target and a shadow file cannot be restored usefully anyway.
+/etc/shadow
+/etc/shadow-
+/etc/gshadow
+/etc/gshadow-
+/etc/opasswd
+
+# Host private keys: a stolen copy lets an attacker impersonate the box.
+# Regenerate them after a restore; known_hosts entries change once.
+/etc/ssh/ssh_host_*_key
+
+# sudo policy and the account database backups it is compared against.
+/etc/sudoers.d/
+/etc/passwd-
+/etc/group-
+/etc/subuid-
+/etc/subgid-
+
+# TLS private keys.
+/etc/ssl/private/
+
+# The restic repository password and the R2 keys themselves. They are stored
+# inside the directory this list protects, so backing them up would put the
+# decryptor next to the ciphertext. They are root-only (mode 0700) and are
+# held outside the backup on purpose: a restore asks the operator for them,
+# the same way it asks for RESTIC_PASSWORD.
+/etc/restic/

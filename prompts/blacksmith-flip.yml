@@ -18,4 +18,4 @@ Notes that matter:
 7. If the largest is at or above 2,850:
    gh variable delete CI_RUNNER --org Nishfleet
    Print "CI_RUNNER deleted (usage <largest> minutes >= 2,850)".
-8. Print FLIP: SET (step 6) or FLIP: DELETE (step 7) as the LAST line of your answer, and nothing after it. Keep any explanation short; the one-line verdict is what the timer reads.
+8. Print FLIP: SET (step 6) or FLIP: DELETE (step 7) as the LAST line of your answer, in plain text with no bold, italics, backticks or other markdown, and nothing after it. Keep any explanation short; the one-line verdict is what the timer reads.

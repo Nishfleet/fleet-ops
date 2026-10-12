@@ -3,6 +3,9 @@ model_list:
   litellm_params:
     model: openai/x
     cooldown_time: 0
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 60

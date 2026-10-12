@@ -1,0 +1,28 @@
+# Cloudflare spend watch data source (fleet-ops#9355).
+# The Infinity data source (yesoreyeram-infinity-datasource, preinstalled via
+# GF_PLUGINS_PREINSTALL_SYNC in fleet-grafana.container) POSTs GraphQL to
+# https://api.cloudflare.com/client/v4 with the analytics-read token. The
+# token is the existing deploy-ci one (Workers scripts, D1, KV, Zone read,
+# GraphQL analytics) and never sits in this file: Grafana expands
+# $CLOUDFLARE_API_TOKEN from the container environment at provisioning load
+# (EnvironmentFile=%h/.config/cloudflare/deploy-ci.env in the quadlet) and
+# stores it encrypted in the Grafana database.
+#
+# parser 'backend' is required for alerting (the frontend JSON parser cannot
+# run inside Grafana's rule evaluation), and auth requires allowedHosts.
+apiVersion: 1
+
+datasources:
+  - name: Cloudflare
+    uid: fleet-cloudflare
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    editable: false
+    isDefault: false
+    jsonData:
+      auth_method: bearerToken
+      allowedHosts:
+        - https://api.cloudflare.com
+      timeoutInSeconds: 60
+    secureJsonData:
+      bearerToken: $CLOUDFLARE_API_TOKEN

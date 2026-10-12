@@ -1,0 +1,15 @@
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (fleet-ops#9469)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
+  optional_pre_call_checks: ["prompt_caching", "session_affinity"]
+  deployment_affinity_ttl_seconds: 600
+  # No allowed_fails_policy block at all: router_settings.required now names it,
+  # so a future edit that drops the block is a rejected config, not a silent
+  # fall-back to the router-level allowed_fails of 1 (fleet-ops#9469).
