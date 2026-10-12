@@ -488,7 +488,7 @@ jobs:
             # same jail, so they add no reach; --settings turns every hook off, and
             # --settings outranks project and local settings.
             echo "$packet" | $claude_jail --chdir "$dir" -- \
-              claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
+              claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
               --strict-mcp-config --disable-slash-commands --setting-sources project,local \
               --settings '{"disableAllHooks":true}' \
               >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
