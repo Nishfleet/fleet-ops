@@ -120,24 +120,15 @@ jobs:
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
           amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
           promtool test rules config/prometheus-tests/*.test.yml
-      - name: stub pi for systemd-analyze verify (host-only binary)
+      - name: stub host-only binaries for systemd-analyze verify
         if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
-      - name: stub tincan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/tincan
-      - name: stub litellm for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
-      - name: stub cursor-agent for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
-      - name: stub leviathan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
-      - name: stub tofu for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
+        run: |
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
+            sudo install -D -m0755 /bin/true "$b"
+          done
+          for b in cursor-agent leviathan tofu; do
+            install -D -m0755 /bin/true "$HOME/.local/bin/$b"
+          done
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
