@@ -419,8 +419,11 @@ model_list:
     # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. No worker row is removed (Nish 2026-10-02:
     # removing a row needs his yes). config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
     max_parallel_requests: 1
-    # 900 s like the sibling Synthetic rows: a pool 429 (500 req / 5 h) needs that long to clear, so a shorter re-probe only re-hits it.
-    cooldown_time: 900
+    # 60 s, not the 900 s of the sibling Synthetic rows: this is the only row in its group, so a long park takes the whole senior fallback
+    # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked it 900 s at 06:14 UTC, and
+    # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
+    # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
+    cooldown_time: 60
     # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
     # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
     # senior's own $10/day cap is not the wall it guards against either: all Pareto GLM-5.3-Flash spend to 2026-10-12 is $0.094.
