@@ -19,13 +19,10 @@
   surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
   only for those classes or irreversible work — present the plan and begin
   everything else (fleet-ops#6610).
-- **Stock first, no glue** (`prompts/worker.md`, "Stock first, no glue";
-  fleet-ops#9614): before you write any persistent script, wrapper, hook,
-  poller, retry loop or more than about 30 lines of workflow shell, find the
-  stock feature that does the job and name it in the PR body as
-  `stock: <feature>`, or `built: <repo + official extension point>` with the
-  search when nothing stock fits. This is the pointer, not a second copy: the
-  reason and the full wording live in `prompts/worker.md`.
+- **Stock first, no glue** (`prompts/worker.md` → "Stock first, no glue";
+  fleet-ops#9614): the reason (audit fleet-ops#9619), the trigger and the
+  `stock:`/`built:` PR-body lines live in `prompts/worker.md`; this bullet is a
+  pointer, not a second source (fleet-ops#5586).
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
