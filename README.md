@@ -88,6 +88,16 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
+  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
+  times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
+  any PR left waiting over an hour: it arms a head a reviewer approved, asks
+  the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
+  issue for a PR no worker owns. One instance per repo with an agent-dispatch
+  stub (fleet-ops, 0509, drive, inish-site, aiconverter-app, tinystudio-in,
+  TinyStudio.io-public, siterep-public). Off switch:
+  `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that

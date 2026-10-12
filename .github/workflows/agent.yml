@@ -31,6 +31,26 @@ on:
         type: string
         required: false
         default: ''
+      stuck_pr:
+        description: PR the sweep found waiting over an hour that no worker owns (agent-dispatch stuck-file)
+        type: string
+        required: false
+        default: ''
+      stuck_sha:
+        description: head sha the sweep judged stuck; the filed issue names it so a new head is a new report
+        type: string
+        required: false
+        default: ''
+      stuck_reason:
+        description: why the PR cannot move on its own (conflict, red checks, reviewer block)
+        type: string
+        required: false
+        default: ''
+      stuck_url:
+        description: link to the comment that blocks it, empty when none
+        type: string
+        required: false
+        default: ''
 
   # The Daily (nish.sh/daily). Only fires on fleet-ops main; the job below
   # tells a cron run from a workflow_call by the empty inputs.ref.
@@ -1140,6 +1160,81 @@ jobs:
             GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
             echo "armed #$PR at $SHA"
           fi
+  # Files one orchestrator issue for a PR that has waited over an hour and that
+  # no worker owns: a session's own branch, or a claim PR whose issue is closed
+  # or deleted (agent-dispatch stuck-prs). 40 of 53 waiting fleet PRs on
+  # 2026-10-11 were such PRs, some idle for days, because every sweep path
+  # followed claim branches only. The App token files it so the
+  # needs-orchestrator label fires the orchestrate job; a GITHUB_TOKEN label
+  # fires no workflow. One open issue per PR: a new head comments on it, the
+  # same head does nothing.
+  stuck:
+    if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+      issues: read
+    concurrency:
+      group: stuck-${{ github.repository }}-${{ inputs.stuck_pr }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      PR: ${{ inputs.stuck_pr }}
+      SHA: ${{ inputs.stuck_sha }}
+      REASON: ${{ inputs.stuck_reason }}
+      URL: ${{ inputs.stuck_url }}
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      - name: Issue token
+        id: issue-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
+      - name: File or update the stuck-PR issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the next sweep decides"; exit 0; }
+          marker="stuck-pr: #$PR"
+          why="PR #$PR ($(jq -r .head.ref <<<"$pr")) has waited over an hour at ${SHA:0:7}: $REASON."
+          [ -z "$URL" ] || why="$why Blocking comment: $URL"
+          old=$(gh issue list -R "$REPO" --state open -L 100 --search "\"$marker\" in:body" --json number,body |
+            jq -c --arg m "$marker" '[.[] | select(.body | split("\n") | any(.[]; startswith($m + " ")))] | first // empty')
+          if [ -n "$old" ]; then
+            n=$(jq -r .number <<<"$old")
+            if gh issue view "$n" -R "$REPO" --json body,comments --jq '[.body, .comments[].body] | join("\n")' | grep -qF "$marker $SHA"; then
+              echo "#$n already reports #$PR at $SHA"
+              exit 0
+            fi
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "$(printf '%s %s\n\n%s' "$marker" "$SHA" "$why")"
+            echo "updated #$n for #$PR at $SHA"
+            exit 0
+          fi
+          body=$(printf '%s %s\n\n%s\n\nTake the PR over: fix the blocker lines or merge main on its branch and push (a new head gets a fresh review and the sweep arms it once approved), or close it as superseded. %s' \
+            "$marker" "$SHA" "$why" "$(jq -r .html_url <<<"$pr")")
+          url=$(GH_TOKEN=$ISSUE_TOKEN gh issue create -R "$REPO" --title "Stuck PR #$PR: $REASON" --body "$body")
+          # Labelled after creation, so the labeled event that starts the
+          # orchestrate job is its own event from the App.
+          GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
+          echo "filed $url for #$PR at $SHA"
   inish-daily:
     # The Daily edition, published to https://nish.sh/daily (inish.in is retired
     # and only redirects). Its runner was a Hermes cron job, disabled 2026-08-20

@@ -710,6 +710,34 @@ jobs:
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
           test "$bad" -eq 0
+      - name: Sweep moves PRs waiting over an hour (STUCK)
+        # Runs the stuck-prs job's own STUCK program, read out of the workflow,
+        # against every case in config/stuck-pr-cases.json. The grep lines pin
+        # the wiring: the verdict feeds the four lists, each list starts its
+        # agent.yml job, and a deleted claim issue is filed, not fatal.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
+          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
+          done
+          bad=0
+          for j in stuck-review:review_pr stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr; do
+            [ "$(yq ".jobs.\"${j%%:*}\".needs" "$f")" = stuck-prs ] && [ "$(yq ".jobs.\"${j%%:*}\".with.${j#*:}" "$f")" != null ] || { echo "${j%%:*} is not wired to stuck-prs"; bad=1; }
+          done
+          [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
+            got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          test "$bad" -eq 0
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
@@ -722,7 +750,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky arm-approved"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky arm-approved stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
