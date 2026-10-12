@@ -71,6 +71,15 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/claude.toml /home/nish/.local/share/leviathan/claude.toml
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/pi.toml /home/nish/.local/share/leviathan/pi.toml
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/leviathan.conf /home/nish/.config/user-tmpfiles.d/leviathan.conf
+# 2d. The helper and scout subagents (the only lanes model-lanes allows) are
+#     COPYs of config/claude-agents/, same class as 6/7/8: they lived only as
+#     hand-placed files. Remote Control runs on the Max config dir
+#     (~/.claude-max), which reads subagents from its own agents/ dir, so every
+#     Remote Control thread got "helper not found". The tmpfiles rule links
+#     ~/.claude-max/agents to ~/.claude/agents (step 5) and step 5b checks it.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
 ExecStart=/usr/bin/systemctl --user daemon-reload
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
@@ -83,6 +92,9 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
 #    it leaves the age-only e lines alone.
 ExecStart=/usr/bin/systemd-tmpfiles --user --create
+# 5b. Plain L never replaces a path that is already there, so a hand-made
+#     ~/.claude-max/agents would quietly hide the lanes again. Fail loud instead.
+ExecStart=/bin/sh -c 'test "$$(readlink %h/.claude-max/agents)" = %h/.claude/agents || { echo "[fleet-sync] ~/.claude-max/agents is not the link to ~/.claude/agents; remove it and re-run"; exit 1; }'
 # 6. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an

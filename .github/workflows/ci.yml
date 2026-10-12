@@ -270,6 +270,13 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+      - name: helper and scout subagents reach the Max config dir
+        # Runs fleet-sync.service's own agent installs, the real
+        # systemd-tmpfiles --user --create and the link check against a temp
+        # home: both lanes read through ~/.claude-max/agents, and a hand-made
+        # dir in the link's place fails the sync.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
