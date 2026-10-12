@@ -32,3 +32,5 @@ bearer[[:space:]]
 AKIA[0-9A-Z]{16}
 -----BEGIN
 [A-Za-z0-9+/]{40,}
+://
+\]\(
