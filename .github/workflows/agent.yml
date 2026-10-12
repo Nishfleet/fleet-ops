@@ -589,8 +589,8 @@ jobs:
             exit 1
           fi
       - name: Record the builder engine
-        # The review job reads this to pick its model: Claude-built work goes to
-        # Fable, anything else to Opus (see the review job). Posted on the PR by
+        # The review job reads this; every first review is Opus 5.5, Claude-built
+        # or not (see the review job). Posted on the PR by
         # the worker App, so only the App's own comment counts there. A PR with no such
         # comment (the orchestrator's, a person's session) counts as Claude-built.
         if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
@@ -892,14 +892,15 @@ jobs:
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # The first review is a no-tools Claude call on a Claude seat: Opus 5.5
-          # for work another engine built, Fable 5.1 for Claude-built work (Nish
-          # approved that exception to "Claude never grades Claude", 2026-10-10).
+          # for all work, Claude-built or not (Nish approved that exception to
+          # "Claude never grades Claude", 2026-10-10). Fable is never a reviewer:
+          # as the default it used 44% of a seat's weekly Fable limit in ~2 days.
           # The verdict is always Jev's (not Claude) and a PR that edits the merge
           # guard or a workflow also needs a second review by a different model
           # family than the Jev judge and than Claude. The senior seat is a single
           # GLM (Z.ai) row. The comment names both families.
           FIRST_MODEL_OTHER: claude-opus-5-5
-          FIRST_MODEL_CLAUDE_BUILT: claude-fable-5-1
+          FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
@@ -996,9 +997,8 @@ jobs:
           # PR. Only the worker App's own comment counts (not any bot's); any claude in a list, or no such
           # comment at all (the orchestrator, a person's session), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
-          # Unknown is the stricter pairing: Fable is the reviewer for Claude-built
-          # work, so a Claude builder (Sonnet or Opus) never meets a reviewer of its
-          # own model, and the verdict is Jev's (non-Claude) either way.
+          # Unknown counts as Claude-built. Both names are Opus 5.5 today; the
+          # verdict is Jev's (non-Claude) either way.
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
