@@ -40,3 +40,16 @@ jobs:
           configPath: ./fleet-ops/config/lighthouserc.json
           uploadArtifacts: false
           temporaryPublicStorage: false
+      - name: Print what each page waited on
+        if: always()
+        run: |
+          test -f .lighthouseci/manifest.json || exit 0
+          for f in $(jq -r '.[] | select(.isRepresentativeRun) | .jsonPath' .lighthouseci/manifest.json); do
+            jq -r '
+              "== \(.finalDisplayedUrl)",
+              "LCP \(.audits["largest-contentful-paint"].numericValue // 0 | round) ms, TTI \(.audits.interactive.numericValue // 0 | round) ms, server response \(.audits["server-response-time"].numericValue // 0 | round) ms",
+              "LCP element: \(.audits["largest-contentful-paint-element"].details.items[0].items[0].node.snippet? // "n/a")",
+              "Requests (url, start-end ms, KB):",
+              (.audits["network-requests"].details.items[]? | "  \(.url[0:100])  \(.networkRequestTime // 0 | round)-\(.networkEndTime // 0 | round)  \((.transferSize // 0) / 1024 | round)")
+            ' "$f" || echo "could not read $f"
+          done
