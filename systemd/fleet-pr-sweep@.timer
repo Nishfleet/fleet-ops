@@ -7,10 +7,11 @@ Description=Hourly agent-dispatch sweep for Nishfleet/%i
 # the same sweep by workflow_dispatch from the box every hour; GitHub's own
 # schedule stays as the second source. The sweep's concurrency group keeps one
 # running and one waiting, so two sources never stack runs.
-# One instance per repo with an agent-dispatch stub: enable with
-#   systemctl --user enable --now fleet-pr-sweep@<repo>.timer
-# Switch off: systemctl --user disable --now 'fleet-pr-sweep@*.timer'. Delete:
-# that, then remove this file and fleet-pr-sweep@.service.
+# One instance per repo with an agent-dispatch stub; fleet-sync.service (step
+# 2a) links this pair and enables the instances on every deploy. Switch off:
+# remove step 2a and its enable line from fleet-sync.service, then
+# systemctl --user disable --now 'fleet-pr-sweep@*.timer'. Delete: that, then
+# remove this file and fleet-pr-sweep@.service.
 
 [Timer]
 OnCalendar=*-*-* *:47:00
