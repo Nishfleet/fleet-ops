@@ -68,6 +68,7 @@
     # Persistent user timers whose job calls a model or a CLI this run updates.
     # The transient later-* reminder timers only add a label, and stopping a
     # transient timer deletes it, so they stay untouched.
+    # Empty on purpose: blacksmith-flip.timer was the only one (fleet-ops#9670).
     work_timers: []
     # 150 one-minute polls: the 60-minute agent job timeout plus headroom.
     drain_polls: 150

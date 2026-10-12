@@ -51,7 +51,8 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 #    Same for the blacksmith-flip.service/.timer links the pull deleted
-#    (fleet-ops#9670); the running timer stops at the daemon-reload.
+#    (fleet-ops#9670): a daemon-reload does not stop a loaded timer, so it is stopped
+#    first (the `-` ignores the exit once it is gone), and the installed prompt copy goes too.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
@@ -59,7 +60,8 @@ ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops
 #     delete this step and the enable line, then `systemctl --user disable --now
 #     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path /home/nish/.config/systemd/user/blacksmith-flip.service /home/nish/.config/systemd/user/blacksmith-flip.timer /home/nish/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
+ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path /home/nish/.config/systemd/user/blacksmith-flip.service /home/nish/.config/systemd/user/blacksmith-flip.timer /home/nish/.config/systemd/user/timers.target.wants/blacksmith-flip.timer /home/nish/.local/share/blacksmith-flip/prompt.yml
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
 #     so the user manager reads it on this run.
