@@ -245,7 +245,7 @@ Hard rules:
 ### PR body contract — run these before `gh pr create`
 
 - `Verification:` carries real run results; every worker PR needs one, and a proof put off to a later run is a finding (docs/quality-bar.md point 7).
-- Every PR body carries the `stock:` or `built:` line defined in `prompts/worker.md` → "Stock first, no glue".
+- Every PR body carries one of the three lines defined in `prompts/worker.md` → "Stock first, no glue": `stock: <feature>`, `stock: not triggered`, or `built: <repo + official extension point>`.
 - New `bin/`/`scripts/` files are banned (no new scripts, anywhere in any repo).
 - Wipe safety: never `pgrep -f` to find or kill a worktree process.
 
