@@ -1038,7 +1038,7 @@ jobs:
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
-            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
+            want=no; ap=no; [ "$held" = no ] && [ "$safe" != fork ] && [ -z "$fail" ] && { [ -n "$safe$approve" ] || [ "$review" = approve ]; } && want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky, or that carries an approval, gets a review on the head it classified (SAFE=fork: a fork's head repo)
             if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
             armout=no
             ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
