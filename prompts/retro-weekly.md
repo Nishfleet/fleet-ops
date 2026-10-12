@@ -60,7 +60,7 @@ class=<main-red|tool-economy|corrections|false-claims|repeated-failures|steering
 count=<the count, digits only>
 rung=<structure|static-gate|rule|skill|prose>
 repo=<fleet-ops|0509|drive|inish-site|tinystudio-in>
-fix=<one plain line: letters, spaces, commas, periods and hyphens only, under 100 characters, no word over 14 letters, no digits, no quotes, no names of files or people>
+fix=<ci-check|stop-hook|test|rule-edit|prompt-edit|config-change|delete-dead-code|other>
 
 A check builds the public title and body from those five values and refuses the
 whole run on anything outside the form. The evidence stays in the private report.
