@@ -630,10 +630,10 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           t=$RUNNER_TEMP/sweep-deleted-issue
           mkdir -p "$t/bin" "$t/data"
-          yq '.jobs.list.steps[0].run' "$f" > "$t/list.sh"
+          yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f" > "$t/list.sh"
           [ -s "$t/list.sh" ] && ! grep -qx null "$t/list.sh"
-          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
@@ -662,8 +662,11 @@ jobs:
             "run view"*) echo '"completed"' | emit ;;
             "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
             "api "*"/issues/9502")
+              # Real gh 2.93.0 (measured 2026-10-12 on this issue): body on
+              # stdout, "(HTTP 410)" on stderr, exit 1. BODY_ON_STDOUT=0 drops
+              # the body, so the stderr path is proven on its own too.
               echo 'gh: This issue was deleted (HTTP 410)' >&2
-              echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
+              [ "${BODY_ON_STDOUT:-1}" = 0 ] || echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
               exit 1 ;;
             "api "*"/issues/"*) serve "$d/issue-${args##*/}.json" ;;
             *) echo "mock gh: unexpected call: $cmd $args" >&2; exit 1 ;;
@@ -680,16 +683,18 @@ jobs:
           jq -c 'map(select(.number==7001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:[]}' "$t/data/prs.json" > "$t/data/pr-7001.json"
           jq -c --argjson r "$red" 'map(select(.number==8001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8001.json"
           jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
-          : > "$t/out"
-          rc=0
-          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x \
-            ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -e "$t/list.sh" > "$t/err" 2>&1 || rc=$?
-          cat "$t/err"
-          [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue"; exit 1; }
-          want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
-          got=$(sed -n 's/^refs=//p' "$t/out")
-          [ "$got" = "$want" ] || { echo "refs: got $got, want $want"; exit 1; }
-          grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported"; exit 1; }
+          for body in 1 0; do
+            : > "$t/out"
+            rc=0
+            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
+              ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/list.sh" > "$t/err" 2>&1 || rc=$?
+            cat "$t/err"
+            [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+            want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
+            got=$(sed -n 's/^refs=//p' "$t/out")
+            [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
+            grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
+          done
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window

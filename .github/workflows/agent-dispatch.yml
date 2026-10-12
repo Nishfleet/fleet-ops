@@ -672,6 +672,25 @@ jobs:
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
         run: |
+          # One issue as JSON for the sweep. Returns 0 with the JSON on stdout,
+          # 3 for an issue that is gone (HTTP 404 or 410), and 1 for any other
+          # failure, after printing gh's own error. Measured 2026-10-12 with gh
+          # 2.93.0 on deleted fleet-ops issue 9502: exit 1, stdout the error
+          # body {"message":"This issue was deleted",...,"status":"410"},
+          # stderr "gh: This issue was deleted (HTTP 410)". Either one marks
+          # the issue gone, so a gh that stops printing the body still skips.
+          # Any other read fault stays fatal, so a real API fault is never
+          # mistaken for a deleted issue (fleet-ops#9553).
+          issue_json() {
+            local out err rc=0
+            err=$(mktemp)
+            out=$(gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err") || rc=$?
+            if [ "$rc" = 0 ]; then printf '%s\n' "$out"; rm -f "$err"; return 0; fi
+            if [[ $(jq -r '.status // empty' <<<"$out" 2>/dev/null) =~ ^(404|410)$ ]] || grep -qE '\(HTTP (404|410)\)' "$err"; then
+              rm -f "$err"; return 3
+            fi
+            echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
+          }
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below still re-checks agent-ready
@@ -797,11 +816,12 @@ jobs:
                   # come back, so skip the PR; any other read failure is still
                   # fatal, so a real API fault is never mistaken for a
                   # deleted issue.
-                  issue=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n" 2>/dev/null) ||
-                    case $(jq -r '.status // 0' <<<"$issue" 2>/dev/null) in
-                      404|410) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
-                      *) echo "#$n: issue read failed for claim PR $pr: ${issue:-no response from gh}" >&2; exit 1 ;;
-                    esac
+                  rc=0; issue=$(issue_json "$n") || rc=$?
+                  case $rc in
+                    0) ;;
+                    3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
+                    *) exit 1 ;;
+                  esac
                   comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
                   verdict=$(jq -nc --argjson pr "$v" --argjson issue "$issue" --argjson comments "$comments" \
                     '{pr: $pr, issue: $issue, comments: $comments}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
@@ -825,7 +845,7 @@ jobs:
               prs='[]'
             fi
           fi
-          # Same gone-issue skip as the red-PR loop above, for the other place
+          # Same gone-issue skip (issue_json) as the red-PR loop above, for the other place
           # the sweep resolves numbers one at a time: a dispatched issue
           # deleted between the listing and this read, or a hand-typed
           # workflow_dispatch issue that names one. The loop runs in this
@@ -833,11 +853,12 @@ jobs:
           # still aborts the sweep instead of quietly shrinking the queue.
           pages=''
           for n in $nums; do
-            i=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n" 2>/dev/null) ||
-              case $(jq -r '.status // 0' <<<"$i" 2>/dev/null) in
-                404|410) echo "#$n: issue gone, skipping" >&2; continue ;;
-                *) echo "#$n: issue read failed: ${i:-no response from gh}" >&2; exit 1 ;;
-              esac
+            rc=0; i=$(issue_json "$n") || rc=$?
+            case $rc in
+              0) ;;
+              3) echo "#$n: issue gone, skipping" >&2; continue ;;
+              *) exit 1 ;;
+            esac
             pages="$pages$i"$'\n'
           done
           refs=$(printf '%s' "$pages" |
