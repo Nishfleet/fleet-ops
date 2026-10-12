@@ -7,8 +7,12 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
   `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
+  alert webhook sends (fleet-ops#9445); switch off with
+  `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
+  fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
@@ -103,6 +107,13 @@ script, or prompt lands unseen.
   ~/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer &&
   systemctl --user enable --now later-sweep.timer` (the deploy clone path, not
   a worktree).
+- `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
+  page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
+  revoked or not `nish3451`. The path unit checks on every change to
+  `~/.config/gh/hosts.yml`, the timer hourly. Wire once with `systemctl --user
+  link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
+  `systemctl --user disable --now fleet-gh-login-check.timer
+  fleet-gh-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
@@ -119,6 +130,28 @@ script, or prompt lands unseen.
   config). Each run rebuilds the index from the files on disk, so it mirrors
   the logs and keeps the same retention; the index never holds more than the
   logs do.
+- `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
+  and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
+  — the dead-man and the Hermes gateway page. Prometheus loads three rules:
+  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody) and
+  `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
+  minutes). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  an outside healthchecks.io check, which alerts when the pings stop, and sends
+  `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
+  id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
+  `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
+  `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
+  rules`, `amtool check-config` and `promtool test rules
+  config/prometheus-tests/`. Off switch, under 2 minutes: `sudo systemctl
+  disable --now prometheus-alertmanager.service`, then pause the check on
+  healthchecks.io so it stops alerting; the next `fleet-host-config.service` run
+  starts it again while `ansible/host.yml` has the enable task, so the durable
+  off is a PR that removes that task and the `rule_files` and `alerting` blocks. Delete it: revert that PR (this
+  removes the rule file, the Alertmanager config and options, the playbook
+  tasks and the CI step), then `sudo rm /etc/prometheus/deadman_url
+  /etc/prometheus/telegram_bot_token /etc/prometheus/telegram_chat_id` and
+  delete the check on healthchecks.io. Stopping Alertmanager does not touch
+  `hermes-gateway.service`.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
@@ -492,6 +525,21 @@ Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
 next run installs it again. The running `ExecStopPost=` and `-500` stay until
 Remote Control is next restarted.
 
+### Remote Control keeps the Max login (2026-10-10)
+
+`claude-remote-control.service.d/10-max-config.conf` sets
+`CLAUDE_CONFIG_DIR=/home/nish/.claude-max`. The default login in `~/.claude`
+is now a Team seat whose organization policy disables Remote Control, and on
+that login the server exits at once and `Restart=always` loops on it (the
+link was down from 10:52 to 10:56 UTC on 2026-10-10). The drop-in keeps the
+link on the separate Max config dir whatever the default login is. A new
+config dir registers a new Remote Control environment on claude.ai; the old
+one stays listed as offline.
+
+Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
+`systemctl daemon-reload`, and restart Remote Control, only once the default
+login allows Remote Control again.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
@@ -595,6 +643,44 @@ The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
 the enrolment mechanism (fleet-ops#32, #25).
 
+## Triage admission (needs-triage)
+
+An open issue labelled `needs-triage` in an enrolled **product** repo
+(`repos` with `product: true` in `config/intake-repos.json`) gets a Jev verdict
+instead of waiting for a person to add `agent-ready`. The `admit` job in
+`.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
+`needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
+`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit
+this issue for an automated worker now?", with the title, body and labels as
+state.
+
+- p >= 0.9: `agent-ready` added, `needs-triage` removed.
+- otherwise: `needs-orchestrator` added, `needs-triage` removed, for a person to decide.
+
+Only the issue author `nish3451` is admitted. The newest `needs-triage` label
+event must also come from `nish3451`. Non-owner issues are skipped with a notice
+and left as `needs-triage` (no Jev call). A daily cap (`vars.ADMIT_DAILY_MAX`,
+default 10) counts `triage-admit: admitted` comments since IST midnight and
+stops early when reached. The job runs only when
+`(inputs.agent_mode || vars.AGENT_MODE) == 'live'`. Issue title and body are
+wrapped in `<ISSUE_TEXT>` fences so the model treats them as data, never as
+instructions.
+
+Every issue gets one comment with p, the model and the run link. An issue whose
+title, body or labels touch secrets, money or payments, or customer-data
+deletion, or that carries `blocked-on: nish-decision`, `nish-reserved` or
+`needs-nish-decision`, never reaches Jev and never gets `agent-ready`: it goes to
+`needs-orchestrator`. `Nishfleet/fleet-ops` is never acted on (fo#8304). If Jev
+gives no answer the label stays and the next sweep retries. The labels are
+written with the worker App token, so the `agent-ready` and `needs-orchestrator`
+events start the next job.
+
+**Switch it off:** set the repo variable `ADMIT_TRIAGE` to `off` on the calling
+repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
+**Delete it:** remove the `admit` job, `tests/test_triage_admit.py`, its step in
+`ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
+and a fake router (`tests/test_triage_admit.py`).
+
 ## Worker capacity
 
 The concurrency bound is the runner count (#8429): 22 `agent` runners
@@ -605,3 +691,21 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
+
+## Private detail scan
+
+Pull requests are scanned for private infrastructure detail: personal home
+paths, the local seat config path, Tailscale addresses and names, and account
+ids written next to an account id name. The rules are in
+`.github/gitleaks-private-detail.toml` (they extend the gitleaks defaults). Only
+the commits a PR adds are scanned, so old history cannot fail a PR. The job is
+`private-detail-scan` and it is not a required check.
+
+- Allow one line: put `gitleaks:allow` in a comment on that line.
+- Switch it off: set the repository variable `PRIVATE_DETAIL_SCAN` to `off`
+  (`gh variable set PRIVATE_DETAIL_SCAN --body off`). Delete the variable to
+  switch it back on.
+- Remove it: delete the `private-detail-scan` job and the rules file.
+- The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
+  that name by itself and the full-history scans would start failing on old
+  commits.
