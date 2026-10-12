@@ -1,11 +1,36 @@
-# No-glue lock (fleet-ops#8459): scripts, wrappers and script dirs need Nish's review to merge.
-# Push rulesets are refused on public repos, so this uses CODEOWNERS + require_code_owner_review.
-*.sh @nish3451
-*.py @nish3451
-*.bash @nish3451
-*.zsh @nish3451
-/bin/ @nish3451
-/scripts/ @nish3451
-**/bin/ @nish3451
-**/scripts/ @nish3451
+# fleet-ops#9605 (Nish said yes on 2026-10-12, see that issue): the two
+# automated reviewers approve worker code (.py, .sh, bin/, scripts/). New
+# scripts are still refused by the `ci` check (.semgrep/no-glue.yml), and any
+# edit under .github/ needs both automated reviews (config/risky-paths.json
+# "guard"). Nish's review stays on the files below: the safety rules and their
+# scanners, the tests that prove the agent jail, deny lists, root-run host
+# config, seat keys and credentials. Public repos refuse push rulesets, so
+# this uses CODEOWNERS + require_code_owner_review.
+
+# The merge guard and its review prompt.
+/config/risky-paths.json @nish3451
+/prompts/risky-review.md @nish3451
+# The no-glue rule and the secret and private-detail scanners, with their ignore files.
+/.semgrep/ @nish3451
+/.semgrepignore @nish3451
+/.gitleaksignore @nish3451
+/.github/gitleaks-private-detail.toml @nish3451
+# Tests that prove the worker jail hides every login and that App tokens are minted safely.
+/tests/test_claude_lanes.py @nish3451
+/tests/github_app_stub.py @nish3451
+# Agent deny lists and permission policy.
+/rootfs/etc/claude-code/ @nish3451
+# Root-run host config: firewall, privilege, kernel hardening, audit, root units.
+/rootfs/etc/nftables.conf @nish3451
+/rootfs/etc/polkit-1/ @nish3451
+/rootfs/etc/sysctl.d/60-netcup-hardening.conf @nish3451
+/rootfs/etc/audit/ @nish3451
+/rootfs/etc/systemd/system/ @nish3451
+/ansible/host.yml @nish3451
+/ansible/update.yml @nish3451
+# Seat keys and credentials.
+/credentials/ @nish3451
+**/*seat*.conf @nish3451
+*.env @nish3451
+# This file.
 /.github/CODEOWNERS @nish3451
