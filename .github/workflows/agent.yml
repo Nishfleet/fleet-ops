@@ -907,6 +907,7 @@ jobs:
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the
           # "reviewer: <sha>" phrase the already-reviewed check looks for, and
           # the job goes red so a re-run reviews the head again.
@@ -1044,7 +1045,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1080,7 +1081,7 @@ jobs:
           if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
