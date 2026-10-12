@@ -1625,14 +1625,14 @@ jobs:
   # job, github-actions[bot], or nish3451) that the approver has not since replaced with a request
   # for changes, so a worker's or any other login's approval does not merge. A PR the base commit's
   # CLASSIFY and risky-paths.json call risky at queue time also needs an approval that is not
-  # hold-risky's own safe-head one, so a list that grew after that approval is caught. Entries ahead in a
-  # group have their own runs. Anywhere else it passes. No comment or status is read.
+  # hold-risky's own safe-head one, so a list that grew after that approval is caught. Every PR in the group is checked. Anywhere else it passes. No comment or status is read.
   # A PR that edits this job edits a workflow, so the review job asks two reviewers of different families.
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
     steps:
       - name: Pass outside the merge queue
@@ -1654,6 +1654,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
           APPROVERS: nish3451 github-actions[bot]
           # stdin: the PR's reviews, slurped. Out: true when an approver's newest review on $sha is APPROVED
           # and, for a risky PR, is not hold-risky's own safe-head approval (its body starts "hold-risky:").
@@ -1664,19 +1666,30 @@ jobs:
                 and (($risky | not) or (.body | startswith("hold-risky:") | not)))
         run: |
           set -euo pipefail
+          # The queue branch is gh-readonly-queue/<base>/pr-<N>-<sha>; <N> is the entry's own PR. Entries
+          # ahead of it in the same group are commits below the tip, each titled "... (#<M>)" by the squash.
           [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] || { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
-          pr=${BASH_REMATCH[1]}
-          pj=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr")
-          sha=$(jq -r .head.sha <<<"$pj")
+          nums=${BASH_REMATCH[1]}
+          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt"
+          if [ "$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)" -gt 1 ]; then
+            while IFS= read -r subject; do
+              [[ "$subject" =~ \(#([0-9]+)\)$ ]] || { echo "::error::coordinator-approval: cannot map commit \"$subject\" to a PR"; exit 1; }
+              nums="$nums ${BASH_REMATCH[1]}"
+            done < "$RUNNER_TEMP/subjects.txt"
+          fi
           # Risk as hold-risky reads it, from the base commit's program and list. A failed read fails the check.
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt"
-          jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
-          jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
-            '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pj" > "$RUNNER_TEMP/facts.json"
           classify=$(yq '.jobs.hold-risky.env.CLASSIFY' base/.github/workflows/agent-dispatch.yml)
           label=$(yq '.jobs.hold-risky.env.LABEL' base/.github/workflows/agent-dispatch.yml)
           cfg=$(jq -c . base/config/risky-paths.json)
-          risky=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$classify | .risky" < "$RUNNER_TEMP/facts.json")
-          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" --jq '.[]' |
-            jq -es --arg sha "$sha" --arg who "$APPROVERS" --argjson risky "$risky" "$APPROVED" ||
-            { echo "::error::coordinator-approval: #$pr (risky: $risky) has no approving review from $APPROVERS on $sha"; exit 1; }
+          for pr in $(tr ' ' '\n' <<<"$nums" | sort -un); do
+            pj=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr")
+            sha=$(jq -r .head.sha <<<"$pj")
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt"
+            jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pj" > "$RUNNER_TEMP/facts.json"
+            risky=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$classify | .risky" < "$RUNNER_TEMP/facts.json")
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" --jq '.[]' |
+              jq -es --arg sha "$sha" --arg who "$APPROVERS" --argjson risky "$risky" "$APPROVED" ||
+              { echo "::error::coordinator-approval: #$pr (risky: $risky) has no approving review from $APPROVERS on $sha"; exit 1; }
+          done
