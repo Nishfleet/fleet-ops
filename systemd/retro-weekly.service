@@ -64,6 +64,18 @@
 # the first: a command that slips past it still has no network, a read-only
 # system and one writable directory.
 #
+# Why bwrap and not the unit's own sandbox directives (PrivateNetwork=,
+# TemporaryFileSystem=): the jail is the worker jail of agent.yml on purpose, so
+# there is one jail design to audit and the review of #9321 asked for exactly
+# that pattern. Why a deny list over built text and not only the harness's
+# --json-schema: a schema is enforced inside the process the model steers; the
+# check here runs outside it, on the bytes that would be published, and fails the
+# unit by itself.
+#
+# A token refresh cannot happen in the jail: the only host reachable is the API
+# host, and the refresh goes to another one, so the shared login is never
+# rotated by a retro run (and ~/.claude is read-only anyway).
+#
 # Gates, each a failed unit someone can list (OnFailure= pages): the pin check,
 # a non-empty report, the public-text check, and ExecStopPost looking for the
 # vault copy. `claude -p` exits 0 on a model refusal, so the success of the call
@@ -89,7 +101,7 @@ OnFailure=fleet-unit-failed@%N.service
 Type=oneshot
 RuntimeDirectory=retro-weekly
 RuntimeDirectoryMode=0700
-WorkingDirectory=%h/workspaces/agent-state/retro
+WorkingDirectory=%h
 Environment=FLEET_TASK_ID=retro-weekly
 Environment=TZ=Asia/Kolkata
 Environment=LC_ALL=C.UTF-8
@@ -106,7 +118,7 @@ UnsetEnvironment=ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPI
 # 1. Fresh run directory, the one date, the inputs that must exist, and the pin
 #    check on the environment. Then the list of issues already filed (titles
 #    only), fetched here with the issues token because the jailed model has none.
-ExecStartPre=/bin/bash -c 'set -eu; d=$$(date +%%F); run="$$RETRO_STATE/run-$$d"; rm -rf "$$run"; mkdir -p "$$run/issues" "$$run/home"; printf %%s "$$d" > "$$RUNTIME_DIRECTORY/date"; for f in prompts/retro-weekly.md config/retro-public-deny.txt config/retro-weekly-claude.json; do test -s "$$RETRO_REPO/$$f" || { echo "retro: missing $$f" >&2; exit 1; }; done; test "$$ANTHROPIC_BASE_URL" = https://api.anthropic.com && test "$$RETRO_MODEL" = claude-sonnet-5-5 || { echo "retro: provider or model pin changed, refusing to run" >&2; exit 1; }; test -s "$$RETRO_TOKEN" || { echo "retro: issues token missing" >&2; exit 1; }; mkdir -p "$$RUNTIME_DIRECTORY/gh"; GH_CONFIG_DIR="$$RUNTIME_DIRECTORY/gh" GH_TOKEN=$$(cat "$$RETRO_TOKEN") %h/.local/bin/gh issue list -R Nishfleet/fleet-ops --label retro --state open --limit 100 --json title -q ".[].title" > "$$run/known-issues.txt"'
+ExecStartPre=/bin/bash -c 'set -eu; d=$$(date +%%F); run="$$RETRO_STATE/run-$$d"; rm -rf "$$run"; mkdir -p "$$run/issues"; printf %%s "$$d" > "$$RUNTIME_DIRECTORY/date"; for f in prompts/retro-weekly.md config/retro-public-deny.txt config/retro-weekly-claude.json; do test -s "$$RETRO_REPO/$$f" || { echo "retro: missing $$f" >&2; exit 1; }; done; test "$$ANTHROPIC_BASE_URL" = https://api.anthropic.com && test "$$RETRO_MODEL" = claude-sonnet-5-5 || { echo "retro: provider or model pin changed, refusing to run" >&2; exit 1; }; test -s "$$RETRO_TOKEN" || { echo "retro: issues token missing" >&2; exit 1; }; mkdir -p "$$RUNTIME_DIRECTORY/gh"; GH_CONFIG_DIR="$$RUNTIME_DIRECTORY/gh" GH_TOKEN=$$(cat "$$RETRO_TOKEN") %h/.local/bin/gh issue list -R Nishfleet/fleet-ops --label retro --state open --limit 100 --json title -q ".[].title" > "$$run/known-issues.txt"'
 # 2. The model, in the jail. Stdin is the prompt, then the dynamic run header. The jail:
 #    system read-only, /home an empty tmpfs, then only these bound back.
 #    --tmpfs over the gh and Cloudflare config is the worker jail's own pair
@@ -118,7 +130,7 @@ ExecStartPre=/bin/bash -c 'set -eu; d=$$(date +%%F); run="$$RETRO_STATE/run-$$d"
 #    file is bound. /srv, /opt and the two system config dirs that hold service
 #    env files and a token are emptied too (the system tree is otherwise
 #    read-only and readable).
-ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; cp "$$HOME/.claude.json" "$$RUNTIME_DIRECTORY/claude.json"; printf "127.0.0.1 localhost api.anthropic.com\n" > "$$RUNTIME_DIRECTORY/hosts"; { cat "$$RETRO_REPO/prompts/retro-weekly.md"; printf "RUN_DIR=%%s\nTODAY=%%s\n" "$$run" "$$d"; } | bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /run/user --tmpfs /srv --tmpfs /opt --tmpfs /var/lib/fleet-ops --tmpfs /etc/fail2ban --tmpfs "$$HOME/.config/gh" --tmpfs "$$HOME/.config/cloudflare" --ro-bind "$$HOME/.local/bin" "$$HOME/.local/bin" --ro-bind "$$HOME/.local/share/claude" "$$HOME/.local/share/claude" --ro-bind "$$HOME/.claude" "$$HOME/.claude" --bind "$$RUNTIME_DIRECTORY/claude.json" "$$HOME/.claude.json" --ro-bind "$$HOME/.pi/agent/sessions" "$$HOME/.pi/agent/sessions" --ro-bind "$$HOME/AGENTS.md" "$$HOME/AGENTS.md" --ro-bind "$$RETRO_REPO/config/retro-weekly-claude.json" "$$RETRO_REPO/config/retro-weekly-claude.json" --ro-bind "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" --ro-bind "$$HOME/workspaces/products/0509/.git" "$$HOME/workspaces/products/0509/.git" --ro-bind "$$HOME/workspaces/products/fleet-ops/.git" "$$HOME/workspaces/products/fleet-ops/.git" --ro-bind "$$HOME/workspaces/products/drive/.git" "$$HOME/workspaces/products/drive/.git" --ro-bind "$$HOME/workspaces/products/inish-site/.git" "$$HOME/workspaces/products/inish-site/.git" --ro-bind "$$HOME/workspaces/products/tinystudio-in/.git" "$$HOME/workspaces/products/tinystudio-in/.git" --bind "$$run" "$$run" --ro-bind "$$RUNTIME_DIRECTORY/hosts" /etc/hosts --bind "$$RETRO_API_SOCK" /tmp/api.sock --chdir "$$run/home" --unshare-pid --unshare-net --die-with-parent -- bash -c "socat TCP-LISTEN:8443,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/api.sock & sleep 1; exec env ANTHROPIC_BASE_URL=https://api.anthropic.com:8443 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 $$HOME/.local/bin/claude -p --model $$RETRO_MODEL --output-format stream-json --verbose --no-session-persistence --setting-sources project,local --settings $$RETRO_REPO/config/retro-weekly-claude.json --permission-mode dontAsk --max-turns 200" > "$$RUNTIME_DIRECTORY/claude.jsonl"'
+ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; cp "$$HOME/.claude.json" "$$RUNTIME_DIRECTORY/claude.json"; printf "127.0.0.1 localhost api.anthropic.com\n" > "$$RUNTIME_DIRECTORY/hosts"; { cat "$$RETRO_REPO/prompts/retro-weekly.md"; printf "RUN_DIR=%%s\nTODAY=%%s\n" "$$run" "$$d"; } | bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /run --tmpfs /srv --tmpfs /opt --tmpfs /var/lib/fleet-ops --tmpfs /etc/fail2ban --tmpfs "$$HOME/.config/gh" --tmpfs "$$HOME/.config/cloudflare" --ro-bind "$$HOME/.local/bin" "$$HOME/.local/bin" --ro-bind "$$HOME/.local/share/claude" "$$HOME/.local/share/claude" --ro-bind "$$HOME/.claude" "$$HOME/.claude" --bind "$$RUNTIME_DIRECTORY/claude.json" "$$HOME/.claude.json" --ro-bind "$$HOME/.pi/agent/sessions" "$$HOME/.pi/agent/sessions" --ro-bind "$$HOME/AGENTS.md" "$$HOME/AGENTS.md" --ro-bind "$$RETRO_REPO/config/retro-weekly-claude.json" "$$RETRO_REPO/config/retro-weekly-claude.json" --ro-bind "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" --ro-bind "$$HOME/workspaces/products/0509/.git" "$$HOME/workspaces/products/0509/.git" --ro-bind "$$HOME/workspaces/products/fleet-ops/.git" "$$HOME/workspaces/products/fleet-ops/.git" --ro-bind "$$HOME/workspaces/products/drive/.git" "$$HOME/workspaces/products/drive/.git" --ro-bind "$$HOME/workspaces/products/inish-site/.git" "$$HOME/workspaces/products/inish-site/.git" --ro-bind "$$HOME/workspaces/products/tinystudio-in/.git" "$$HOME/workspaces/products/tinystudio-in/.git" --bind "$$run" "$$run" --ro-bind "$$RUNTIME_DIRECTORY/hosts" /etc/hosts --bind "$$RETRO_API_SOCK" /tmp/api.sock --chdir / --unshare-pid --unshare-net --die-with-parent -- bash -c "socat TCP-LISTEN:8443,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/api.sock & sleep 1; exec env ANTHROPIC_BASE_URL=https://api.anthropic.com:8443 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 $$HOME/.local/bin/claude -p --model $$RETRO_MODEL --output-format stream-json --verbose --no-session-persistence --setting-sources project,local --settings $$RETRO_REPO/config/retro-weekly-claude.json --permission-mode dontAsk --max-turns 200" > "$$RUNTIME_DIRECTORY/claude.jsonl"'
 # 3. Pin check: read the call's own record. It is written to the runtime directory,
 #    which the jail hides, so the model cannot replace it with a forged one. Fails unless the call succeeded, the
 #    main model is the pinned one and every model it touched is a claude-* model

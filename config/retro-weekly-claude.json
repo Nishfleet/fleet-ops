@@ -24,6 +24,8 @@
       "Read(~/.claude/.credentials.json)",
       "Read(~/.claude.json)",
       "Bash(*credentials*)",
+      "Write(**/.claude/**)",
+      "Edit(**/.claude/**)",
       "WebFetch",
       "WebSearch",
       "Agent",
