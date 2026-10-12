@@ -399,10 +399,6 @@ jobs:
           label_ok=true
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent ||
             { echo "::error::hold-risky: could not label #$PR $LABEL"; label_ok=false; }
-          # A head this job approved as safe stays approved when a later event finds it risky (a label added, the list grown): withdraw that review. The review job's own approval has a different body.
-          [ "$sha" = unknown ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' |
-            jq -r --arg sha "$sha" 'select(.state == "APPROVED" and .commit_id == $sha and (.body | startswith("hold-risky:"))) | .id' |
-            while read -r id; do gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews/$id/dismissals" -f message="hold-risky: this head is risky, so the independent review decides." --silent || echo "::warning::hold-risky: could not dismiss review $id on #$PR"; done || true
           [ "$sha" = unknown ] || echo "review_sha=$sha" >> "$GITHUB_OUTPUT"
           {
             echo "### hold-risky: #$PR is risky at \`$sha\`"
@@ -410,6 +406,10 @@ jobs:
             echo
             echo "review-risky reviews this exact head next. Auto-merge waits for its approving review and the required checks. Nothing here needs a person."
           } >> "$GITHUB_STEP_SUMMARY"
+          # A head this job approved as safe stays approved when a later event finds it risky (a label added, the list grown): withdraw that review, and fail the job if that fails. The review job's own approval has a different body.
+          [ "$sha" = unknown ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' |
+            jq -r --arg sha "$sha" 'select(.state == "APPROVED" and .commit_id == $sha and (.body | startswith("hold-risky:"))) | .id' |
+            while read -r id; do gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews/$id/dismissals" -f message="hold-risky: this head is risky, so the independent review decides." --silent || { echo "::error::hold-risky: could not dismiss review $id on #$PR"; exit 1; }; done
           [ "$label_ok" = true ]
   # Independent review of a risky PR (Nish 2026-10-05: reviewed PRs merge
   # themselves). agent.yml's review job reads the head's diff through the API,

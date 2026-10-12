@@ -661,15 +661,25 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            # Every claim PR is armed here, and the merge waits natively for
-            # the ruleset's review and the required checks. The App has no
-            # workflows permission, so GitHub refuses its arm on a PR that
-            # edits .github/workflows/**: that arm uses the runner user's own
-            # gh login (GH_TOKEN and GITHUB_TOKEN unset).
-            if gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)' | grep -q '^\.github/workflows/'; then
-              env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$REF" -R "$REPO" --auto --squash
+            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
+            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+            safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'
+            policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
+            # A path outside the allowlist is risky: the label makes hold-risky send the head to the independent review.
+            if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the independent review decides"
+              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+            fi
+            # Every claim PR is armed here, on the head this run produced, and the
+            # merge waits natively for the ruleset's review and the required checks.
+            # The App has no workflows permission, so GitHub refuses its arm on a PR
+            # that edits .github/workflows/**: that arm uses the runner user's own gh
+            # login (GH_TOKEN and GITHUB_TOKEN unset).
+            head=$(gh pr view "$REF" -R "$REPO" --json headRefOid --jq .headRefOid)
+            if grep -q '^\.github/workflows/' <<<"$files"; then
+              env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$REF" -R "$REPO" --auto --squash --match-head-commit "$head"
             else
-              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
+              gh pr merge "$REF" -R "$REPO" --auto --squash --match-head-commit "$head"  # a merge queue overrides the method; repos without one need it
             fi
           fi
       - name: Deliverable
