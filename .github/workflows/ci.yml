@@ -1840,7 +1840,7 @@ jobs:
         run: tofu validate
 
   ratchet:
-    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
+    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@refs/heads/main
 
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
