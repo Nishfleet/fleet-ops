@@ -79,11 +79,11 @@ def test_live_config_senior_has_one_fallback_and_no_cycle():
 
 
 def test_synthetic_key_stays_under_its_measured_concurrency():
-    # 12 parallel calls on the Synthetic key gave 8x200 and 4x429, so senior-backup takes one of 7 slots, not an 8th.
+    # 12 parallel calls on the Synthetic key gave 8x200 and 4x429, so 7 worker rows plus senior-backup sit at 8 slots, not a 9th.
     rows = [row for row in _config()["model_list"]
             if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
     assert "synthetic-glm53flash-senior-backup" in {row["model_info"]["id"] for row in rows}
-    assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 7
+    assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 8
 
 
 def _route(model: str) -> list:

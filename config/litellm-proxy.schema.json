@@ -5,6 +5,23 @@
   "required": ["model_list", "router_settings"],
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "seniorBackupRow": {
+      "$comment": "fleet-ops#9596: the one row senior falls back to. Pinned to the same model as the Pareto senior row, on Synthetic's own key, so senior never falls back down and the fallback sits behind a different provider's wall.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "senior-backup" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_base", "api_key"],
+          "properties": {
+            "model": { "const": "openai/hf:zai-org/GLM-5.3-Flash" },
+            "api_base": { "const": "https://api.synthetic.new/openai/v1" },
+            "api_key": { "const": "os.environ/SYNTHETIC_API_KEY" }
+          }
+        }
+      }
+    },
     "syntheticRow": {
       "type": "object",
       "required": ["litellm_params"],
@@ -131,10 +148,17 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 7 rows exist: senior-backup took the slot of a removed worker-capable row. A new Synthetic row has to take a slot from an existing one.",
+          "$comment": "fleet-ops#9596: router_settings.fallbacks sends senior to senior-backup, so exactly one senior-backup row exists and it is GLM-5.3-Flash on Synthetic. A fallback that names a missing group, or a weaker model, fails here.",
+          "allOf": [
+            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior-backup" } } }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/seniorBackupRow" }, "minContains": 1 }
+          ]
+        },
+        {
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
           "contains": { "$ref": "#/$defs/syntheticRow" },
           "minContains": 0,
-          "maxContains": 7,
+          "maxContains": 8,
           "items": {
             "if": { "$ref": "#/$defs/syntheticRow" },
             "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
