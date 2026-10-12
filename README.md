@@ -27,9 +27,6 @@ script, or prompt lands unseen.
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
-  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
-  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop

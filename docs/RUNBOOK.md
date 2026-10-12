@@ -164,8 +164,7 @@ three times. Host data directories stay at
 `~/.local/share/fleet-litellm-redis`.
 
 The proxy version is the image tag in `fleet-litellm-proxy.container`,
-bumped in its own PR. `patches/litellm-1.98.0-gchunk-usage-union.patch` is
-not applied by any unit in this repo.
+bumped in its own PR.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
