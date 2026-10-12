@@ -1007,6 +1007,7 @@ jobs:
             *"/labels"*) touch "$STATE/labelled" ;;
             *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
+            *"-X POST"*"/reviews"*) echo "$args" > "$STATE/approved" ;;
             *"/reviews?"*) if [ -n "${REVIEW:-}" ]; then u=nish3451 st=APPROVED cid=$SHA
                 case $REVIEW in
                   stale) cid=0000000000000000000000000000000000000001 ;;
@@ -1047,6 +1048,8 @@ jobs:
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
+            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a PR that is not risky gets a review on the head it classified
+            if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
             armout=no
             ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
             if [ "$armout" != "${arm:-no}" ]; then echo "case $name: arm output=$armout (want ${arm:-no})"; cat "$t/$name/out"; bad=1; fi
@@ -1206,6 +1209,7 @@ jobs:
           args="$*"
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
+            *"-X POST"*"pulls/7/reviews"*) echo "$args" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$args token=$k" >> "$STATE/merge" ;;
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
@@ -1328,6 +1332,7 @@ jobs:
             problem=
             [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
             [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
+            if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"

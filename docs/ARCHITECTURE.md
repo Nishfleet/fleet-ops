@@ -148,7 +148,11 @@ The rules still in force:
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
   approve or block (p >= 0.9), and posts that approval as
-  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN).
+  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
+  GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
+  requires one approving review and dismisses it on a push, so GitHub itself
+  refuses a merge on any head the reviewer did not approve; `hold-risky` gives
+  the same review to a PR that is not risky.
   "Claude never grades Claude" has one exception, approved by Nish on
   2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
   work), but the verdict is always Jev's, a non-Claude family, so a non-Claude

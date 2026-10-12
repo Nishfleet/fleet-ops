@@ -346,17 +346,10 @@ jobs:
     env:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts. Any token with
-      # statuses: write can post a status, and anyone who can comment can
-      # write the approval line, so the context name or line alone is not an
-      # approval.
-      # github-actions[bot] is the approver (review-risky below): its approval
-      # comment is written by agent.yml's review job with GITHUB_TOKEN, after a
-      # judge review (and, for a PR that edits the guard or a workflow, a second
-      # review by another model family). Nobody has to be asked. nish3451 stays
-      # as an optional override: his typed comment, or his GitHub "Approve"
-      # review (the review path below never counts a [bot] login, so the
-      # reviewer's own approval stays a comment).
+      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
+      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
+      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
+      # nish3451 is an optional override: a typed comment, or an Approve review (the review path below skips [bot] logins).
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
@@ -485,7 +478,8 @@ jobs:
           # An unread PR has no labels or file count to classify, so it holds.
           [ "$pr" != null ] || verdict=$(jq -c '.risky = true | .why += ["PR read failed"]' <<<"$verdict")
           echo "hold-risky: #$PR at $sha: $verdict"
-          jq -e .risky <<<"$verdict" >/dev/null || exit 0
+          # Not risky: nothing to review, so the review the ruleset requires is given here. commit_id makes GitHub refuse a head that moved since the read.
+          jq -e .risky <<<"$verdict" >/dev/null || { gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
           # Either approval read failing means not approved, even if the other
           # read alone would approve.
           approved=false
