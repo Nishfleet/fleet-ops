@@ -64,6 +64,19 @@
 # the first: a command that slips past it still has no network, a read-only
 # system and one writable directory.
 #
+# The network door has three small parts, each with one reason. A stock socat
+# inside the jail joins the CLI's TCP to the filesystem socket, the only thing a
+# network-less jail can reach; the CLI keeps the real API host name (an /etc/hosts
+# line inside maps it to loopback) so TLS verifies against the true host, on an
+# unprivileged port because the jail has no capabilities. The man-page example
+# for systemd-socket-proxyd (PrivateNetwork= plus JoinsNamespaceOf=) puts the
+# proxy inside a service's private network to reach that service's loopback; here
+# the target is outside and the model inside, which it does not cover. Claude
+# Code's own sandbox allow-list fences the commands the CLI runs, not the CLI, and
+# would need nested namespaces inside this jail; it can be a later extra layer.
+# The one-second wait for socat is not a race that can hurt: the CLI retries a
+# refused first connection.
+#
 # Why bwrap and not the unit's own sandbox directives (PrivateNetwork=,
 # TemporaryFileSystem=): the jail is the worker jail of agent.yml on purpose, so
 # there is one jail design to audit and the review of #9321 asked for exactly
@@ -144,7 +157,7 @@ ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date")
 ExecStart=/bin/bash -c 'set -eu; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; jq -e -s "([.[] | select(.type==\"system\" and .subtype==\"init\")] | length == 1 and .[0].model == env.RETRO_MODEL) and ([.[] | select(.type==\"assistant\" and (.parent_tool_use_id == null)) | .message.model] | length > 0 and all(. == env.RETRO_MODEL or . == \"<synthetic>\")) and ([.[] | select(.type==\"result\")] | length == 1 and .[0].is_error == false and .[0].subtype == \"success\" and (.[0].modelUsage | keys | all(test(\"^claude-\"))))" "$$RUNTIME_DIRECTORY/claude.jsonl" > /dev/null || { echo "retro: PIN CHECK FAILED (wrong model, other provider, or the call did not succeed)" >&2; exit 1; }; used=$$(jq -r -s "[.[] | select(.type==\"result\") | .modelUsage | keys[]] | unique | join(\",\")" "$$RUNTIME_DIRECTORY/claude.jsonl"); echo "retro-provider: anthropic base=$$ANTHROPIC_BASE_URL pinned-model=$$RETRO_MODEL models-used=$$used auth=$$(jq -r -s ".[] | select(.type==\"system\" and .subtype==\"init\") | .apiKeySource" "$$RUNTIME_DIRECTORY/claude.jsonl") router=none"'
 # 4. The private report goes to the vault (syncs to the Mac; the vault repo is
 #    private and ignores nothing under _system/retro).
-ExecStart=/bin/bash -c 'set -eu; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; test -f "$$run/report.md" && test ! -L "$$run/report.md" && test -s "$$run/report.md" || { echo "retro: no report written (or it is not a regular file)" >&2; exit 1; }; sed -E "s/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9+/=_-]{48,}/[redacted]/g" "$$run/report.md" > "$$RUNTIME_DIRECTORY/report.md"; /usr/bin/install -D -m 0644 "$$RUNTIME_DIRECTORY/report.md" "$$RETRO_VAULT/retro-week-$$d.md"; echo "retro: private report $$RETRO_VAULT/retro-week-$$d.md ($$(wc -c < "$$RUNTIME_DIRECTORY/report.md") bytes, secret shapes redacted: $$(grep -o "[[]redacted[]]" "$$RUNTIME_DIRECTORY/report.md" | wc -l))"'
+ExecStart=/bin/bash -c 'set -eu; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; test -f "$$run/report.md" && test ! -L "$$run/report.md" && test -s "$$run/report.md" || { echo "retro: no report written (or it is not a regular file)" >&2; exit 1; }; sed -E "s/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|[0-9]{8,10}:[A-Za-z0-9_-]{30,}|[A-Za-z0-9_-]{40,}|[A-Za-z0-9_]{32,}/[redacted]/g" "$$run/report.md" > "$$RUNTIME_DIRECTORY/report.md"; /usr/bin/install -D -m 0644 "$$RUNTIME_DIRECTORY/report.md" "$$RETRO_VAULT/retro-week-$$d.md"; echo "retro: private report $$RETRO_VAULT/retro-week-$$d.md ($$(wc -c < "$$RUNTIME_DIRECTORY/report.md") bytes, secret shapes redacted: $$(grep -o "[[]redacted[]]" "$$RUNTIME_DIRECTORY/report.md" | wc -l))"'
 # 5. File follow-up issues, only if every one passes the public-text check. All
 #    files are checked before any is filed; one refusal fails the unit and files
 #    nothing. Only line numbers are printed on a refusal, never the matched text.
