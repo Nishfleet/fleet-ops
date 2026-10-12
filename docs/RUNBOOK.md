@@ -362,3 +362,9 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+
+## Main has no ruleset bypass (2026-10-12)
+
+- Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
+- Repository admins, including every session acting as `nish3451`, merge only through the required checks and the merge queue: `gh pr merge <PR> --auto`.
+- Warning: the emergency path removes the merge guard. Only Nish takes it, as org owner, and restores the state after. Restore the admin role (actor 5) with `echo '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`. Remove it again with `echo '{"bypass_actors":[]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
