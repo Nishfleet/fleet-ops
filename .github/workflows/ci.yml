@@ -22,8 +22,7 @@ jobs:
   # `ci` is also the aggregate gate: it needs every other job in this file that
   # runs on pull_request or merge_group, so a red grafana-boot or
   # cloudflare-tokens-tofu fails the required check (PR #9507 merged with
-  # grafana-boot red). coordinator-approval is its own required check, in
-  # coordinator-approval.yml. `!cancelled()` so a failed need still runs this job and turns it red:
+  # grafana-boot red). `!cancelled()` so a failed need still runs this job and turns it red:
   # a skipped required check would pass. A need that skips on its own (a job-level
   # `if:`) counts as a pass; failure and cancelled do not. grafana-boot's path
   # gate skips its steps, not the job, so it reports success.

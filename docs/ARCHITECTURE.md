@@ -132,10 +132,10 @@ The rules still in force:
   defect in its rung.
 - Gates that exist: every PR is armed when it opens and merges natively once the
   `main-merge-queue` ruleset is satisfied: one approving review on the exact head (a
-  push dismisses it) and the required checks, one of which is `coordinator-approval`
-  (`coordinator-approval.yml`: success when the head has an `APPROVED` review from the
-  review job or `nish3451`, read from the reviews API). Nothing disarms, dequeues,
-  re-arms or relays. agent-dispatch.yml's `hold-risky` job classifies a PR by
+  push dismisses it) and the required checks. The `coordinator-approval` check is
+  gone: a review made with GITHUB_TOKEN fires no `pull_request_review`, so a check
+  over review state needed a poller, and the required review does the same natively.
+  Nothing disarms, dequeues, re-arms or relays. agent-dispatch.yml's `hold-risky` job classifies a PR by
   `config/risky-paths.json` (0509#7092): a risky one is labelled `needs-coordinator`
   and goes to the independent review, one that is not risky gets its approving
   review from the job itself. agent.yml's `review` job (called by

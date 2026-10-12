@@ -302,10 +302,9 @@ jobs:
   # risky gets a real GitHub approving review on its head from this job. A
   # risky one gets the label and goes to the review job below. This job never
   # touches auto-merge: every PR is armed when it is opened, and the merge
-  # waits natively for the ruleset's review and required checks, one of which
-  # is coordinator-approval (coordinator-approval.yml, read from GitHub's own
-  # review state). A push dismisses the old approval. ci.yml runs CLASSIFY
-  # below against every case in config/risky-paths.json.
+  # waits natively for the ruleset's approving review (a push dismisses it) and
+  # the required checks. ci.yml runs CLASSIFY below against every case in
+  # config/risky-paths.json.
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&

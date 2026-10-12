@@ -26,6 +26,3 @@ rules:
       # (ci.yml asserts it). The paused job that logs a pause reads only the
       # event name and action, through env, and has no permissions.
       - agent-dispatch.yml
-      # workflow_run only re-runs the PR head's coordinator-approval check with
-      # the API; nothing is checked out, and the check reads reviews as data.
-      - coordinator-approval.yml
