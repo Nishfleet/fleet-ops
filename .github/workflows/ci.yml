@@ -1567,6 +1567,61 @@ jobs:
           [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
           echo "ci: needed jobs green: $(jq -r 'keys | join(", ")' <<<"$NEEDS")"
 
+      - name: Clean workspace salvage (fake remote)
+        # fleet-ops#9326: runs agent.yml's Clean workspace block against a bare
+        # repo standing in for origin. A dirty tree, or commits that no remote
+        # holds, land on the claim ref as wip(salvage) and the directory is
+        # deleted. A clean tree pushes nothing. A failing push or a rejecting
+        # pre-commit hook pushes nothing and still deletes.
+        if: always()
+        run: |
+          set -euo pipefail
+          t=$RUNNER_TEMP/salvage-mock
+          rm -rf "$t"; mkdir -p "$t"
+          step() { yq ".jobs.work.steps[] | select(.name == \"Clean workspace\") | .$1" .github/workflows/agent.yml; }
+          step run > "$t/clean.sh"
+          step env.GH_TOKEN | grep -F 'steps.arm-token.outputs.token' >/dev/null || { echo "Clean workspace has no token"; exit 1; }
+          # the Worker's pi launch resumes with the stock --continue from the issue directory
+          yq '.jobs.work.steps[] | select(.name == "Worker") | .run' .github/workflows/agent.yml | grep -F 'pi --print --no-context-files --continue' >/dev/null || { echo "Worker pi launch has no --continue"; exit 1; }
+          step env.WORKER_OUTCOME | grep -F 'steps.worker.outcome' >/dev/null || { echo "Clean workspace has no worker outcome"; exit 1; }
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+          export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+          export REPO=Nishfleet/fleet-ops REF=claim/issue-77 MISS=false
+          bad=0
+          for name in dirty clean unpushed-commit push-fails hook-rejects worker-success; do
+            export WORKER_OUTCOME=failure
+            export HOME=$t/home-$name
+            r=$t/$name-remote.git; dir=$HOME/workspaces/agent-worktrees/issue-fleet-ops-77
+            mkdir -p "$HOME/workspaces/agent-worktrees"
+            git init -q --bare -b main "$r"
+            git clone -q "$r" "$t/$name-seed" 2>/dev/null
+            git -C "$t/$name-seed" checkout -q -b main
+            echo base > "$t/$name-seed/a.txt"; git -C "$t/$name-seed" add a.txt; git -C "$t/$name-seed" commit -q -m base
+            git -C "$t/$name-seed" push -q origin main
+            git -C "$t/$name-seed" push -q origin main:claim/issue-77
+            git clone -q "$r" "$dir"; git -C "$dir" checkout -q -B claim/issue-77 origin/claim/issue-77
+            case $name in
+              dirty) echo edit >> "$dir/a.txt"; echo new > "$dir/b.txt" ;;
+              unpushed-commit) echo more > "$dir/c.txt"; git -C "$dir" add c.txt; git -C "$dir" commit -q -m local-work ;;
+              worker-success) echo edit >> "$dir/a.txt"; export WORKER_OUTCOME=success ;;
+              push-fails) echo edit >> "$dir/a.txt"; git -C "$dir" remote set-url origin "$t/does-not-exist.git" ;;
+              # the repo's pre-commit secret scan must still run on the salvage commit
+              hook-rejects) echo "token=x" > "$dir/b.txt"; printf '#!/bin/sh\nexit 1\n' > "$dir/.git/hooks/pre-commit"; chmod +x "$dir/.git/hooks/pre-commit" ;;
+            esac
+            rc=0
+            bash "$t/clean.sh" > "$t/$name.log" 2>&1 || rc=$?
+            n=$(git -C "$r" rev-list --count main..claim/issue-77 2>/dev/null || echo 0)
+            subj=$(git -C "$r" log -1 --format=%s claim/issue-77 2>/dev/null || echo none)
+            case $name in
+              dirty) ok=0; [ "$n" = 1 ] && [ "$subj" = "wip(salvage)" ] && git -C "$r" cat-file -e claim/issue-77:b.txt && ok=1 ;;
+              unpushed-commit) ok=0; [ "$n" = 1 ] && [ "$subj" = local-work ] && ok=1 ;;
+              *) ok=0; [ "$n" = 0 ] && ok=1 ;;
+            esac
+            if [ "$ok" != 1 ] || [ "$rc" != 0 ] || [ -e "$dir" ]; then
+              echo "case $name: ok=$ok exit=$rc dir_exists=$([ -e "$dir" ] && echo yes || echo no) commits_ahead=$n subject=$subj"; cat "$t/$name.log"; bad=1
+            else echo "case $name: ok (ahead=$n subject=$subj, dir gone)"; fi
+          done
+          test "$bad" -eq 0
   # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
   # config/grafana/provisioning/alerting as alert provisioning, so a promtool
   # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
@@ -1964,60 +2019,5 @@ jobs:
               echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
               bad=1
             fi
-          done
-          test "$bad" -eq 0
-      - name: Clean workspace salvage (fake remote)
-        # fleet-ops#9326: runs agent.yml's Clean workspace block against a bare
-        # repo standing in for origin. A dirty tree, or commits that no remote
-        # holds, land on the claim ref as wip(salvage) and the directory is
-        # deleted. A clean tree pushes nothing. A failing push or a rejecting
-        # pre-commit hook pushes nothing and still deletes.
-        if: always()
-        run: |
-          set -euo pipefail
-          t=$RUNNER_TEMP/salvage-mock
-          rm -rf "$t"; mkdir -p "$t"
-          step() { yq ".jobs.work.steps[] | select(.name == \"Clean workspace\") | .$1" .github/workflows/agent.yml; }
-          step run > "$t/clean.sh"
-          step env.GH_TOKEN | grep -F 'steps.arm-token.outputs.token' >/dev/null || { echo "Clean workspace has no token"; exit 1; }
-          # the Worker's pi launch resumes with the stock --continue from the issue directory
-          yq '.jobs.work.steps[] | select(.name == "Worker") | .run' .github/workflows/agent.yml | grep -F 'pi --print --no-context-files --continue' >/dev/null || { echo "Worker pi launch has no --continue"; exit 1; }
-          step env.WORKER_OUTCOME | grep -F 'steps.worker.outcome' >/dev/null || { echo "Clean workspace has no worker outcome"; exit 1; }
-          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-          export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
-          export REPO=Nishfleet/fleet-ops REF=claim/issue-77 MISS=false
-          bad=0
-          for name in dirty clean unpushed-commit push-fails hook-rejects worker-success; do
-            export WORKER_OUTCOME=failure
-            export HOME=$t/home-$name
-            r=$t/$name-remote.git; dir=$HOME/workspaces/agent-worktrees/issue-fleet-ops-77
-            mkdir -p "$HOME/workspaces/agent-worktrees"
-            git init -q --bare -b main "$r"
-            git clone -q "$r" "$t/$name-seed" 2>/dev/null
-            git -C "$t/$name-seed" checkout -q -b main
-            echo base > "$t/$name-seed/a.txt"; git -C "$t/$name-seed" add a.txt; git -C "$t/$name-seed" commit -q -m base
-            git -C "$t/$name-seed" push -q origin main
-            git -C "$t/$name-seed" push -q origin main:claim/issue-77
-            git clone -q "$r" "$dir"; git -C "$dir" checkout -q -B claim/issue-77 origin/claim/issue-77
-            case $name in
-              dirty) echo edit >> "$dir/a.txt"; echo new > "$dir/b.txt" ;;
-              unpushed-commit) echo more > "$dir/c.txt"; git -C "$dir" add c.txt; git -C "$dir" commit -q -m local-work ;;
-              worker-success) echo edit >> "$dir/a.txt"; export WORKER_OUTCOME=success ;;
-              push-fails) echo edit >> "$dir/a.txt"; git -C "$dir" remote set-url origin "$t/does-not-exist.git" ;;
-              # the repo's pre-commit secret scan must still run on the salvage commit
-              hook-rejects) echo "token=x" > "$dir/b.txt"; printf '#!/bin/sh\nexit 1\n' > "$dir/.git/hooks/pre-commit"; chmod +x "$dir/.git/hooks/pre-commit" ;;
-            esac
-            rc=0
-            bash "$t/clean.sh" > "$t/$name.log" 2>&1 || rc=$?
-            n=$(git -C "$r" rev-list --count main..claim/issue-77 2>/dev/null || echo 0)
-            subj=$(git -C "$r" log -1 --format=%s claim/issue-77 2>/dev/null || echo none)
-            case $name in
-              dirty) ok=0; [ "$n" = 1 ] && [ "$subj" = "wip(salvage)" ] && git -C "$r" cat-file -e claim/issue-77:b.txt && ok=1 ;;
-              unpushed-commit) ok=0; [ "$n" = 1 ] && [ "$subj" = local-work ] && ok=1 ;;
-              *) ok=0; [ "$n" = 0 ] && ok=1 ;;
-            esac
-            if [ "$ok" != 1 ] || [ "$rc" != 0 ] || [ -e "$dir" ]; then
-              echo "case $name: ok=$ok exit=$rc dir_exists=$([ -e "$dir" ] && echo yes || echo no) commits_ahead=$n subject=$subj"; cat "$t/$name.log"; bad=1
-            else echo "case $name: ok (ahead=$n subject=$subj, dir gone)"; fi
           done
           test "$bad" -eq 0
