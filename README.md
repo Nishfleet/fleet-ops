@@ -779,9 +779,13 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   (`fleet-grafana-github-token.service` mints it) with an empty `gh` config
   directory. Repo and labels are fixed in the unit.
 - The report goes to the vault's `_system/retro/` and syncs to the Mac. A
-  follow-up issue is filed only if `config/retro-public-deny.txt` finds no
-  session id, path, quote, time of day, email or secret shape in it; one
-  refusal fails the unit and files nothing.
+  follow-up issue is a fixed five-line file (class, count, fix rung and owning
+  repo from lists, one plain-letters line); the unit builds the public title and
+  body from a template, then `config/retro-public-deny.txt` must find no session
+  id, path, quote, time of day, link, email or secret shape in it. One refusal
+  fails the unit and files nothing.
+- The jail has no network. The only way out is a socket to a forwarder, run
+  outside the jail, that reaches `api.anthropic.com` and nothing else.
 - The call is Claude Code to the Anthropic API with the model pinned in the unit.
   The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
   it is not used. The pin check fails the unit if the call was anything else
