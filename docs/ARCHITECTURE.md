@@ -135,7 +135,7 @@ The rules still in force:
   push dismisses it) and the required checks. The `coordinator-approval` check
   (ci.yml) passes on a PR and, in the queue, fails an entry whose PR head has no
   `APPROVED` review from the review job or `nish3451`, read from the reviews API: it
-  holds the approver's identity and the head binding, and reads no comment or status.
+  holds the approver's identity, the head binding and, from the base commit's CLASSIFY and path list, the risk (a risky PR needs more than hold-risky's own safe-head approval); it reads no comment or status.
   It runs on merge_group because a review written with GITHUB_TOKEN fires no
   `pull_request_review`, so a PR-level check over review state would need a poller.
   Nothing disarms, dequeues, re-arms or relays. agent-dispatch.yml's `hold-risky` job classifies a PR by

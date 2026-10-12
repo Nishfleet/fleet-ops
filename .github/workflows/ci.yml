@@ -1181,10 +1181,11 @@ jobs:
           prog=$(yq '.jobs.coordinator-approval.steps[] | select(.env.APPROVED) | .env.APPROVED' .github/workflows/ci.yml)
           [ -n "$prog" ] && [ "$prog" != null ]
           bad=0
-          r() { printf '{"user":{"login":"%s"},"state":"%s","commit_id":"%s","submitted_at":"%s"}\n' "$1" "$2" "$3" "$4"; }
-          # case: name|want|reviews (newline separated)
+          r() { printf '{"user":{"login":"%s"},"state":"%s","commit_id":"%s","submitted_at":"%s","body":"%s"}\n' "$1" "$2" "$3" "$4" "${5:-reviewer: h2 approved.}"; }
+          who=$(yq '.jobs.coordinator-approval.steps[] | select(.env.APPROVED) | .env.APPROVERS' .github/workflows/ci.yml)
+          # check name want reviews [risky]
           check() {
-            got=$(jq -es --arg sha h2 --arg who "nish3451 github-actions[bot]" "$prog" <<<"$3") || got=false
+            got=$(jq -es --arg sha h2 --arg who "$who" --argjson risky "${4:-false}" "$prog" <<<"$3") || got=false
             [ "$got" = "$2" ] || { echo "case $1: got $got, want $2"; bad=1; }
           }
           check bot-approved true "$(r 'github-actions[bot]' APPROVED h2 1)"
@@ -1198,6 +1199,10 @@ jobs:
           check dismissed false "$(r nish3451 APPROVED h2 1; r nish3451 DISMISSED h2 2)"
           check comment-only false "$(r nish3451 COMMENTED h2 1)"
           check none false ""
+          check safe-pr-hold-risky-approval-passes true "$(r 'github-actions[bot]' APPROVED h2 1 'hold-risky: not risky, no review needed.')" false
+          check risky-pr-hold-risky-approval-fails false "$(r 'github-actions[bot]' APPROVED h2 1 'hold-risky: not risky, no review needed.')" true
+          check risky-pr-review-job-approval-passes true "$(r 'github-actions[bot]' APPROVED h2 1)" true
+          check risky-pr-nish-approval-passes true "$(r nish3451 APPROVED h2 1 '')" true
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
         # Runs the report job's own run block, read out of agent.yml, against a
@@ -1613,12 +1618,14 @@ jobs:
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
 
-  # Required check `coordinator-approval` (fleet-ops#9383): the identity and head binding of the
+  # Required check `coordinator-approval` (fleet-ops#9383): the identity, head and risk binding of the
   # ruleset's approving review. The ruleset keeps a PR out of the queue until a review exists and
   # dismisses it on a push; auto-merge waits for it natively. On the merge_group event this job
   # fails when the entry's PR has no APPROVED review on its live head from an approver (the review
   # job, github-actions[bot], or nish3451) that the approver has not since replaced with a request
-  # for changes, so a worker's or any other login's approval does not merge. Entries ahead in a
+  # for changes, so a worker's or any other login's approval does not merge. A PR the base commit's
+  # CLASSIFY and risky-paths.json call risky at queue time also needs an approval that is not
+  # hold-risky's own safe-head one, so a list that grew after that approval is caught. Entries ahead in a
   # group have their own runs. Anywhere else it passes. No comment or status is read.
   # A PR that edits this job edits a workflow, so the review job asks two reviewers of different families.
   coordinator-approval:
@@ -1631,22 +1638,45 @@ jobs:
       - name: Pass outside the merge queue
         if: github.event_name != 'merge_group'
         run: echo "coordinator-approval is enforced on merge_group; this run is informational."
+      - name: Checkout the base commit (CLASSIFY and path list)
+        if: github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/agent-dispatch.yml
+            config/risky-paths.json
+          sparse-checkout-cone-mode: false
       - name: Fail a queue entry whose PR head has no approving review from an approver
         if: github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
           APPROVERS: nish3451 github-actions[bot]
-          # stdin: the PR's reviews, slurped. Out: true when an approver's newest review on $sha is APPROVED.
+          # stdin: the PR's reviews, slurped. Out: true when an approver's newest review on $sha is APPROVED
+          # and, for a risky PR, is not hold-risky's own safe-head approval (its body starts "hold-risky:").
           APPROVED: |
             [.[] | select(.commit_id == $sha and (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED")))]
             | group_by(.user.login) | map(max_by(.submitted_at))
-            | any(.[]; .state == "APPROVED" and (.user.login as $l | $who | split(" ") | index($l)))
+            | any(.[]; .state == "APPROVED" and (.user.login as $l | $who | split(" ") | index($l))
+                and (($risky | not) or (.body | startswith("hold-risky:") | not)))
         run: |
           set -euo pipefail
           [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] || { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
           pr=${BASH_REMATCH[1]}
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)
+          pj=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr")
+          sha=$(jq -r .head.sha <<<"$pj")
+          # Risk as hold-risky reads it, from the base commit's program and list. A failed read fails the check.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt"
+          jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+          jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+            '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pj" > "$RUNNER_TEMP/facts.json"
+          classify=$(yq '.jobs.hold-risky.env.CLASSIFY' base/.github/workflows/agent-dispatch.yml)
+          label=$(yq '.jobs.hold-risky.env.LABEL' base/.github/workflows/agent-dispatch.yml)
+          cfg=$(jq -c . base/config/risky-paths.json)
+          risky=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$classify | .risky" < "$RUNNER_TEMP/facts.json")
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" --jq '.[]' |
-            jq -es --arg sha "$sha" --arg who "$APPROVERS" "$APPROVED" ||
-            { echo "::error::coordinator-approval: #$pr has no approving review from $APPROVERS on $sha"; exit 1; }
+            jq -es --arg sha "$sha" --arg who "$APPROVERS" --argjson risky "$risky" "$APPROVED" ||
+            { echo "::error::coordinator-approval: #$pr (risky: $risky) has no approving review from $APPROVERS on $sha"; exit 1; }
