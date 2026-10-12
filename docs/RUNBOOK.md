@@ -81,18 +81,65 @@ the Quadlet `containers/quadlet/fleet-grafana.container`, read-only for every
 viewer. Dashboards, datasources and alerting come from `config/grafana/dashboards/`
 and `config/grafana/provisioning/`, edited in this repo only.
 
+Grafana reads the alerting and datasource provisioning files only at start, and the
+deploy is a `git merge --ff-only` that never restarts the container.
+`fleet-grafana-provisioning.path` (`PathChanged=` on both directories in the deploy
+clone) therefore triggers `fleet-grafana-provisioning.service`, which POSTs the stock
+admin API `/api/admin/provisioning/alerting/reload` and `/datasources/reload` (Grafana HTTP
+API docs, "Reload provisioning configurations"), authenticated as `admin` with
+`~/.config/fleet-ops/grafana-admin-password`. Dashboards need no help: their provider
+polls every 60 s. To check a rule landed, `GET /api/v1/provisioning/alert-rules` and
+compare the rule's `expression` with the repo file. Wire the pair once after merge, like
+`fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
+files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
+wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
+once linked, or `curl -X POST` the two endpoints.
+
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`; `hermes-urgent` is the policy root and the fallback. The webhook
-needs `GITHUB_ISSUES_TOKEN` (issues:write on Nishfleet/fleet-ops) in
-`~/.config/fleet-ops/github-issues.env`, mode 0600. `grafana_alerting_notifications_failed_total`
-rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
+`cloudflare-spend-dispatch`. The webhook
+sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
+"Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
-GITHUB_ISSUES_TOKEN lives in ~/.config/fleet-ops/github-issues.env (fine-grained, issues:write on Nishfleet/fleet-ops only). Spend alerts also go to hermes-urgent, so a dead token never silences them.
+Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
+or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
+cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
+nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
+cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
+labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
+cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
+fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
+add it there with the reason. Switch off the fleet route: point the policy root back at
+`hermes-urgent` in `cloudflare-spend-contact.yaml`.
+
+Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
+Authorization value and a GitHub App installation token lives an hour, so a token pasted into
+a file went stale and every delivery answered `401 Bad credentials` for days.
+`fleet-grafana-github-token.timer` (every 20 min, and 2 min after boot) starts
+`fleet-grafana-github-token.service`, which signs an RS256 App JWT with the nishfleet-worker
+key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
+`issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
+0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
+reload above. The contact points read the file with Grafana's `$__file{}`, which is
+re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
+`systemctl --user link` both files, `systemctl --user daemon-reload`, `systemctl --user
+enable --now fleet-grafana-github-token.timer`, then restart `fleet-grafana.service` once so
+the quadlet's new mount takes effect. Do it right after the merge deploys: until Grafana restarts, the
+provisioning reload the merge triggers cannot find the new mount and
+`fleet-grafana-provisioning.service` pages once per provisioning change. Read it: `systemctl --user show
+fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the journal line
+`minted a GitHub App token`. A failed mint pages through `OnFailure=`
+(`fleet-unit-failed@`), keeps the previous token, and the delivery rule pages hermes-urgent
+if a webhook still fails. Switch off: `systemctl --user disable --now
+fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
+(the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
+rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
+`tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
+unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
 `systemctl --user list-timers blacksmith-flip.timer` (hourly,
 `Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
@@ -251,6 +298,53 @@ engine ever needs one of these names, give that runner a drop-in with the line
 above for the single file it needs; nothing in this repo asks for it today. A
 hand-run `claude -p` or `systemd-run --user` that needs the token passes the
 line above.
+
+## Unattended Claude runs (fleet-ops#9502)
+
+Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
+(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the Remote Control server). Both used to pass
+`--permission-mode bypassPermissions`, which skips every check, so the
+`permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
+`gh repo delete`, ...) were decorative: exactly the rules that mark a step as
+destructive.
+
+Both now run `--permission-mode dontAsk`, which denies a tool call that would
+have raised a prompt nobody can answer. The allow list per unit is a file in
+this repo under `rootfs/etc/claude-code/roles/`, installed to
+`/etc/claude-code/roles/` by `ansible/host.yml`:
+
+| unit | role file | how it is loaded |
+| --- | --- | --- |
+| `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
+| `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
+
+`claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
+Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:
+`git stash` was still denied under dontAsk with `Bash` in allow (2026-10-09).
+`sed -i` stayed denied by the managed deny list. Edit a role file in a PR,
+never on the box. The CLI flag is the mode switch: do not set
+`permissions.defaultMode` in a role file.
+
+dontAsk on Remote Control is intended: Nish cannot approve a one-off command
+from the phone. A denied call is reported in the session and there is no
+prompt to tap.
+
+The tincan unit goes live after merge, when fleet-sync has the new file and
+the user unit is reloaded (`systemctl --user daemon-reload && systemctl
+--user restart tincan-listen-claude-vps.service`). Remote Control stays on
+the old `ExecStart` until Nish restarts it.
+
+**Where denials show.** Each denied call is reported twice: in the unit's
+journal, and in the run transcript (`claude -p --output-format json` lists
+them under `permission_denials`). The tincan transcript is
+`~/.claude/projects/-home-nish--local-state-tincan-listen-claude-vps/<id>.jsonl`
+(the directory name is the escaped cwd, which is the unit's `StateDirectory`).
+
+**Rollback.** Put `--permission-mode bypassPermissions` back on the `ExecStart`
+line of the unit and restart it. That restores today's behaviour: the role
+file is then inert and nothing else in the unit changed. Only Nish restarts
+`claude-remote-control.service`, because that cuts the phone link.
 
 ## Break-glass access (SSH is Tailscale-only)
 

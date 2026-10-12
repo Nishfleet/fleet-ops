@@ -54,10 +54,9 @@
 #    covered by this rule. Lowering the floor to reach them would let a single
 #    probe call page, which is the reason the floor exists.
 #
-# Contact point: the existing hermes-urgent Telegram contact point, declared in
-# paid-plan-idle.yaml and referenced by name here, exactly as cpu-pressure.yaml
-# does. Grafana merges every file under the alerting provisioning dir, so this
-# adds a rule and reuses that receiver rather than declaring a second one.
+# Contact point: the existing hermes-urgent Telegram contact point (paid-plan-idle.yaml).
+# A route that stopped caching bills every request at full input price: money, so it
+# pages (fleet-ops#9445: only outages, money problems and Nish-only calls page).
 apiVersion: 1
 
 groups:

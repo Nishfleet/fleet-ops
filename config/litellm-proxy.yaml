@@ -22,9 +22,9 @@
 #
 # The per-exception resolution is also what makes one router-level key reach every row:
 # _should_cooldown_based_on_deployment_policy reads the row's own policy first and, for an
-# exception type that policy does not name, defers to the router-level policy. All 81 rows
+# exception type that policy does not name, defers to the router-level policy. All 82 rows
 # below carry a deployment-level allowed_fails_policy and none of them names NotFoundError,
-# so the fix is one key, not 81.
+# so the fix is one key, not 82.
 #
 # Measured consequence, stated because it is a real trade: the cooldown a 404 applies is the
 # ROW's own cooldown_time, not the router-level 60 s. A 404 on one of the 14 rows parked
@@ -405,6 +405,38 @@ model_list:
     id: pareto-glm53flash-senior
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+- model_name: senior-backup
+  # fleet-ops#9596: senior is one Pareto row, and a 429 "Insufficient credits" on it left the group with nowhere to go (evening audits 2026-10-11). This row is the same model, GLM-5.3-Flash, on Synthetic's own prepaid key, so the fallback is of equal strength and "senior never falls back down" still holds. It is its own group, not a second senior row, so router_settings.fallbacks can name it and the 429 is answered by another provider. It has no fallback of its own (no cycle with judge: senior). Same model as the Pareto senior row, so the GLM-family second reviewer stays GLM; judge rows are Qwen/DeepSeek and already fell to GLM through senior before this change.
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
+    # The key's 8th slot. 12 parallel calls on this key gave 8x200 and 4x429 "Too many concurrent requests", so 8 one-slot rows sit at
+    # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. No worker row is removed (Nish 2026-10-02:
+    # removing a row needs his yes). config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
+    max_parallel_requests: 1
+    # 60 s, not the 900 s of the sibling Synthetic rows: this is the only row in its group, so a long park takes the whole senior fallback
+    # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked it 900 s at 06:14 UTC, and
+    # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
+    # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
+    cooldown_time: 60
+    # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
+    # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
+    # senior's own $10/day cap is not the wall it guards against either: all Pareto GLM-5.3-Flash spend to 2026-10-12 is $0.094.
+    # The fallback fires on any senior failure the router raises, so a busy Pareto slot (max_parallel_requests 1) also lands here,
+    # not only a 429 or credit wall. Pool headroom even if every senior call moved here for days: router metrics 2026-10-09 16:06 to 2026-10-12 05:00 UTC (61 h) show 536 senior
+    # calls (~44 per 5 h) and ~650 Synthetic worker calls (~53 per 5 h), so all senior traffic moved here is ~100 of the 500 per 5 h.
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap)."
+    id: synthetic-glm53flash-senior-backup
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -415,7 +447,7 @@ model_list:
     order: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8. The 500 / 5 h pool is the real wall:
+    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8; senior-backup (fleet-ops#9596) is the 8th slot. The 500 / 5 h pool is the real wall:
     # a pool 429 cools a row 15 min, and the rolling window refills by itself.
     max_parallel_requests: 1
     cooldown_time: 900
@@ -1787,9 +1819,10 @@ router_settings:
   # APIConnectionError (cooldown_handlers._is_cooldown_required ignores that string) and only runs a
   # mid-stream fallback before any content was generated, so this switch never splices two models into one
   # answer. A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
-  # strike adds strong-only). senior never falls back down.
+  # strike adds strong-only). senior never falls back down: its one fallback, senior-backup, is the same GLM-5.3-Flash on Synthetic (fleet-ops#9596), so a Pareto 429, credit wall or busy slot moves to another provider at equal strength. A judge call that falls to senior still reaches senior-backup: v1.98.0 run_async_fallback re-enters async_function_with_fallbacks with fallback_depth+1 (router_utils/fallback_event_handlers.py:366-372). senior-backup has no fallback, so judge -> senior -> senior-backup ends there and cannot cycle.
   fallbacks:
     - judge: [senior]
+    - senior: [senior-backup]
     - worker-capable: [worker-cheap]
     - worker-cheap: [worker-capable]
   cooldown_time: 60
@@ -1799,10 +1832,13 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 2
-    RateLimitErrorRetries: 2
+    # fleet-ops#9375: cut the in-router retry budget so a mid-session failure spends at most one attempt inside the worker group before the fallback group answers or the call reaches Pi's own retry. Pi keeps x-litellm-session-id, and the session pin is first-writer-wins, so a pinned seat that recovers is re-picked on the next call. Drilled on litellm 1.98.0 with a pinned seat whose first attempt 429s: shipped (2/2/2) made 4 upstream picks [seat-a, seat-a, seat-c, seat-b]; proposed (0/1/1) makes 3 [seat-a, seat-a, seat-b], where the retry lands back on the row that failed. When the 429 clears on that second call, proposed spends 2 picks on seat-a alone and no fallback fires, where a zeroed budget would kick the call to the fallback seat. The schema bounds this block and tests/test_router_retry_policy_no_cross_seat.py locks it.
+    # 0 for 401: a bad key can never recover on retry. 1 for 429 bounds the in-group attempts to one, and litellm 1.98.0 sends that retry back to the row that just failed, so a briefly-limited pinned seat is not kicked to another seat. That holds for rows under the router-level allowed_fails of 1 (measured that way). A row that parks on its first 429 (RateLimitErrorAllowedFails 0) is already cooling when the retry runs, so its retry goes to a peer (drilled: [seat-a, seat-c, fallback] by test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself): still one extra in-group pick at most, but not a same-row retry. 8 worker-capable and 8 worker-cheap rows are in that class. The retry is instant - Router._time_to_sleep_before_retry returns 0 while the group still has a healthy row - so the backoff itself stays in Pi's own retry, not here.
+    # Note: litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError branch, so InternalServerErrorRetries resolves to None (num_retries 0 -> one attempt) until litellm adds the handler; 1 is the intended forward value and the test asserts the current inert behavior. The shipped 2 was inert too, so a 500 got no in-group retry before this change and gets none after: it still goes straight to the fallback group, and this change does not touch the 500 half of fleet-ops#9375.
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
     TimeoutErrorRetries: 1
-    InternalServerErrorRetries: 2
+    InternalServerErrorRetries: 1
     # 400 only (a separate fix from the 402 removal above): LiteLLM never cools a 400, so a row whose model is gone upstream stays in the shuffle (zen union-alpha "Model is unavailable", stalled drive for an hour on 2026-09-30; its rows are removed since, so this guards against any future dead-model 400). 1 retry = 2 picks. The retry re-shuffles and does not exclude the failed row, so escape is by odds: a dead row's share of its group decides - tiny in the many-row worker groups, but all of senior's single remaining row, where 2 picks cannot escape. ContentPolicyViolation is matched first and stays 0; a context-window 400 is retried too, which costs one fast failure.
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
