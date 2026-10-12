@@ -676,6 +676,33 @@ jobs:
             rules=$(gh api "repos/$REPO/rules/branches/main") || rules='[]'
             gated=$(jq -r '([.[] | select(.type == "pull_request") | .parameters | select(.required_approving_review_count > 0 and .dismiss_stale_reviews_on_push)] | length) > 0 and ([.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "coordinator-approval")] | length) > 0' <<<"$rules") || gated=false
             if [ "$risky" = true ] && [ "$gated" != true ]; then echo "#$n is risky and $REPO does not require a push-dismissed approving review and coordinator-approval: not armed"; exit 0; fi
+            # A head whose required checks are red is not armed, the same
+            # test Deliverable fails on (fleet-ops#9315). The step disarms
+            # an arm left by an earlier run, so a mid-rework push cannot
+            # merge before a run has judged it, and fails, so report
+            # requeues the issue and the next run arms the fixed head.
+            # Pending checks still arm: nothing re-arms a head that later
+            # goes green, and the required checks hold the merge. A repo
+            # with no required checks judges all of them, as Deliverable
+            # does. An unreadable result is treated as red. The runner
+            # user's own gh login reads the checks: the App token has no
+            # checks: read.
+            q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+            red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+              8) ;; # gh's pending exit: --jq still printed any red names, empty if none
+              *) case ${red,,} in
+                   *"no required checks reported"*)
+                     red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                       case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
+                   *"no checks reported"*) red= ;;
+                   *) red="unreadable ($red)" ;;
+                 esac ;;
+            esac
+            if [ -n "$red" ]; then
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+              echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+              exit 1
+            fi
             # Every other claim PR is armed here, on the head this run produced, and the
             # merge waits natively for the ruleset's review and the required checks.
             # The App has no workflows permission, so GitHub refuses its arm on a PR

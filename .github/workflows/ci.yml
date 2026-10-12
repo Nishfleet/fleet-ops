@@ -1681,6 +1681,7 @@ jobs:
           classify=$(yq '.jobs.hold-risky.env.CLASSIFY' base/.github/workflows/agent-dispatch.yml)
           label=$(yq '.jobs.hold-risky.env.LABEL' base/.github/workflows/agent-dispatch.yml)
           cfg=$(jq -c . base/config/risky-paths.json)
+          [ -n "$classify" ] && [ "$classify" != null ] && [ "$label" != null ] || { echo "::error::coordinator-approval: CLASSIFY or LABEL unreadable in the base commit"; exit 1; }
           for pr in $(tr ' ' '\n' <<<"$nums" | sort -un); do
             pj=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr")
             sha=$(jq -r .head.sha <<<"$pj")
