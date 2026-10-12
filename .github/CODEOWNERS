@@ -1,11 +1,22 @@
-# No-glue lock (fleet-ops#8459): scripts, wrappers and script dirs need Nish's review to merge.
-# Push rulesets are refused on public repos, so this uses CODEOWNERS + require_code_owner_review.
-*.sh @nish3451
-*.py @nish3451
-*.bash @nish3451
-*.zsh @nish3451
-/bin/ @nish3451
-/scripts/ @nish3451
-**/bin/ @nish3451
-**/scripts/ @nish3451
+# Nish 2026-10-12 (fleet-ops#9605): the two automated reviewers approve worker
+# code (.py, .sh, bin/, scripts/); the no-glue rule is still held by the `ci`
+# check (.semgrep/no-glue.yml). Nish's review stays only on the fleet's safety
+# rules, deny lists, seat keys and credentials, listed below. Public repos
+# refuse push rulesets, so this uses CODEOWNERS + require_code_owner_review.
+
+# The merge guard and its review prompt.
+/config/risky-paths.json @nish3451
+/prompts/risky-review.md @nish3451
+# The no-glue rule itself.
+/.semgrep/ @nish3451
+# Agent deny lists and permission policy.
+/rootfs/etc/claude-code/ @nish3451
+# Host firewall and privilege rules.
+/rootfs/etc/nftables.conf @nish3451
+/rootfs/etc/systemd/system/nftables.service.d/ @nish3451
+/rootfs/etc/polkit-1/ @nish3451
+# Seat keys and credentials.
+/credentials/ @nish3451
+**/*seat*.conf @nish3451
+# This file.
 /.github/CODEOWNERS @nish3451
