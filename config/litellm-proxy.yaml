@@ -415,7 +415,7 @@ model_list:
     order: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8. The 500 / 5 h pool is the real wall:
+    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8: 3 worker-cheap, 3 worker-capable and senior-backup (fleet-ops#9596). The 500 / 5 h pool is the real wall:
     # a pool 429 cools a row 15 min, and the rolling window refills by itself.
     max_parallel_requests: 1
     cooldown_time: 900
@@ -511,21 +511,31 @@ model_list:
     id: synthetic-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
+- model_name: senior-backup
+  # fleet-ops#9596: senior is one Pareto row, and a 429 "Insufficient credits" on it left the group with nowhere to go (evening audits 2026-10-11). This row is the same model, GLM-5.3-Flash, on Synthetic's own prepaid key, so the fallback is of equal strength and "senior never falls back down" still holds. It is its own group, not a second senior row, so router_settings.fallbacks can name it and the 429 is answered by another provider. It has no fallback of its own (no cycle with judge: senior). Same model as the Pareto senior row, so the GLM-family second reviewer stays GLM; judge rows are Qwen/DeepSeek and already fell to GLM through senior before this change.
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
+    - senior
     order: 1
+    # One of the key's 7 slots, not an 8th: synthetic-glm53flashd-worker-capable was removed in the same change, so the Synthetic
+    # key still sums to 7 x max_parallel_requests 1, under the measured 8 (config/litellm-proxy.schema.json caps Synthetic at 7 one-slot rows).
     max_parallel_requests: 1
+    # 900 s like the sibling Synthetic rows: a pool 429 (500 req / 5 h) needs that long to clear, so a shorter re-probe only re-hits it.
     cooldown_time: 900
+    # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
+    # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
+    # senior's own $10/day cap is not the wall it guards against either: all Pareto GLM-5.3-Flash spend to 2026-10-12 is $0.094.
+    # Pool headroom if Pareto stays walled for days: router metrics 2026-10-09 16:06 to 2026-10-12 05:00 UTC (61 h) show 536 senior
+    # calls (~44 per 5 h) and ~650 Synthetic worker calls (~53 per 5 h), so all senior traffic moved here is ~100 of the 500 per 5 h.
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
-    id: synthetic-glm53flashd-worker-capable
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap)."
+    id: synthetic-glm53flash-senior-backup
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
@@ -1787,9 +1797,10 @@ router_settings:
   # APIConnectionError (cooldown_handlers._is_cooldown_required ignores that string) and only runs a
   # mid-stream fallback before any content was generated, so this switch never splices two models into one
   # answer. A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
-  # strike adds strong-only). senior never falls back down.
+  # strike adds strong-only). senior never falls back down: its one fallback, senior-backup, is the same GLM-5.3-Flash on Synthetic (fleet-ops#9596), so a Pareto 429 or credit wall moves to another provider at equal strength. A judge call that falls to senior still reaches senior-backup: v1.98.0 run_async_fallback re-enters async_function_with_fallbacks with fallback_depth+1 (router_utils/fallback_event_handlers.py:366-372). senior-backup has no fallback, so judge -> senior -> senior-backup ends there and cannot cycle.
   fallbacks:
     - judge: [senior]
+    - senior: [senior-backup]
     - worker-capable: [worker-cheap]
     - worker-cheap: [worker-capable]
   cooldown_time: 60
