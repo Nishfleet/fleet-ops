@@ -950,7 +950,7 @@ jobs:
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
-              | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
+              | if any($l[]; startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
                 else "other" end] as $k
             | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
@@ -1045,7 +1045,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'reviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1081,7 +1081,7 @@ jobs:
           if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            approve; say "$(printf 'reviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi

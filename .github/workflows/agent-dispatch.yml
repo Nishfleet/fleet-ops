@@ -303,15 +303,12 @@ jobs:
   # the arm). Risk is read from the changed paths, not only the label, so an
   # unlabelled risky PR is caught too. The path list is config/risky-paths.json
   # on fleet-ops main, read by URL so every caller repo uses the same copy; an
-  # unreadable list holds every PR. A risky PR whose CURRENT head sha has no
-  # approval from an approver loses its arm, leaves the merge queue and gets
-  # the label. Approval is either a PR comment with the line
-  # `coordinator-approval: <full head sha>` (unedited), or a
-  # coordinator-approval=success commit status on that sha. The comment path
-  # exists because cloud sessions get 403 on POST /statuses. Both name one
-  # sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
-  # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
-  # and APPROVAL below against every case in config/risky-paths.json.
+  # unreadable list holds every PR. A risky PR whose CURRENT head has no
+  # approving review (GitHub's reviewDecision; a push dismisses it) loses its
+  # arm, leaves the merge queue and gets the label, and review-risky reviews it.
+  # The ruleset's required review is the merge-time gate; this hold only keeps a
+  # PR from sitting armed on a head nobody reviewed. GITHUB_TOKEN writes fire no
+  # workflow, so the hold does not re-trigger itself or the ejected job.
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&
@@ -323,23 +320,15 @@ jobs:
     concurrency:
       group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    # pull-requests: write labels the PR and disables auto-merge. contents:
-    # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
-    # like arming does). statuses: read and pull-requests (which covers a PR's
-    # issue comments) read the approval. Nothing here checks out code, so
-    # contents: write never meets PR head code.
+    # pull-requests: write labels the PR, reads its review decision and
+    # disables auto-merge. contents: write is what GitHub asks of a merge-queue
+    # dequeue (it acts on the merge, like arming does). Nothing here checks out
+    # code, so contents: write never meets PR head code.
     permissions:
       contents: write
       pull-requests: write
-      statuses: read
     env:
       LABEL: needs-coordinator
-      CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
       # risky-paths.json or null. patches is [{file, patch}] with patch null
@@ -371,25 +360,6 @@ jobs:
            + ($hits | unique | .[:10] | map("path \(.)"))
            + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
-      APPROVAL: |
-        . as $in
-        | ($who | split(" ") | map(select(length > 0))) as $approvers
-        | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
-        | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
-        | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
-        | ($full and any(($in.comments // [])[];
-            (.user.login // "") as $l
-            | any($approvers[]; . == $l)
-              and .created_at != null and .updated_at == .created_at
-              and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
@@ -435,23 +405,11 @@ jobs:
           echo "hold-risky: #$PR at $sha: $verdict"
           # Not risky: the merge list says these merge on green checks (as before), so the review the ruleset now requires on every PR is given here, for a same-repo head only; a fork PR waits for a person. The API refuses a commit_id that is no longer the head (HTTP 422, checked 2026-10-12), so a push after the read gets no approval. The repo setting "Allow GitHub Actions to create and approve pull requests" is on.
           jq -e .risky <<<"$verdict" >/dev/null || { [ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ] || gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
-          # Either approval read failing means not approved, even if the other
-          # read alone would approve.
-          approved=false
-          if [ "$sha" = unknown ]; then
-            echo "::warning::hold-risky: no head sha for #$PR; not approved"
-          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt"; then
-            echo "::warning::hold-risky: statuses read failed for $sha; not approved"
-          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
-            --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
-            echo "::warning::hold-risky: comments read failed for #$PR; not approved"
-          else
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
-          fi
-          if [ "$approved" = true ]; then
-            echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
+          # The review job decides how much review a risky head needs and skips one it already judged.
+          [ "$sha" = unknown ] || echo "review_sha=$sha" >> "$GITHUB_OUTPUT"
+          # A failed read counts as not approved.
+          if [ "$(gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json reviewDecision --jq .reviewDecision || true)" = APPROVED ]; then
+            echo "hold-risky: #$PR is risky and its head has an approving review; no hold"
             exit 0
           fi
           # Label first, so a dequeued event raised by the steps below already
@@ -502,7 +460,6 @@ jobs:
               ok=false
             fi
           fi
-          [ "$sha" = unknown ] || echo "review_sha=$sha" >> "$GITHUB_OUTPUT"
           {
             echo "### hold-risky: #$PR held at \`$sha\`"
             jq -r '.why[] | "- \(.)"' <<<"$verdict"
@@ -513,10 +470,9 @@ jobs:
   # Independent review of a held risky PR (Nish 2026-10-05: reviewed PRs merge
   # themselves, no pasted approval lines). agent.yml's review job reads the
   # head's diff through the API, never checks out PR code, asks a model with no
-  # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot]; the same run's arm
-  # job then arms the PR.
-  # hold-risky stays the only door: it reads that comment like any other.
+  # tools for findings and Jev for approve or block, then approves the head
+  # with a GitHub review as github-actions[bot]; the same run's arm job then
+  # arms the PR. The ruleset counts that review.
   # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
   # needs two reviews to approve: the judge and a second reviewer of a
   # different model family. No person is asked. Paused fleets do not review.
@@ -852,10 +808,7 @@ jobs:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
-          # Logins whose unedited `coordinator-approval: <sha>` comment counts,
-          # hold-risky's APPROVERS.
-          APPROVERS: nish3451 github-actions[bot]
-          # stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
+          # stdin: {pr: {headRefOid, mergeable, reviewDecision}, comments: the PR's issue
           # comments (API objects), red: names of failed required checks on the
           # head}. Out: {class, reason, url}. class is arm, review or stuck.
           # Only verdicts on the CURRENT head count, in the words agent.yml's
@@ -870,17 +823,13 @@ jobs:
           STUCK: |
             .pr.headRefOid as $sha
             | $sha[0:7] as $s7
-            | ($who | split(" ") | map(select(length > 0))) as $approvers
             | [(.comments // [])[] | select(.body != null) | . + {lines: [.body | split("\n")[] | rtrimstr("\r")]}] as $cs
-            | [$cs[] | select((.user.login // "") as $l | any($approvers[]; . == $l)
-                and .created_at != null and .updated_at == .created_at
-                and any(.lines[]; . == "coordinator-approval: \($sha)"))] as $ok
             | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
             | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
             | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
             | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
-              elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
+              elif .pr.reviewDecision == "APPROVED" then {class: "arm", reason: "approved at \($s7) and not armed", url: ""}
               elif ($no | length) > 0 then {class: "stuck", reason: "the reviewer did not approve \($s7)", url: ($no[-1].html_url // "")}
               elif ($asked | length) >= 3 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries", url: ($asked[-1].html_url // "")}
               else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
@@ -892,7 +841,7 @@ jobs:
           # A draft is its author saying "not yet"; Dependabot PRs follow the
           # repo's own Dependabot rules. Everything else open is meant to land.
           list() {
-            gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
+            gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,reviewDecision,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
               jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
                 and (.author.login | test("dependabot") | not) and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)'
           }
@@ -944,7 +893,7 @@ jobs:
               errs=$((errs + 1)); continue
             fi
             v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" \
-              '{pr: $pr, comments: $comments, red: $red}' | jq -c --arg who "$APPROVERS" "$STUCK")
+              '{pr: $pr, comments: $comments, red: $red}' | jq -c "$STUCK")
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in

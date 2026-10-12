@@ -133,11 +133,10 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
-  head sha is approved: an approver's unedited PR comment with the line
-  `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092). A person's Approve review counts toward the
-  ruleset's required review, not toward this gate, and there is no relay that
-  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
+  head has an approving review (0509#7092). The `main-merge-queue` ruleset
+  requires one approving review and dismisses it on a push, which is the
+  merge-time gate; the `coordinator-approval` check and its comment protocol
+  are removed, and so is the one-tap relay of fleet-ops#9505.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
@@ -145,11 +144,9 @@ The rules still in force:
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
   approve or block (p >= 0.9), and posts that approval as
-  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
-  GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
-  requires one approving review and dismisses it on a push, so GitHub itself
-  refuses a merge on any head the reviewer did not approve; `hold-risky` gives
-  the same review to a PR that is not risky.
+  `github-actions[bot]`: a GitHub `Approve` review on that exact head, written
+  with GITHUB_TOKEN. GitHub itself refuses a merge on any head the reviewer did
+  not approve; `hold-risky` gives the same review to a PR that is not risky.
   "Claude never grades Claude" has one exception, approved by Nish on
   2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
   work), but the verdict is always Jev's, a non-Claude family, so a non-Claude
@@ -159,9 +156,8 @@ The rules still in force:
   a model family other than the judge's and Claude's, and both must approve; if
   either blocks, its blockers go to the agent as fix-it items. The same run then
   arms the PR (agent.yml `arm`, App token, `--match-head-commit`), so no person
-  is asked at any step. Nish's typed comment or app review stays an optional
-  override. The gate and `hold-risky` read their programs and the path list from
-  the base branch, so a PR cannot loosen the rules that judge it in the same PR;
+  is asked at any step. Nish's app review stays an optional override. `hold-risky`
+  reads its program and the path list from the base branch, so a PR cannot loosen the rules that judge it in the same PR;
   agent-authored PRs self-land green. The in-session held-PR approver loop (a
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it

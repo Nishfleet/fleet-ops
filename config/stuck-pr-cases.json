@@ -1,5 +1,5 @@
 {
- "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved by the reviewer at its head 5183950, CLEAN, never armed, because it was approved before the arm job existed.",
+ "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved at its head 5183950 (reviewDecision APPROVED), CLEAN, never armed, because it was approved before the arm job existed.",
  "base": {
   "pr": {
    "number": 9486,
@@ -10,28 +10,10 @@
      "name": "needs-coordinator"
     }
    ],
-   "mergeable": "MERGEABLE"
+   "mergeable": "MERGEABLE",
+   "reviewDecision": "APPROVED"
   },
-  "comments": [
-   {
-    "user": {
-     "login": "github-actions[bot]"
-    },
-    "body": "coordinator-approval: fd39de101a4bfe1a3f74923f62e9f22601081626\n\nreviewer: fd39de101a4bfe1a3f74923f62e9f22601081626 approved. CI still has to pass before it merges.",
-    "created_at": "2026-10-09T08:02:48Z",
-    "updated_at": "2026-10-09T08:02:48Z",
-    "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-   },
-   {
-    "user": {
-     "login": "github-actions[bot]"
-    },
-    "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
-    "created_at": "2026-10-09T08:02:48Z",
-    "updated_at": "2026-10-09T08:02:48Z",
-    "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-   }
-  ],
+  "comments": [],
   "red": []
  },
  "cases": [
@@ -41,27 +23,13 @@
    "set": {}
   },
   {
-   "id": "approval-by-nish-arms",
-   "want": "arm",
-   "set": {
-    "comments": [
-     {
-      "user": {
-       "login": "nish3451"
-      },
-      "body": "looks fine\ncoordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e",
-      "created_at": "2026-10-09T08:02:48Z",
-      "updated_at": "2026-10-09T08:02:48Z",
-      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-     }
-    ]
-   }
-  },
-  {
    "id": "unreviewed-head-gets-review",
    "want": "review",
    "set": {
-    "comments": []
+    "comments": [],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -69,77 +37,10 @@
    "want": "review",
    "set": {
     "pr": {
-     "labels": []
+     "labels": [],
+     "reviewDecision": null
     },
     "comments": []
-   }
-  },
-  {
-   "id": "approval-of-older-head-gets-review",
-   "want": "review",
-   "set": {
-    "comments": [
-     {
-      "user": {
-       "login": "github-actions[bot]"
-      },
-      "body": "coordinator-approval: fd39de101a4bfe1a3f74923f62e9f22601081626\n\nreviewer: fd39de101a4bfe1a3f74923f62e9f22601081626 approved. CI still has to pass before it merges.",
-      "created_at": "2026-10-09T08:02:48Z",
-      "updated_at": "2026-10-09T08:02:48Z",
-      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-     }
-    ]
-   }
-  },
-  {
-   "id": "edited-approval-gets-review",
-   "want": "review",
-   "set": {
-    "comments": [
-     {
-      "user": {
-       "login": "github-actions[bot]"
-      },
-      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
-      "created_at": "2026-10-09T08:02:48Z",
-      "updated_at": "2026-10-09T09:00:00Z",
-      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-     }
-    ]
-   }
-  },
-  {
-   "id": "approval-by-a-stranger-gets-review",
-   "want": "review",
-   "set": {
-    "comments": [
-     {
-      "user": {
-       "login": "someone"
-      },
-      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e",
-      "created_at": "2026-10-09T08:02:48Z",
-      "updated_at": "2026-10-09T08:02:48Z",
-      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-     }
-    ]
-   }
-  },
-  {
-   "id": "approval-line-with-extra-text-gets-review",
-   "want": "review",
-   "set": {
-    "comments": [
-     {
-      "user": {
-       "login": "github-actions[bot]"
-      },
-      "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e please",
-      "created_at": "2026-10-09T08:02:48Z",
-      "updated_at": "2026-10-09T08:02:48Z",
-      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
-     }
-    ]
    }
   },
   {
@@ -165,7 +66,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -200,7 +104,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -235,7 +142,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -270,7 +180,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -287,7 +200,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -304,7 +220,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -321,7 +240,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -338,7 +260,10 @@
       "updated_at": "2026-10-09T08:02:48Z",
       "html_url": "https://github.com/Nishfleet/fleet-ops/pull/9486#issuecomment-1"
      }
-    ]
+    ],
+    "pr": {
+     "reviewDecision": null
+    }
    }
   },
   {
@@ -346,7 +271,8 @@
    "want": "stuck",
    "set": {
     "pr": {
-     "mergeable": "CONFLICTING"
+     "mergeable": "CONFLICTING",
+     "reviewDecision": null
     },
     "comments": []
    }
