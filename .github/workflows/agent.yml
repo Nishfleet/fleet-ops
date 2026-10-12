@@ -411,6 +411,7 @@ jobs:
           claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          mkdir -p "$dir"
           # Static text, the marker line, then the target id: the id is the only
           # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
@@ -469,7 +470,6 @@ jobs:
           fi
           if [ "$ENGINE" = claude ]; then
             echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
-            mkdir -p "$dir"
             mark claude
             rc=0
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
@@ -506,7 +506,6 @@ jobs:
           if [ "$ENGINE" = devin ]; then
             # --chdir puts the worker directory on the bwrap command line,
             # which is what the Gate's lane count reads.
-            mkdir -p "$dir"
             mark devin
             for model in swe-2-max swe-2-high; do
               rc=0
@@ -532,7 +531,6 @@ jobs:
           if [ "$ENGINE" = opencode ]; then
             # --dir puts the worker directory on the bwrap command line; --auto
             # approves what the worker needs outside it (prompts, gh, the repo).
-            mkdir -p "$dir"
             mark opencode
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
@@ -559,7 +557,6 @@ jobs:
             # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
             . "$HOME/.config/fleet-ops/seats/$cursor_env"
             set +a
-            mkdir -p "$dir"
             mark cursor
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
@@ -580,10 +577,7 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              # fleet-ops#9326: pi filters --continue by cwd, so start in the issue
-              # directory (fixed per issue, unlike the runner's work dir) and a
-              # retry resumes the killed run's conversation.
-              mkdir -p "$dir" && cd "$dir"
+              cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
@@ -857,29 +851,14 @@ jobs:
         env:
           MISS: ${{ steps.gate.outputs.miss }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
-          # The arm token is the newest (minted after the Worker); the first
-          # token can be past its hour on a run that hit the wall.
-          GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}
           id=${REPO#*/}-${i%%-*}
           if [ "$MISS" = true ]; then
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
-            exit 0
+          elif [ "$WORKER_OUTCOME" = success ]; then # a failed run keeps its dir: the retry resumes in it
+            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
-          dir="$HOME/workspaces/agent-worktrees/issue-$id"
-          # fleet-ops#9326: edits that only exist here die with the directory.
-          # After a failed Worker, commit them as wip(salvage) and push to the
-          # claim ref (worker.md step 2 cherry-picks it). Fail open. Hooks stay
-          # on, so the repo's secret scan still runs on the commit.
-          if [ "$WORKER_OUTCOME" != success ] && [ -d "$dir/.git" ]; then
-            (
-              cd "$dir" && git add --all -- . &&
-              { git diff --cached --quiet || timeout 120 git commit -q -m "wip(salvage)"; } &&
-              timeout 120 git push -q origin "HEAD:refs/heads/$REF"
-            ) || echo "::warning::salvage failed; deleting the tree anyway (fleet-ops#9326)"
-          fi
-          rm -rf "$dir"
   review:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
