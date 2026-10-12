@@ -46,6 +46,7 @@
     {"id": "object-purge", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(deleteObjects?\\b|purge(Bucket|Objects?|All|Data)|emptyBucket|deleteBucket|bucket\\.delete)"},
     {"id": "workflow-secrets", "hold_no_patch": true, "files": "^\\.github/", "pattern": "\\bsecrets(\\.|\\[)"},
     {"id": "secret-handling", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(api_?key|secret|private_?key|access_?token|auth_?token|credential|password|process\\.env\\.\\w*(key|token))"},
+    {"id": "billing-code", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "\\b\\w*(charge|refund|cancelSubscription|createSubscription|createCheckoutSession|paymentIntent|checkout\\.session)\\w*\\s*\\("},
     {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "guard": [
@@ -83,6 +84,9 @@
     {"id": "label-only", "want": true, "repo": "Nishfleet/0509", "labels": ["needs-coordinator"], "changed_files": 1, "files": ["app/routes/home.tsx"]},
     {"id": "workflow-deploy", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": [".github/workflows/deploy-production.yml"]},
     {"id": "billing", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/billing/plans.ts"]},
+    {"id": "route-billing-call", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/routes/plans-page.tsx"], "patches": [{"file": "app/routes/plans-page.tsx", "patch": "@@ -1 +1 @@\n+if (tier === 'pro') await chargeBilling()"}]},
+    {"id": "route-ordinary-change", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/routes/plans-page.tsx"], "patches": [{"file": "app/routes/plans-page.tsx", "patch": "@@ -1 +1 @@\n+const heading = <h1>Plans</h1>"}]},
+    {"id": "route-billing-call-in-test-safe", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/routes/plans-page.test.ts"], "patches": [{"file": "app/routes/plans-page.test.ts", "patch": "@@ -1 +1 @@\n+await chargeBilling()"}]},
     {"id": "billing-route", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/routes/settings.billing.ts"]},
     {"id": "entitlements", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/billing/entitlements.ts"]},
     {"id": "wrangler-jsonc", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["wrangler.jsonc"]},
