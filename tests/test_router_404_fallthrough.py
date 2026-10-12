@@ -205,7 +205,7 @@ def _production_router_settings(policy: dict) -> dict:
 def _production_row_policy() -> dict:
     """The deployment-level allowed_fails_policy a real row carries.
 
-    All 82 rows in config/litellm-proxy.yaml carry one. If a future row does
+    All 81 rows in config/litellm-proxy.yaml carry one. If a future row does
     not, the test names that row instead of silently testing an empty policy.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())

@@ -24,6 +24,8 @@ from litellm import Router  # noqa: E402
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 HITS: list = []
+# Groups whose stand-in provider answers 429 "Insufficient credits".
+WALLED = {"senior", "judge"}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -34,7 +36,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
         HITS.append(self.path)
-        if self.path.startswith("/senior/"):
+        if self.path.split("/")[1] in WALLED:
             body = json.dumps({"error": {
                 "message": "Insufficient credits", "type": "rate_limit_error",
                 "code": "rate_limit_exceeded"}}).encode()
@@ -84,39 +86,44 @@ def test_synthetic_key_stays_under_its_measured_concurrency():
     assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 7
 
 
-def test_a_429_on_senior_is_answered_by_senior_backup():
+def _route(model: str) -> list:
+    """Send one call for `model` through a real Router on the live fallbacks; return the groups hit, in order."""
     HITS.clear()
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     port = srv.server_address[1]
-    cfg = _config()
+    settings = _config()["router_settings"]
     saved = litellm.callbacks
     litellm.callbacks = []
     try:
-        model_list = [
-            {"model_name": "senior",
-             "litellm_params": {"model": "openai/glm", "api_base": f"http://127.0.0.1:{port}/senior", "api_key": "k"},
-             "model_info": {"id": "senior-primary"}},
-            {"model_name": "senior-backup",
-             "litellm_params": {"model": "openai/glm", "api_base": f"http://127.0.0.1:{port}/backup", "api_key": "k"},
-             "model_info": {"id": "senior-backup-row"}},
-        ]
-        settings = cfg["router_settings"]
         router = Router(
-            model_list=model_list,
+            model_list=[
+                {"model_name": group,
+                 "litellm_params": {"model": "openai/glm", "api_base": f"http://127.0.0.1:{port}/{group}", "api_key": "k"},
+                 "model_info": {"id": f"{group}-row"}}
+                for group in ("judge", "senior", "senior-backup")],
             num_retries=settings["num_retries"],
             cooldown_time=settings["cooldown_time"],
             allowed_fails=settings["allowed_fails"],
             fallbacks=settings["fallbacks"],
             retry_policy=settings["retry_policy"],
         )
-        resp = asyncio.run(router.acompletion(
-            model="senior", messages=[{"role": "user", "content": "hi"}]))
+        resp = asyncio.run(router.acompletion(model=model, messages=[{"role": "user", "content": "hi"}]))
         assert resp.choices[0].message.content == "ok"
-        # retry_policy RateLimitErrorRetries 1: the walled primary is tried twice, then the backup answers once.
-        assert [h.split("/")[1] for h in HITS] == ["senior", "senior", "backup"], HITS
+        return [h.split("/")[1] for h in HITS]
     finally:
         litellm.callbacks = saved
         srv.shutdown()
         srv.server_close()
+
+
+def test_a_429_on_senior_is_answered_by_senior_backup():
+    # retry_policy RateLimitErrorRetries 1: the walled primary is tried twice, then the backup answers once.
+    assert _route("senior") == ["senior", "senior", "senior-backup"]
+
+
+def test_a_judge_call_reaches_senior_backup_through_senior():
+    # judge names only senior; the second hop is LiteLLM re-entering fallbacks for the senior group
+    # (v1.98.0 fallback_event_handlers.run_async_fallback, fallback_depth + 1).
+    assert _route("judge") == ["judge", "judge", "senior", "senior", "senior-backup"]

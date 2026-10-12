@@ -1,75 +1,273 @@
-# fleet-ops#9596: an eighth Synthetic row. The key answered 8x200 and 4x429 on 12
-# parallel calls, so 7 rows x 1 slot is the ceiling; a new row takes a slot from an old one.
+# fleet-ops#9596: an eighth Synthetic row. The key answered 8x200 and 4x429 on 12 parallel calls, so 7 one-slot
+# rows is the ceiling and a new Synthetic row has to take a slot from an existing one.
+# Built from the live config's judge, senior and senior-backup rows and its router_settings,
+# which pass the schema alone, so this file breaks only the rule named above.
 model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-judge
+    tags:
+    - prepaid
+    - opencode-go
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own.'
+    id: opencodego-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet2-judge
+    tags:
+    - prepaid
+    - opencode-go
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic.'
+    id: opencodego2-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: senior
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    - pareto
+    - senior
+    order: 1
+    input_cost_per_token: 9e-08
+    cache_read_input_token_cost: 1.8e-08
+    output_cost_per_token: 3e-07
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 300
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 81.5% cache-read 7d on real router traffic.'
+    id: pareto-glm53flash-senior
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: senior-backup
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-glm53flash-senior-backup
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 900
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only,
+      order unchanged.'
+    id: alibaba-qwen38max-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-0-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-1-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-2-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-3-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-4-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-5-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
     max_parallel_requests: 1
+    cooldown_time: 900
   model_info:
+    mode: chat
     supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
-    max_parallel_requests: 1
-  model_info:
-    supports_prompt_caching: true
-    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-6-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
+  redis_url: redis://127.0.0.1:6379
+  deployment_affinity_ttl_seconds: 600
+  fallbacks:
+  - judge:
+    - senior
+  - senior:
+    - senior-backup
+  - worker-capable:
+    - worker-cheap
+  - worker-cheap:
+    - worker-capable
+  cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 0
+  timeout: 1800
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 1
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    NotFoundErrorAllowedFails: 0
