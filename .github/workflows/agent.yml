@@ -1310,8 +1310,7 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The candidate fetch (which needs the Jev key and the GitHub search
-        # token) runs here, outside the jail, from a fresh clone of main before
+        # The candidate fetch (needs the Jev key and the GitHub search token) runs here, outside the jail, from a fresh clone of main before
         # the model starts. The model then runs in a bwrap jail with neither
         # secret in its environment, that hides Nish's gh login, the Cloudflare
         # tokens, the seat files and the App key; it reads outsider text all day
@@ -1327,6 +1326,9 @@ jobs:
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
           echo "::add-mask::$key"
+          dkey=$(sed -n 's/^LITELLM_INISH_DAILY_KEY=//p' "$HOME/.config/fleet-ops/seats/inish-daily.env")
+          [ -n "$dkey" ] || { echo "::error::LITELLM_INISH_DAILY_KEY missing from seats/inish-daily.env"; exit 1; }
+          echo "::add-mask::$dkey"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
@@ -1340,8 +1342,7 @@ jobs:
           # Everything run through sys() (clone, fetch, build, tests) gets a system
           # PATH and no user git config: the jailed model can write under $HOME, so a shim in
           # ~/.local/bin or a line in ~/.gitconfig must not decide what gets
-          # fetched, built or pushed. /usr/bin/node and python3 run the same two
-          # suites `npm test` does; /usr/local/bin holds gh.
+          # fetched, built or pushed. /usr/bin/node and python3 run the same two suites `npm test` does; /usr/local/bin holds gh.
           sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
           fresh_clone() {
             rm -rf "$1"
@@ -1371,16 +1372,15 @@ jobs:
             n=$((n + 1))
             out="$RUNNER_TEMP/inish-daily-$n.out"
             rc=0
-            # One FLEET_TASK_ID per attempt: Pi sends it as the router session id (#9015).
-            # The agent- session prefix keeps the seat visible to the Gate's live() count.
-            # env -u: the model gets neither the GitHub token nor the Jev key.
+            # FLEET_TASK_ID per attempt = router session id (#9015); the agent- prefix keeps the seat in live().
+            # env -u: no GitHub token or Jev key; only the scoped router key (#9634).
             echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
-              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base -- pi --print --no-context-files \
+              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" LITELLM_INISH_DAILY_KEY="$dkey" timeout 40m $jail_base -- pi --print --no-context-files \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                   --append-system-prompt "$HOME/AGENTS.md" \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \
                   --session-dir "$HOME/.pi/agent/sessions/agent-inish-daily-${GITHUB_RUN_ID}-$n" \
-                  --exclude-tools subagent --provider litellm --model "$model") > "$out" || rc=$?
+                  --exclude-tools subagent --provider litellm-inish-daily --model "$model") > "$out" || rc=$?
             echo "inish-daily: $model exited $rc"
             tail -n 3 "$out" | cut -c1-200
             if checked; then echo "today=$today" >> "$GITHUB_OUTPUT"; exit 0; fi

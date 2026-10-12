@@ -64,6 +64,17 @@
         }
       ]
     },
+    "litellm-inish-daily": {
+      "name": "LiteLLM proxy, inish-daily scoped virtual key (fleet-ops#9634)",
+      "baseUrl": "http://litellm.fleet.local:4000",
+      "api": "openai-completions",
+      "apiKey": "$LITELLM_INISH_DAILY_KEY",
+      "headers": { "x-litellm-session-id": "$FLEET_TASK_ID" },
+      "models": [
+        { "id": "worker-capable", "name": "LiteLLM worker-capable (strong models)", "contextWindow": 140000, "maxTokens": 32768 },
+        { "id": "senior", "name": "LiteLLM senior (ordered fallback ladder)", "contextWindow": 500000, "maxTokens": 131072 }
+      ]
+    },
     "minimax": {
       "models": [
         {
