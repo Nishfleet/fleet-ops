@@ -1,4 +1,4 @@
-# fleet-ops#9596: an eighth Synthetic row. The key answered 8x200 and 4x429 on 12 parallel calls, so 7 one-slot
+# fleet-ops#9596: a ninth Synthetic row. The key answered 8x200 and 4x429 on 12 parallel calls, so 8 one-slot
 # rows is the ceiling and a new Synthetic row has to take a slot from an existing one.
 # Built from the live config's judge, senior and senior-backup rows and its router_settings,
 # which pass the schema alone, so this file breaks only the rule named above.
@@ -228,6 +228,23 @@ model_list:
     supports_prompt_caching: true
     cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
     id: synthetic-fixture-6-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-fixture-7-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:

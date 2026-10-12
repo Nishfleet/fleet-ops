@@ -155,10 +155,10 @@
           ]
         },
         {
-          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 7 rows exist: senior-backup took the slot of a removed worker-capable row. A new Synthetic row has to take a slot from an existing one.",
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
           "contains": { "$ref": "#/$defs/syntheticRow" },
           "minContains": 0,
-          "maxContains": 7,
+          "maxContains": 8,
           "items": {
             "if": { "$ref": "#/$defs/syntheticRow" },
             "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
