@@ -1065,14 +1065,10 @@ jobs:
             cat "$RUNNER_TEMP/diff.txt"
             printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are the second, independent reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
           } > "$RUNNER_TEMP/second-in.txt"
-          second=
-          for _try in 1 2; do
-            second=$(pi --print --no-context-files --no-tools --no-session \
-              --append-system-prompt "$HOME/AGENTS.md" \
-              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-              --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
-            [ -z "${second//[[:space:]]/}" ] || break
-          done
+          second=$(pi --print --no-context-files --no-tools --no-session \
+            --append-system-prompt "$HOME/AGENTS.md" \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+            --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
           [ -n "${second//[[:space:]]/}" ] || retry "the second reviewer gave no answer"
           second_shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$second" || true)
           second_text=$(printf '%s' "$second_shown" | head -c 3500)
