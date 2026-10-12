@@ -86,6 +86,15 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
+# 2e. The weekly retro (fleet-ops#9314, #9641): link the unit pair so every
+#     deploy carries edits to it. The first run replaces the hand-made real
+#     files of the same name (a regular file blocks `link`; a symlink is left
+#     alone), which is the delete step of fleet-ops#9641. The timer is NOT
+#     enabled here: README "Weekly retro" enables it once, so a hand disable
+#     stays disabled. Off switch: delete this step, then `systemctl --user
+#     unlink retro-weekly.service retro-weekly.timer`.
+ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer; do test -L %h/.config/systemd/user/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other

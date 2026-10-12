@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Write",
+      "Bash(jq:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(ls:*)",
+      "Bash(date:*)",
+      "Bash(stat:*)",
+      "Bash(du:*)",
+      "Bash(git show:*)",
+      "Bash(git log:*)",
+      "Bash(git ls-tree:*)"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Bash(*-exec*)",
+      "Bash(*-delete*)",
+      "Bash(*--pre*)",
+      "Bash(*curl*)",
+      "Bash(*wget*)",
+      "Bash(*ssh*)",
+      "Bash(*gh *)"
+    ]
+  }
+}
