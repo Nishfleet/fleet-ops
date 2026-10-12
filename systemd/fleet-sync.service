@@ -51,6 +51,7 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
 #     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
@@ -58,10 +59,10 @@ ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops
 #     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
 # 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
-#     timer, so it is stopped first (`-` ignores the exit once it is gone); the rm then
-#     drops its live links and installed prompt dir. Delete both lines once every host has deployed this.
+#     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
+#     lines then drop its live links and installed prompt dir. Delete these three lines
+#     once every host has deployed this (the checklist is Nishfleet/fleet-ops#9703).
 ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of

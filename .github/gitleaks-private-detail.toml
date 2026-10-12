@@ -47,7 +47,8 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
-description = "The pre-existing prometheus-reload retirement line in fleet-sync, touched by an earlier commit of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
+description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)systemd/fleet-sync\.service$''']
-regexes = ['''fleet-prometheus-reload\.path''']
+regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
+condition = "AND"

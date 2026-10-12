@@ -141,7 +141,21 @@ rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
-The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip): read `blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and `runtime_minutes` columns (4-vCPU minutes count double); at 2,850 minutes (95% of the 3,000 free) or more, `gh variable delete CI_RUNNER --org Nishfleet`; below, `gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all` (`-v all` keeps the public repos on it; the default is private-only). Nish owns it: check `blacksmith usage` when a month's CI load is heavy and at the start of each month, when the variable must be set again after a delete.
+`CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
+(fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
+
+    gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
+
+`-v all` keeps the public repos on it; the default is private-only. While it is set, read
+`blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
+`runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
+or more, delete it again: `gh variable delete CI_RUNNER --org Nishfleet`. Nish owns this call -
+check `blacksmith usage` when a month's CI load is heavy, and set the variable again at the start
+of a month if CI should run on Blacksmith. There is no automatic guard: the vendor bills past the
+3,000 free minutes even with no card on file (fleet-ops#8935), and ships no usage webhook or
+alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody does. The retirement
+leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
+that changed nothing running, because nothing read it (fleet-ops#9670).
 
 ## LiteLLM stack (rebuild reference)
 

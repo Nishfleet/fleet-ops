@@ -111,7 +111,8 @@ page. The live-state commands and their output:
   `OPEN REOPENED`
 - `gh issue view 8936 -R Nishfleet/fleet-ops --json state,title` → `OPEN`,
   "Blacksmith auto-flip: hourly cheap-seat check flips CI_RUNNER at 95% of free
-  minutes"
+  minutes" (the flip this issue built was retired and the variable deleted in
+  fleet-ops#9670; the open remainder is the consumer job, #9043)
 - `gh pr view 8954 -R Nishfleet/fleet-ops --json state,mergedAt` → `MERGED`,
   `mergedAt=2026-09-29T12:00:09Z`, "Cut the scheduled agent jobs and the extra
   workflows"
