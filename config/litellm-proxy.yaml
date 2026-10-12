@@ -1,9 +1,11 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Nish 2026-09-30 free rows: CommandCode: stealth/space-bunny-alpha, poolside/laguna-s-2.1-free, inclusionai/ling-3.0-flash-sante:free, inclusionai/ling-3.1-flash:free. Cline: poolside/laguna-s-2.1:free, inclusionai/ling-3.0-flash-sante:free. xkiro: stealth/space-bunny-alpha:free, inclusionai/ling-3.0-flash-sante:free.
-# Nish 2026-10-08 free rows: OpenCode Go endpoint (OPENCODE_API_KEY and OPENCODE_API_KEY_2): step-5-preview-free, "free on OpenCode for a limited time" (opencode.ai/docs/zen, no end date published; Go "Unlimited" allowance, opencode.ai/docs/go). 2 lanes per key. Checked and NOT free: CommandCode stepfun/Step-5-Preview (spends plan credits), Vercel AI Gateway (billed), OpenRouter and ZenMux (paid, 402), Cline (402), OpenCode Zen endpoint (403 FreeTierError).
+# Nish 2026-10-08 free rows (step-5-preview-free on the OpenCode Go endpoint) were removed 2026-10-12 (see the OpenCode note below). Checked and NOT free: CommandCode stepfun/Step-5-Preview (spends plan credits), Vercel AI Gateway (billed), OpenRouter and ZenMux (paid, 402), Cline (402), OpenCode Zen endpoint (403 FreeTierError).
+# OpenCode Zen space-bunny-free (zen/v1, OPENCODE_API_KEY) removed 2026-10-12 (fleet-ops#9658): the free tier answers 403 FreeTierError "OpenCode's free tier can only be used from within OpenCode" to any outside client (direct probe 2026-10-12), openai-compatible 403 maps to APIError, which v1.98.0 neither retries nor cools, so the two rows kept leaking into worker-capable and worker-cheap. The Go endpoint does not serve the model (400 Model is unavailable), and both rows belong to no other group, so deleting them leaves worker-capable (48 rows) and worker-cheap (23 rows) with their remaining deployments. Failed runs: 38222233757 and 38245409742 (the only two in 7 days across fleet-ops, drive and 0509). The groups' other rows and the router fallbacks carry the traffic; no header or client spoofing.
+# OpenCode keys (OPENCODE_API_KEY, OPENCODE_API_KEY_2) are for DeepSeek 4.1 flash only (Nish 2026-10-12, chat: "opencode is alive bruv, both oc keys - just for ds4.1 flash"; this is his explicit yes to remove the other OpenCode rows). Removed with it: opencodego-step5free-worker-capable, opencodego-step5free-worker-cheap, opencodego2-step5free-worker-capable, opencodego2-step5free-worker-cheap (step-5-preview-free on the Go endpoint). Only the opencodego-ds41flash-* and opencodego2-ds41flash-* rows stay on OpenCode. Why the four step5free rows go though they answered 200 on 2026-10-08: they run on keys Nish scoped to one model, so they are a misuse of those keys, not a failing row. Effect: each of worker-capable and worker-cheap loses 3 rows (2 step5free rows per group plus one zen row; 6 concurrent slots per group), leaving 48 and 23 rows with 36 and 14 healthy in litellm_deployment_state on 2026-10-12. Spend: the freed share moves onto the remaining rows; the CommandCode ds41flashb rows have no max_budget, measured $1.81/day per lane, so the extra is small and bounded by the wallet and its 429 alert. The quote is from Nish in chat 2026-10-12 about 18:45 IST, relayed by the operator rajeev and recorded at https://github.com/Nishfleet/fleet-ops/issues/9658#issuecomment-6125544189 as his yes to remove the rows; no repo test or schema names the removed ids.
 # MiniMax M3.1-Flash-Preview free promo ended 2026-10-07 (free for every MiniMax Code subscriber through then, Nish 2026-09-30, #9008/#9009); the four rows below are tagged prepaid again (#9414). Nish 2026-10-09: he is on the flat MiniMax Yearly Plus plan (5-hour and weekly limits, no per-token bill), so the rows carry no dollar cap and no spend alert; the plan quota is the cap (see the comment above the rows).
 # CommandCode, Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
-# xkiro: qwen3-coder-plus:free, qwen3.8-max:free. OpenCode zen: space-bunny-free. Cline: stealth/space-bunny-alpha.
+# xkiro: qwen3-coder-plus:free, qwen3.8-max:free. Cline: stealth/space-bunny-alpha.
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
 # CommandCode stealth/pixel-canary and xkiro stealth/pixel-canary:free ended 2026-09-30 (403 "no longer available", 404 "does not exist"). openai-compatible 403 maps to APIError (no retry_policy key, same as 402); 404 maps to NotFoundError, which should_retry_this_error hard-raises on v1.98.0. Their four rows are removed.
@@ -22,7 +24,7 @@
 #
 # The per-exception resolution is also what makes one router-level key reach every row:
 # _should_cooldown_based_on_deployment_policy reads the row's own policy first and, for an
-# exception type that policy does not name, defers to the router-level policy. All 82 rows
+# exception type that policy does not name, defers to the router-level policy. All 76 rows
 # below carry a deployment-level allowed_fails_policy and none of them names NotFoundError,
 # so the fix is one key, not 82.
 #
@@ -913,42 +915,6 @@ model_list:
       # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
       # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
       RateLimitErrorAllowedFails: 3
-- model_name: worker-capable
-  litellm_params:
-    model: openai/space-bunny-free
-    api_base: https://opencode.ai/zen/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 84.5% cache-read 7d (86.6% 48h)."
-    id: zen-spacebunny-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/space-bunny-free
-    api_base: https://opencode.ai/zen/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    tags:
-    - free
-    - stealth
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 84.5% cache-read 7d (86.6% 48h)."
-    id: zen-spacebunny-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
 # MiniMax Yearly Plus flat plan (Nish 2026-10-09, screenshot: 5-hour limit and weekly limit, no per-token bill):
 # the plan's quota is the cap, not dollars, so these rows carry no max_budget. The accounting prices below
 # (platform.minimax.io/docs/guides/pricing-paygo, M3 Standard as the proxy; M3.1-Flash-Preview has none of its
@@ -1688,91 +1654,6 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# Nish 2026-10-08 (in-thread: "add 2 lanes each from all the providers offering it"; standing rule 2 lanes per free promo model per provider) free rows: step-5-preview-free is free on OpenCode "for a limited time" (no end date published; opencode.ai/docs/zen). Probe 2026-10-08: 200 + finish_reason=tool_calls on both keys, 8-way burst 8x200 per key, usage carries no cost. The raw Zen endpoint 403s this model (FreeTierError); the Go endpoint with x-opencode-session answers it. No max_budget: LiteLLM has no price for this model id, so a per-row budget would read $0 forever; the spend wall is the Go plan itself (flat $10 plan, no per-token billing), and an ended promo shows up as 400/404 (BadRequest cools the row, then needs-nish-decision). 2 lanes per row = 4 concurrent per key (8 total), the same shape as fleet-ops#9210; a 429 parks a row 900 s on the first hit.
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview-free
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    extra_headers:
-      x-opencode-session: fleet-step5free-worker-capable
-    tags:
-    - free
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
-    id: opencodego-step5free-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/step-5-preview-free
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY
-    extra_headers:
-      x-opencode-session: fleet-step5free-worker-cheap
-    tags:
-    - free
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
-    id: opencodego-step5free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-capable
-  litellm_params:
-    model: openai/step-5-preview-free
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    extra_headers:
-      x-opencode-session: fleet2-step5free-worker-capable
-    tags:
-    - free
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
-    id: opencodego2-step5free-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/step-5-preview-free
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    extra_headers:
-      x-opencode-session: fleet2-step5free-worker-cheap
-    tags:
-    - free
-    - opencode-go
-    order: 1
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Direct probe 2026-10-08 on the Go endpoint, 5 streamed calls on a ~21k prefix, cached_tokens 21056 of 21122 prompt tokens on calls 2-5 (both keys)."
-    id: opencodego2-step5free-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      RateLimitErrorAllowedFails: 0
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
