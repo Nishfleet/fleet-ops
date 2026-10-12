@@ -68,10 +68,14 @@
 # inside the jail joins the CLI's TCP to the filesystem socket, the only thing a
 # network-less jail can reach; the CLI keeps the real API host name (an /etc/hosts
 # line inside maps it to loopback) so TLS verifies against the true host, on an
-# unprivileged port because the jail has no capabilities. The man-page example
-# for systemd-socket-proxyd (PrivateNetwork= plus JoinsNamespaceOf=) puts the
-# proxy inside a service's private network to reach that service's loopback; here
-# the target is outside and the model inside, which it does not cover. Claude
+# unprivileged port because the jail has no capabilities. The systemd-native
+# form (PrivateNetwork=yes on this service, and on the socket unit
+# ListenStream=127.0.0.1:8443 with PrivateNetwork=yes and JoinsNamespaceOf= this
+# service) was tried on this host's user manager (2026-10-12) and fails: the
+# socket unit logs "Failed to join network namespace: Operation not permitted"
+# and "Failed to listen on sockets", and the dependent service does not start.
+# PrivateNetwork=yes alone works for a service, but a user manager cannot place a
+# socket in it. Claude
 # Code's own sandbox allow-list fences the commands the CLI runs, not the CLI, and
 # would need nested namespaces inside this jail; it can be a later extra layer.
 # The one-second wait for socat is not a race that can hurt: the CLI retries a
@@ -86,7 +90,8 @@
 # unit by itself.
 #
 # The managed policy settings under /etc/claude-code are root-installed and apply
-# to this call too (they only add rules); they are trusted. The Claude login
+# to this call too; checked 2026-10-12: they carry no allow rule, so they add
+# no command to the permission file, only deny and ask rules and one hook. The Claude login
 # file is within the model's reach (the call needs it) but it has no way out: no
 # network but the API host, a report scrubbed of token shapes, and public issues
 # made only of listed values.
@@ -149,7 +154,7 @@ ExecStartPre=/bin/bash -c 'set -eu; d=$$(date +%%F); run="$$RETRO_STATE/run-$$d"
 #    file is bound. /srv, /opt and the two system config dirs that hold service
 #    env files and a token are emptied too (the system tree is otherwise
 #    read-only and readable).
-ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; cp "$$HOME/.claude.json" "$$RUNTIME_DIRECTORY/claude.json"; printf "127.0.0.1 localhost api.anthropic.com\n" > "$$RUNTIME_DIRECTORY/hosts"; { cat "$$RETRO_REPO/prompts/retro-weekly.md"; printf "RUN_DIR=%%s\nTODAY=%%s\n" "$$run" "$$d"; } | bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /run --tmpfs /srv --tmpfs /opt --tmpfs /var/lib/fleet-ops --tmpfs /etc/fail2ban --ro-bind /dev/null /usr/bin/curl --ro-bind /dev/null /usr/bin/wget --ro-bind /dev/null /usr/bin/nc.openbsd --ro-bind /dev/null /usr/bin/openssl --ro-bind /dev/null /usr/bin/ssh --tmpfs "$$HOME/.config/gh" --tmpfs "$$HOME/.config/cloudflare" --ro-bind "$$HOME/.local/bin" "$$HOME/.local/bin" --ro-bind "$$HOME/.local/share/claude" "$$HOME/.local/share/claude" --ro-bind "$$HOME/.claude" "$$HOME/.claude" --bind "$$RUNTIME_DIRECTORY/claude.json" "$$HOME/.claude.json" --ro-bind "$$HOME/.pi/agent/sessions" "$$HOME/.pi/agent/sessions" --ro-bind "$$HOME/AGENTS.md" "$$HOME/AGENTS.md" --ro-bind "$$RETRO_REPO/config/retro-weekly-claude.json" "$$RETRO_REPO/config/retro-weekly-claude.json" --ro-bind "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" --bind "$$run" "$$run" --ro-bind "$$RUNTIME_DIRECTORY/known-issues.txt" "$$run/known-issues.txt" --ro-bind "$$RUNTIME_DIRECTORY/hosts" /etc/hosts --bind "$$RETRO_API_SOCK" /tmp/api.sock --chdir / --unshare-pid --unshare-net --die-with-parent -- bash -c "socat TCP-LISTEN:8443,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/api.sock & sleep 1; exec env ANTHROPIC_BASE_URL=https://api.anthropic.com:8443 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 $$HOME/.local/bin/claude -p --model $$RETRO_MODEL --output-format stream-json --verbose --no-session-persistence --setting-sources project,local --settings $$RETRO_REPO/config/retro-weekly-claude.json --permission-mode dontAsk --max-turns 200" > "$$RUNTIME_DIRECTORY/claude.jsonl"'
+ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; cp "$$HOME/.claude.json" "$$RUNTIME_DIRECTORY/claude.json"; printf "127.0.0.1 localhost api.anthropic.com\n" > "$$RUNTIME_DIRECTORY/hosts"; { cat "$$RETRO_REPO/prompts/retro-weekly.md"; printf "RUN_DIR=%%s\nTODAY=%%s\n" "$$run" "$$d"; } | bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /run --tmpfs /srv --tmpfs /opt --tmpfs /var/lib/fleet-ops --tmpfs /etc/fail2ban --ro-bind /dev/null /usr/bin/python3 --ro-bind /dev/null /usr/bin/perl --ro-bind /dev/null /usr/bin/curl --ro-bind /dev/null /usr/bin/wget --ro-bind /dev/null /usr/bin/nc.openbsd --ro-bind /dev/null /usr/bin/openssl --ro-bind /dev/null /usr/bin/ssh --tmpfs "$$HOME/.config/gh" --tmpfs "$$HOME/.config/cloudflare" --ro-bind "$$HOME/.local/bin" "$$HOME/.local/bin" --ro-bind "$$HOME/.local/share/claude" "$$HOME/.local/share/claude" --ro-bind "$$HOME/.claude" "$$HOME/.claude" --bind "$$RUNTIME_DIRECTORY/claude.json" "$$HOME/.claude.json" --ro-bind "$$HOME/.pi/agent/sessions" "$$HOME/.pi/agent/sessions" --ro-bind "$$HOME/AGENTS.md" "$$HOME/AGENTS.md" --ro-bind "$$RETRO_REPO/config/retro-weekly-claude.json" "$$RETRO_REPO/config/retro-weekly-claude.json" --ro-bind "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" --bind "$$run" "$$run" --ro-bind "$$RUNTIME_DIRECTORY/known-issues.txt" "$$run/known-issues.txt" --ro-bind "$$RUNTIME_DIRECTORY/hosts" /etc/hosts --bind "$$RETRO_API_SOCK" /tmp/api.sock --chdir / --unshare-pid --unshare-net --die-with-parent -- bash -c "socat TCP-LISTEN:8443,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/api.sock & sleep 1; exec env ANTHROPIC_BASE_URL=https://api.anthropic.com:8443 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 $$HOME/.local/bin/claude -p --model $$RETRO_MODEL --output-format stream-json --verbose --no-session-persistence --setting-sources project,local --settings $$RETRO_REPO/config/retro-weekly-claude.json --permission-mode dontAsk --max-turns 200" > "$$RUNTIME_DIRECTORY/claude.jsonl"'
 # 3. Pin check: read the call's own record. It is written to the runtime directory,
 #    which the jail hides, so the model cannot replace it with a forged one. Fails unless the call succeeded, the
 #    main model is the pinned one and every model it touched is a claude-* model
