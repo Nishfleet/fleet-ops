@@ -585,7 +585,7 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 
 The `ratchet` job in `ci.yml` fails a PR whose net added lines (additions minus
 deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
-`scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
 as many, so removing glue earns room. There are no exceptions in this repo: a new
 mechanism is a component in its own repo, behind an official extension point. The job
 self-tests on throwaway repos every run (growing fails; shrinking, flat and no code
