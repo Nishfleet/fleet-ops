@@ -5,6 +5,11 @@
   "required": ["model_list", "router_settings"],
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "syntheticRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -125,6 +130,16 @@
       "type": "array",
       "minItems": 1,
       "allOf": [
+        {
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 7 rows exist: senior-backup took the slot of a removed worker-capable row. A new Synthetic row has to take a slot from an existing one.",
+          "contains": { "$ref": "#/$defs/syntheticRow" },
+          "minContains": 0,
+          "maxContains": 7,
+          "items": {
+            "if": { "$ref": "#/$defs/syntheticRow" },
+            "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
+          }
+        },
         {
           "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
           "contains": { "$ref": "#/$defs/judgePaidRow" },

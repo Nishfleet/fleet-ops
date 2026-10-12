@@ -1,0 +1,12 @@
+# fleet-ops#9596: a Synthetic row holding two slots. Each Synthetic row holds exactly one,
+# so the row count is the key's concurrency and the 7-row cap holds it under the measured 8.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 2
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."

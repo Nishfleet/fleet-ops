@@ -1,0 +1,75 @@
+# fleet-ops#9596: an eighth Synthetic row. The key answered 8x200 and 4x429 on 12
+# parallel calls, so 7 rows x 1 slot is the ceiling; a new row takes a slot from an old one.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    max_parallel_requests: 1
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the Synthetic slot rule is under test (#9596)."

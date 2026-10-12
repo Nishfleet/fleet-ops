@@ -14,9 +14,13 @@ import json
 import socketserver
 import threading
 
-import litellm
-import yaml
-from litellm import Router
+import pytest
+
+pytest.importorskip("litellm")
+
+import litellm  # noqa: E402
+import yaml  # noqa: E402
+from litellm import Router  # noqa: E402
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 HITS: list = []
@@ -72,6 +76,14 @@ def test_live_config_senior_has_one_fallback_and_no_cycle():
     assert not set(fallbacks["senior"]) & {"judge", "senior"}
 
 
+def test_synthetic_key_stays_under_its_measured_concurrency():
+    # 12 parallel calls on the Synthetic key gave 8x200 and 4x429, so senior-backup takes one of 7 slots, not an 8th.
+    rows = [row for row in _config()["model_list"]
+            if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
+    assert "synthetic-glm53flash-senior-backup" in {row["model_info"]["id"] for row in rows}
+    assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 7
+
+
 def test_a_429_on_senior_is_answered_by_senior_backup():
     HITS.clear()
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
@@ -102,7 +114,8 @@ def test_a_429_on_senior_is_answered_by_senior_backup():
         resp = asyncio.run(router.acompletion(
             model="senior", messages=[{"role": "user", "content": "hi"}]))
         assert resp.choices[0].message.content == "ok"
-        assert HITS[0].startswith("/senior/") and HITS[-1].startswith("/backup/"), HITS
+        # retry_policy RateLimitErrorRetries 1: the walled primary is tried twice, then the backup answers once.
+        assert [h.split("/")[1] for h in HITS] == ["senior", "senior", "backup"], HITS
     finally:
         litellm.callbacks = saved
         srv.shutdown()
