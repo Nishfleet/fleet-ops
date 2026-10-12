@@ -1859,7 +1859,7 @@ jobs:
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
   ratchet:
-    uses: ./.github/workflows/ratchet.yml
+    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
 
   coordinator-approval:
     name: coordinator-approval
