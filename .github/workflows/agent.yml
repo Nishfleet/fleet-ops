@@ -672,9 +672,10 @@ jobs:
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
               risky=true
             fi
-            # A repo whose ruleset does not require an approving review that a push dismisses has nothing that makes a risky PR wait for the review job: it stays unarmed, labelled. An unreadable ruleset counts as not requiring it.
-            reviews=$(gh api "repos/$REPO/rules/branches/main" --jq '[.[] | select(.type == "pull_request") | .parameters | select(.required_approving_review_count > 0 and .dismiss_stale_reviews_on_push)] | length') || reviews=0
-            if [ "$risky" = true ] && [ "${reviews:-0}" = 0 ]; then echo "#$n is risky and $REPO has no push-dismissed approving review rule: not armed"; exit 0; fi
+            # A risky PR is armed only where the ruleset makes it wait for the independent review and the approver check: an approving review that a push dismisses, and a required coordinator-approval check. Elsewhere it stays unarmed, labelled. An unreadable ruleset counts as neither.
+            rules=$(gh api "repos/$REPO/rules/branches/main") || rules='[]'
+            gated=$(jq -r '([.[] | select(.type == "pull_request") | .parameters | select(.required_approving_review_count > 0 and .dismiss_stale_reviews_on_push)] | length) > 0 and ([.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.context == "coordinator-approval")] | length) > 0' <<<"$rules") || gated=false
+            if [ "$risky" = true ] && [ "$gated" != true ]; then echo "#$n is risky and $REPO does not require a push-dismissed approving review and coordinator-approval: not armed"; exit 0; fi
             # Every other claim PR is armed here, on the head this run produced, and the
             # merge waits natively for the ruleset's review and the required checks.
             # The App has no workflows permission, so GitHub refuses its arm on a PR
