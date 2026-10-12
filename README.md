@@ -99,11 +99,17 @@ script, or prompt lands unseen.
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
-  the link. The files are byte-identical to what ran before, so adopting them
-  restarted nothing: a unit edit applies at the unit's next restart (never
-  restart `tigervnc.service` while a remote-desktop session is live). Switch
-  one off with `systemctl --user disable --now <unit>`; delete it by removing
-  its file here and the live link, then `systemctl --user daemon-reload`.
+  the link. Install on a fresh host: `ln -s` each file from the deploy clone's
+  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
+  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  and `enable --now`. The files match what ran before (only the two Amp
+  `Description=` lines lost their account names), so adopting them restarted
+  nothing: a unit edit applies at the unit's next restart (never restart
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
+  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  so only its parent unit is verified. Switch one off with
+  `systemctl --user disable --now <unit>`; delete it by removing its file here
+  and the live link, then `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5

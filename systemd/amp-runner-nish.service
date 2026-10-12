@@ -1,5 +1,5 @@
 [Unit]
-Description=Amp runner vps-nish (Claude Code mode, nish@aiconverter.app seat)
+Description=Amp runner vps-nish (Claude Code mode, second seat)
 After=network-online.target
 Wants=network-online.target
 
