@@ -928,6 +928,7 @@ jobs:
         if: always()
         env:
           MISS: ${{ steps.gate.outputs.miss }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
           # The arm token is the newest (minted after the Worker); the first
           # token can be past its hour on a run that hit the wall.
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
@@ -948,10 +949,15 @@ jobs:
           # hanging hook (120 s cap) falls through to the warning and the delete.
           # The push authenticates through the host's gh credential helper and
           # GH_TOKEN, the same way the worker's own push does.
-          if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+          # A Worker that finished successfully has nothing to rescue: its leftovers
+          # must not land on a PR branch. A claim ref that is gone (merged and
+          # deleted) is never recreated by the salvage push.
+          if [ "$WORKER_OUTCOME" != success ] &&
+             git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
              { [ -n "$(git -C "$dir" status --porcelain 2>/dev/null)" ] || [ "$(git -C "$dir" rev-list --count HEAD --not --remotes 2>/dev/null)" != 0 ]; }; then
             (
               cd "$dir" &&
+              timeout 60 git ls-remote --exit-code --heads origin "refs/heads/$REF" >/dev/null &&
               git add --all -- . &&
               { git diff --cached --quiet || timeout 120 git commit -q -m "wip(salvage)"; } &&
               timeout 120 git push -q origin "HEAD:refs/heads/$REF"
