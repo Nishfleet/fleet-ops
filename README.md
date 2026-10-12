@@ -798,4 +798,4 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
 - Switch it off: `systemctl --user disable --now retro-weekly.timer`.
 - Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
-  `systemctl --user unlink retro-weekly.service retro-weekly.timer`.
+  `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
