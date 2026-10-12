@@ -303,7 +303,8 @@ jobs:
   # risky one gets the label and goes to the review job below. This job never
   # touches auto-merge: every PR is armed when it is opened, and the merge
   # waits natively for the ruleset's approving review (a push dismisses it) and
-  # the required checks. ci.yml runs CLASSIFY below against every case in
+  # the required checks, coordinator-approval among them (ci.yml, in the queue).
+  # ci.yml runs CLASSIFY below against every case in
   # config/risky-paths.json.
   hold-risky:
     if: >-
