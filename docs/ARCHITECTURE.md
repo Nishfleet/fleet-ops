@@ -44,8 +44,11 @@ fleet-ops checkout bound read-only. It stays in the runner's cgroup, so the
 
 Nish, 2026-09-21: _"wipe and replace with properly done up design with no
 glue."_ The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
-`.semgrep/no-glue.yml`; since fleet-ops#9605 `.github/CODEOWNERS` sends only
-safety rules, deny lists, seat keys and credentials to Nish):
+`.semgrep/no-glue.yml`. Since fleet-ops#9605, `.github/CODEOWNERS` no longer
+sends every script to Nish. It sends him the merge guard, the no-glue rule and
+the scanners with their ignore files, the jail and token tests, deny lists,
+root-run host config, seat keys, credentials and CODEOWNERS itself. Other edits
+to existing `tests/` and script files merge on the automated reviews):
 
 - **No new scripts, helpers, hooks or extensions anywhere** — no added file
   under `bin/`, `lib/`, `libexec/`, `scripts/`, `ops/`, `hooks/`,
