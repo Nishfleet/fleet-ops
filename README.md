@@ -607,7 +607,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
