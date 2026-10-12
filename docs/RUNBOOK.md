@@ -141,14 +141,7 @@ rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
-`systemctl --user list-timers blacksmith-flip.timer` (hourly,
-`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
-`prompts/blacksmith-flip.yml` through `pi --print`. Read one run with
-`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus
--p InvocationID`: the first two read `success`/`0` before the first run, so the
-journal at that `InvocationID` is the proof, ending `FLIP: SET` or `FLIP: DELETE`.
-That hourly decision sets org `CI_RUNNER` to `blacksmith-4vcpu-ubuntu-2404` below
-2,850 minutes (95% of the 3,000 free), deleted at or above (fleet-ops#8936).
+The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip): read `blacksmith usage`; at 2,850 minutes (95% of the 3,000 free) or more, `gh variable delete CI_RUNNER --org Nishfleet`; below, `gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404`.
 
 ## LiteLLM stack (rebuild reference)
 

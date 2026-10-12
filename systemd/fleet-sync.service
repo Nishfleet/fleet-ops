@@ -50,6 +50,8 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    fleet-prometheus-reload.path/.service (fleet-ops#9088); README
 #    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
+#    Same for the blacksmith-flip.service/.timer links the pull deleted
+#    (fleet-ops#9670); the running timer stops at the daemon-reload.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
@@ -57,7 +59,7 @@ ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops
 #     delete this step and the enable line, then `systemctl --user disable --now
 #     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path /home/nish/.config/systemd/user/blacksmith-flip.service /home/nish/.config/systemd/user/blacksmith-flip.timer /home/nish/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
 #     so the user manager reads it on this run.
@@ -125,13 +127,6 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 #     on every sync. 2026-09-28..10-02: 28 restarts, ~6 from real config edits,
 #     each ~60 s with no router (11:16 IST 10-02 came from a prompt-only merge).
 ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml || /usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml'
-# 8. ~/.local/share/blacksmith-flip/prompt.yml is a COPY of
-#    prompts/blacksmith-flip.yml, same class as 6 and 7 (fleet-ops#8936): the
-#    hourly blacksmith-flip.service cats it into `pi --print`, so a prompt edit
-#    that stayed only on a branch would leave the hourly flip deciding on the
-#    previous text. The repo is the only way in. ~/.local/share is an
-#    allowlisted stable tree, so the installed prompt outlives a re-clone.
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml /home/nish/.local/share/blacksmith-flip/prompt.yml
 # 9. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone

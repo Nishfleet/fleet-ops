@@ -81,13 +81,6 @@ script, or prompt lands unseen.
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `systemd/blacksmith-flip.service` and `systemd/blacksmith-flip.timer` — one
-  hourly decision on the cheap seat: does this calendar month still have
-  Blacksmith free minutes, and does the org Actions variable `CI_RUNNER` point
-  at Blacksmith accordingly (fleet-ops#8936). The decision lives in
-  `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
-  model runs `blacksmith usage` rather than a checked-in script, because
-  "no glue or scripts" was Nish's condition on approval.
 - `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
   /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
   Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
@@ -180,7 +173,6 @@ script, or prompt lands unseen.
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`,
   and the leviathan index units, their configs and the tmpfiles rule to
   `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
