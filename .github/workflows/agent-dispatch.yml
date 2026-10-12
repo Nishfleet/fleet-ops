@@ -399,6 +399,10 @@ jobs:
           label_ok=true
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent ||
             { echo "::error::hold-risky: could not label #$PR $LABEL"; label_ok=false; }
+          # A head this job approved as safe stays approved when a later event finds it risky (a label added, the list grown): withdraw that review. The review job's own approval has a different body.
+          [ "$sha" = unknown ] || gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" --jq '.[]' |
+            jq -r --arg sha "$sha" 'select(.state == "APPROVED" and .commit_id == $sha and (.body | startswith("hold-risky:"))) | .id' |
+            while read -r id; do gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews/$id/dismissals" -f message="hold-risky: this head is risky, so the independent review decides." --silent || echo "::warning::hold-risky: could not dismiss review $id on #$PR"; done || true
           [ "$sha" = unknown ] || echo "review_sha=$sha" >> "$GITHUB_OUTPUT"
           {
             echo "### hold-risky: #$PR is risky at \`$sha\`"

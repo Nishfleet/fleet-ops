@@ -4,8 +4,11 @@
 # head starts unapproved. Auto-merge, armed when the PR is opened, waits for this check
 # like any other. Approvers: the review job's identity (agent.yml, GITHUB_TOKEN) and nish3451.
 # A review written with GITHUB_TOKEN fires no pull_request_review, so `refresh` re-runs the
-# head's check when the agent-dispatch run that wrote the review ends. A PR that edits this
-# file edits a workflow, so the review job asks two reviewers of different families.
+# head's check when the agent-dispatch run that wrote the review ends.
+# Trust boundary, unchanged from the comment gate this replaces: any workflow a PR runs can
+# write a check or a GITHUB_TOKEN review under these names, so a PR that adds or edits one is
+# held to the review job's two reviewers of different model families (it is a workflow edit).
+# The ruleset's own approving review is checked by GitHub, apart from this file.
 name: coordinator-approval
 on:
   pull_request:
