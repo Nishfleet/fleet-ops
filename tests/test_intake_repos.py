@@ -5,7 +5,7 @@ import pathlib
 CFG = json.loads((pathlib.Path(__file__).parent.parent / "config" / "intake-repos.json").read_text())
 ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"] for r in CFG["deferred"]}
-NEW = ("TinyStudio.io-public", "tinystudio-in", "aiconverter-app")
+NEW = ("TinyStudio.io-public", "aiconverter-app")
 
 
 def test_new_product_repos_are_admitted():
@@ -22,6 +22,11 @@ def test_enrolled_repos_are_not_deferred_or_excluded():
     excluded = {r["name"] for r in CFG["excluded"]}
     for name in ENROLLED:
         assert name not in DEFERRED and name not in excluded, name
+
+
+def test_archived_tinystudio_in_is_not_admitted():
+    # tinystudio-in was archived 2026-10-12; TinyStudio continues in TinyStudio.io-public.
+    assert "tinystudio-in" not in ENROLLED
 
 
 def test_zero_five_nine_exclusive_deferrals_are_gone():
