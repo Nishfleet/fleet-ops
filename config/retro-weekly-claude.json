@@ -26,6 +26,7 @@
       "WebSearch",
       "Agent",
       "Bash(*-exec*)",
+      "Bash(*-ok*)",
       "Bash(*-delete*)",
       "Bash(*--pre*)",
       "Bash(*curl*)",
