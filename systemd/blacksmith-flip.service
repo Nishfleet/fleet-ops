@@ -53,9 +53,18 @@
 Description=Blacksmith CI_RUNNER auto-flip (hourly)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 Environment=FLEET_TASK_ID=blacksmith-flip-hourly
-ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | tr -d "*_" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" | grep -qxE "FLIP: (SET|DELETE)" || exit 1'
+ExecStart=/bin/sh -c 'out=$(cat /home/nish/.local/share/blacksmith-flip/prompt.yml | /usr/bin/timeout 120 /home/nish/.local/bin/pi --print --provider litellm --model worker-cheap --no-context-files); printf "%%s\n" "$out"; printf "%%s\n" "$out" | tr -d "*_" | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//" | grep -qxE "FLIP: (SET|DELETE)" || exit 1'
 TimeoutStartSec=300
+# Incident 2026-10-10 13:00 IST: one `pi --print` call hung with no output (1.7 s
+# CPU in 300 s; 1 timeout in 19 runs over 30 days, normal runs take 11-63 s) and
+# left the unit failed until the next hour. `timeout 120` above bounds that call
+# (exit 124 leaves $out empty, so the FLIP check exits 1) and Restart= retries
+# it, at most twice an hour, before the unit stays failed.
+Restart=on-failure
+RestartSec=30

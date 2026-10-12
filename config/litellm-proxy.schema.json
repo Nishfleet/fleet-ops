@@ -5,6 +5,28 @@
   "required": ["model_list", "router_settings"],
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "seniorBackupRow": {
+      "$comment": "fleet-ops#9596: the one row senior falls back to. Pinned to the same model as the Pareto senior row, on Synthetic's own key, so senior never falls back down and the fallback sits behind a different provider's wall.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "senior-backup" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_base", "api_key"],
+          "properties": {
+            "model": { "const": "openai/hf:zai-org/GLM-5.3-Flash" },
+            "api_base": { "const": "https://api.synthetic.new/openai/v1" },
+            "api_key": { "const": "os.environ/SYNTHETIC_API_KEY" }
+          }
+        }
+      }
+    },
+    "syntheticRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -126,6 +148,23 @@
       "minItems": 1,
       "allOf": [
         {
+          "$comment": "fleet-ops#9596: router_settings.fallbacks sends senior to senior-backup, so exactly one senior-backup row exists and it is GLM-5.3-Flash on Synthetic. A fallback that names a missing group, or a weaker model, fails here.",
+          "allOf": [
+            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior-backup" } } }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/seniorBackupRow" }, "minContains": 1 }
+          ]
+        },
+        {
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
+          "contains": { "$ref": "#/$defs/syntheticRow" },
+          "minContains": 0,
+          "maxContains": 8,
+          "items": {
+            "if": { "$ref": "#/$defs/syntheticRow" },
+            "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
+          }
+        },
+        {
           "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
           "contains": { "$ref": "#/$defs/judgePaidRow" },
           "minContains": 1,
@@ -233,7 +272,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "required": ["redis_url", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -248,6 +287,20 @@
             "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
           }
+        },
+        "fallbacks": {
+          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior. Every entry that names senior is pinned to senior-backup: contains only asked that some senior entry existed, so a second senior entry naming judge passed the gate and turned senior -> judge -> senior into the cycle the issue names. judge is deliberately not pinned. judge: [senior] is the live layout and it reaches senior-backup only because LiteLLM 1.98.0 re-enters the senior group's fallbacks (fallback_depth + 1, cap 5); judge: [senior, senior-backup] spells both rungs out and needs no such re-entry. Which spelling is right is a separate call, so this gate takes neither. The deliberate worker-capable <-> worker-cheap two-way pair is left alone for the same reason.",
+          "type": "array",
+          "items": {
+            "if": { "type": "object", "required": ["senior"] },
+            "then": { "properties": { "senior": { "const": ["senior-backup"] } } }
+          },
+          "contains": {
+            "type": "object",
+            "required": ["senior"],
+            "properties": { "senior": { "const": ["senior-backup"] } }
+          },
+          "not": { "contains": { "type": "object", "required": ["senior-backup"] } }
         },
         "redis_url": { "type": "string", "pattern": "^redis://" },
         "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },

@@ -15,6 +15,10 @@
 
 [Unit]
 Description=Fleet view (Grafana, Quadlet)
+# The alert webhook's GitHub token is minted by this oneshot (fleet-ops#9445);
+# the directory it fills must exist before the container mounts it.
+Wants=fleet-grafana-github-token.service
+After=fleet-grafana-github-token.service
 
 [Container]
 Image=docker.io/grafana/grafana:13.2.3
@@ -32,16 +36,24 @@ Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/provisioning/
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/grafana/dashboards:/etc/grafana/dashboards:ro
 Volume=%h/.config/fleet-worker/nishfleet-worker.private-key.pem:/run/secrets/github-app.pem:ro
 Volume=%h/.config/fleet-ops/grafana-admin-password:/run/secrets/grafana-admin-password:ro
+# One-hour GitHub App token for the alert webhooks (fleet-ops#9445), rewritten
+# every 20 min by fleet-grafana-github-token.service. A directory, not a file:
+# the writer replaces the file by rename, which a single-file bind mount would
+# not follow. The contact points read it with $__file{} at each provisioning load.
+# Readable despite 0700/0600: UserNS=keep-id:uid=472,gid=472 above maps the host
+# user (the file owner) to the image's grafana uid, the same way the 0600 App
+# key mount below works. Measured on the pinned image: id -u prints 472 and the
+# token reads.
+Volume=%t/fleet-grafana-github-token:/run/secrets/github-token:ro
 # Named pass-through, not --env-host (fleet-ops#9020): only the names the
 # provisioned files' env references expand ($TELEGRAM_BOT_TOKEN,
-# $TELEGRAM_HOME_CHANNEL, $CLOUDFLARE_API_TOKEN, $GITHUB_ISSUES_TOKEN).
+# $TELEGRAM_HOME_CHANNEL, $CLOUDFLARE_API_TOKEN).
 # EnvironmentFile= below fills them for podman.
 PodmanArgs=--env=TELEGRAM_BOT_TOKEN
 PodmanArgs=--env=TELEGRAM_HOME_CHANNEL
-# Cost alarm (fleet-ops#9355): the two names below come from the two
-# EnvironmentFile= lines in [Service].
+# Cost alarm (fleet-ops#9355): the name below comes from the deploy-ci
+# EnvironmentFile= line in [Service].
 PodmanArgs=--env=CLOUDFLARE_API_TOKEN
-PodmanArgs=--env=GITHUB_ISSUES_TOKEN
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/
@@ -59,13 +71,16 @@ Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fl
 
 [Service]
 EnvironmentFile=%h/.hermes/.env
+# The token directory and file must exist before the container mounts them and
+# before Grafana expands $__file{} (a missing file fails the whole alerting
+# provisioning, not just the GitHub route). fleet-grafana-github-token.service
+# normally makes both first (Wants=/After= above); this makes a start safe when
+# that unit is not wired yet or the mint failed, leaving an empty token: the
+# webhook then answers 401 and the delivery rule pages hermes-urgent.
+ExecStartPre=/bin/sh -c 'umask 077; d=%t/fleet-grafana-github-token; mkdir -p "$$d"; test -e "$$d/token" || : > "$$d/token"'
 # Cloudflare analytics-read token for the cost-alarm data source (the file
 # exists; $CLOUDFLARE_API_TOKEN is expanded in datasources/cloudflare.yaml).
 EnvironmentFile=%h/.config/cloudflare/deploy-ci.env
-# issues:write token for the cost-alarm webhook, mode 0600, one line
-# GITHUB_ISSUES_TOKEN=. The leading dash lets the unit start without it; the
-# webhook then fails and cloudflare-spend-delivery.yaml pages hermes-urgent.
-EnvironmentFile=-%h/.config/fleet-ops/github-issues.env
 # Measured 2026-10-02: ~240 MB anon + ~160 MB file cache; 400M kept it in
 # constant reclaim (memory.events max=669 in minutes).
 MemoryMax=512M

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Read",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "Write",
+      "mcp__agent-tincan",
+      "mcp__agent-tincan__check_inbox",
+      "mcp__agent-tincan__reply"
+    ]
+  }
+}

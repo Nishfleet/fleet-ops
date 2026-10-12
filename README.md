@@ -7,8 +7,12 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, one `.path` unit (`fleet-litellm-proxy-config.path`)
-  and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
+  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
+  alert webhook sends (fleet-ops#9445); switch off with
+  `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
+  fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
@@ -23,12 +27,11 @@ script, or prompt lands unseen.
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
-  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
-  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
-  `quality-bar.md` and `incidents/` (one blameless write-up per outage,
-  named `YYYY-MM-DD-<slug>.md`).
+  `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
+  `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
+  scheduled tasks), `quality-bar.md` and `incidents/` (one blameless
+  write-up per outage, named `YYYY-MM-DD-<slug>.md`).
 - `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).
@@ -62,6 +65,9 @@ script, or prompt lands unseen.
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
+- `config/claude-agents/` — the `helper` and `scout` subagent files
+  `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
+  the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
@@ -82,6 +88,50 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
+  /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
+  Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
+  no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
+  is the job; `config/retro-public-deny.txt` is the check every follow-up issue
+  must pass before it is filed; `config/retro-weekly-claude.json` is the tool
+  list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
+  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  second-login env line for the Tincan listener. They were hand-placed on the
+  host with no repo copy (fleet-ops#9645); they decide nothing and wrap
+  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
+  the link. Install on a fresh host: `ln -s` each file from the deploy clone's
+  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
+  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  and `enable --now`. The files match what ran before (only the two Amp
+  `Description=` lines lost their account names), so adopting them restarted
+  nothing: a unit edit applies at the unit's next restart (never restart
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
+  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  so only its parent unit is verified. Switch one off with
+  `systemctl --user disable --now <unit>`; delete it by removing its file here
+  and the live link, then `systemctl --user daemon-reload`.
+- `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
+  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
+  times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
+  any PR left waiting over an hour: it arms a head a reviewer approved, asks
+  the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
+  issue for a PR no worker owns. One instance per repo with an agent-dispatch
+  stub (fleet-ops, 0509, drive, aiconverter-app,
+  TinyStudio.io-public, siterep-public), linked and enabled by
+  `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
+  line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+- `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
+  page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
+  revoked or not `nish3451`. The path unit checks on every change to
+  `~/.config/gh/hosts.yml`, the timer hourly. Wire once with `systemctl --user
+  link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
+  `systemctl --user disable --now fleet-gh-login-check.timer
+  fleet-gh-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
@@ -98,6 +148,28 @@ script, or prompt lands unseen.
   config). Each run rebuilds the index from the files on disk, so it mirrors
   the logs and keeps the same retention; the index never holds more than the
   logs do.
+- `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
+  and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
+  — the dead-man and the Hermes gateway page. Prometheus loads three rules:
+  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody) and
+  `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
+  minutes). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  an outside healthchecks.io check, which alerts when the pings stop, and sends
+  `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
+  id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
+  `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
+  `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
+  rules`, `amtool check-config` and `promtool test rules
+  config/prometheus-tests/`. Off switch, under 2 minutes: `sudo systemctl
+  disable --now prometheus-alertmanager.service`, then pause the check on
+  healthchecks.io so it stops alerting; the next `fleet-host-config.service` run
+  starts it again while `ansible/host.yml` has the enable task, so the durable
+  off is a PR that removes that task and the `rule_files` and `alerting` blocks. Delete it: revert that PR (this
+  removes the rule file, the Alertmanager config and options, the playbook
+  tasks and the CI step), then `sudo rm /etc/prometheus/deadman_url
+  /etc/prometheus/telegram_bot_token /etc/prometheus/telegram_chat_id` and
+  delete the check on healthchecks.io. Stopping Alertmanager does not touch
+  `hermes-gateway.service`.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
@@ -431,10 +503,113 @@ number after the restart is the real test.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
 
+## Remote Control stays on (OOM storm 2026-10-09)
+
+The phone link must not drop, and when it does someone must hear within
+seconds. Measured on 2026-10-09: a secret scan (trufflehog over a full git
+history) started from one Remote Control session grew to 15.4G RSS on the 32G
+host. Nothing capped `claude.slice`, and everything under Remote Control
+inherited `OOMScoreAdjust=-900`, which scores a 15G scan the same as an idle
+session. The kernel killed the unprotected services instead (hermes, the
+router, the executor) and stalled the link for about two minutes with all 8G
+of swap full. Nothing alerted anyone.
+
+| Piece | File | Takes effect |
+| --- | --- | --- |
+| `claude.slice` `MemoryHigh=14G` / `MemoryMax=18G` / `MemorySwapMax=2G` (normal use 6-7G, incident peak 21.5G) | `rootfs/etc/systemd/system/claude.slice` | at the daemon-reload after merge |
+| `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
+| `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
+| `OOMScoreAdjust=-500` for `hermes-gateway.service` | `hermes-gateway.service.d/70-oom-protect.conf` | next restart of hermes (it restarts itself) |
+
+The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
+it fires on `failed`, and `Restart=always` with `StartLimitIntervalSec=0`
+(`selfheal.conf`) sends every exit to auto-restart. A deliberate restart by
+Nish pings too. The ping needs `HC_URL_RECONCILE` in
+`~/.config/fleet-ops/keystone-hc.env`; unset, the handler logs SKIP and exits 0.
+That check is shared with every `fleet-unit-failed@` caller and is fail-only,
+so it stays down until it is re-armed with a success ping, and a second drop
+while it is still down does not page again.
+
+The LiteLLM router gets no `OOMScoreAdjust`: it runs in the user manager,
+which cannot lower the value below its own 100 (measured:
+`systemd-run --user -p OOMScoreAdjust=-500` reads back 100). The cap above is
+what keeps it from being the victim.
+
+Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
+`MemoryHigh`/`MemoryMax`/`MemorySwapMax` lines in `claude.slice`, or
+`70-oom-protect.conf`, then `systemctl daemon-reload`. Delete the file from
+`rootfs/` and add its path to `retired` in `ansible/host.yml`, otherwise the
+next run installs it again. The running `ExecStopPost=` and `-500` stay until
+Remote Control is next restarted.
+
+### Remote Control keeps the Max login (2026-10-10)
+
+`claude-remote-control.service.d/10-max-config.conf` sets
+`CLAUDE_CONFIG_DIR=/home/nish/.claude-max`. The default login in `~/.claude`
+is now a Team seat whose organization policy disables Remote Control, and on
+that login the server exits at once and `Restart=always` loops on it (the
+link was down from 10:52 to 10:56 UTC on 2026-10-10). The drop-in keeps the
+link on the separate Max config dir whatever the default login is. A new
+config dir registers a new Remote Control environment on claude.ai; the old
+one stays listed as offline.
+
+Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
+`systemctl daemon-reload`, and restart Remote Control, only once the default
+login allows Remote Control again.
+
+### Subagents on the Max config dir (2026-10-11)
+
+Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
+drop-in above every Remote Control thread got "helper not found", and the
+model-lanes gate denies every other subagent type: no thread could delegate.
+`config/claude-agents/` now ships `helper.md` and `scout.md` (until now
+hand-placed in `~/.claude/agents`). `fleet-sync.service` step 2d copies them
+there, `config/user-tmpfiles.d/claude-max-agents.conf` links
+`~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
+sync if that path is anything but the link. Edit an agent here, by PR; a hand
+edit of the live file is overwritten on the next sync.
+`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+
+Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
+file and its live copy in `~/.config/user-tmpfiles.d/`, then
+`rm ~/.claude-max/agents`. The live agent files stay as plain files.
+
+## Agent autonomy drop-in
+
+`rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
+Code managed-settings drop-in; Claude Code merges every
+`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
+hand-installed `/etc/claude-code/managed-settings.json` is not touched and
+`/etc/claude-code` is not in `owned_dirs`. It does four things:
+
+- Tells the auto-mode safety checker which orgs and repos are ours.
+- Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
+  repos whose rulesets require checks. Not `--admin`, not approving, not any
+  other repo.
+- Allows cleanup of an agent's own comments and its own systemd units.
+- Adds a prompt hook on agent messages to Nish that bounces asks about routine,
+  reversible steps, so the agent does the step and reports the result. Reserved
+  matters (money, secrets, irreversible steps, safety gates) still go through.
+
+Every `autoMode` array keeps `"$defaults"`, so these rules add to the built-in
+ones and never replace them. `ansible/host.yml` installs the drop-in with a
+`validate:` that refuses a file that is not a JSON object (a drop-in that does
+not parse stops Claude Code from starting on the whole box), and the `ci` check
+"Claude Code managed-settings drop-ins parse and keep the autoMode defaults"
+holds both rules before merge.
+
+- Verify: `claude auto-mode config` prints the effective rules, which now
+  include the entries from the drop-in beside the defaults.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.d/50-agent-autonomy.json` to `retired` in
+  `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
+  step and the install task in the same PR once no drop-in is left.
+
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
@@ -442,11 +617,33 @@ semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
 resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug on the native provider
-(fleet-ops#8332, fleet-ops#9253), the litellm-proxy
+(fleet-ops#8332, fleet-ops#9253), the Claude Code managed-settings drop-ins
+(each file under `rootfs/etc/claude-code/managed-settings.d/` is a JSON object
+and every `autoMode` array keeps `"$defaults"`), the litellm-proxy
 schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.json`, and every
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
+
+### Ratchet: workflow and script code only shrinks
+
+The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
+deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+as many, so removing glue earns room. There are no exceptions in this repo: a new
+mechanism is a component in its own repo, behind an official extension point. The job
+self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+A web or product repo adds a workflow with one job named `ratchet` that calls
+`uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
+and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
+the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
+Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
+403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
+`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
+ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+the job alone does not switch it off: a required check that never reports blocks the PR.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
@@ -461,7 +658,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
@@ -501,6 +698,44 @@ The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
 the enrolment mechanism (fleet-ops#32, #25).
 
+## Triage admission (needs-triage)
+
+An open issue labelled `needs-triage` in an enrolled **product** repo
+(`repos` with `product: true` in `config/intake-repos.json`) gets a Jev verdict
+instead of waiting for a person to add `agent-ready`. The `admit` job in
+`.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
+`needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
+`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit
+this issue for an automated worker now?", with the title, body and labels as
+state.
+
+- p >= 0.9: `agent-ready` added, `needs-triage` removed.
+- otherwise: `needs-orchestrator` added, `needs-triage` removed, for a person to decide.
+
+Only the issue author `nish3451` is admitted. The newest `needs-triage` label
+event must also come from `nish3451`. Non-owner issues are skipped with a notice
+and left as `needs-triage` (no Jev call). A daily cap (`vars.ADMIT_DAILY_MAX`,
+default 10) counts `triage-admit: admitted` comments since IST midnight and
+stops early when reached. The job runs only when
+`(inputs.agent_mode || vars.AGENT_MODE) == 'live'`. Issue title and body are
+wrapped in `<ISSUE_TEXT>` fences so the model treats them as data, never as
+instructions.
+
+Every issue gets one comment with p, the model and the run link. An issue whose
+title, body or labels touch secrets, money or payments, or customer-data
+deletion, or that carries `blocked-on: nish-decision`, `nish-reserved` or
+`needs-nish-decision`, never reaches Jev and never gets `agent-ready`: it goes to
+`needs-orchestrator`. `Nishfleet/fleet-ops` is never acted on (fo#8304). If Jev
+gives no answer the label stays and the next sweep retries. The labels are
+written with the worker App token, so the `agent-ready` and `needs-orchestrator`
+events start the next job.
+
+**Switch it off:** set the repo variable `ADMIT_TRIAGE` to `off` on the calling
+repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
+**Delete it:** remove the `admit` job, `tests/test_triage_admit.py`, its step in
+`ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
+and a fake router (`tests/test_triage_admit.py`).
+
 ## Worker capacity
 
 The concurrency bound is the runner count (#8429): 22 `agent` runners
@@ -511,3 +746,56 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
+
+## Private detail scan
+
+Pull requests are scanned for private infrastructure detail: personal home
+paths, the local seat config path, Tailscale addresses and names, and account
+ids written next to an account id name. The rules are in
+`.github/gitleaks-private-detail.toml` (they extend the gitleaks defaults). Only
+the commits a PR adds are scanned, so old history cannot fail a PR. The job is
+`private-detail-scan` and it is not a required check.
+
+- Allow one line: put `gitleaks:allow` in a comment on that line.
+- Switch it off: set the repository variable `PRIVATE_DETAIL_SCAN` to `off`
+  (`gh variable set PRIVATE_DETAIL_SCAN --body off`). Delete the variable to
+  switch it back on.
+- Remove it: delete the `private-detail-scan` job and the rules file.
+- The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
+  that name by itself and the full-history scans would start failing on old
+  commits.
+
+## Weekly retro
+
+`retro-weekly.timer` starts `retro-weekly.service` every Monday at 07:00 IST.
+It is built so a fooled model cannot do harm, not so it is asked not to.
+
+- The model runs in a bwrap jail: the system is read-only, `/home` is an empty
+  tmpfs, and only the session logs and steering files are bound back read-only. The gh login, the Cloudflare tokens, the
+  seat files, the App key and the other Claude logins are not there.
+- It has no GitHub token. A later step in the unit files at most three
+  follow-up issues using the worker App's issues-only installation token
+  (`fleet-grafana-github-token.service` mints it) with an empty `gh` config
+  directory. Repo and labels are fixed in the unit.
+- The report goes to the vault's `_system/retro/` and syncs to the Mac. A
+  follow-up issue is a fixed five-line file (class, count, fix rung, owning
+  repo and fix kind, each from a list); the unit builds the public title and
+  body from a template, then `config/retro-public-deny.txt` must find no session
+  id, path, quote, time of day, link, email or secret shape in it. One refusal
+  fails the unit and files nothing.
+- The jail has no network. The only way out is `retro-weekly-api.socket`, served
+  by `systemd-socket-proxyd` to `api.anthropic.com:443` and nothing else.
+- Follow-up issues carry only the label `retro` (`needs-orchestrator` would start
+  a paid orchestrator run per issue), one open issue per class.
+- The call is Claude Code to the Anthropic API with the model pinned in the unit.
+  The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
+  it is not used. The pin check fails the unit if the call was anything else
+  and prints a `retro-provider:` line.
+
+- Run it now: `systemctl --user start retro-weekly.service`, then
+  `journalctl --user -u retro-weekly -f`.
+- Switch it on: `systemctl --user enable --now retro-weekly.timer`.
+- Switch it off: `systemctl --user disable --now retro-weekly.timer`.
+- Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
+  `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
+  `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.

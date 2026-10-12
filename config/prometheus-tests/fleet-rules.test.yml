@@ -1,0 +1,98 @@
+# promtool test rules config/prometheus-tests/fleet-rules.test.yml
+# (CI runs it). The rule file is the one the host installs.
+rule_files:
+  - ../../rootfs/etc/prometheus/fleet_rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # Watchdog fires on an empty TSDB, from the first evaluation.
+  - interval: 30s
+    input_series: []
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: none
+            exp_annotations:
+              summary: "Watchdog heartbeat for the alerting pipeline"
+              description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
+
+  # Gateway active the whole time: never fires. Then it stops being active and
+  # the alert fires once the 5 minute window holds no active sample.
+  - interval: 30s
+    input_series:
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HermesGatewayDown
+        exp_alerts: []
+      # last active sample at t=9.5m; the window (t-5m, t] holds none from t=14m30s
+      - eval_time: 14m
+        alertname: HermesGatewayDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: HermesGatewayDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: hermes-gateway.service
+              state: active
+            exp_annotations:
+              summary: "hermes-gateway.service has not been active for 5 minutes"
+              description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
+
+  # A crash loop that is "active" for one scrape in the window does not fire
+  # (it is restarting, not down), and a short restart gap never fires.
+  - interval: 30s
+    input_series:
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x10 0x3 1x10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HermesGatewayDown
+        exp_alerts: []
+
+  # The series disappears entirely: fires after the window empties.
+  - interval: 30s
+    input_series:
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x10 _x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HermesGatewayDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: HermesGatewayDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: hermes-gateway.service
+              state: active
+            exp_annotations:
+              summary: "hermes-gateway.service has not been active for 5 minutes"
+              description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
+
+  # SystemUnitFailed: pending for 5m, then fires; a unit that recovers does not.
+  - interval: 30s
+    input_series:
+      - series: 'node_systemd_unit_state{name="foo.service",state="failed"}'
+        values: '0x4 1x20'
+      - series: 'node_systemd_unit_state{name="bar.service",state="failed"}'
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SystemUnitFailed
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SystemUnitFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: foo.service
+              state: failed
+            exp_annotations:
+              summary: "system unit foo.service failed"
+              description: "Systemd unit foo.service has been in the failed state for 5 minutes."

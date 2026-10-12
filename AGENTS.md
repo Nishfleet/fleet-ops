@@ -19,10 +19,16 @@
   surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
   only for those classes or irreversible work — present the plan and begin
   everything else (fleet-ops#6610).
+- **Stock first, no glue** (`prompts/worker.md` → "Stock first, no glue";
+  fleet-ops#9614): the reason (audit fleet-ops#9619), the trigger and the
+  `stock:`/`built:` PR-body lines live in `prompts/worker.md`; this bullet is a
+  pointer, not a second source (fleet-ops#5586).
 - One-off -> skill -> routine ladder (fleet-ops#8871): the criteria live in the
   vault (`global-standing-rules.md` → "Skill ladder"); this bullet is a pointer,
   not a second source.
-- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and the coordinator reviews it before it merges.
+- The quality bar your PR is held to is `docs/quality-bar.md` (all points met, zero findings). CI is the merge gate; a PR that touches any path outside the allowlist in agent.yml's arm step (anything not clearly safe, such as `.github/`, `migrations/`, `workers/`, auth, data, billing, CSP, package and wrangler config, prompts, policy docs and this repo's own config) is labelled `needs-coordinator` and is held until its exact head has a `coordinator-approval: <sha>` line.
+- **Who approves (Nish, 2026-10-09: he is never asked).** The approval is automatic. agent.yml's `review` job reads the held head's diff and posts `coordinator-approval: <sha>` as `github-actions[bot]`, and approves that head with a GitHub Approve review (the ruleset requires one approving review and dismisses it on a push; the `coordinator-approval` gate does not read it), when the judge is at least 90% sure and the review lists no blocker. The review text comes from a no-tools Claude call on one of the two Claude seats: Opus 5.5 for all work, Claude-built or not (Fable is not a reviewer or a default model: as the default reviewer it used 44% of a seat's weekly Fable limit in about 2 days). That is an exception Nish approved (2026-10-10) to "Claude never grades Claude": the review model may be Claude, but the verdict is always Jev's (`/jev`, approve at p >= 0.9), a non-Claude family, so a non-Claude family always decides. "Claude-built" is read from the worker App's `builder-engine:` comment on the PR; a PR with none (the orchestrator's, a person's session) counts as Claude-built. A PR that edits the merge guard (`guard` in `config/risky-paths.json`) or any workflow needs a second reviewer from a different model family than Jev and Claude as well (the senior GLM seat); both must approve. If either blocks, the blockers are posted on the PR as fix-it items for the agent: fix them and push, and the new head is reviewed again. The same run then arms auto-merge on that exact head (`arm` job, `--match-head-commit`), so nobody types, taps or arms anything. Nish's own comment still counts as an optional override and is never required. Never ask Nish, or any person, to approve a PR, and never post `coordinator-approval` yourself. The merge gate and `hold-risky` read their programs and the path list from the base branch, so a PR cannot loosen the rules that judge it in the same PR.
+- **Claude Code worker lanes (Nish, 2026-10-10).** Senior (`strong-only`) work runs on Claude Code first, on the two Claude seats (split by runner): `claude-sonnet-5-5`, or `claude-opus-5-5` once the packet has failed twice or carries `needs-opus`. Claude does the judgment work, free workers do the mechanical work, and Jev decides which is which: for any other issue the Gate asks Jev whether it needs engineering judgment (design choice, ambiguity, multi-file reasoning, debugging) or is a mechanical, fully specified change. At p >= 0.9 it goes to claude (Sonnet, or Opus with `needs-opus`); at p <= 0.1, anything in between, or on a Jev error it goes to the free lanes (pi, then opencode, then Devin); `strong-only` always goes to claude. The decision is logged as `judgment: p=<x> -> claude|free (<reason>)` and written to the job summary. The seat is set by runner-number parity (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b), an odd N or a name with no number keeps seat a, and the step logs `claude lane: seat=a|b runner=<name>`; a job stays on its seat unless that seat's `.credentials.json` is missing or empty (checked by file size only, never read): then it takes the other seat and logs `::warning::claude lane: seat=<x> missing login, using seat=<y>`, and with both missing it skips the claude lane and falls through as a refused seat does; there is no clock and no usage poller. When claude dies on a rate limit or usage limit, a `strong-only` packet goes to the Cursor lane and any other goes to pi. Every other worker engine (pi, opencode, Devin, Cursor) runs in a jail that hides both Claude seat logins and every other Claude config and credential backup directory (a glob resolved at job start); the claude lane sees only the seat it runs on. `ci.yml` runs the jail lines and fails if a login can be read.
 - Any change that adds or edits an AI decision (a Jev question, or a model prompt that decides something users see) ships with before/after numbers in the PR body, measured on cases held out from tuning. The builder never grades its own work: a different model family writes and labels the held-out cases before tuning starts, and runs the final score. Where the repo has `tests/evals/` (0509#6161), use it. Never add a script to run it.
 - Never deploy without Nish; agent-authored PRs self-land per
   `global-standing-rules.md` → "Agent-authored PRs land themselves"
@@ -31,7 +37,9 @@
 - Money is Nish's alone. No payments, cards, or paid trials.
 - Paid `/jev` and eval or judge calls: a run makes only the ones its own task
   calls for. `/jev` is called by worker.md step 4, only when its
-  orchestrator-versus-nish-decision choice is live, and by miss-review. A
+  orchestrator-versus-nish-decision choice is live, by miss-review, and by the
+  agent.yml Gate's judgment routing (one call per claimed issue that is not
+  `strong-only`). A
   report-only or check-only issue makes none, and no run re-asks a judge or
   eval for a second read: 16 rows x 3 questions x 3 repeats was 144 paid calls
   nobody asked for (0509#6967, 2026-10-04). worker.md's own planner
@@ -120,21 +128,22 @@ only User > API Tokens Write, from the dashboard template "Create Additional Tok
 deletes tokens and nothing else: never use it for work, never source it into a long-running
 process. It is a user token, not account-owned, because an account-owned token creator can only
 grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
-(`159.195.212.168/32`, `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`; outbound API calls leave over
+(`<vps-ip>/32`, `<vps-ipv6>/128`; outbound API calls leave over
 IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
 sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
 only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
 because the original value was pasted in chat. If it is ever exposed again, roll it with
 `PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
-pipe the response straight into the env file with jq, never print it. Account id:
-`f670a698e17bf160c8e4679823e68916`.
+pipe the response straight into the env file with jq, never print it. Account id: the `account_id` default in
+`infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
 
 **The gate.** The minter can create a token with any permission Nish's user holds, so it is not
 a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
 
 1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
 2. `--expires-on` at most 24h from now (UTC RFC3339).
-3. `--condition-request-ip-in` the two VPS addresses above.
+3. `--condition-request-ip-in` the two VPS addresses (not kept in git; read them on the box:
+   `curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`).
 4. Resources as narrow as the API allows. Cloudflare's token policy documents three resource
    types only: user, account and zone (`com.cloudflare.api.account.zone.<ZONE_ID>`). So scope to
    a specific zone whenever the permission group is zone-level. Account-wide is allowed only for
@@ -174,7 +183,7 @@ guarded delete, then a 404 check:
      POL=$(jq -nc --arg z "com.cloudflare.api.account.zone.$ZONE" --arg p "$PG" '[{effect:"allow",resources:{($z):"*"},permission_groups:[{id:$p}]}]')
      set -- --name "$NAME" --policies "$POL" \
        --expires-on "$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)" \
-       --condition-request-ip-in 159.195.212.168/32 2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128
+       --condition-request-ip-in <vps-ip>/32 <vps-ipv6>/128
      # 1. dry run first: read the request, check name, expiry, IPs and the single zone
      cf user tokens create "$@" --dry-run
      # 2. the real create; the secret goes to the 0600 file, not the terminal
@@ -219,7 +228,7 @@ Hard rules:
 - The agent run's arm step arms auto-merge after you exit — you never merge and never arm: it arms every PR except one touching a path outside agent.yml's arm allowlist, which gets the `needs-coordinator` label. The required checks gate the merge (fleet-ops#8418). If a PR genuinely needs an admin call, park the ISSUE `blocked-on: orchestrator` + `needs-orchestrator` — a labeled state drains can list, where a PR comment is invisible.
 - When you (as reviewer) post a BLOCKING review comment on a PR, disarm it (`gh pr merge <PR> --disable-auto`) in the SAME step — without the disarm the PR still merges on green (fleet-ops#4557: 0509#2011 merged 90s after its block comment). Workers never arm: the next agent run's arm step re-arms it.
 - Agent names are forbidden: a session writes no Co-Authored-By trailers or "Generated with" footers and no agent names in commits/PR/comments (the `ci` job's pull_request step fails a PR that does; the co-author line GitHub itself adds on a squash merge is platform metadata and out of scope) — every Claude Code session (local, Mac, claude.ai/code cloud) reads this repo's `.claude/settings.json` with `attribution: {commit: "", pr: "", sessionUrl: false}`, which suppresses the trailers at source; the fleet/merge path (`squash_merge_commit_message: COMMIT_MESSAGES`, API-verified) copies branch trailers into main and a GitHub `commit_message_pattern` ruleset would hard-gate the rest — both need a GitHub admin token (attempted in fleet-ops#9017, recorded 403s); audit your own `origin/main..HEAD` commit range and PR body before pushing (fleet-ops#1052).
-- Stay inside the issue's scope. File extras as NEW issues. On a product repo (any repo but fleet-ops), file a follow-up in that same repo with `--label agent-ready`, so the next free builder starts it (Nish chose auto-start for builder-found fixes, 2026-10-03). The exceptions are a follow-up that deletes customer data or touches secrets, billing or money: file it with `--label needs-nish-decision`, because those stay Nish's call. On fleet-ops, and for any follow-up filed in a different repo, file plain issues with no labels, because a worker that queues control-plane work for itself regrows glue (fleet-ops#8304).
+- Stay inside the issue's scope. File extras as NEW issues. On a product repo (any repo but fleet-ops), file a follow-up in that same repo with `--label agent-ready`, so the next free builder starts it (Nish chose auto-start for builder-found fixes, 2026-10-03). One carve-out: a follow-up only a repo admin can apply — a stock feature that needs a permission `GH_TOKEN` lacks, such as branch protection or a `.github/workflows/` edit — is filed `--label needs-orchestrator` on fleet-ops and with no `agent-ready` label on any repo, because `agent-ready` starts a worker that cannot apply it (`prompts/worker.md` → "Stock first, no glue"). The exceptions are a follow-up that deletes customer data or touches secrets, billing or money: file it with `--label needs-nish-decision`, because those stay Nish's call. On fleet-ops, and for any follow-up filed in a different repo, file plain issues with no labels, because a worker that queues control-plane work for itself regrows glue (fleet-ops#8304).
 - NEVER delete `claim/issue-<N>` once a PR exists on it — that closes your own PR and throws the work away (fleet-ops#7736, 2026-09-18). Branch deletion belongs to the BLOCKED path (step 4) only, where there is no PR.
 - Session-outliving work is a systemd transient unit, never `nohup pi ... &` or a trailing `&` — those die with the shell (fleet-ops#350) and launch with no dead-man (fleet-ops#4266). One line, stock systemd, no wrapper script:
   `systemd-run --user --collect -p RuntimeMaxSec=<seconds> -E DELIVERABLE=<abs path> -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' --unit <name> -- sh -c 'cat <packet.md> | pi --print --provider <provider> --model <model>'`
@@ -236,6 +245,7 @@ Hard rules:
 ### PR body contract — run these before `gh pr create`
 
 - `Verification:` carries real run results; every worker PR needs one, and a proof put off to a later run is a finding (docs/quality-bar.md point 7).
+- Every worker PR body carries one of the three lines defined in `prompts/worker.md` → "Stock first, no glue": `stock: <feature>`, `stock: not triggered`, or `built: <repo + official extension point>`. A person's PR or the orchestrator hand-off's carries none: neither loads `prompts/worker.md`, and no check parses the line.
 - New `bin/`/`scripts/` files are banned (no new scripts, anywhere in any repo).
 - Wipe safety: never `pgrep -f` to find or kill a worktree process.
 
