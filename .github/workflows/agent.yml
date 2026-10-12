@@ -274,10 +274,11 @@ jobs:
           # anything between, or a Jev call that fails, goes to the free lanes. The
           # free order is pi, then opencode, then Devin, and never Cursor
           # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the runner's number (netcup-agent-N):
-          # odd runs seat a, even runs the default login (seat b), so
-          # the jobs split across both seats and a job never changes seat (no
-          # clock, and the prompt cache holds). A seat at its usage limit shows up
+          # failed runs. The seat follows the issue number's parity (the same
+          # input the Cursor lane keys on, fleet-ops#9696): an odd issue runs
+          # seat a, an even issue runs the default login (seat b), so the jobs
+          # split across both seats and a job never changes seat (no clock, and
+          # the prompt cache holds). A seat at its usage limit shows up
           # as a rate limit in the Worker, which falls through (below). There is no
           # cap on live claude workers: nothing stock gives N slots, and
           # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
@@ -431,12 +432,17 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the runner's number
-            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
-            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
-            # login). A name with no number keeps seat a. The seat never changes
-            # inside a job, except to the other seat when its own login is missing
-            # (below). A run that dies on a rate limit or
+            # Claude Code on one of the two seats, chosen by the issue number's
+            # parity (the same input the Cursor lane keys on, fleet-ops#9696): an
+            # even $id unsets CLAUDE_CONFIG_DIR (seat b, the default login), an odd
+            # $id keeps it (seat a), and a non-numeric id keeps seat a. The seat
+            # follows the issue, not the runner, so a retry of the same issue lands
+            # on the same seat even when it runs on a different runner: the runner
+            # number changes between attempts, the issue number does not, and
+            # `claude -p --continue` then finds the earlier session (a session
+            # lives in one seat's config dir, so the other seat cannot see it).
+            # The seat never changes inside a job, except to the other seat when
+            # its own login is missing (below). A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
@@ -444,9 +450,11 @@ jobs:
             # logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
-            runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}
-            if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
+            case ${id##*-} in
+              *[!0-9]*) ;;   # not numeric: keep the runner's CLAUDE_CONFIG_DIR (seat a)
+              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;;   # even issue -> seat b, odd keeps seat a
+            esac
             if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
             # A seat whose login file is missing or empty fails every job on it, so a
             # missing login costs one seat, never both. Only the file's presence and
@@ -474,7 +482,7 @@ jobs:
             if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
           fi
           if [ "$ENGINE" = claude ]; then
-            echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
+            echo "claude lane: seat=$claude_seat issue=${id##*-} runner=${RUNNER_NAME:-unknown}"
             mark claude
             rc=0
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
