@@ -1,0 +1,179 @@
+# Weekly /retro (fleet-ops#9314), rebuilt so the four blockers of the review on
+# PR #9321 are closed by structure, not by prompt text (fleet-ops#9641, #9339).
+#
+# What runs: Monday 07:00 IST (retro-weekly.timer) one headless Claude Code call
+# reads a week of fleet sessions and writes a retro report. Four things hold
+# whatever the model reads or is told by text inside the sessions:
+#
+# 1. No admin login. The model runs inside a bwrap jail built from the worker
+#    jail of agent.yml (empty tmpfs over the gh and Cloudflare config) but
+#    stricter: /home is an empty tmpfs and only what the retro reads is bound
+#    back, read-only. Not bound, so not readable: the gh login, the Cloudflare
+#    tokens, fleet-ops seat files, the worker App key, ssh keys, the other
+#    Claude logins, every .env. The runtime directory (where the issue token
+#    lives) is hidden too. The Claude config and the vault are read-only, so a
+#    fooled model cannot plant a hook, a setting or a shim that later runs
+#    outside the jail. The jailed process has NO GitHub token at all. The one
+#    token the run uses is the worker App's installation token limited to
+#    issues:write on this one repo (fleet-grafana-github-token.service mints it
+#    every 20 minutes; this unit only reads it). It is used by the filing step
+#    below, outside the jail, with an empty GH_CONFIG_DIR so the gh login is
+#    never read (fleet-ops#9339 asked for exactly this scope; the App token
+#    gives it without a hand-minted file). Scope, from the mint request in
+#    fleet-grafana-github-token.service ("repositories":["fleet-ops"],
+#    "permissions":{"issues":"write"}) and probed 2026-10-12: the token lists one
+#    repository, fleet-ops, and gets 403 on that repo's Actions secrets and on its
+#    self-hosted runners.
+# 2. Private reports. The report is a file in the vault (_system/retro/, which
+#    syncs to Nish's Mac and never reaches a public repo). Follow-up work is
+#    filed as an issue only in a fixed form: the model writes a five-line file
+#    (a class, a count, a fix rung, an owning repo and a fix kind, each from a
+#    list, the count a number), and the filing step builds the
+#    public title and body from a template. No free text, quote, id, path or
+#    time can reach the page, because the grammar has nowhere to put them. The
+#    built text then also goes through config/retro-public-deny.txt (a session
+#    id, a /home or other path, a quoted line, a time of day, a link, an email or
+#    a secret shape): one refusal fails the unit and nothing is filed. The model
+#    cannot choose labels, repo or the token: it only writes files, and a
+#    different process files them. The only label is retro: needs-orchestrator
+#    would start a paid orchestrator run per issue (agent-dispatch.yml). The title
+#    is fixed per class and a class that already has an open issue is skipped.
+#    The report is also scrubbed of secret shapes before it reaches the vault.
+# 3. Approved provider only. The call is Claude Code to the Anthropic API, the
+#    provider that already holds these sessions, with the model pinned below.
+#    It does not use the router. The `ollama` seat is NOT local: its rows are
+#    api_base https://ollama.com (config/litellm-proxy.yaml) and nothing
+#    listens on this host's Ollama port. A step after the run reads the call's
+#    own record and fails the unit unless the main model is the pinned one and
+#    every model used is a claude-* model; it prints the pinned provider to the
+#    journal. ANTHROPIC_BASE_URL is pinned and checked against a literal before
+#    the model starts, user settings are not loaded (--setting-sources), and
+#    the other provider switches are unset.
+# 4. Live only after review. Nothing ships on the host until this file is on
+#    main; fleet-sync.service then links it (step 2e), and the timer is enabled
+#    by hand once (README "Weekly retro").
+#
+# Network: the jail has none. bwrap --unshare-net leaves only loopback; the one
+# way out is retro-weekly-api.socket, bound into the jail, which systemd serves
+# with systemd-socket-proxyd to api.anthropic.com:443 (retro-weekly-api.service).
+# A stock socat inside the jail joins the model's loopback port to that socket,
+# and /etc/hosts inside maps the API name to the loopback port. TLS stays end to
+# end with the real host name, so the destination is fixed by the proxy's own
+# address and cannot be changed from inside. A request to any other host from
+# inside the jail fails.
+# Tools: the permission file (config/retro-weekly-claude.json) allows reading,
+# searching and a short list of read-only commands, denies the network tools and
+# anything that can exec (find -exec, rg --pre), and the mode is dontAsk so a
+# call outside the list is refused, not asked. That list is the second fence, not
+# the first: a command that slips past it still has no network, a read-only
+# system and one writable directory.
+#
+# The network door has three small parts, each with one reason. A stock socat
+# inside the jail joins the CLI's TCP to the filesystem socket, the only thing a
+# network-less jail can reach; the CLI keeps the real API host name (an /etc/hosts
+# line inside maps it to loopback) so TLS verifies against the true host, on an
+# unprivileged port because the jail has no capabilities. The systemd-native
+# form (PrivateNetwork=yes on this service, and on the socket unit
+# ListenStream=127.0.0.1:8443 with PrivateNetwork=yes and JoinsNamespaceOf= this
+# service) was tried on this host's user manager (2026-10-12) and fails: the
+# socket unit logs "Failed to join network namespace: Operation not permitted"
+# and "Failed to listen on sockets", and the dependent service does not start.
+# PrivateNetwork=yes alone works for a service, but a user manager cannot place a
+# socket in it. Claude
+# Code's own sandbox allow-list fences the commands the CLI runs, not the CLI, and
+# would need nested namespaces inside this jail; it can be a later extra layer.
+# The one-second wait for socat is not a race that can hurt: the CLI retries a
+# refused first connection.
+#
+# Why bwrap and not the unit's own sandbox directives (PrivateNetwork=,
+# TemporaryFileSystem=): the jail is the worker jail of agent.yml on purpose, so
+# there is one jail design to audit and the review of #9321 asked for exactly
+# that pattern. Why a deny list over built text and not only the harness's
+# --json-schema: a schema is enforced inside the process the model steers; the
+# check here runs outside it, on the bytes that would be published, and fails the
+# unit by itself.
+#
+# The managed policy settings under /etc/claude-code are root-installed and apply
+# to this call too; checked 2026-10-12: they carry no allow rule, so they add
+# no command to the permission file, only deny and ask rules and one hook. The Claude login
+# file is within the model's reach (the call needs it) but it has no way out: no
+# network but the API host, a report scrubbed of token shapes, and public issues
+# made only of listed values.
+#
+# A token refresh cannot happen in the jail: the only host reachable is the API
+# host, and the refresh goes to another one, so the shared login is never
+# rotated by a retro run (and ~/.claude is read-only anyway).
+#
+# Gates, each a failed unit someone can list (OnFailure= pages): the pin check,
+# a non-empty report, the public-text check, and ExecStopPost looking for the
+# vault copy. `claude -p` exits 0 on a model refusal, so the success of the call
+# is read from its own result record, not its exit status.
+#
+# One date: ExecStartPre writes today's IST date once into the runtime
+# directory; every later step reads it, so a catch-up run that crosses midnight
+# still names the report and its gate with the same string.
+#
+# %%, $$: systemd expands % and $ itself before any shell runs, so every shell
+# $ is written $$ and every shell % is written %% (ci.yml gate fleet-ops#8382).
+# The shell lines use bash, single-quoted, with no single quote inside.
+#
+# Switch off: systemctl --user disable --now retro-weekly.timer
+# Delete: the README "Weekly retro" section lists the files.
+[Unit]
+Description=Weekly /retro over one week of fleet sessions (Monday 07:00 IST)
+After=fleet-grafana-github-token.service retro-weekly-api.socket
+Requires=retro-weekly-api.socket
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=retro-weekly
+RuntimeDirectoryMode=0700
+WorkingDirectory=%h
+Environment=FLEET_TASK_ID=retro-weekly
+Environment=TZ=Asia/Kolkata
+Environment=LC_ALL=C.UTF-8
+Environment=RETRO_STATE=%h/workspaces/agent-state/retro
+Environment=RETRO_VAULT=%h/workspaces/tooling/nish-vault/_system/retro
+Environment=RETRO_REPO=%h/workspaces/tooling/fleet-ops-deploy-clone
+Environment=RETRO_TOKEN=%t/fleet-grafana-github-token/token
+Environment=RETRO_API_SOCK=%t/retro-weekly-api.sock
+# Pinned provider and model. The pin check below compares against the literals
+# in the script too, so a drop-in that changes only these lines fails the unit.
+Environment=ANTHROPIC_BASE_URL=https://api.anthropic.com
+Environment=RETRO_MODEL=claude-sonnet-5-5
+UnsetEnvironment=ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CONFIG_DIR GH_TOKEN GITHUB_TOKEN
+# 1. Fresh run directory, the one date, the inputs that must exist, and the pin
+#    check on the environment. Then the list of issues already filed (titles
+#    only), fetched here with the issues token because the jailed model has none.
+ExecStartPre=/bin/bash -c 'set -eu; d=$$(date +%%F); run="$$RETRO_STATE/run-$$d"; rm -rf "$$run"; mkdir -p "$$run/issues"; printf %%s "$$d" > "$$RUNTIME_DIRECTORY/date"; for f in prompts/retro-weekly.md config/retro-public-deny.txt config/retro-weekly-claude.json; do test -s "$$RETRO_REPO/$$f" || { echo "retro: missing $$f" >&2; exit 1; }; done; test "$$ANTHROPIC_BASE_URL" = https://api.anthropic.com && test "$$RETRO_MODEL" = claude-sonnet-5-5 || { echo "retro: provider or model pin changed, refusing to run" >&2; exit 1; }; test -s "$$RETRO_TOKEN" || { echo "retro: issues token missing" >&2; exit 1; }; mkdir -p "$$RUNTIME_DIRECTORY/gh"; GH_CONFIG_DIR="$$RUNTIME_DIRECTORY/gh" GH_TOKEN=$$(cat "$$RETRO_TOKEN") %h/.local/bin/gh issue list -R Nishfleet/fleet-ops --label retro --state open --limit 100 --json title -q ".[].title" > "$$RUNTIME_DIRECTORY/known-issues.txt"'
+# 2. The model, in the jail. Stdin is the prompt, then the dynamic run header. The jail:
+#    system read-only, /home an empty tmpfs, then only these bound back.
+#    --tmpfs over the gh and Cloudflare config is the worker jail's own pair
+#    (agent.yml); under the empty /home they are redundant and stay so the line
+#    reads the same as the worker jail. A copy of ~/.claude.json is bound so the
+#    model cannot edit the real one, and ~/.claude is read-only including the
+#    login file: a run that needs a token refresh fails loudly rather than let a
+#    fooled model rewrite the login. Of the deploy clone only the permission
+#    file is bound. /srv, /opt and the two system config dirs that hold service
+#    env files and a token are emptied too (the system tree is otherwise
+#    read-only and readable).
+ExecStart=/bin/bash -c 'set -eu; umask 077; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; cp "$$HOME/.claude.json" "$$RUNTIME_DIRECTORY/claude.json"; printf "127.0.0.1 localhost api.anthropic.com\n" > "$$RUNTIME_DIRECTORY/hosts"; hide=(); for b in curl wget nc.openbsd openssl ssh python3 perl; do if [ -e /usr/bin/$$b ]; then hide+=(--ro-bind /dev/null /usr/bin/$$b); fi; done; for t in /srv /opt /var/lib/fleet-ops /etc/fail2ban; do if [ -d $$t ]; then hide+=(--tmpfs $$t); fi; done; { cat "$$RETRO_REPO/prompts/retro-weekly.md"; printf "RUN_DIR=%%s\nTODAY=%%s\n" "$$run" "$$d"; } | bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /home --tmpfs /run "$${hide[@]}" --tmpfs "$$HOME/.config/gh" --tmpfs "$$HOME/.config/cloudflare" --ro-bind "$$HOME/.local/bin" "$$HOME/.local/bin" --ro-bind "$$HOME/.local/share/claude" "$$HOME/.local/share/claude" --ro-bind "$$HOME/.claude" "$$HOME/.claude" --bind "$$RUNTIME_DIRECTORY/claude.json" "$$HOME/.claude.json" --ro-bind "$$HOME/.pi/agent/sessions" "$$HOME/.pi/agent/sessions" --ro-bind "$$HOME/AGENTS.md" "$$HOME/AGENTS.md" --ro-bind "$$RETRO_REPO/config/retro-weekly-claude.json" "$$RETRO_REPO/config/retro-weekly-claude.json" --ro-bind "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" "$$HOME/workspaces/tooling/nish-vault/_system/shared-memory" --bind "$$run" "$$run" --ro-bind "$$RUNTIME_DIRECTORY/known-issues.txt" "$$run/known-issues.txt" --ro-bind "$$RUNTIME_DIRECTORY/hosts" /etc/hosts --bind "$$RETRO_API_SOCK" /tmp/api.sock --chdir / --unshare-pid --unshare-net --die-with-parent -- bash -c "socat TCP-LISTEN:8443,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/api.sock & sleep 1; exec env ANTHROPIC_BASE_URL=https://api.anthropic.com:8443 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_TELEMETRY=1 $$HOME/.local/bin/claude -p --model $$RETRO_MODEL --output-format stream-json --verbose --no-session-persistence --setting-sources project,local --settings $$RETRO_REPO/config/retro-weekly-claude.json --permission-mode dontAsk --max-turns 200" > "$$RUNTIME_DIRECTORY/claude.jsonl"'
+# 3. Pin check: read the call's own record. It is written to the runtime directory,
+#    which the jail hides, so the model cannot replace it with a forged one. Fails unless the call succeeded, the
+#    main model is the pinned one and every model it touched is a claude-* model
+#    (the Anthropic API). Prints the pinned provider; no transcript text.
+ExecStart=/bin/bash -c 'set -eu; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; jq -e -s "([.[] | select(.type==\"system\" and .subtype==\"init\")] | length == 1 and .[0].model == env.RETRO_MODEL) and ([.[] | select(.type==\"assistant\" and (.parent_tool_use_id == null)) | .message.model] | length > 0 and all(. == env.RETRO_MODEL or . == \"<synthetic>\")) and ([.[] | select(.type==\"result\")] | length == 1 and .[0].is_error == false and .[0].subtype == \"success\" and (.[0].modelUsage | keys | all(test(\"^claude-\"))))" "$$RUNTIME_DIRECTORY/claude.jsonl" > /dev/null || { echo "retro: PIN CHECK FAILED (wrong model, other provider, or the call did not succeed)" >&2; exit 1; }; used=$$(jq -r -s "[.[] | select(.type==\"result\") | .modelUsage | keys[]] | unique | join(\",\")" "$$RUNTIME_DIRECTORY/claude.jsonl"); echo "retro-provider: anthropic base=$$ANTHROPIC_BASE_URL pinned-model=$$RETRO_MODEL models-used=$$used auth=$$(jq -r -s ".[] | select(.type==\"system\" and .subtype==\"init\") | .apiKeySource" "$$RUNTIME_DIRECTORY/claude.jsonl") router=none"'
+# 4. The private report goes to the vault (syncs to the Mac; the vault repo is
+#    private and ignores nothing under _system/retro).
+ExecStart=/bin/bash -c 'set -eu; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; test -f "$$run/report.md" && test ! -L "$$run/report.md" && test -s "$$run/report.md" || { echo "retro: no report written (or it is not a regular file)" >&2; exit 1; }; sed -E "s/gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|[0-9]{8,10}:[A-Za-z0-9_-]{30,}|[A-Za-z0-9_-]{40,}|[A-Za-z0-9_]{32,}/[redacted]/g" "$$run/report.md" > "$$RUNTIME_DIRECTORY/report.md"; /usr/bin/install -D -m 0644 "$$RUNTIME_DIRECTORY/report.md" "$$RETRO_VAULT/retro-week-$$d.md"; echo "retro: private report $$RETRO_VAULT/retro-week-$$d.md ($$(wc -c < "$$RUNTIME_DIRECTORY/report.md") bytes, secret shapes redacted: $$(grep -o "[[]redacted[]]" "$$RUNTIME_DIRECTORY/report.md" | wc -l))"'
+# 5. File follow-up issues, only if every one passes the public-text check. All
+#    files are checked before any is filed; one refusal fails the unit and files
+#    nothing. Only line numbers are printed on a refusal, never the matched text.
+#    The repo, labels and the token are fixed here, not chosen by the model. gh
+#    reads an empty config dir plus the issues token, never the gh login.
+ExecStart=/bin/bash -c 'set -eu; shopt -s nullglob; d=$$(cat "$$RUNTIME_DIRECTORY/date"); run="$$RETRO_STATE/run-$$d"; deny="$$RETRO_REPO/config/retro-public-deny.txt"; test "$$(grep -c . "$$deny")" -ge 10 || { echo "retro-public-check: deny list is empty or short" >&2; exit 1; }; printf "%%s\n" "x 00000000-0000-0000-0000-000000000000 /home/x \"q\" 09:15" | grep -Eqif "$$deny" || { echo "retro-public-check: deny list failed its own canary" >&2; exit 1; }; if [ -L "$$run/issues" ]; then echo "retro-public-check: REFUSED, issues is a link" >&2; exit 1; fi; files=("$$run"/issues/*.md); n=$${#files[@]}; if [ "$$n" -gt 3 ]; then echo "retro-public-check: REFUSED, $$n issue files (max 3)" >&2; exit 1; fi; ok() { sed -n "$$1p" "$$3" | grep -Exq -- "$$2"; }; bad=0; : > "$$RUNTIME_DIRECTORY/queue"; : > "$$RUNTIME_DIRECTORY/seen"; for f in "$${files[@]}"; do b=$$(basename "$$f"); if [ -L "$$f" ] || [ ! -f "$$f" ] || [ "$$(wc -l < "$$f")" -ne 5 ] || [ "$$(wc -c < "$$f")" -gt 400 ]; then echo "retro-public-check: REFUSED $$b: not a regular five-line file" >&2; bad=1; continue; fi; rc=0; m=$$(grep -nEif "$$deny" "$$f") || rc=$$?; if [ "$$rc" -gt 1 ]; then echo "retro-public-check: grep failed on $$b" >&2; exit 1; fi; if [ "$$rc" -eq 0 ]; then echo "retro-public-check: REFUSED $$b as written by the model: session id, path, quote, time, link, email or secret shape on line(s) $$(printf "%%s\n" "$$m" | cut -d: -f1 | tr "\n" " ")" >&2; bad=1; continue; fi; ok 1 "class=(main-red|tool-economy|corrections|false-claims|repeated-failures|steering-no-ops)" "$$f" && ok 2 "count=[0-9]{1,5}" "$$f" && ok 3 "rung=(structure|static-gate|rule|skill|prose)" "$$f" && ok 4 "repo=(fleet-ops|0509|drive|inish-site|tinystudio-in)" "$$f" && ok 5 "fix=(ci-check|stop-hook|test|rule-edit|prompt-edit|config-change|delete-dead-code|other)" "$$f" || { echo "retro-public-check: REFUSED $$b: a line is outside the fixed form" >&2; bad=1; continue; }; c=$$(sed -n 1p "$$f" | cut -d= -f2); v=$$(sed -n 2p "$$f" | cut -d= -f2); r=$$(sed -n 3p "$$f" | cut -d= -f2); o=$$(sed -n 4p "$$f" | cut -d= -f2); x=$$(sed -n 5p "$$f" | cut -d= -f2-); printf "Retro: %%s\n" "$$c" > "$$RUNTIME_DIRECTORY/t.$$b"; printf "Week ending: %%s\nClass: %%s\nCount this week: %%s\nLowest fix rung: %%s\nOwning repo: %%s\nSuggested fix kind: %%s\n\nThe evidence is in the private weekly retro report, not on this page.\n" "$$d" "$$c" "$$v" "$$r" "$$o" "$$x" > "$$RUNTIME_DIRECTORY/b.$$b"; rc=0; m=$$(cat "$$RUNTIME_DIRECTORY/t.$$b" "$$RUNTIME_DIRECTORY/b.$$b" | grep -nEif "$$deny") || rc=$$?; if [ "$$rc" -gt 1 ]; then echo "retro-public-check: grep failed on $$b" >&2; exit 1; fi; if [ "$$rc" -eq 0 ]; then echo "retro-public-check: REFUSED $$b: session id, path, quote, time, link, email or secret shape on line(s) $$(printf "%%s\n" "$$m" | cut -d: -f1 | tr "\n" " ")" >&2; bad=1; continue; fi; if grep -Fxq -- "$$c" "$$RUNTIME_DIRECTORY/seen"; then echo "retro: two files for one class, second skipped: $$b"; continue; fi; echo "$$c" >> "$$RUNTIME_DIRECTORY/seen"; echo "$$b" >> "$$RUNTIME_DIRECTORY/queue"; done; if [ "$$bad" -ne 0 ]; then echo "retro-public-check: nothing was filed" >&2; exit 1; fi; echo "retro-public-check: $$n issue file(s) passed"; export GH_CONFIG_DIR="$$RUNTIME_DIRECTORY/gh" GH_TOKEN=$$(cat "$$RETRO_TOKEN"); while read -r b; do t=$$(cat "$$RUNTIME_DIRECTORY/t.$$b"); if grep -Fxq -- "$$t" "$$RUNTIME_DIRECTORY/known-issues.txt"; then echo "retro: already open, skipped: $$t"; continue; fi; %h/.local/bin/gh issue create -R Nishfleet/fleet-ops --title "$$t" --label retro --body-file "$$RUNTIME_DIRECTORY/b.$$b" < /dev/null; done < "$$RUNTIME_DIRECTORY/queue"'
+# The vault copy is the deliverable; a missing one fails the unit even when an
+# earlier step died first.
+ExecStopPost=/bin/bash -c 'test -s "$$RUNTIME_DIRECTORY/date" || { echo no-deliverable >&2; exit 1; }; d=$$(cat "$$RUNTIME_DIRECTORY/date"); test -s "$$RETRO_VAULT/retro-week-$$d.md" && test "$$RETRO_VAULT/retro-week-$$d.md" -nt "$$RUNTIME_DIRECTORY/date" || { echo no-deliverable >&2; exit 1; }'
+TimeoutStartSec=3600

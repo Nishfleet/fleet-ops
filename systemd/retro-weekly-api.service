@@ -1,0 +1,11 @@
+# Started by retro-weekly-api.socket on the first connection from the retro jail
+# (fleet-ops#9641). systemd-socket-proxyd is the vendor's own forwarder (man
+# systemd-socket-proxyd); the one host and port below is the whole policy. TLS
+# runs end to end between the Claude call and this host, so nothing here sees
+# or changes the traffic. It exits after 30 s idle.
+[Unit]
+Description=Retro jail door to the Anthropic API (forwarder, api.anthropic.com:443 only)
+StopWhenUnneeded=yes
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=30s api.anthropic.com:443
