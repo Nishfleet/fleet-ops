@@ -99,13 +99,22 @@ Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cl
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`; `hermes-urgent` is the policy root and the fallback. The webhook
+`cloudflare-spend-dispatch`. The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
-Spend alerts also go to hermes-urgent, so a dead token never silences them.
+Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
+or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
+cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
+nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
+cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
+labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
+cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
+fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
+add it there with the reason. Switch off the fleet route: point the policy root back at
+`hermes-urgent` in `cloudflare-spend-contact.yaml`.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -128,7 +137,7 @@ fleet-grafana-github-token.service -p Result -p ExecMainStartTimestamp` and the 
 if a webhook still fails. Switch off: `systemctl --user disable --now
 fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-github-token.service`
 (the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
-rule pages hermes-urgent, and spend and dead-row alerts still reach Telegram. CI proof:
+rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
@@ -155,8 +164,7 @@ three times. Host data directories stay at
 `~/.local/share/fleet-litellm-redis`.
 
 The proxy version is the image tag in `fleet-litellm-proxy.container`,
-bumped in its own PR. `patches/litellm-1.98.0-gchunk-usage-union.patch` is
-not applied by any unit in this repo.
+bumped in its own PR.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
@@ -290,6 +298,53 @@ above for the single file it needs; nothing in this repo asks for it today. A
 hand-run `claude -p` or `systemd-run --user` that needs the token passes the
 line above.
 
+## Unattended Claude runs (fleet-ops#9502)
+
+Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
+(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the Remote Control server). Both used to pass
+`--permission-mode bypassPermissions`, which skips every check, so the
+`permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
+`gh repo delete`, ...) were decorative: exactly the rules that mark a step as
+destructive.
+
+Both now run `--permission-mode dontAsk`, which denies a tool call that would
+have raised a prompt nobody can answer. The allow list per unit is a file in
+this repo under `rootfs/etc/claude-code/roles/`, installed to
+`/etc/claude-code/roles/` by `ansible/host.yml`:
+
+| unit | role file | how it is loaded |
+| --- | --- | --- |
+| `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
+| `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
+
+`claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
+Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:
+`git stash` was still denied under dontAsk with `Bash` in allow (2026-10-09).
+`sed -i` stayed denied by the managed deny list. Edit a role file in a PR,
+never on the box. The CLI flag is the mode switch: do not set
+`permissions.defaultMode` in a role file.
+
+dontAsk on Remote Control is intended: Nish cannot approve a one-off command
+from the phone. A denied call is reported in the session and there is no
+prompt to tap.
+
+The tincan unit goes live after merge, when fleet-sync has the new file and
+the user unit is reloaded (`systemctl --user daemon-reload && systemctl
+--user restart tincan-listen-claude-vps.service`). Remote Control stays on
+the old `ExecStart` until Nish restarts it.
+
+**Where denials show.** Each denied call is reported twice: in the unit's
+journal, and in the run transcript (`claude -p --output-format json` lists
+them under `permission_denials`). The tincan transcript is
+`~/.claude/projects/-home-nish--local-state-tincan-listen-claude-vps/<id>.jsonl`
+(the directory name is the escaped cwd, which is the unit's `StateDirectory`).
+
+**Rollback.** Put `--permission-mode bypassPermissions` back on the `ExecStart`
+line of the unit and restart it. That restores today's behaviour: the role
+file is then inert and nothing else in the unit changed. Only Nish restarts
+`claude-remote-control.service`, because that cuts the phone link.
+
 ## Break-glass access (SSH is Tailscale-only)
 
 If tailscaled is down, SSH is gone. The out-of-band layer exists today at zero
@@ -306,3 +361,17 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+
+## Main has no ruleset bypass (2026-10-12)
+
+- Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
+- Repository admins, including every session acting as `nish3451`, merge only through the required checks and the merge queue: `gh pr merge <PR> --auto`.
+- Warning: the emergency path removes the merge guard. Only Nish takes it, as org owner, and restores the state after. Restore the admin role (actor 5) with `echo '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`. Remove it again with `echo '{"bypass_actors":[]}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
+
+## The ratchet runs from main (2026-10-12)
+
+- Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
+- Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
+- A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
+- Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
+- Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.

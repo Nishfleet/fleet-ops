@@ -22,12 +22,32 @@ on:
         required: false
         default: ''
       arm_pr:
-        description: risky PR number whose head carries an approver's approval and is not armed (agent-dispatch arm-approved)
+        description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
         type: string
         required: false
         default: ''
       arm_sha:
-        description: head sha hold-risky saw approved; the arm uses --match-head-commit with exactly this sha
+        description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
+        type: string
+        required: false
+        default: ''
+      stuck_pr:
+        description: PR the sweep found waiting over an hour that no worker owns (agent-dispatch stuck-file)
+        type: string
+        required: false
+        default: ''
+      stuck_sha:
+        description: head sha the sweep judged stuck; the filed issue names it so a new head is a new report
+        type: string
+        required: false
+        default: ''
+      stuck_reason:
+        description: why the PR cannot move on its own (conflict, red checks, reviewer block)
+        type: string
+        required: false
+        default: ''
+      stuck_url:
+        description: link to the comment that blocks it, empty when none
         type: string
         required: false
         default: ''
@@ -107,7 +127,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Gate
         # The dispatch policy that the old intake prompt used to carry, now in one
         # step: skip parked or blocked work, cap runs, then claim.
@@ -391,6 +410,13 @@ jobs:
           claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
+          mkdir -p "$dir"
+          # Plain git, local edits kept (no reset, clean or checkout -B); a failed switch fails the step.
+          if [ "$MISS" != true ]; then
+            [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
+            git -C "$dir" fetch -v origin
+            git -C "$dir" switch "$REF"
+          fi
           # Static text, the marker line, then the target id: the id is the only
           # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
@@ -409,7 +435,8 @@ jobs:
             # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
             # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
             # login). A name with no number keeps seat a. The seat never changes
-            # inside a job. A run that dies on a rate limit or
+            # inside a job, except to the other seat when its own login is missing
+            # (below). A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
@@ -418,10 +445,36 @@ jobs:
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
+            seat_a_dir=${CLAUDE_CONFIG_DIR:-}
             if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
-            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_jail="$claude_jail_a" claude_seat=a; else claude_jail="$claude_jail_b" claude_seat=b; fi
+            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
+            # A seat whose login file is missing or empty fails every job on it, so a
+            # missing login costs one seat, never both. Only the file's presence and
+            # size are tested, never its content. The other seat takes the job if it
+            # has a login; with neither, the lane is skipped and the job falls
+            # through as a refused seat does (below).
+            seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
+            claude_other=a; [ "$claude_seat" = a ] && claude_other=b
+            if ! seat_login "$claude_seat"; then
+              if seat_login "$claude_other"; then
+                echo "::warning::claude lane: seat=$claude_seat missing login, using seat=$claude_other"
+                claude_seat=$claude_other
+                if [ "$claude_seat" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; else unset CLAUDE_CONFIG_DIR; fi
+              else
+                echo "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane"
+                if [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; then
+                  ENGINE=$fallback
+                  echo "fallthrough: $ENGINE (claude login missing)"
+                else
+                  echo "claude: no login on either seat, treated as 429 rate limit, cursor lane full" >&2
+                  exit 1
+                fi
+              fi
+            fi
+            if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
+          fi
+          if [ "$ENGINE" = claude ]; then
             echo "claude lane: seat=$claude_seat runner=${RUNNER_NAME:-unknown}"
-            mkdir -p "$dir"
             mark claude
             rc=0
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
@@ -429,7 +482,7 @@ jobs:
             # run that stopped on the turn cap is a failed run, not a refused seat.
             refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
             # --chdir puts the worker directory on the bwrap command line, which is
-            # what the Gate's lane count reads. The trim flags are the orchestrator
+            # what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator
             # session's: no MCP servers, no skills, no user settings; managed
             # settings still apply.
             # bypassPermissions is the same trust the other engines get (Devin runs
@@ -440,7 +493,7 @@ jobs:
             # same jail, so they add no reach; --settings turns every hook off, and
             # --settings outranks project and local settings.
             echo "$packet" | $claude_jail --chdir "$dir" -- \
-              claude -p --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
+              claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
               --strict-mcp-config --disable-slash-commands --setting-sources project,local \
               --settings '{"disableAllHooks":true}' \
               >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
@@ -456,9 +509,6 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = devin ]; then
-            # --chdir puts the worker directory on the bwrap command line,
-            # which is what the Gate's lane count reads.
-            mkdir -p "$dir"
             mark devin
             for model in swe-2-max swe-2-high; do
               rc=0
@@ -471,7 +521,6 @@ jobs:
             # ends here; after a fallthrough, the Router wall must judge the
             # lane that actually ran.
             if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
-              live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
               if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
               else ENGINE=pi
               fi
@@ -482,9 +531,7 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = opencode ]; then
-            # --dir puts the worker directory on the bwrap command line; --auto
-            # approves what the worker needs outside it (prompts, gh, the repo).
-            mkdir -p "$dir"
+            # --auto approves what the worker needs outside --dir (prompts, gh, the repo).
             mark opencode
             rc=0
             $jail opencode run --dir "$dir" -m opencode/longcat-2.5-preview-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
@@ -511,7 +558,6 @@ jobs:
             # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
             . "$HOME/.config/fleet-ops/seats/$cursor_env"
             set +a
-            mkdir -p "$dir"
             mark cursor
             $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
               --workspace "$dir" "$packet" >/dev/null
@@ -532,7 +578,8 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model worker-capable >/dev/null
             else
-              echo "/worker $id" | $jail pi --print --no-context-files \
+              cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
+              echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
@@ -543,8 +590,8 @@ jobs:
             exit 1
           fi
       - name: Record the builder engine
-        # The review job reads this to pick its model: Claude-built work goes to
-        # Fable, anything else to Opus (see the review job). Posted on the PR by
+        # The review job reads this; every first review is Opus 5.5, Claude-built
+        # or not (see the review job). Posted on the PR by
         # the worker App, so only the App's own comment counts there. A PR with no such
         # comment (the orchestrator's, a person's session) counts as Claude-built.
         if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
@@ -587,7 +634,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          skip-token-revoke: "false"
       - name: Router wall
         id: wall
         # A router seat wall or a Devin capacity refusal is infra, not a bad
@@ -804,12 +850,13 @@ jobs:
         if: always()
         env:
           MISS: ${{ steps.gate.outputs.miss }}
+          WORKER_OUTCOME: ${{ steps.worker.outcome }}
         run: |
           i=${REF#claim/issue-}
           id=${REPO#*/}-${i%%-*}
           if [ "$MISS" = true ]; then
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
-          else
+          elif [ "$WORKER_OUTCOME" = success ]; then # a failed run keeps its dir: the retry resumes in it
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
   review:
@@ -845,20 +892,22 @@ jobs:
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # The first review is a no-tools Claude call on a Claude seat: Opus 5.5
-          # for work another engine built, Fable 5.1 for Claude-built work (Nish
-          # approved that exception to "Claude never grades Claude", 2026-10-10).
+          # for all work, Claude-built or not (Nish approved that exception to
+          # "Claude never grades Claude", 2026-10-10). Fable is never a reviewer:
+          # as the default it used 44% of a seat's weekly Fable limit in ~2 days.
           # The verdict is always Jev's (not Claude) and a PR that edits the merge
           # guard or a workflow also needs a second review by a different model
           # family than the Jev judge and than Claude. The senior seat is a single
           # GLM (Z.ai) row. The comment names both families.
           FIRST_MODEL_OTHER: claude-opus-5-5
-          FIRST_MODEL_CLAUDE_BUILT: claude-fable-5-1
+          FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the
           # "reviewer: <sha>" phrase the already-reviewed check looks for, and
           # the job goes red so a re-run reviews the head again.
@@ -949,9 +998,8 @@ jobs:
           # PR. Only the worker App's own comment counts (not any bot's); any claude in a list, or no such
           # comment at all (the orchestrator, a person's session), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
-          # Unknown is the stricter pairing: Fable is the reviewer for Claude-built
-          # work, so a Claude builder (Sonnet or Opus) never meets a reviewer of its
-          # own model, and the verdict is Jev's (non-Claude) either way.
+          # Unknown counts as Claude-built. Both names are Opus 5.5 today; the
+          # verdict is Jev's (non-Claude) either way.
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
@@ -997,7 +1045,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1017,14 +1065,10 @@ jobs:
             cat "$RUNNER_TEMP/diff.txt"
             printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are the second, independent reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
           } > "$RUNNER_TEMP/second-in.txt"
-          second=
-          for _try in 1 2; do
-            second=$(pi --print --no-context-files --no-tools --no-session \
-              --append-system-prompt "$HOME/AGENTS.md" \
-              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-              --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
-            [ -z "${second//[[:space:]]/}" ] || break
-          done
+          second=$(pi --print --no-context-files --no-tools --no-session \
+            --append-system-prompt "$HOME/AGENTS.md" \
+            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
+            --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
           [ -n "${second//[[:space:]]/}" ] || retry "the second reviewer gave no answer"
           second_shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$second" || true)
           second_text=$(printf '%s' "$second_shown" | head -c 3500)
@@ -1033,20 +1077,18 @@ jobs:
           if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
           fi
-  # Arms an approved head: the review job's own approval in the same run, or a
-  # person's approval that hold-risky confirmed (fleet-ops#9505). hold-risky
-  # already confirmed the approval of this exact head for the second; this job
-  # only arms, as the worker App, and re-reads the PR so a head that moved or a
-  # PR that closed since is left alone. --match-head-commit makes the arm
-  # itself refuse a moved head, and a later approval is read again by
-  # hold-risky when the arm fires auto_merge_enabled.
+  # Arms an approved head: the review job's own approval in the same run, or
+  # one the hourly sweep found (stuck-arm). This job only arms, as the worker
+  # App, and re-reads the PR so a head that moved or a PR that closed since is
+  # left alone. --match-head-commit makes the arm itself refuse a moved head,
+  # and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
     if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
@@ -1101,7 +1143,7 @@ jobs:
           # orchestrator job does, but only when this same run's review job just
           # approved this exact head (REVIEWED, from the review job's output).
           # No comment or dispatch input can switch it on. Any other arm, including
-          # a person's approval relayed through arm_pr, keeps the App token. A
+          # the sweep's arm_pr, keeps the App token. A
           # failed read of the file list fails the step; it never falls to the
           # wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
@@ -1112,6 +1154,81 @@ jobs:
             GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
             echo "armed #$PR at $SHA"
           fi
+  # Files one orchestrator issue for a PR that has waited over an hour and that
+  # no worker owns: a session's own branch, or a claim PR whose issue is closed
+  # or deleted (agent-dispatch stuck-prs). 40 of 53 waiting fleet PRs on
+  # 2026-10-11 were such PRs, some idle for days, because every sweep path
+  # followed claim branches only. The App token files it so the
+  # needs-orchestrator label fires the orchestrate job; a GITHUB_TOKEN label
+  # fires no workflow. One open issue per PR: a new head comments on it, the
+  # same head does nothing.
+  stuck:
+    if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+      issues: read
+    concurrency:
+      group: stuck-${{ github.repository }}-${{ inputs.stuck_pr }}
+      cancel-in-progress: false
+    env:
+      REPO: ${{ github.repository }}
+      PR: ${{ inputs.stuck_pr }}
+      SHA: ${{ inputs.stuck_sha }}
+      REASON: ${{ inputs.stuck_reason }}
+      URL: ${{ inputs.stuck_url }}
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      - name: Issue token
+        id: issue-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
+      - name: File or update the stuck-PR issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the next sweep decides"; exit 0; }
+          marker="stuck-pr: #$PR"
+          why="PR #$PR ($(jq -r .head.ref <<<"$pr")) has waited over an hour at ${SHA:0:7}: $REASON."
+          [ -z "$URL" ] || why="$why Blocking comment: $URL"
+          old=$(gh issue list -R "$REPO" --state open -L 100 --search "\"$marker\" in:body" --json number,body |
+            jq -c --arg m "$marker" '[.[] | select(.body | split("\n") | any(.[]; startswith($m + " ")))] | first // empty')
+          if [ -n "$old" ]; then
+            n=$(jq -r .number <<<"$old")
+            if gh issue view "$n" -R "$REPO" --json body,comments --jq '[.body, .comments[].body] | join("\n")' | grep -qF "$marker $SHA"; then
+              echo "#$n already reports #$PR at $SHA"
+              exit 0
+            fi
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "$(printf '%s %s\n\n%s' "$marker" "$SHA" "$why")"
+            echo "updated #$n for #$PR at $SHA"
+            exit 0
+          fi
+          body=$(printf '%s %s\n\n%s\n\nTake the PR over: fix the blocker lines or merge main on its branch and push (a new head gets a fresh review and the sweep arms it once approved), or close it as superseded. %s' \
+            "$marker" "$SHA" "$why" "$(jq -r .html_url <<<"$pr")")
+          url=$(GH_TOKEN=$ISSUE_TOKEN gh issue create -R "$REPO" --title "Stuck PR #$PR: $REASON" --body "$body")
+          # Labelled after creation, so the labeled event that starts the
+          # orchestrate job is its own event from the App.
+          GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
+          echo "filed $url for #$PR at $SHA"
   inish-daily:
     # The Daily edition, published to https://nish.sh/daily (inish.in is retired
     # and only redirects). Its runner was a Hermes cron job, disabled 2026-08-20
@@ -1188,13 +1305,13 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The candidate fetch (which needs the Jev key and the GitHub search
-        # token) runs here, outside the jail, from a fresh clone of main before
-        # the model starts. The model then runs in a bwrap jail with neither
-        # secret in its environment, that hides Nish's gh login, the Cloudflare
-        # tokens, the seat files and the App key; it reads outsider text all day
-        # (fleet-ops#9274). Nothing the model leaves in its own checkout is
-        # trusted: after each attempt only its edition JSON is taken (a regular
+        # The candidate fetch (Jev key, GitHub search token) runs outside the jail before the model starts.
+        # The jail hides both, Nish's gh login, the Cloudflare tokens, the seat files, the App key and
+        # litellm-master-key.env (the model reads outsider text, fleet-ops#9274). pi instead reads a virtual
+        # key bound at that path (fleet-ops#9634): models worker-capable and senior only (the loop's two
+        # --model values; this is the step's only trap), 3h (two 40m attempts plus fetch and builds), $5
+        # for the whole run, revoked on exit. The key file in $RUNNER_TEMP holds only that virtual key.
+        # Nothing the model leaves is trusted: after each attempt only its edition JSON is taken (a regular
         # file, size-capped), a fresh clone of main is made, the edition and the
         # pristine candidate file are dropped in, and the builder and the whole
         # test suite run there. The publish step pushes from that clone, so
@@ -1204,7 +1321,9 @@ jobs:
         run: |
           key=$(sed -n 's/^TYPESAFE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env")
           [ -n "$key" ] || { echo "::error::TYPESAFE_API_KEY missing from the Jev seat file; an unranked edition is not worth 40 minutes of model time"; exit 1; }
-          echo "::add-mask::$key"
+          admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
+          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\",\"senior\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
+          echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
@@ -1249,11 +1368,9 @@ jobs:
             n=$((n + 1))
             out="$RUNNER_TEMP/inish-daily-$n.out"
             rc=0
-            # One FLEET_TASK_ID per attempt: Pi sends it as the router session id (#9015).
-            # The agent- session prefix keeps the seat visible to the Gate's live() count.
-            # env -u: the model gets neither the GitHub token nor the Jev key.
+            # One FLEET_TASK_ID per attempt (router session id, #9015); the agent- prefix keeps it in the Gate's live() count.
             echo "Compile today's The Daily edition (today = $today, Asia/Kolkata)." \
-              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base -- pi --print --no-context-files \
+              | (cd "$src" && env -u GH_TOKEN FLEET_TASK_ID="inish-daily-${GITHUB_RUN_ID}-$n" timeout 40m $jail_base --ro-bind "$router_key" "$HOME/.config/fleet-ops/litellm-master-key.env" -- pi --print --no-context-files \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                   --append-system-prompt "$HOME/AGENTS.md" \
                   --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/inish-daily.md" \

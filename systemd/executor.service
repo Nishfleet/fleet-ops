@@ -1,0 +1,19 @@
+[Unit]
+Description=Executor MCP hub (executor.sh) - loopback only
+After=network-online.target
+
+[Service]
+Environment=PATH=/home/nish/.nvm/versions/node/v24.21.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=EXECUTOR_PORT=4312
+Environment=EXECUTOR_DATA_DIR=/home/nish/.executor/v2/cli
+Environment=EXECUTOR_KEY_STORAGE=file
+Environment=EXECUTOR_NO_UPDATE_CHECK=1
+Environment=DO_NOT_TRACK=1
+ExecStart=/home/nish/.nvm/versions/node/v24.21.0/bin/executor serve
+Restart=on-failure
+RestartSec=5
+MemoryMax=2G
+UMask=0077
+
+[Install]
+WantedBy=default.target

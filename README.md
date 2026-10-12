@@ -7,7 +7,7 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, two `.path` units (`fleet-litellm-proxy-config.path`,
+  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
   `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
@@ -27,9 +27,6 @@ script, or prompt lands unseen.
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
-  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
-  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
@@ -68,6 +65,9 @@ script, or prompt lands unseen.
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
+- `config/claude-agents/` — the `helper` and `scout` subagent files
+  `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
+  the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
@@ -88,6 +88,43 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
+  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  second-login env line for the Tincan listener. They were hand-placed on the
+  host with no repo copy (fleet-ops#9645); they decide nothing and wrap
+  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
+  the link. Install on a fresh host: `ln -s` each file from the deploy clone's
+  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
+  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  and `enable --now`. The files match what ran before (only the two Amp
+  `Description=` lines lost their account names), so adopting them restarted
+  nothing: a unit edit applies at the unit's next restart (never restart
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
+  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  so only its parent unit is verified. Switch one off with
+  `systemctl --user disable --now <unit>`; delete it by removing its file here
+  and the live link, then `systemctl --user daemon-reload`.
+- `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
+  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
+  times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
+  any PR left waiting over an hour: it arms a head a reviewer approved, asks
+  the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
+  issue for a PR no worker owns. One instance per repo with an agent-dispatch
+  stub (fleet-ops, 0509, drive, aiconverter-app,
+  TinyStudio.io-public, siterep-public), linked and enabled by
+  `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
+  line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+- `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
+  page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
+  revoked or not `nish3451`. The path unit checks on every change to
+  `~/.config/gh/hosts.yml`, the timer hourly. Wire once with `systemctl --user
+  link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
+  `systemctl --user disable --now fleet-gh-login-check.timer
+  fleet-gh-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
@@ -515,6 +552,23 @@ Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
 `systemctl daemon-reload`, and restart Remote Control, only once the default
 login allows Remote Control again.
 
+### Subagents on the Max config dir (2026-10-11)
+
+Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
+drop-in above every Remote Control thread got "helper not found", and the
+model-lanes gate denies every other subagent type: no thread could delegate.
+`config/claude-agents/` now ships `helper.md` and `scout.md` (until now
+hand-placed in `~/.claude/agents`). `fleet-sync.service` step 2d copies them
+there, `config/user-tmpfiles.d/claude-max-agents.conf` links
+`~/.claude-max/agents` to `~/.claude/agents` (step 5), and step 5b fails the
+sync if that path is anything but the link. Edit an agent here, by PR; a hand
+edit of the live file is overwritten on the next sync.
+`tests/test_claude_max_agents.py` runs those unit lines against a temp home.
+
+Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
+file and its live copy in `~/.config/user-tmpfiles.d/`, then
+`rm ~/.claude-max/agents`. The live agent files stay as plain files.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
@@ -549,7 +603,7 @@ holds both rules before merge.
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
@@ -565,6 +619,26 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Ratchet: workflow and script code only shrinks
+
+The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
+deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+as many, so removing glue earns room. There are no exceptions in this repo: a new
+mechanism is a component in its own repo, behind an official extension point. The job
+self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+A web or product repo adds a workflow with one job named `ratchet` that calls
+`uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
+and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
+the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
+Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
+403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
+`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
+ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+the job alone does not switch it off: a required check that never reports blocks the PR.
+
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
@@ -578,7 +652,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
@@ -617,6 +691,44 @@ Only `repos` is enrolled.
 The `bin/intake-reconcile` reconciler and its `intake-reconcile.{path,
 service,timer}` units were deleted in the glue sweep — the file itself is
 the enrolment mechanism (fleet-ops#32, #25).
+
+## Triage admission (needs-triage)
+
+An open issue labelled `needs-triage` in an enrolled **product** repo
+(`repos` with `product: true` in `config/intake-repos.json`) gets a Jev verdict
+instead of waiting for a person to add `agent-ready`. The `admit` job in
+`.github/workflows/agent-dispatch.yml` runs on the hourly sweep, on the
+`needs-triage` label event and on `workflow_dispatch` (`task=admit`, optionally
+`issue=<N>`). It asks the router `/jev` the same way `agent.yml` does: "Admit
+this issue for an automated worker now?", with the title, body and labels as
+state.
+
+- p >= 0.9: `agent-ready` added, `needs-triage` removed.
+- otherwise: `needs-orchestrator` added, `needs-triage` removed, for a person to decide.
+
+Only the issue author `nish3451` is admitted. The newest `needs-triage` label
+event must also come from `nish3451`. Non-owner issues are skipped with a notice
+and left as `needs-triage` (no Jev call). A daily cap (`vars.ADMIT_DAILY_MAX`,
+default 10) counts `triage-admit: admitted` comments since IST midnight and
+stops early when reached. The job runs only when
+`(inputs.agent_mode || vars.AGENT_MODE) == 'live'`. Issue title and body are
+wrapped in `<ISSUE_TEXT>` fences so the model treats them as data, never as
+instructions.
+
+Every issue gets one comment with p, the model and the run link. An issue whose
+title, body or labels touch secrets, money or payments, or customer-data
+deletion, or that carries `blocked-on: nish-decision`, `nish-reserved` or
+`needs-nish-decision`, never reaches Jev and never gets `agent-ready`: it goes to
+`needs-orchestrator`. `Nishfleet/fleet-ops` is never acted on (fo#8304). If Jev
+gives no answer the label stays and the next sweep retries. The labels are
+written with the worker App token, so the `agent-ready` and `needs-orchestrator`
+events start the next job.
+
+**Switch it off:** set the repo variable `ADMIT_TRIAGE` to `off` on the calling
+repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
+**Delete it:** remove the `admit` job, `tests/test_triage_admit.py`, its step in
+`ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
+and a fake router (`tests/test_triage_admit.py`).
 
 ## Worker capacity
 

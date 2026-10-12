@@ -51,6 +51,12 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+# 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
+#     pair here so every deploy carries edits to it, and enable one instance per
+#     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
+#     delete this step and the enable line, then `systemctl --user disable --now
+#     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
 ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
@@ -71,7 +77,17 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/claude.toml /home/nish/.local/share/leviathan/claude.toml
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/pi.toml /home/nish/.local/share/leviathan/pi.toml
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/leviathan.conf /home/nish/.config/user-tmpfiles.d/leviathan.conf
+# 2d. The helper and scout subagents (the only lanes model-lanes allows) are
+#     COPYs of config/claude-agents/, same class as 6/7/8: they lived only as
+#     hand-placed files. Remote Control runs on the Max config dir
+#     (~/.claude-max), which reads subagents from its own agents/ dir, so every
+#     Remote Control thread got "helper not found". The tmpfiles rule links
+#     ~/.claude-max/agents to ~/.claude/agents (step 5) and step 5b checks it.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
 ExecStart=/usr/bin/systemctl --user daemon-reload
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
@@ -83,6 +99,9 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
 #    it leaves the age-only e lines alone.
 ExecStart=/usr/bin/systemd-tmpfiles --user --create
+# 5b. Plain L never replaces a path that is already there, so a hand-made
+#     ~/.claude-max/agents would quietly hide the lanes again. Fail loud instead.
+ExecStart=/bin/sh -c 'test "$$(readlink %h/.claude-max/agents)" = %h/.claude/agents || { echo "[fleet-sync] ~/.claude-max/agents is not the link to ~/.claude/agents; remove it and re-run"; exit 1; }'
 # 6. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an

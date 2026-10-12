@@ -17,10 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci: every step is one vendor command (Nish 2026-09-22: "wipe" the inline
-  # shell block that lived here). Dropped with it: the shellcheck loop (no
-  # systemd/*.sh remain) and the per-file yaml parse (the proxy and systemd
-  # load these files on deploy and fail loud). Required check by this name.
+  # ci: every step is one vendor command. Required check by this name.
   #
   # `ci` is also the aggregate gate: it needs every other job in this file that
   # runs on pull_request or merge_group, so a red grafana-boot or
@@ -32,7 +29,7 @@ jobs:
   # gate skips its steps, not the job, so it reports success.
   ci:
     name: ci
-    needs: [grafana-boot, cloudflare-tokens-tofu]
+    needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,18 +49,11 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # Parity with the block this replaced: it ran semgrep without --error, so
-      # findings were reported, never gating. Gating on p/default is a separate
-      # decision with the findings listed (fleet-ops issue filed by Fable).
-      - run: semgrep --config p/default --metrics=off
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
       - name: No agent attribution in the PR's commits or body
-        # AGENTS.md "Agent names are forbidden" was prose only; agent
-        # trailers reached main (#9205, #9240). A pull_request check, not
-        # merge_group: GitHub's own squash adds a Co-authored-by line when the
-        # commit author is not the PR opener, so a merge_group check would fail
-        # every agent PR. This gates what a session writes, not what GitHub adds.
+        # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
+        # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -76,22 +66,13 @@ jobs:
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
-        # fleet-ops#7381: a worker's improvised presence check carried the
-        #   "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"
-        # payload — the :- expansion yields the VALUE, so the live App token
-        # landed in the run transcript. This step gates the committed
-        # surfaces an agent reads or runs (prompts, units, workflows, AGENTS.md).
-        # Secret names = the fleet's uppercase conventions plus LiteLLM SK_*
-        # vars and JS process.env.X. fleet-litellm-key is exempt: emitting
-        # a key IS its job. tests/ holds fixture drills that legitimately
-        # carry the runnable shape; .fleet/ is generated bench corpora — a
-        # stale quote there must not poison unrelated PRs (0509#1817 class).
-        # rc: 0 prints+ fails on match, 1 is clean, 2 is a grep error and
-        # must fail too — a broken pattern can never read as a clean scan.
+        # fleet-ops#7381: `${TOKEN:-EMPTY}` printed the live App token into a transcript.
+        # Scans the surfaces an agent reads or runs; tests/ drills and .fleet/ corpora are not scanned.
+        # grep rc 1 is clean; rc 2 (a broken pattern) must fail too.
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
-            AGENTS.md README.md prompts systemd rootfs ansible config template docs patches .github credentials || rc=$?
+            AGENTS.md README.md prompts systemd rootfs ansible config template docs .github credentials || rc=$?
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
@@ -139,24 +120,15 @@ jobs:
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
           amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
           promtool test rules config/prometheus-tests/*.test.yml
-      - name: stub pi for systemd-analyze verify (host-only binary)
+      - name: stub host-only binaries for systemd-analyze verify
         if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/pi
-      - name: stub tincan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/bin/tincan
-      - name: stub litellm for systemd-analyze verify (host-only binary)
-        if: always()
-        run: sudo install -D -m0755 /bin/true /home/nish/.local/venvs/litellm/bin/litellm
-      - name: stub cursor-agent for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/cursor-agent"
-      - name: stub leviathan for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/leviathan"
-      - name: stub tofu for systemd-analyze verify (host-only binary)
-        if: always()
-        run: install -D -m0755 /bin/true "$HOME/.local/bin/tofu"
+        run: |
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
+            sudo install -D -m0755 /bin/true "$b"
+          done
+          for b in cursor-agent leviathan tofu; do
+            install -D -m0755 /bin/true "$HOME/.local/bin/$b"
+          done
       - name: systemd-analyze verify over unit files
         # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
         # glob reaches systemd-analyze as a literal filename -> rc 1. With
@@ -234,6 +206,10 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
+      - name: Only money and outage rules can page Nish (fleet-ops#9445)
+        run: |
+          sudo apt-get install -y -q python3-yaml >/dev/null
+          python3 tests/alert_routes_check.py
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -266,6 +242,25 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+      - name: helper and scout subagents reach the Max config dir
+        # Runs fleet-sync.service's own agent installs, the real
+        # systemd-tmpfiles --user --create and the link check against a temp
+        # home: both lanes read through ~/.claude-max/agents, and a hand-made
+        # dir in the link's place fails the sync.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py
+      - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
+        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
+        # and the jail step below with plain bash in a temp home, with no
+        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
+        # touching a file.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py
+      - name: needs-triage admission (Jev verdict, then queue)
+        # Runs the admit job's own exclusion program, band program and run block,
+        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -285,6 +280,17 @@ jobs:
         # VPS allows them, so the runner is set to match.
         if: always()
         run: |
+          # This step plants fake logins over $HOME's real login files and its
+          # EXIT trap deletes them. On 2026-10-11 a session replayed it on the
+          # fleet box with plain `bash` (no -e, so the `test ! -e` guards below
+          # did not stop it) and wiped the gh, Cloudflare and Claude Team seat
+          # logins. Refuse anywhere but a throwaway GitHub-hosted runner, and
+          # stop at the first failed guard however the step is run.
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+            echo "refusing: this step overwrites and deletes login files under \$HOME; it runs only on a GitHub-hosted runner"
+            exit 1
+          fi
           # Every jail line (the worker's and the inish-daily job's) is tested; a
           # bwrap line that is not a jail_base= assignment would skip the mounts.
           test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *(jail_base|claude_jail_[ab])="bwrap --dev-bind' .github/workflows/agent.yml)"
@@ -296,7 +302,16 @@ jobs:
           line_b=${lb[0]:-}
           test -n "$line_a" && test -n "$line_b"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          # Plant only where nothing exists, so a real login is never overwritten.
+          # Everything below plants and removes files under $HOME, so $HOME is a
+          # throwaway directory for this step. On a self-hosted runner the real
+          # home holds live logins; the guard fails the step if the swap did not
+          # happen.
+          real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+          test -n "$real_home"
+          tmp_home=$(mktemp -d)
+          export HOME="$tmp_home"
+          if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
           # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
@@ -325,7 +340,7 @@ jobs:
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
           echo planted > "$HOME/.config/fleet-worker/planted-key"
           sealed=0
@@ -692,6 +707,113 @@ jobs:
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
           test "$bad" -eq 0
+      - name: Sweep moves PRs waiting over an hour (STUCK)
+        # Runs the stuck-prs job's own STUCK program, read out of the workflow,
+        # against every case in config/stuck-pr-cases.json. The grep lines pin
+        # the wiring: the verdict feeds the four lists, each list starts its
+        # agent.yml job, and a deleted claim issue is filed, not fatal.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
+          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
+          done
+          bad=0
+          for j in stuck-review:review_pr stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr; do
+            [ "$(yq ".jobs.\"${j%%:*}\".needs" "$f")" = stuck-prs ] && [ "$(yq ".jobs.\"${j%%:*}\".with.${j#*:}" "$f")" != null ] || { echo "${j%%:*} is not wired to stuck-prs"; bad=1; }
+          done
+          [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
+            got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          test "$bad" -eq 0
+      - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
+        # Runs the list job's own script against a mock gh whose claim PR
+        # #8002 points at deleted issue #9502, the shape that stopped every
+        # sweep: gh api answers 410 and gh issue view cannot resolve the
+        # number, so the empty comments went into --argjson, jq died, and the
+        # job exited 1 with no refs written, skipping every dispatch job
+        # downstream. The sweep must now exit 0, name the issue it skipped,
+        # and still pick the red PR and both queued issues.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          t=$RUNNER_TEMP/sweep-deleted-issue
+          mkdir -p "$t/bin" "$t/data"
+          yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f" > "$t/list.sh"
+          [ -s "$t/list.sh" ] && ! grep -qx null "$t/list.sh"
+          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          # Mock gh for the sweep: #7001 and #7002 are queued, #7003 has a red
+          # claim PR with no run since, and #9502 is deleted.
+          q=
+          for ((i = 1; i <= $#; i++)); do if [ "${!i}" = --jq ]; then j=$((i + 1)); q=${!j}; fi; done
+          cmd=$1; args=${*:2}; d=$FAKE_DIR
+          emit() { # stdin is the json gh would return; gh prints raw scalars
+            in=$(cat)
+            if [ -z "$q" ]; then printf '%s\n' "$in"; return; fi
+            out=$(jq -c "$q" <<<"$in")
+            case ${out:0:1} in '[' | '{') printf '%s\n' "$out" ;; *) jq -r "$q" <<<"$in" ;; esac
+          }
+          serve() { [ -f "$1" ] || { echo "mock gh: no fixture for $1" >&2; exit 1; }; emit < "$1"; }
+          case "$cmd $args" in
+            "issue list "*agent-in-progress*) echo '[{"number":11}]' | emit ;;
+            "issue list"*) echo '[{"number":7001},{"number":7002}]' | emit ;;
+            "issue view 9502"*)
+              echo "GraphQL: Could not resolve to an issue or pull request with the number of 9502. (repository.issue)" >&2
+              exit 1 ;;
+            "issue view"*) echo '{"comments":[]}' | emit ;;
+            "pr list "*--head*) echo '0' | emit ;;
+            "pr list"*) serve "$d/prs.json" ;;
+            "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
+            "run view"*) echo '"completed"' | emit ;;
+            "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
+            "api "*"/issues/9502")
+              # Real gh 2.93.0 (measured 2026-10-12 on this issue): body on
+              # stdout, "(HTTP 410)" on stderr, exit 1. BODY_ON_STDOUT=0 drops
+              # the body, so the stderr path is proven on its own too.
+              echo 'gh: This issue was deleted (HTTP 410)' >&2
+              [ "${BODY_ON_STDOUT:-1}" = 0 ] || echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
+              exit 1 ;;
+            "api "*"/issues/"*) serve "$d/issue-${args##*/}.json" ;;
+            *) echo "mock gh: unexpected call: $cmd $args" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          jq -n '{number:7001,created_at:"2026-10-01T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7001.json"
+          jq -n '{number:7002,created_at:"2026-10-02T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7002.json"
+          jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
+          jq -n '[{number:7001,headRefName:"claim/issue-7001",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
+                  {number:8001,headRefName:"claim/issue-7003",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
+                  {number:8002,headRefName:"claim/issue-9502",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[{name:"needs-coordinator"}]}]' > "$t/data/prs.json"
+          red='[{"name":"ci","status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-10-09T00:00:00Z","startedAt":"2026-10-09T00:00:00Z"}]'
+          jq -c 'map(select(.number==7001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:[]}' "$t/data/prs.json" > "$t/data/pr-7001.json"
+          jq -c --argjson r "$red" 'map(select(.number==8001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8001.json"
+          jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
+          for body in 1 0; do
+            : > "$t/out"
+            rc=0
+            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
+              ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/list.sh" > "$t/err" 2>&1 || rc=$?
+            cat "$t/err"
+            [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+            want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
+            got=$(sed -n 's/^refs=//p' "$t/out")
+            [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
+            grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
+          done
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
@@ -704,7 +826,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate review-risky arm-approved"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -820,9 +942,8 @@ jobs:
         # of the workflow, against every case in config/risky-paths.json, so the list
         # and the program cannot drift from what the hold job runs. A case with
         # "paths": null stands for an unreadable list, which must hold. An
-        # approval case feeds APPROVAL {sha, statuses, comments, reviews}, the shape
-        # the job builds from the head sha, its statuses, the PR's comments and
-        # its reviews.
+        # approval case feeds APPROVAL {sha, statuses, comments}, the shape
+        # the job builds from the head sha, its statuses and the PR's comments.
         if: always()
         run: |
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
@@ -839,7 +960,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments, reviews}' <<<"$c")")
+            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
@@ -876,18 +997,9 @@ jobs:
             *"/labels"*) touch "$STATE/labelled" ;;
             *"/files?"*) if [ -n "${SAFE:-}" ]; then echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/statuses?"*) ;;
-            *"/reviews?"*) if [ -n "${REVIEW:-}" ]; then u=nish3451 st=APPROVED cid=$SHA
-                case $REVIEW in
-                  stale) cid=0000000000000000000000000000000000000001 ;;
-                  non-approver) u=someone-else ;;
-                  bot) u='github-actions[bot]' ;;
-                  dismissed) st=DISMISSED ;;
-                esac
-                echo "{\"user\":{\"login\":\"$u\"},\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
-              fi ;;
+            *"-X POST"*"/reviews"*) echo "$args" > "$STATE/approved" ;;
             *"/comments?"*) [ -z "${APPROVE:-}" ] || echo "{\"user\":{\"login\":\"nish3451\"},\"body\":\"coordinator-approval: $SHA\",\"created_at\":\"t\",\"updated_at\":\"t\"}" ;;
-            *"/pulls/7") d=false am=null; [ -z "${DRAFT:-}" ] || d=true; [ -z "${ARMED:-}" ] || am='{"merge_method":"squash"}'
-              echo "{\"state\":\"open\",\"draft\":$d,\"auto_merge\":$am,\"head\":{\"sha\":\"$SHA\"},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
+            *"/pulls/7") echo "{\"state\":\"open\",\"head\":{\"sha\":\"$SHA\",\"repo\":{\"full_name\":\"$([ "${SAFE:-}" = fork ] && echo someone/fork || echo Nishfleet/0509)\"}},\"labels\":[],\"changed_files\":1,\"node_id\":\"PR_n\"}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -899,26 +1011,21 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/0509 PR=7
           bad=0
-          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)|review shape|rearm|draft|armed|want arm output (yes/no, default no)
-          # A review shape is a PR review by nish3451 on the head unless the shape says otherwise.
-          # rearm runs the block as approval-signal does: it never holds, and arms only an approved, unarmed, non-draft risky PR.
-          while IFS='|' read -r name fail approve safe held code review rearm draft armed arm; do
-            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe REVIEW=$review DRAFT=$draft ARMED=$armed REARM=false
-            [ -z "$rearm" ] || REARM=true
+          # case: name|FAIL regex|APPROVE (comment)|SAFE|want held (yes/no)|want exit (0/1)
+          while IFS='|' read -r name fail approve safe held code; do
+            export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_STEP_SUMMARY=$t/$name/summary GITHUB_OUTPUT=$t/$name/output FAIL=$fail APPROVE=$approve SAFE=$safe
             mkdir -p "$RUNNER_TEMP"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/hold.sh" > "$t/$name/out" 2>&1 || rc=$?
             got=no
-            # Held = disarmed, dequeued and labelled (the label write itself
-            # fails in label-write-fails, which must still disarm and dequeue).
+            # Held = disarmed, dequeued and labelled (label-write-fails fails the label write and must still disarm and dequeue).
             [ -f "$STATE/disarmed" ] && [ -f "$STATE/dequeued" ] && { [ -f "$STATE/labelled" ] || [ "$name" = label-write-fails ]; } && got=yes
             if [ "$held" = no ] && { [ -f "$STATE/labelled" ] || [ -f "$STATE/disarmed" ] || [ -f "$STATE/dequeued" ]; }; then got=partial; fi
             if [ "$got" != "$held" ] || [ "$rc" != "$code" ]; then
               echo "case $name: held=$got (want $held) exit=$rc (want $code)"; cat "$t/$name/out"; bad=1
             fi
-            armout=no
-            ! grep -qx "arm_sha=$SHA" "$t/$name/output" 2>/dev/null || armout=yes
-            if [ "$armout" != "${arm:-no}" ]; then echo "case $name: arm output=$armout (want ${arm:-no})"; cat "$t/$name/out"; bad=1; fi
+            want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
+            if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
           done <<'CASES'
           risky-unapproved||||yes|0
           pr-read-fails|pulls/7$|||yes|0
@@ -931,21 +1038,7 @@ jobs:
           label-write-fails|/labels|||yes|1
           approved-control||1||no|0
           safe-control|||1|no|0
-          review-approved-on-head||||no|0|approve
-          review-approved-stale-sha||||yes|0|stale
-          review-by-non-approver||||yes|0|non-approver
-          review-by-actions-bot||||yes|0|bot
-          review-dismissed||||yes|0|dismissed
-          reviews-read-fails|/reviews\?|1||yes|0|approve
-          rearm-review-approved||||no|0|approve|1|||yes
-          rearm-comment-approved||1||no|0||1|||yes
-          rearm-unapproved||||no|0||1|||no
-          rearm-stale-review||||no|0|stale|1|||no
-          rearm-bot-review||||no|0|bot|1|||no
-          rearm-draft||||no|0|approve|1|1||no
-          rearm-already-armed||||no|0|approve|1||1|no
-          rearm-safe-pr|||1|no|0|approve|1|||no
-          rearm-reviews-read-fails|/reviews\?|||no|0|approve|1|||no
+          safe-fork-pr|||fork|no|0
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
@@ -970,19 +1063,6 @@ jobs:
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
             *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
-            *"/pulls/"*"/reviews?"*) n=${args#*pulls/}; n=${n%%/*}
-              # REVIEW picks a review shape for the PRs in REVIEWED; commit_id is the head unless the shape says stale.
-              if has "$REVIEWED" "$n"; then h=$(sha "$n"); u='{"login":"nish3451"}'; st=APPROVED; cid=$h
-                case ${REVIEW:-} in
-                  stale) cid=$(sha 999) ;;
-                  non-approver) u='{"login":"someone-else"}' ;;
-                  bot) u='{"login":"github-actions[bot]"}' ;;
-                  dismissed) st=DISMISSED ;;
-                  commented) st=COMMENTED ;;
-                  changes-requested-later) echo "{\"user\":{\"login\":\"nish3451\"},\"state\":\"APPROVED\",\"commit_id\":\"$h\",\"submitted_at\":\"2026-10-09T01:00:00Z\"}"; st=CHANGES_REQUESTED ;;
-                esac
-                echo "{\"user\":$u,\"state\":\"$st\",\"commit_id\":\"$cid\",\"submitted_at\":\"2026-10-09T02:00:00Z\"}"
-              fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -993,10 +1073,9 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|review shape (PRs with an approving review are the ones in "approved" only when the shape is empty; a shape applies to PR 7)
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want review; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail REVIEW=$review REVIEWED=
-            [ -z "$review" ] || REVIEWED=7
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -1018,15 +1097,6 @@ jobs:
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
-          review-approved-on-head|7|Add x (#7)|7|||||0|approve
-          review-approved-stale-sha|7|Add x (#7)|7|||||1|stale
-          review-by-non-approver|7|Add x (#7)|7|||||1|non-approver
-          review-by-actions-bot|7|Add x (#7)|7|||||1|bot
-          review-dismissed|7|Add x (#7)|7|||||1|dismissed
-          review-comment-only|7|Add x (#7)|7|||||1|commented
-          review-approve-then-changes-requested|7|Add x (#7)|7|||||1|changes-requested-later
-          review-approved-reviews-read-fails|7|Add x (#7)|7||7||/reviews\?|1|approve
-          comment-approval-without-reviews|7|Add x (#7)|7||7|||0|
           CASES
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
@@ -1066,7 +1136,6 @@ jobs:
           yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
           yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
           yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
-          yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .env.REARM' .github/workflows/agent-dispatch.yml | grep -q ready_for_review || { echo "a draft turning ready does not re-arm"; bad=1; }
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
@@ -1075,6 +1144,7 @@ jobs:
           args="$*"
           case $args in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
+            *"-X POST"*"pulls/7/reviews"*) echo "$args" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$args token=$k" >> "$STATE/merge" ;;
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
@@ -1197,6 +1267,7 @@ jobs:
             problem=
             [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
             [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
+            if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
@@ -1204,61 +1275,61 @@ jobs:
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done <<'CASES'
-          normal-approved||approve|0.95|clean|none||yes|0|claude-fable-5-1
-          normal-judge-low||approve|0.8|clean|none||no|0|claude-fable-5-1
-          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-fable-5-1
-          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-fable-5-1 senior
-          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|claude-fable-5-1 senior
-          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|claude-fable-5-1 senior
-          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-fable-5-1 senior
-          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
-          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-fable-5-1 senior
-          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-fable-5-1 senior
+          normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
+          normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 senior
+          guard-second-blocks|1|approve|0.95|clean|blocked_b||no|0|claude-opus-5-5 senior
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok||no|0|claude-opus-5-5 senior
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 senior
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 senior
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 senior
+          guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-opus-5-5 senior
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-fable-5-1 senior senior
-          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-fable-5-1 senior
-          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-fable-5-1 senior
-          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-fable-5-1 senior
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 senior
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 senior
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 senior
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 senior
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
-          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|claude-fable-5-1 senior
-          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|claude-fable-5-1 senior
-          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|claude-fable-5-1 senior
-          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|claude-fable-5-1 senior
-          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|claude-fable-5-1 senior
-          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|claude-fable-5-1 senior
-          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|claude-fable-5-1 senior
-          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|claude-fable-5-1 senior
-          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|claude-fable-5-1 senior
-          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|claude-fable-5-1 senior
-          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|claude-fable-5-1 senior
-          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|claude-fable-5-1 senior
-          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|claude-fable-5-1 senior
-          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-fable-5-1
-          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|claude-fable-5-1 senior
-          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|claude-fable-5-1 senior
-          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|claude-fable-5-1 senior
-          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-fable-5-1
-          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|claude-fable-5-1 senior
-          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|claude-fable-5-1 senior
-          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-fable-5-1 senior
-          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-fable-5-1 senior
-          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-fable-5-1 senior
+          second-none-line-approves|1|approve|0.95|clean|v_none||yes|0|claude-opus-5-5 senior
+          second-found-line-approves|1|approve|0.95|clean|v_found||yes|0|claude-opus-5-5 senior
+          second-nob-line-approves|1|approve|0.95|clean|v_nob||yes|0|claude-opus-5-5 senior
+          second-nothing-line-approves|1|approve|0.95|clean|v_nothing||yes|0|claude-opus-5-5 senior
+          second-na-line-approves|1|approve|0.95|clean|v_na||yes|0|claude-opus-5-5 senior
+          second-dash-line-approves|1|approve|0.95|clean|v_dash||yes|0|claude-opus-5-5 senior
+          second-bold-line-approves|1|approve|0.95|clean|v_bold||yes|0|claude-opus-5-5 senior
+          second-ident-line-approves|1|approve|0.95|clean|v_ident||yes|0|claude-opus-5-5 senior
+          second-expl-line-approves|1|approve|0.95|clean|v_expl||yes|0|claude-opus-5-5 senior
+          second-dashexpl-line-approves|1|approve|0.95|clean|v_dashexpl||yes|0|claude-opus-5-5 senior
+          second-semi-line-approves|1|approve|0.95|clean|v_semi||yes|0|claude-opus-5-5 senior
+          second-none-of-the-callers-blocks|1|approve|0.95|clean|real_none_of||no|0|claude-opus-5-5 senior
+          second-nothing-stops-blocks|1|approve|0.95|clean|real_nothing||no|0|claude-opus-5-5 senior
+          first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
+          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found||yes|0|claude-opus-5-5 senior
+          none-line-second-approves|1|approve|0.95|clean|none_ok||yes|0|claude-opus-5-5 senior
+          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok||yes|0|claude-opus-5-5 senior
+          none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
+          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words||no|0|claude-opus-5-5 senior
+          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real||no|0|claude-opus-5-5 senior
+          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5 senior
+          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5 senior
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5 senior
           prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
-          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-fable-5-1 senior
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 senior
           built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
           built-by-devin-and-cursor-judge-is-opus||approve|0.95|clean|none|BUILT=cursor,devin|yes|0|claude-opus-5-5
-          built-by-claude-judge-is-fable||approve|0.95|clean|none|BUILT=claude|yes|0|claude-fable-5-1
-          built-by-claude-then-cursor-judge-is-fable||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-fable-5-1
-          built-by-nobody-recorded-judge-is-fable||approve|0.95|clean|none||yes|0|claude-fable-5-1
-          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-fable-5-1
-          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-fable-5-1
-          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-fable-5-1 senior
+          built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
+          built-by-claude-then-cursor-first-review-is-opus||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-opus-5-5
+          built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
+          built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
+          built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
+          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 senior
           other-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 senior
-          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-fable-5-1
-          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-fable-5-1
+          claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
+          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
@@ -1623,6 +1694,21 @@ jobs:
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: router-dead-row, model_id: drill}
+                - uid: drill-generic
+                  title: drill generic
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: drill-generic}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
           : > "$d/sink.log"
@@ -1657,7 +1743,14 @@ jobs:
           for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
           sort "$d/sink.log" | uniq -c
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart"
+          # A rule with no route of its own lands on the policy root,
+          # fleet-alert-dispatch: its payload must be a labelled fleet issue.
+          for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
+          g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
+          [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
+          jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
+            || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
@@ -1690,14 +1783,16 @@ jobs:
         working-directory: infra/cloudflare-tokens
         run: tofu validate
 
+  ratchet:
+    uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
+
   # Coordinator approval as a required status check (fleet-ops#9383).
   # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
   # direct enqueue or merge got past it (#9371 merged with no approval). A
   # required check is the one thing the merge queue cannot skip. On merge_group
   # this job resolves the PR(s) in the queue entry, classifies each one's
   # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment, success status or approving review
-  # (fleet-ops#9505) from an approver.
+  # `coordinator-approval: <sha>` comment or success status from an approver.
   # On pull_request and push it passes, so a PR can be enqueued and the queue
   # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
   # path list are read from the BASE commit's agent-dispatch.yml and
@@ -1785,11 +1880,8 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
               --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
               { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/reviews?per_page=100" \
-              --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt" ||
-              { echo "::error::coordinator-approval: reviews read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
-              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"

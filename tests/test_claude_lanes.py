@@ -7,7 +7,8 @@ p >= 0.9 judgment goes to claude, p <= 0.1 or anything between (or a Jev error)
 to the free pi, opencode, devin order; the decision is logged and written to the
 job summary.
 Worker: the claude invocation, the seat (the runner's CLAUDE_CONFIG_DIR, or the
-default login when it has none), the rate-limit fallthrough, and the
+default login when it has none; a seat with no login file hands the job to the other
+seat, or skips the lane when both lack one), the rate-limit fallthrough, and the
 engines-ran record the review reads.
 Secret isolation: every other engine's jail hides the Claude seat logins; the
 claude jail sees only its own seat. The real-bwrap test proves both halves.
@@ -241,7 +242,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err=""):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x"):
     b, home = _bin(tmp_path)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -249,6 +250,13 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
     tmp.mkdir()
     seat_a = home / ".claude-seat-a"
     seat_a.mkdir()
+    # Fake login files (login_a / login_b: their content, None for no file). Only
+    # their presence and size matter to the lane; they hold no real credential.
+    (home / ".claude").mkdir()
+    if login_a is not None:
+        (seat_a / ".credentials.json").write_text(login_a)
+    if login_b is not None:
+        (home / ".claude/.credentials.json").write_text(login_b)
     for d in (".claude-auth-backup-x", "backups-claude-x", ".claude-other-seat"):
         (home / d).mkdir()
         (home / d / "creds").write_text("planted")
@@ -315,6 +323,71 @@ def test_even_runner_unsets_the_config_dir_and_hides_seat_a(tmp_path, name):
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
     _assert_backups_hidden(bwrap, home)
+
+
+def test_own_seat_with_a_login_is_used_without_a_warning(tmp_path):
+    for i, (name, seat) in enumerate((("netcup-agent-1", "a"), ("netcup-agent-2", "b"))):
+        d = tmp_path / str(i)
+        d.mkdir()
+        r, _, claude, _, ran, seat_a, _ = _worker(d, "claude", runner_name=name)
+        assert r.returncode == 0, r.stderr
+        assert f"claude lane: seat={seat} runner={name}" in r.stdout
+        assert "missing login" not in r.stdout and "::warning::" not in r.stdout
+        assert (f"CCD={seat_a}" in claude) == (seat == "a")
+        assert ran == ["claude"]
+
+
+def test_odd_runner_with_seat_a_login_missing_uses_seat_b(tmp_path):
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name="netcup-agent-3", login_a=None)
+    assert r.returncode == 0, r.stderr
+    assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
+    assert "claude lane: seat=b runner=netcup-agent-3" in r.stdout
+    assert "CCD=unset" in claude and ran == ["claude"] and cursor == ""
+    # the jail is seat b's: seat a hidden, the default login left readable
+    assert f"--tmpfs {seat_a}" in bwrap
+    assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
+
+
+def test_even_runner_with_default_login_missing_uses_seat_a(tmp_path):
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name="netcup-agent-4", login_b=None)
+    assert r.returncode == 0, r.stderr
+    assert "::warning::claude lane: seat=b missing login, using seat=a" in r.stdout
+    assert "claude lane: seat=a runner=netcup-agent-4" in r.stdout
+    assert f"CCD={seat_a}" in claude and ran == ["claude"] and cursor == ""
+    # the jail is seat a's: the default login hidden, seat a left readable
+    assert f"--tmpfs {seat_a}" not in bwrap
+    assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" in bwrap
+    assert f"--ro-bind /dev/null {home}/.claude.json" in bwrap
+
+
+def test_an_empty_login_file_counts_as_missing(tmp_path):
+    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-3", login_a="")
+    assert r.returncode == 0, r.stderr
+    assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
+    assert "CCD=unset" in claude
+
+
+@pytest.mark.parametrize("name", ["netcup-agent-3", "netcup-agent-4"])
+def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, name):
+    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, login_a=None, login_b=None)
+    assert r.returncode == 0, r.stderr
+    assert "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane" in r.stdout
+    assert "fallthrough: cursor (claude login missing)" in r.stdout
+    assert claude == "" and "claude -p" not in bwrap
+    assert "--model cursor-grok-4.6-high" in cursor and ran == ["cursor"]
+
+
+def test_both_logins_missing_sends_non_senior_work_to_pi(tmp_path):
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", senior="false", login_a=None, login_b=None)
+    assert r.returncode == 0, r.stderr
+    assert "fallthrough: pi (claude login missing)" in r.stdout
+    assert claude == "" and cursor == "" and ran == ["pi"]
+
+
+def test_both_logins_missing_with_cursor_full_fails_like_a_refused_seat(tmp_path):
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", cursor_live=1, login_a=None, login_b=None)
+    assert r.returncode == 1 and claude == "" and cursor == "" and ran == []
+    assert "429" in r.stderr
 
 
 def test_claude_worker_runs_with_hooks_disabled(tmp_path):
@@ -402,26 +475,31 @@ def _hides(home, keep):
     return r.stdout.strip()
 
 
-def _lane_seat(runner_name):
-    """Runs the lane's own parity lines and returns (seat, whether CLAUDE_CONFIG_DIR survives)."""
+def _lane_seat(runner_name, home, seat_a_dir):
+    """Runs the lane's own seat lines (parity, then the login check) against real
+    files under home and returns (seat, whether CLAUDE_CONFIG_DIR survives)."""
     lines = _step("work", "Worker").splitlines()
     a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("runner_n="))
-    b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('echo "claude lane:'))
-    prog = "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
-    r = subprocess.run(["bash", "-c", "claude_jail_a=A claude_jail_b=B\n" + prog], env={"RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": "/seat-a", "PATH": SYS_PATH}, capture_output=True, text=True)
+    b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
+    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=cursor\n" + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": str(seat_a_dir), "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    seat, cfg = r.stdout.split()
+    seat, cfg = r.stdout.splitlines()[-1].split()
     return seat, cfg != "unset"
 
 
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
-@pytest.mark.parametrize("runner_name", ["netcup-agent-3", "netcup-agent-4"])
-def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, runner_name):
+@pytest.mark.parametrize("runner_name,missing,final", [
+    ("netcup-agent-3", None, "a"),
+    ("netcup-agent-4", None, "b"),
+    ("netcup-agent-3", "a", "b"),  # own login missing: the lane moves to the other seat
+    ("netcup-agent-4", "b", "a"),
+])
+def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, runner_name, missing, final):
     """Real bwrap, an odd and an even runner. The lane's own parity rule picks the seat: odd
-    keeps CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b); the Worker then uses the
-    already-hidden gh dir as the stand-in `seat_a` for seat b's jail."""
-    seat, keeps_cfg = _lane_seat(runner_name)
-    assert (seat, keeps_cfg) == (("a", True) if int(runner_name.rsplit("-", 1)[1]) % 2 else ("b", False))
+    keeps CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b); a missing login moves it to the
+    other seat. The Worker then uses the already-hidden gh dir as the stand-in `seat_a` for
+    seat b's jail. The jail shows only the seat finally used."""
     home = tmp_path / "home"
     seat_a = home / ".claude-seat"
     (home / ".claude").mkdir(parents=True)
@@ -436,6 +514,10 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     (home / ".claude-backup.json").write_text("planted")  # a plain file matching the glob
     for p in (seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"):
         p.write_text("planted")
+    if missing:  # this seat has no login; the lane's check sees no file
+        ((seat_a / ".credentials.json") if missing == "a" else (home / ".claude/.credentials.json")).unlink()
+    seat, keeps_cfg = _lane_seat(runner_name, home, seat_a)
+    assert (seat, keeps_cfg) == (final, final == "a")
     lines = _jail_lines()
     seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
