@@ -91,6 +91,19 @@ script, or prompt lands unseen.
   `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
   model runs `blacksmith usage` rather than a checked-in script, because
   "no glue or scripts" was Nish's condition on approval.
+- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
+  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  second-login env line for the Tincan listener. They were hand-placed on the
+  host with no repo copy (fleet-ops#9645); they decide nothing and wrap
+  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
+  the link. The files are byte-identical to what ran before, so adopting them
+  restarted nothing: a unit edit applies at the unit's next restart (never
+  restart `tigervnc.service` while a remote-desktop session is live). Switch
+  one off with `systemctl --user disable --now <unit>`; delete it by removing
+  its file here and the live link, then `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
