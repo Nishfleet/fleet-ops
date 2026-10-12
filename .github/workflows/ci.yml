@@ -17,10 +17,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci: every step is one vendor command (Nish 2026-09-22: "wipe" the inline
-  # shell block that lived here). Dropped with it: the shellcheck loop (no
-  # systemd/*.sh remain) and the per-file yaml parse (the proxy and systemd
-  # load these files on deploy and fail loud). Required check by this name.
+  # ci: every step is one vendor command. Required check by this name.
   #
   # `ci` is also the aggregate gate: it needs every other job in this file that
   # runs on pull_request or merge_group, so a red grafana-boot or
@@ -32,7 +29,7 @@ jobs:
   # gate skips its steps, not the job, so it reports success.
   ci:
     name: ci
-    needs: [grafana-boot, cloudflare-tokens-tofu]
+    needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -52,18 +49,11 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # Parity with the block this replaced: it ran semgrep without --error, so
-      # findings were reported, never gating. Gating on p/default is a separate
-      # decision with the findings listed (fleet-ops issue filed by Fable).
-      - run: semgrep --config p/default --metrics=off
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
       - name: No agent attribution in the PR's commits or body
-        # AGENTS.md "Agent names are forbidden" was prose only; agent
-        # trailers reached main (#9205, #9240). A pull_request check, not
-        # merge_group: GitHub's own squash adds a Co-authored-by line when the
-        # commit author is not the PR opener, so a merge_group check would fail
-        # every agent PR. This gates what a session writes, not what GitHub adds.
+        # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
+        # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -76,18 +66,9 @@ jobs:
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
-        # fleet-ops#7381: a worker's improvised presence check carried the
-        #   "token: ${GH_TOKEN:+set}${GH_TOKEN:-EMPTY}"
-        # payload — the :- expansion yields the VALUE, so the live App token
-        # landed in the run transcript. This step gates the committed
-        # surfaces an agent reads or runs (prompts, units, workflows, AGENTS.md).
-        # Secret names = the fleet's uppercase conventions plus LiteLLM SK_*
-        # vars and JS process.env.X. fleet-litellm-key is exempt: emitting
-        # a key IS its job. tests/ holds fixture drills that legitimately
-        # carry the runnable shape; .fleet/ is generated bench corpora — a
-        # stale quote there must not poison unrelated PRs (0509#1817 class).
-        # rc: 0 prints+ fails on match, 1 is clean, 2 is a grep error and
-        # must fail too — a broken pattern can never read as a clean scan.
+        # fleet-ops#7381: `${TOKEN:-EMPTY}` printed the live App token into a transcript.
+        # Scans the surfaces an agent reads or runs; tests/ drills and .fleet/ corpora are not scanned.
+        # grep rc 1 is clean; rc 2 (a broken pattern) must fail too.
         run: |
           rc=0
           grep -rEn --exclude-dir=.git "$SPAT" \
@@ -1877,6 +1858,45 @@ jobs:
   # what this job runs and a PR cannot loosen the list it is judged by.
   # Every failed read fails the check. Ruleset bypass actors (repository admin)
   # can still skip a required check.
+  # ratchet: workflow and script code may only shrink or stay flat. A PR's net
+  # added lines under .github/workflows/, .github/actions/, scripts/ and bin/ must be 0 or fewer.
+  # Required by name in the main-merge-queue ruleset; to switch it off, remove
+  # "ratchet" there. Deleting this job leaves the check unreported, so PRs block.
+  ratchet:
+    name: ratchet
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Self-test (growing fails; shrinking, flat and no code change pass)
+        run: |
+          set -euo pipefail
+          t=$(mktemp -d)
+          yq '.jobs.ratchet.steps[] | select(.id == "count") | .run' .github/workflows/ci.yml > "$t/count.sh"
+          git init -q "$t/r" && cd "$t/r" && mkdir -p .github/workflows bin && seq 9 | tee .github/workflows/a.yml > bin/b && echo x > README
+          git add -A && git -c user.name=t -c user.email=t@t commit -qm base
+          for c in 'seq 5 >> .github/workflows/a.yml;1' 'seq 5 >> bin/b;1' 'sed -i 1,3d .github/workflows/a.yml;0' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'echo y >> README;0'; do
+            eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t
+            rc=0; BASE=HEAD~1 HEAD=HEAD bash "$t/count.sh" >/dev/null || rc=$?
+            git reset -q --hard HEAD~1
+            [ "$rc" = "${c##*;}" ] || { echo "self-test '${c%;*}' exited $rc, want ${c##*;}"; exit 1; }
+          done
+      - name: Net added lines under .github/workflows, scripts and bin are 0 or fewer
+        id: count
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          net=$(git diff --numstat "$(git merge-base "$BASE" "$HEAD")" "$HEAD" -- .github/workflows .github/actions scripts bin | awk '{a+=$1; d+=$2} END {print a-d}')
+          echo "ratchet: net added lines under .github/workflows, .github/actions, scripts, bin: $net"
+          [ "$net" -le 0 ] || { echo "::error::ratchet: +$net net lines of workflow or script code. Delete as many as you add, or build the mechanism in its own repo behind an official extension point."; exit 1; }
+
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest

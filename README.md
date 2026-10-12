@@ -586,7 +586,7 @@ holds both rules before merge.
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
@@ -602,6 +602,19 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Ratchet: workflow and script code only shrinks
+
+The `ratchet` job in `ci.yml` fails a PR whose net added lines (additions minus
+deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+as many, so removing glue earns room. There are no exceptions in this repo: a new
+mechanism is a component in its own repo, behind an official extension point. The job
+self-tests on throwaway repos every run (growing fails; shrinking, flat and no code
+change pass). `ratchet` is a required status check in the `main-merge-queue` ruleset
+and in `ci`'s `needs`. To switch it off, remove `ratchet` from the ruleset's required
+status checks (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+the job alone does not switch it off: a required check that never reports blocks the PR.
+
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
@@ -615,7 +628,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
