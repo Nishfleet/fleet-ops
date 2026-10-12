@@ -56,7 +56,7 @@ groups:
         for: 0s
         annotations:
           summary: 'Router row {{ $labels.model_id }} answered 402, 403 or 404 {{ $values.A.Value | printf "%.0f" }} times in the last hour'
-          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ $labels.model_id }}). Remove it with a normal PR once the evidence shows it dead: a non-transient 4xx (401, 402, 403) in at least 2 real calls more than 1 h apart (2026-10-12 rule). Never bench it.'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ $labels.model_id }}). Remove it with a normal PR once the evidence shows it dead: a non-transient 4xx (401, 402, 403) in at least 2 real calls more than 1 h apart, and for a 401 or 402 no key rotation or top-up pending (2026-10-12 rule). Never bench it.'
           value: '{{ $values.A.Value | printf "%.0f" }} failures in the last hour'
           threshold: 'more than 5 in 1 hour'
         labels: {signal: router-dead-row}
