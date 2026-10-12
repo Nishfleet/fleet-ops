@@ -31,3 +31,7 @@ jobs:
         run: /usr/bin/systemctl --user start fleet-sync.service
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service
+# throwaway ratchet proof, do not merge
+# line 2
+# line 3
+# line 4
