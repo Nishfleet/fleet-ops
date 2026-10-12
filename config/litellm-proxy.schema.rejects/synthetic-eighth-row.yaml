@@ -118,7 +118,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -136,7 +135,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -154,7 +152,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -172,7 +169,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -190,7 +186,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -208,7 +203,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
@@ -226,7 +220,6 @@ model_list:
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
     max_parallel_requests: 1
     cooldown_time: 900
