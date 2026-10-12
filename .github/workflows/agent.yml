@@ -252,6 +252,7 @@ jobs:
           # A lane's live count is the distinct worker directories (Devin,
           # Cursor) or pi session directories on its bwrap command lines, so
           # it spans every runner and repo on this host.
+          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is
           # ever counted out for failing (Nish 2026-09-28: no benching); a failed
