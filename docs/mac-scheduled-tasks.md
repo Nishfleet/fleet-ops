@@ -70,6 +70,26 @@ gate. They do not end the same way, and the difference matters.
 | `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week, which this retires with it. |
 | `weekly-fleet-gardener` | retired earlier | Cut on 2026-09-29 (fleet-ops#8954, merged) after filing 0 proposals. Recorded in `docs/skill-proposals.md`. |
 
+## The digest prompts' canonical home (fleet-ops#9706)
+
+The `digest-morning` and `digest-evening` jobs' prompt text lives in this repo:
+`config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
+live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
+files, never edited by hand:
+
+1. Edit the file under `config/hermes/` and land it through a PR (the shape
+   gate `tests/test_digest_reply_shape.py` runs in CI and fails a prompt that
+   drops the reply contract: at most 6 short plain lines, no internal names,
+   no questions).
+2. Apply it on the box with the stock command:
+   `hermes cron edit <job id> --prompt "$(cat config/hermes/digest-<which>.md)"`.
+
+To switch a digest off: `hermes cron pause <job id>` stops it without deleting
+anything, and `hermes cron resume <job id>` brings it back. To restore the
+previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
+prompts (copy the old `prompt` value back with the same `hermes cron edit`
+command).
+
 ## Checked, not assumed
 
 Every reason above was checked against live state during the run that added this

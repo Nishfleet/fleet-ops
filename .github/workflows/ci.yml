@@ -261,6 +261,14 @@ jobs:
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py
+      - name: digest reply shape gate (fleet-ops#9706)
+        # The cron digests' reply step must hold: at most 6 short plain lines, no
+        # internal names, commands, config advice or questions. The canonical
+        # prompts under config/hermes/ carry the contract, the five shipped
+        # pre-fix replies (labels by a non-Claude model, written before the
+        # rewrite) all flag, and the first shipped post-fix reply passes clean.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_digest_reply_shape.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22

@@ -1,0 +1,27 @@
+{
+  "question": "digest reply shape: the cron digests' reply step must hold - at most 6 short plain lines, no sections, no internal names, commands, paths or config advice, no questions or asks, no routine all-green lines (Nishfleet/fleet-ops#9706)",
+  "cases_file": "tests/evals/cases/digest_reply_shape.json",
+  "source": "all five digest replies shipped to Telegram under the pre-fix prompt wording (REPLY rule unchanged since jobs.json.bak-9560, 2026-10-10T22:21): morning+evening of 2026-10-11 and 2026-10-12 and the morning of 2026-10-13",
+  "labeller": {
+    "group": "judge",
+    "served_model": "openai/qwen3.8-max",
+    "calls": 1,
+    "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). One no-tools call labelled all five shipped replies against the shape spec (task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST)."
+  },
+  "scorer": {
+    "endpoint": "tests/test_digest_reply_shape.py check_reply_shape",
+    "served_model": "none (deterministic regex checker)",
+    "calls": "n/a",
+    "repeats": "n/a",
+    "request": "the shipped reply text, exactly as delivered; URLs are stripped before the name and number rules run, because the link carries the detail"
+  },
+  "tuning": "the reply contract in config/hermes/digest-*.md and the checker's rules were written after the labels existed; the checker's rules were then fitted to the five labelled replies plus two clean fixtures (the post-fix shipped reply and the quiet template), which is the scoring, not label-changing",
+  "summary": {
+    "cases": 5,
+    "labelled_violation": 5,
+    "labelled_obey": 0,
+    "before": "0/5 replies obey the shape (labeler: every one carries sections, internal names, and in one case an approval ask and config advice)",
+    "after": "checker agreement with the labels 5/5 on the held-out replies; first shipped post-fix reply (digest-evening execution 634b61c6, 2026-10-13T09:46 IST, delivered to Telegram) obeys: exactly 6 plain lines, 'and 2 more broken' overflow, links carry the detail, the step-1 failure produced the designed one-liner 'Merged count could not be read'",
+    "gate": "tests/test_digest_reply_shape.py runs in ci.yml, so a prompt edit that drops the contract or a checker drift goes red"
+  }
+}
