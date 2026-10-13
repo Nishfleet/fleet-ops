@@ -529,8 +529,8 @@ def test_production_config_keeps_the_fallthrough_shape():
     filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
     router_settings.fallbacks must carry the worker net both ways so a parked
     lane is left, not retried. The order-2 overflow rows this test used to
-    require were the xkiro free rows, removed with that host (the router is cut
-    to 5 providers); the peers and the two-way fallback now carry the job.
+    require were the xkiro free rows, removed with that host; the peers and the
+    two-way fallback now carry the job.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
     rows = config["model_list"]
