@@ -24,6 +24,11 @@
       "name": "aiconverter-app",
       "product": true,
       "enrolled_by": "Nish, 2026-10-12 (0509-only dispatch freeze lifted)"
+    },
+    {
+      "name": "rera-report-card",
+      "product": true,
+      "enrolled_by": "Nish, 2026-10-13 (RERA Report Card approved)"
     }
   ],
   "excluded": [
