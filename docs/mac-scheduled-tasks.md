@@ -84,6 +84,9 @@ files, never edited by hand:
 2. Apply it on the box with the stock command:
    `hermes cron edit <job id> --prompt "$(cat config/hermes/digest-<which>.md)"`.
 
+To check the live copy still matches the canonical file, diff them:
+`diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
+
 To switch a digest off: `hermes cron pause <job id>` stops it without deleting
 anything, and `hermes cron resume <job id>` brings it back. To restore the
 previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706

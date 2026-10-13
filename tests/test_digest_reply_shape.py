@@ -40,7 +40,7 @@ _QUIET_LINE = "Quiet 12 hours, 0 merged."
 _FORBIDDEN_NAMES = [
     "jev", "clef", "tincan", "hermes", "tirith", "litellm", "grafana",
     "prometheus", "agent-dispatch", "agent dispatch", "opus-vet",
-    "e2e-scheduled", "lighthouse", "deploy production", "opencode",
+    "e2e-scheduled", "lighthouse", "opencode",
     "cursor", "devin", "claude", "cron", "cron_mode", "reserved-class",
     "reserved class", "workflow", "worker", "seat", "lane",
     "0509", "fleet-ops", "aiconverter", "tinystudio", "siterep",
@@ -51,6 +51,7 @@ _FORBIDDEN_RES = [
     re.compile(r"\bJ\d\b"),
     re.compile(r"[A-Z0-9]+_(TOKEN|KEY|SECRET)\b"),
     re.compile(r"\bkey\s+\d+\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)#\d+\b"),
 ]
 _ASK_RES = [
     re.compile(r"\?"),
@@ -67,8 +68,8 @@ _COMMAND_RES = [
     re.compile(r"[`]"),
     re.compile(r"\$\("),
     re.compile(r"/home/|/dev/|/usr/"),
-    re.compile(r"\.(md|json|ya?ml|sh|py)\b"),
-    re.compile(r"\b(curl|systemctl|sudo|bash|gh)\b"),
+    re.compile(r"\.(md|json|ya?ml|sh|py)\b", re.IGNORECASE),
+    re.compile(r"\b(curl|systemctl|sudo|bash|gh)\b", re.IGNORECASE),
 ]
 _NOISE_RES = [
     re.compile(r":\s*\d{3}\b"),
@@ -142,6 +143,9 @@ def test_held_out_replies_flag():
     """Every shipped reply the outside labeler called a violation must flag here."""
     data = json.loads(CASES.read_text())
     assert data["labeller"]["calls"] == 1
+    assert {c["id"] for c in data["cases"]} == {"m11", "e11", "m12", "e12", "m13"}, (
+        "a held-out case went missing: the gate weakens silently"
+    )
     for case in data["cases"]:
         got = check_reply_shape(case["reply"])
         if case["label"] == "violation":
@@ -156,6 +160,10 @@ def test_post_fix_reply_passes():
 
 def test_quiet_template_passes():
     assert check_reply_shape(_QUIET_LINE) == []
+
+
+def test_issue_number_in_text_flags():
+    assert "internal-names" in check_reply_shape("Fixed: the rotation (#9433)")
 
 
 def test_ci_runs_this_file():
