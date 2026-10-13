@@ -27,8 +27,7 @@ URGENT = {
     "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
     "Prompt-cache read share below 50%": "money: every request pays full input price",
     # money: a paid plan sits unused, and cancelling it is Nish's call
-    "Cline idle": "money", "CommandCode idle": "money", "MiniMax idle": "money",
-    "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
+    "MiniMax idle": "money", "StepFun idle": "money",
     "OpenCode Go idle": "money", "Pareto idle": "money",
     "Alibaba token-plan SG idle": "money",
 }

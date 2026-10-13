@@ -33,8 +33,8 @@
 # for: 30m on top of the 1h window: a route has to stay broken across half an
 # hour of steady traffic before this pages, so one bad upstream reply does not.
 #
-# The four vendors that report no cache field at all (cline, zai, ollama,
-# openrouter) are NOT an incident here: their providers return a usage block
+# The four vendors that reported no cache field at all (cline, zai, ollama,
+# openrouter; since removed from the router) were NOT an incident here: their providers returned a usage block
 # with prompt_tokens_details null, so there is no cache number to report. See
 # docs/prompt-cache-routes.md for that per-vendor proof. The rule therefore
 # reads per requested_model, where those rows share an alias with the caching

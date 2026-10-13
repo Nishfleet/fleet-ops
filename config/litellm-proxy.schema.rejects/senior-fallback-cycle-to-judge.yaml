@@ -79,21 +79,25 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: senior-backup
   litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
     tags:
     - prepaid
+    - alibaba
     - senior
     order: 1
-    max_parallel_requests: 1
-    cooldown_time: 900
+    rpm: 3
+    max_parallel_requests: 3
+    cooldown_time: 60
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic
-      GLM-5.3-Flash lane as worker-cheap).'
-    id: synthetic-glm53flash-senior-backup
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens.'
+    id: alibaba-qwen38max-senior-backup
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge

@@ -205,7 +205,7 @@ def _production_router_settings(policy: dict) -> dict:
 def _production_row_policy() -> dict:
     """The deployment-level allowed_fails_policy a real row carries.
 
-    All 81 rows in config/litellm-proxy.yaml carry one. If a future row does
+    Every row in config/litellm-proxy.yaml carries one. If a future row does
     not, the test names that row instead of silently testing an empty policy.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -524,22 +524,20 @@ def test_production_config_keeps_the_fallthrough_shape():
     """The parked lane's job has somewhere to go.
 
     A parked row only helps if the group has another row: worker-capable and
-    worker-cheap each need at least one order-2 overflow row (order filtering is
-    applied after the cooldown filter in v1.98.0 router.py, proven by
-    tests/test_router_order2_overflow.py) and router_settings.fallbacks must
-    carry the worker net both ways so a parked lane is left, not retried.
+    worker-cheap each need at least two rows (the parked lane's job goes to a
+    peer once it is in cooldown, order filtering being applied after the cooldown
+    filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
+    router_settings.fallbacks must carry the worker net both ways so a parked
+    lane is left, not retried. The order-2 overflow rows this test used to
+    require were the xkiro free rows, removed with that host (the router is cut
+    to 5 providers); the peers and the two-way fallback now carry the job.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
     rows = config["model_list"]
 
     for group in ("worker-capable", "worker-cheap"):
-        overflow = [
-            row
-            for row in rows
-            if row["model_name"] == group
-            and (row.get("litellm_params") or {}).get("order") == 2
-        ]
-        assert overflow, f"no order-2 row in the {group} group"
+        in_group = [row for row in rows if row["model_name"] == group]
+        assert len(in_group) >= 2, f"{group} has no peer for a parked lane's job"
 
     fallbacks = config["router_settings"]["fallbacks"]
     assert {"worker-capable": ["worker-cheap"]} in fallbacks

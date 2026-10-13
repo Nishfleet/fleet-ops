@@ -78,12 +78,18 @@ def test_live_config_senior_has_one_fallback_and_no_cycle():
     assert not set(fallbacks["senior"]) & {"judge", "senior"}
 
 
-def test_synthetic_key_stays_under_its_measured_concurrency():
-    # 12 parallel calls on the Synthetic key gave 8x200 and 4x429, so 7 worker rows plus senior-backup sit at 8 slots, not a 9th.
-    rows = [row for row in _config()["model_list"]
-            if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
-    assert "synthetic-glm53flash-senior-backup" in {row["model_info"]["id"] for row in rows}
-    assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 8
+def test_senior_backup_is_one_alibaba_row_sharing_the_judge_seat():
+    # Synthetic is cancelled: senior-backup is exactly one Alibaba Token Plan row, the same model, api_base and key
+    # as the judge primary. The plan is one rpm-3 seat shared by senior-backup and judge (~320 req/day together).
+    rows = [row for row in _config()["model_list"] if row["model_name"] == "senior-backup"]
+    assert len(rows) == 1
+    judge = next(row for row in _config()["model_list"]
+                 if row["model_info"]["id"] == "alibaba-qwen38max-judge")
+    for key in ("model", "api_base", "api_key", "rpm", "max_parallel_requests", "extra_body"):
+        assert rows[0]["litellm_params"][key] == judge["litellm_params"][key], key
+    assert rows[0]["litellm_params"]["api_base"].endswith("aliyuncs.com/compatible-mode/v1")
+    assert not [row for row in _config()["model_list"]
+                if "synthetic" in str(row["litellm_params"].get("api_base", ""))]
 
 
 def _route(model: str) -> list:
