@@ -217,6 +217,21 @@
             }
           },
           {
+            "$comment": "Every worker row carries an integer weight >= 1 (Nish 2026-10-13 asked for more traffic on the unlimited ds41flash rows). LiteLLM v1.98.0 simple_shuffle.py:43-46 turns weighted picking on only when the FIRST healthy row of the group has a weight, and reads a missing weight as 0: one worker row without it either switches the weighting off or gives that row a 0 share (a bench the header forbids). A weight of 0 or below is the same bench, so the floor is 1.",
+            "if": {
+              "required": ["model_name"],
+              "properties": { "model_name": { "pattern": "^worker" } }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "required": ["weight"],
+                  "properties": { "weight": { "type": "integer", "minimum": 1 } }
+                }
+              }
+            }
+          },
+          {
             "$comment": "fleet-ops#9248: a row on openrouter.ai/api/v1 is metered by OpenRouter's free-tier DAILY quota, so its RateLimitError must park the row on the first failure. Without RateLimitErrorAllowedFails the router-level default of 1 needs a second 429, and the wall leaks to the caller: 4 of 30 parallel worker-capable calls on 2026-10-04.",
             "if": {
               "required": ["litellm_params"],
