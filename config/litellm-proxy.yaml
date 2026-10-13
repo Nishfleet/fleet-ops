@@ -47,6 +47,7 @@
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows (cline-lagunas21, 2 rows) park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first: a 5-min park costs less than leaking a saturated key's 429s to callers. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
+# Selection share (no row removed or benched, only weighted): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". The 4 OpenCode Go and Command Code ds41flash rows in each worker group (opencodego-, opencodego2-, commandcode-ds41flash, commandcode-ds41flashb) carry a litellm_params weight and every other worker row carries weight 1. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=4, n=43, w=10 gives 40/79 = 50.6% (was 9.3% uniform, 8.2% measured over 7 days); worker-cheap k=4, n=15, w=3 gives 12/23 = 52.2% (was 26.7% uniform, 18.5% measured). Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 45-60%).
 model_list:
 - model_name: worker-capable
   litellm_params:
@@ -57,6 +58,7 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    weight: 10
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -80,6 +82,7 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    weight: 3
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -132,6 +135,7 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    weight: 10
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -154,6 +158,7 @@ model_list:
     - prepaid
     - commandcode
     order: 1
+    weight: 3
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -176,6 +181,7 @@ model_list:
     api_key: os.environ/COMMANDCODE_API_KEY
     tags: [free, commandcode]
     order: 1
+    weight: 1
     max_parallel_requests: 2
     cooldown_time: 900
   model_info:
@@ -230,6 +236,7 @@ model_list:
     - prepaid
     - opencode-go
     order: 1
+    weight: 10
     max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
@@ -253,6 +260,7 @@ model_list:
     - prepaid
     - opencode-go
     order: 1
+    weight: 3
     max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
@@ -307,6 +315,7 @@ model_list:
     - prepaid
     - opencode-go
     order: 1
+    weight: 10
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -328,6 +337,7 @@ model_list:
     - prepaid
     - opencode-go
     order: 1
+    weight: 3
     max_parallel_requests: 4
     cooldown_time: 900
   model_info:
@@ -368,6 +378,7 @@ model_list:
     - prepaid
     - pareto
     order: 1
+    weight: 1
     input_cost_per_token: 9e-08
     cache_read_input_token_cost: 1.8e-08
     output_cost_per_token: 3e-07
@@ -448,6 +459,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
     # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8; senior-backup (fleet-ops#9596) is the 8th slot. The 500 / 5 h pool is the real wall:
@@ -469,6 +481,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -486,6 +499,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -503,6 +517,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -520,6 +535,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -537,6 +553,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -554,6 +571,7 @@ model_list:
     tags:
     - prepaid
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -572,6 +590,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
     # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
     # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
@@ -596,6 +615,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -614,6 +634,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -632,6 +653,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -650,6 +672,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -668,6 +691,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -686,6 +710,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -704,6 +729,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -722,6 +748,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -740,6 +767,7 @@ model_list:
     - prepaid
     - zai
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
@@ -758,6 +786,7 @@ model_list:
     - prepaid
     - cline
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -815,6 +844,7 @@ model_list:
     - prepaid
     - cline
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -853,6 +883,7 @@ model_list:
     - prepaid
     - minimax
     order: 1
+    weight: 1
     max_parallel_requests: 12
     cooldown_time: 1800
   model_info:
@@ -876,6 +907,7 @@ model_list:
     - prepaid
     - minimax
     order: 1
+    weight: 1
     max_parallel_requests: 12
     cooldown_time: 1800
   model_info:
@@ -899,6 +931,7 @@ model_list:
     - prepaid
     - minimax
     order: 1
+    weight: 1
     max_parallel_requests: 12
     cooldown_time: 1800
   model_info:
@@ -922,6 +955,7 @@ model_list:
     - prepaid
     - minimax
     order: 1
+    weight: 1
     max_parallel_requests: 12
     cooldown_time: 1800
   model_info:
@@ -951,6 +985,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -974,6 +1009,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -997,6 +1033,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1020,6 +1057,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1043,6 +1081,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1066,6 +1105,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1089,6 +1129,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1112,6 +1153,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1135,6 +1177,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1158,6 +1201,7 @@ model_list:
     - prepaid
     - ollama
     order: 1
+    weight: 1
     input_cost_per_token: 3e-07
     cache_read_input_token_cost: 6e-09
     output_cost_per_token: 1.2e-06
@@ -1181,6 +1225,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     # Nish 2026-10-02: StepFun gets 10 slots. simple-shuffle picks among rows, and one row got 562 of 10,512 worker calls (5%),
     # 58M tokens = ~22% of the Pro plan's pace (8000M/month), in the 24 h to 15:00 IST. Ten rows give it ~10x the share of new tasks.
@@ -1205,6 +1250,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 2
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1225,6 +1271,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 2
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1245,6 +1292,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1265,6 +1313,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1285,6 +1334,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1305,6 +1355,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1325,6 +1376,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1345,6 +1397,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1365,6 +1418,7 @@ model_list:
     - prepaid
     - stepfun
     order: 1
+    weight: 1
     # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
     max_parallel_requests: 1
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
@@ -1388,6 +1442,7 @@ model_list:
     api_key: os.environ/CLINE_API_KEY
     tags: [free, cline]
     order: 1
+    weight: 1
     max_parallel_requests: 2
     # 6 h, sized to Cline's daily free-model token quota (fleet-ops#9075).
     cooldown_time: 21600
