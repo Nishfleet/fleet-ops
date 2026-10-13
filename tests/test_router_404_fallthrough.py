@@ -20,7 +20,7 @@ not against a mock of it:
     covers neither the exception type nor the model, which makes
     _should_cooldown_deployment fall through to the router-level policy
     (types/router.py, Router.get_allowed_fails_from_policy). That fall-through is
-    what lets one router-level key reach all 81 rows, every one of which carries
+    what lets one router-level key reach all 63 rows, every one of which carries
     its own deployment-level allowed_fails_policy.
   * The cooldown a 404 applies is the ROW's own cooldown_time
     (_first_present(model_info, litellm_params, key="cooldown_time")), not the
@@ -205,7 +205,7 @@ def _production_router_settings(policy: dict) -> dict:
 def _production_row_policy() -> dict:
     """The deployment-level allowed_fails_policy a real row carries.
 
-    Every row in config/litellm-proxy.yaml carries one. If a future row does
+    All 63 rows in config/litellm-proxy.yaml carry one. If a future row does
     not, the test names that row instead of silently testing an empty policy.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -524,13 +524,15 @@ def test_production_config_keeps_the_fallthrough_shape():
     """The parked lane's job has somewhere to go.
 
     A parked row only helps if the group has another row: worker-capable and
-    worker-cheap each need at least two rows (the parked lane's job goes to a
-    peer once it is in cooldown, order filtering being applied after the cooldown
+    worker-cheap each need rows on at least two distinct api_key values (two
+    rows that share one key share one quota wall, so a wall on that key parks
+    both and leaves no peer; order filtering is applied after the cooldown
     filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
     router_settings.fallbacks must carry the worker net both ways so a parked
-    lane is left, not retried. The order-2 overflow rows this test used to
-    require were the xkiro free rows, removed with that host; the peers and the
-    two-way fallback now carry the job.
+    lane is left, not retried. No order-2 worker row remains: the order-2
+    overflow rows this test used to require were the xkiro free rows, removed
+    in fleet-ops#9711; the peers on other keys and the two-way fallback now
+    carry the job.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
     rows = config["model_list"]
@@ -538,6 +540,11 @@ def test_production_config_keeps_the_fallthrough_shape():
     for group in ("worker-capable", "worker-cheap"):
         in_group = [row for row in rows if row["model_name"] == group]
         assert len(in_group) >= 2, f"{group} has no peer for a parked lane's job"
+        keys = {(row.get("litellm_params") or {}).get("api_key") for row in in_group}
+        assert len(keys) >= 2, (
+            f"{group} rows share {len(keys)} api_key value(s): a parked lane's "
+            "peers sit behind the same quota wall"
+        )
 
     fallbacks = config["router_settings"]["fallbacks"]
     assert {"worker-capable": ["worker-cheap"]} in fallbacks
