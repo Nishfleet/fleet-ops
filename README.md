@@ -667,7 +667,7 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
-Each enrolled repo needs two preconditions:
+Each enrolled repo needs three preconditions:
 
 1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
    creates its worktree from it. Packet clones (when a worker clones instead
@@ -680,6 +680,15 @@ https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    `needs-orchestrator`, `strong-only` — must be present on the repo —
    agent-dispatch fires only on the `agent-ready` label, so on a repo missing
    any required label an issue looks queued and is inert (fleet-ops#25).
+3. An `.github/workflows/agent-dispatch.yml` stub whose
+   `on.pull_request_target.types` lists all nine events — `dequeued`,
+   `auto_merge_disabled`, `closed`, `auto_merge_enabled`, `synchronize`,
+   `labeled`, `opened`, `reopened`, `ready_for_review`. `hold-risky` is the
+   only door into `review-risky`, a `pull_request_target` trigger fires only
+   for the types its own repo's stub lists, and `pull_request_target` reads
+   that stub from the base branch — so a short list leaves the repo with no
+   review and no coordinator gate on risky PRs (fleet-ops#9722, #9726).
+   fleet-ops's own stub is the reference.
 
 `excluded` in the file lists repos that are never enrolled (fleet2: no
 second dispatcher, ever; archived repos). `deferred` lists repos paused with
