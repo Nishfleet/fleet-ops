@@ -443,7 +443,7 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
 1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
    repo, stop the work timers, wait until no runner has a job (up to 150 min),
    stop the runner services. `agent-dispatch` stays enabled: only its
-   worker-starting jobs skip, and `hold-risky` keeps holding risky PRs. (It was
+   worker-starting jobs skip, and `hold-risky` keeps labelling and reviewing risky PRs. (It was
    `gh workflow disable` until 2026-10-05; a disabled workflow drops every
    trigger, the guard included.)
 2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
