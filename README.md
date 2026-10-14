@@ -115,7 +115,7 @@ script, or prompt lands unseen.
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
   stub (fleet-ops, 0509, drive, aiconverter-app,
-  TinyStudio.io-public, siterep-public), linked and enabled by
+  TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
