@@ -823,8 +823,7 @@ jobs:
   # approver approved, send an unreviewed head to the review job, or hand a
   # stuck one to its owner. Nothing is armed without an approval of its exact
   # head, and hold-risky still re-reads it on auto_merge_enabled.
-  # updatedAt moves on every push, comment, label and review, so a PR anyone
-  # touched in the last 15 minutes is left alone.
+  # updatedAt moves on every push, comment, label and review, so a PR anyone touched in the last 15 minutes is left alone.
   stuck-prs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -865,8 +864,7 @@ jobs:
           # check is stuck whatever the review said. Each review the sweep asks
           # for leaves a `stuck-review: <sha>` comment, so after three asks
           # with no verdict (a review job that died before it wrote one) the
-          # head is stuck: STUCK re-asks only once the marker comment is 15
-          # minutes old.
+          # head is stuck: STUCK re-asks once the marker is 15 minutes old.
           # config/stuck-pr-cases.json runs this program in CI.
           STUCK: |
             .pr.headRefOid as $sha
@@ -953,9 +951,7 @@ jobs:
               review)
                 # Four paid reviews a sweep at most; the rest wait for the next
                 # sweep that sees them. The marker comment is what STUCK counts
-                # toward its cap of three asks per head, and it moves updatedAt,
-                # so the head is not a candidate again until 15 minutes after
-                # the marker, whichever sweep runs then.
+                # toward its cap of three asks per head, and it moves updatedAt.
                 if [ "$(jq length <<<"$review")" -lt 4 ]; then
                   gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.' "$sha")"
                   review=$(add "$review" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')" 4)
@@ -976,11 +972,7 @@ jobs:
                   fi
                   bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body]') || { errs=$((errs + 1)); continue; }
                   note="rework: PR #$n at ${sha:0:7} has waited over 15 minutes"
-                  # Match on the head, not the reason text: a note posted with
-                  # an older wording is still this head's note, and a reason
-                  # edit must not re-send it.
-                  key="rework: PR #$n at ${sha:0:7}"
-                  if jq -e --arg x "$key" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
+                  if jq -e --arg x "rework: PR #$n at ${sha:0:7}" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
                     echo "#$n: issue #$i already has this rework note"; continue
                   fi
                   last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
@@ -1112,8 +1104,6 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          # A merged `Closes #N` closes the issue and leaves the claim label on it
-          # (fleet-ops#9722: three product issues kept agent-in-progress).
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
