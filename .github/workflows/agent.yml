@@ -965,7 +965,7 @@ jobs:
           guard=false
           [ "$hits" = 0 ] || guard=true
           # The diff is read with git from a checkout, never through the diff API: the API
-          # refuses a PR over 20,000 diff lines (406, drive#949), so size became a failure
+          # refuses a PR over 20,000 diff lines (406, Nishfleet/drive#949), so size became a failure
           # mode. Both SHAs are fetched whole and the three-dot diff is the merge base
           # against the head, the change the review judges. A failed read is said on the PR.
           base=$(jq -r .base.sha <<<"$pr")
