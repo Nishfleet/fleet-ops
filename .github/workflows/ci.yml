@@ -707,7 +707,7 @@ jobs:
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
           test "$bad" -eq 0
-      - name: Sweep moves PRs waiting over an hour (STUCK)
+      - name: Sweep moves PRs waiting over 15 minutes (STUCK)
         # Runs the stuck-prs job's own STUCK program, read out of the workflow,
         # against every case in config/stuck-pr-cases.json. The grep lines pin
         # the wiring: the verdict feeds the four lists, each list starts its
