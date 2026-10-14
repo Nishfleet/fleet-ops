@@ -815,7 +815,7 @@ jobs:
       pull-requests: write
     with:
       ref: ${{ matrix.ref }}
-  # Any open PR that has waited over an hour, on any branch (2026-10-11: 53
+  # Any open PR that has waited over 15 minutes, on any branch (2026-10-11: 53
   # fleet PRs idle and unarmed, 40 of them not claim branches, which every
   # path above skips; approved heads from before the arm job existed, #9486
   # #9509, were never armed; reviewer blocks on session PRs had no owner).
@@ -823,8 +823,7 @@ jobs:
   # approver approved, send an unreviewed head to the review job, or hand a
   # stuck one to its owner. Nothing is armed without an approval of its exact
   # head, and hold-risky still re-reads it on auto_merge_enabled.
-  # updatedAt moves on every push, comment, label and review, so a PR anyone
-  # touched in the last hour is left alone.
+  # updatedAt moves on every push, comment, label and review, so a PR anyone touched in the last 15 minutes is left alone.
   stuck-prs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -865,7 +864,7 @@ jobs:
           # check is stuck whatever the review said. Each review the sweep asks
           # for leaves a `stuck-review: <sha>` comment, so after three asks
           # with no verdict (a review job that died before it wrote one) the
-          # head is stuck, not reviewed again every hour.
+          # head is stuck: STUCK re-asks once the marker is 15 minutes old.
           # config/stuck-pr-cases.json runs this program in CI.
           STUCK: |
             .pr.headRefOid as $sha
@@ -886,7 +885,7 @@ jobs:
               else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
         run: |
           set -euo pipefail
-          cutoff=$(( $(date +%s) - 3600 ))
+          cutoff=$(( $(date +%s) - 900 ))
           queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
             --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
           # A draft is its author saying "not yet"; Dependabot PRs follow the
@@ -950,12 +949,11 @@ jobs:
             case $class in
               arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
-                # Four paid reviews a sweep at most; the rest wait an hour.
-                # The marker comment is what STUCK counts toward its cap of
-                # three asks per head, and it moves updatedAt, so the head
-                # waits a full hour before the next ask.
+                # Four paid reviews a sweep at most; the rest wait for the next
+                # sweep that sees them. The marker comment is what STUCK counts
+                # toward its cap of three asks per head, and it moves updatedAt.
                 if [ "$(jq length <<<"$review")" -lt 4 ]; then
-                  gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over an hour with no review verdict on its head, so the sweep asked for one.' "$sha")"
+                  gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.' "$sha")"
                   review=$(add "$review" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')" 4)
                 fi
                 continue ;;
@@ -973,8 +971,8 @@ jobs:
                     echo "#$n: issue #$i is parked or blocked, its owner has it"; continue
                   fi
                   bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body]') || { errs=$((errs + 1)); continue; }
-                  note="rework: PR #$n at ${sha:0:7} has waited over an hour"
-                  if jq -e --arg x "$note" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
+                  note="rework: PR #$n at ${sha:0:7} has waited over 15 minutes"
+                  if jq -e --arg x "rework: PR #$n at ${sha:0:7}" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
                     echo "#$n: issue #$i already has this rework note"; continue
                   fi
                   last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
@@ -1003,7 +1001,7 @@ jobs:
             # closes these.
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
-          echo "waiting over an hour: $seen, unreadable: $errs"
+          echo "waiting over 15 minutes: $seen, unreadable: $errs"
           echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
           {
             echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
@@ -1097,6 +1095,7 @@ jobs:
       # --delete-branch needs to delete the ref (fleet-ops#8457).
       pull-requests: write
       contents: write
+      issues: write
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -1105,6 +1104,7 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
