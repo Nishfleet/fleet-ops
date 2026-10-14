@@ -1,4 +1,3 @@
 cross_model_review_mode: auto
 cross_model_peer: opencode
 cross_model_model: opencode-go/grok-4.6
-cross_model_effort: high
