@@ -144,7 +144,10 @@ The rules still in force:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
-  approve or block (p >= 0.9), and posts that approval as
+  approve or block. Jev at p >= 0.9 approves on its own; below 0.9 (however low)
+  Claude (the same Opus 5.5 call) adjudicates from the diff, the first review and
+  Jev's score, and has the final say: approve, or request changes with reasons
+  (Nish 2026-10-14). The review job posts an approval as
   `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
   GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
   requires one approving review and dismisses it on a push, so GitHub itself
@@ -152,8 +155,8 @@ The rules still in force:
   the same review to a PR that is not risky.
   "Claude never grades Claude" has one exception, approved by Nish on
   2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
-  work), but the verdict is always Jev's, a non-Claude family, so a non-Claude
-  family always decides. With the runner's seat at its limit the review does not
+  work). Jev, a non-Claude family, approves alone at 0.9; below 0.9 Claude has the
+  final say (Nish 2026-10-14, replacing "the verdict is always Jev's"). With the runner's seat at its limit the review does not
   finish and is re-run; it is never approved without it. A PR that edits the guard itself
   (`guard` in risky-paths.json) or a workflow needs a second review as well, by
   a model family other than the judge's and Claude's, and both must approve; if
