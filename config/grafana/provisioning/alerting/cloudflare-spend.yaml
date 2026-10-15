@@ -390,7 +390,7 @@ groups:
           - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
           - refId: E
             datasourceUid: __expr__
-            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $D > 20000000000}
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $D > 45000000000}
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -400,9 +400,9 @@ groups:
         for: 0s
         annotations:
           summary: 'R2 Standard storage is {{ $values.D.Value | humanize }}B'
-          description: 'Total R2 Standard storage is over 20 GB; 16.06 GB was the 2026-10-07 baseline at about $0.09/month. Between 2026-09-22 and 2026-10-07 0509-landing-page-artifacts grew about 36 GB.'
+          description: 'Total R2 Standard storage is over 45 GB, which is above the designed steady state, so a firing names a real leak. Measured on 2026-10-15 (fleet-ops#9812): the restic live repo holds about 8.6 GiB, bounded by the daily restic forget --keep-daily 7 --keep-weekly 4 --prune; its 30-day-locked copy plateaus near 12.5 GiB once rclone sync --min-age 31d starts reclaiming expired locks; the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950). The designed plateau is about 34 GiB by 2027-10, near $0.55/month. The leak this rule was built for, 0509-landing-page-artifacts at 36 GB over 2026-09-22 to 2026-10-07, was emptied on 2026-10-07 and its writer is gone from every repo. cf-r2-bucket-growth stays the fast per-bucket leak detector at 2 GB in 24 hours.'
           value: '{{ $values.D.Value | humanize }}B Standard in total'
-          threshold: 'over 20 GB Standard in total'
+          threshold: 'over 45 GB Standard in total'
           top: 'bucket {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: r2-storage}
         isPaused: false
