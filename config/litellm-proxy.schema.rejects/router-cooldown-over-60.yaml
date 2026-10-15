@@ -2,6 +2,9 @@ model_list:
 - model_name: worker-cheap
   litellm_params:
     model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
 router_settings:
   redis_url: redis://127.0.0.1:6379
   cooldown_time: 900

@@ -1,0 +1,12 @@
+# fleet-ops#9365: every row must declare its cache capability. This row carries
+# model_info without supports_prompt_caching and without cache_proof, so a new
+# seat could merge with a silent cache leak.
+model_list:
+- model_name: worker-capable
+  litellm_params:
+    model: openai/x
+  model_info:
+    cooldown_time: 300
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60

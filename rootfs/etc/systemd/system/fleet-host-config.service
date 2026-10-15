@@ -35,5 +35,14 @@ Type=oneshot
 StateDirectory=fleet-ops
 Environment=ANSIBLE_HOME=/var/lib/fleet-ops/ansible
 Environment=ANSIBLE_NOCOLOR=1
+# Ansible's own log of the run, because the journal cannot be trusted for it:
+# journald.conf.d/99-cap.conf caps the journal at 300M, which rotated the
+# 2026-10-05 fleet-update run's log away and hid the failed task (fleet-ops#9334).
+# The nightly and deploy runs read the same way: the last PLAY RECAP, and the
+# task above it that failed. StateDirectory=fleet-ops above creates the
+# directory, so the path is always writable; a missing parent makes ansible warn
+# and write no log, not fail. This is in addition to stdout, so the journal
+# keeps its own record too.
+Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-host-config.log
 ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/repo --clean --inventory localhost, --diff ansible/host.yml
 TimeoutStartSec=600

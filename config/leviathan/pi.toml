@@ -1,0 +1,14 @@
+[about]
+name = "Pi worker session logs"
+description = "Every message from Pi fleet worker sessions on this host"
+record = "message"
+
+[source]
+paths = ["/home/nish/.pi/agent/sessions"]
+format = "jsonl"
+
+[fields]
+text = ["message.content[].text", "message.content[].thinking", "message.content[].arguments.command", "message.content[].arguments.path"]
+date = "timestamp"
+filters = ["message.role", "message.toolName"]
+display = ["message.role"]

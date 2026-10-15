@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the Hermes xAI login hourly
+# A revoked or expired refresh token changes no local file, so the path unit
+# cannot see it. See fleet-hermes-xai-login-check.service.
+# Switch off: systemctl --user disable --now fleet-hermes-xai-login-check.timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
