@@ -89,9 +89,6 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    nish_config: "{{ nish_home }}/.config"
-    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
-    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
     commandcode_shell_files:
       - "{{ nish_home }}/.zshenv"
       - "{{ nish_home }}/.bashrc"
@@ -100,16 +97,15 @@
         _fleet_ops_cc_key=
         while IFS= read -r _fleet_ops_cc_line || [ -n "$_fleet_ops_cc_line" ]; do
           case "$_fleet_ops_cc_line" in
-            COMMAND_CODE_API_KEY=*|"export COMMAND_CODE_API_KEY="*) _fleet_ops_cc_key="${_fleet_ops_cc_line#*=}" ;;
+            COMMANDCODE_API_KEY=*|"export COMMANDCODE_API_KEY="*) _fleet_ops_cc_key="${_fleet_ops_cc_line#*=}" ;;
           esac
         done < "$HOME/.config/fleet-ops/seats/commandcode.env"
         case "$_fleet_ops_cc_key" in
-          \"?*\"|\'?*\') _fleet_ops_cc_key="${_fleet_ops_cc_key#?}"; _fleet_ops_cc_key="${_fleet_ops_cc_key%?}" ;;
+          \"*\"|\'*\')_fleet_ops_cc_key="${_fleet_ops_cc_key#?}"; _fleet_ops_cc_key="${_fleet_ops_cc_key%?}" ;;
         esac
         if [ -n "$_fleet_ops_cc_key" ]; then export COMMAND_CODE_API_KEY="$_fleet_ops_cc_key"; fi
         unset _fleet_ops_cc_key _fleet_ops_cc_line
       fi
-    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - name: Check the prometheus config before installing it
@@ -742,38 +738,6 @@
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
-    - name: Read the Command Code seat
-      become: true
-      become_user: nish
-      ansible.builtin.slurp:
-        src: "{{ commandcode_seat_file }}"
-      register: commandcode_seat
-      failed_when: false
-      no_log: true
-      diff: false
-
-    - name: Give the Command Code seat the COMMAND_CODE_API_KEY name that cmd reads
-      become: true
-      become_user: nish
-      ansible.builtin.lineinfile:
-        path: "{{ commandcode_seat_file }}"
-        regexp: '^(?:export +)?COMMAND_CODE_API_KEY='
-        line: "COMMAND_CODE_API_KEY={{ commandcode_seat_key }}"
-      when: commandcode_seat_key != ''
-      no_log: true
-      diff: false
-
-    - name: Drop the COMMAND_CODE_API_KEY line when the seat no longer has COMMANDCODE_API_KEY
-      become: true
-      become_user: nish
-      ansible.builtin.lineinfile:
-        path: "{{ commandcode_seat_file }}"
-        regexp: '^(?:export +)?COMMAND_CODE_API_KEY='
-        state: absent
-      when: commandcode_seat.content is defined and commandcode_seat_key == ''
-      no_log: true
-      diff: false
-
     - name: Export COMMAND_CODE_API_KEY from the seat in nish's zsh and bash startup files
       become: true
       become_user: nish
@@ -781,7 +745,7 @@
         path: "{{ item }}"
         create: true
         insertbefore: BOF
-        marker: "# {mark} fleet-ops: COMMAND_CODE_API_KEY for cmd, read from the seat"
+        marker: "# {mark} fleet-ops: COMMAND_CODE_API_KEY for cmd, from COMMANDCODE_API_KEY in the seat"
         block: "{{ commandcode_shell_block }}"
       loop: "{{ commandcode_shell_files }}"
 
