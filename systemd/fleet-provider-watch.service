@@ -32,6 +32,10 @@ Description=Daily check of each router provider's model list against config/prov
 # ^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$ and the api_base must be https://, or the row is
 # refused and the unit fails, so a config row cannot send any other variable to any host.
 # tests/test_provider_watch.py fails CI when a router key has no EnvironmentFile= below.
+# IGNORE (an extended regex) drops ids a provider shows only to contributors or early-access
+# keys, so they are neither committed to this public repo nor named in an issue.
+# The EnvironmentFile= lines have a - so one retired seat file leaves that one provider
+# unchecked (a plain line says so) instead of stopping every provider.
 # A provider with "listing": "none" in the snapshot is skipped. A snapshot
 # entry may carry "watch", an extended regex: only ids matching it are compared (cline lists
 # a whole catalogue that changes weekly, so only its free, deepseek, z-ai and cline-own ids count). The issue body lists at
@@ -57,6 +61,7 @@ Description=Daily check of each router provider's model list against config/prov
 # Switch off: systemctl --user disable --now fleet-provider-watch.timer
 # Delete: the README "Provider watch" section lists the files.
 After=fleet-grafana-github-token.service
+Wants=fleet-grafana-github-token.service
 OnFailure=fleet-unit-failed@%N.service
 
 [Service]
@@ -69,18 +74,19 @@ Environment=CATALOG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/provider
 Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
 Environment=GH=%h/.local/bin/gh
 Environment=YQ=%h/.local/bin/yq
+Environment=IGNORE=contributor|stealth|alpha
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
-EnvironmentFile=%E/fleet-ops/seats/commandcode.env
-EnvironmentFile=%E/fleet-ops/seats/opencode.env
-EnvironmentFile=%E/fleet-ops/seats/opencode-2.env
-EnvironmentFile=%E/fleet-ops/seats/pareto.env
-EnvironmentFile=%E/fleet-ops/seats/synthetic.env
-EnvironmentFile=%E/fleet-ops/seats/zai.env
-EnvironmentFile=%E/fleet-ops/seats/cline.env
-EnvironmentFile=%E/fleet-ops/seats/minimax.env
-EnvironmentFile=%E/fleet-ops/seats/ollama.env
-EnvironmentFile=%E/fleet-ops/seats/stepfun.env
-EnvironmentFile=%E/fleet-ops/seats/alibaba-coding.env
+EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
+EnvironmentFile=-%E/fleet-ops/seats/opencode.env
+EnvironmentFile=-%E/fleet-ops/seats/opencode-2.env
+EnvironmentFile=-%E/fleet-ops/seats/pareto.env
+EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
+EnvironmentFile=-%E/fleet-ops/seats/zai.env
+EnvironmentFile=-%E/fleet-ops/seats/cline.env
+EnvironmentFile=-%E/fleet-ops/seats/minimax.env
+EnvironmentFile=-%E/fleet-ops/seats/ollama.env
+EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
+EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; re="^~?[A-Za-z0-9._:/-]{1,64}$$"; bad=0; ready=0; filed=0; mkdir -p "$$d/gh"; \
 test -s "$$CATALOG" || { echo "provider-watch: snapshot missing"; exit 1; }; \
 $$YQ -o=json . "$$CONFIG" | jq -r ".model_list[].litellm_params | select(.api_key != null) | [.api_key, .api_base] | @tsv" | sort -u -k1,1 > "$$d/targets"; \
@@ -106,7 +112,7 @@ case $$code in \
 *) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \
 esac; \
 if ! jq -e ".data | arrays | length > 0" "$$d/body" > /dev/null 2>&1; then echo "provider-watch: $$name listing unavailable (HTTP 200 without a model list), skipped; outages page through litellm_deployment_state"; continue; fi; \
-jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u > "$$d/ids.all"; \
+jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u | { grep -Ev -e "$$IGNORE" || true; } > "$$d/ids.all"; \
 w=$$(jq -r ".[env.NAME].watch // empty" "$$CATALOG"); \
 if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
 jq -r ".[env.NAME].models // [] | .[]" "$$CATALOG" | LC_ALL=C sort -u > "$$d/snap"; \
@@ -142,4 +148,4 @@ if [ "$$filed" -ge 3 ]; then echo "provider-watch: $$name changed (+$$na -$$nr),
 filed=$$((filed+1)); echo "$$t" >> "$$d/known"; echo "provider-watch: $$name changed (+$$na -$$nr), issue filed"; \
 done < "$$d/targets"; \
 [ "$$bad" -eq 0 ]'
-TimeoutStartSec=1800
+TimeoutStartSec=3600

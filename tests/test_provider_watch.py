@@ -139,6 +139,7 @@ def box(tmp_path):
                 "LC_ALL": "C",
                 "ALPHA_API_KEY": "fake-alpha-key",
                 "BETA_API_KEY": "fake-beta-key",
+                "IGNORE": re.search(r"^Environment=IGNORE=(.*)$", UNIT.read_text(), re.M).group(1),
                 "FAIL_CREATE": "",
                 "FAIL_LABEL": "",
             }
@@ -516,7 +517,7 @@ def test_every_router_key_has_an_environment_file_in_the_unit():
     for var in sorted(keys):
         assert key_re.match(var), var
         name = re.sub(r"-api-key", "", var.lower().replace("_", "-"))
-        assert f"EnvironmentFile=%E/fleet-ops/seats/{name}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
+        assert f"EnvironmentFile=-%E/fleet-ops/seats/{name}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
 
 
 def test_a_filing_failure_fails_the_unit(box):
@@ -524,3 +525,27 @@ def test_a_filing_failure_fails_the_unit(box):
     r = box.run(extra={"FAIL_CREATE": "1"})
     assert r.returncode == 1
     assert "provider-watch: alpha changed (+1 -0) but filing the issue failed" in r.stdout
+
+
+def test_contributor_and_early_access_ids_are_never_compared_or_listed(box):
+    box.serve("alpha.test", ["a1", "a2", "x-contributor", "stealth/y:free", "omen-alpha"])
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "provider-watch: alpha ok, 2 models" in r.stdout
+    assert box.log("gh.log") == ""
+
+
+def test_the_catalog_holds_no_contributor_or_early_access_ids():
+    ignore = re.search(r"^Environment=IGNORE=(.*)$", UNIT.read_text(), re.M).group(1)
+    catalog = json.loads((ROOT / "config/provider-catalog.json").read_text())
+    for name, entry in catalog.items():
+        for model in entry.get("models", []):
+            assert not re.search(ignore, model), f"{name}: {model}"
+
+
+def test_the_inline_script_passes_shellcheck():
+    tool = shutil.which("shellcheck")
+    assert tool, "shellcheck must be on PATH to lint the inline ExecStart"
+    script = _exec_start()[2]
+    r = subprocess.run([tool, "-s", "bash", "-"], input="#!/bin/bash\n" + script + "\n", capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout

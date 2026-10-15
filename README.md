@@ -889,8 +889,10 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
 - The issues token is the one `retro-weekly.service` uses: the worker App's issues-only
   installation token that `fleet-grafana-github-token.service` mints, with an empty `GH_CONFIG_DIR`
   so the human gh login is never read.
-- The snapshot lists the model ids each provider returns to its own key; fleet-ops is public, so
-  an id the provider shows only to contributors is published with the rest.
+- fleet-ops is public, so ids that look contributor-only or early-access (`IGNORE` in the unit:
+  `contributor|stealth|alpha`) are dropped before the compare and never reach the snapshot or an issue.
+- A seat key file missing on the host leaves that one provider unchecked with a plain line
+  (`EnvironmentFile=-`), and CI fails if a router key has no line in the unit.
 - Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing
   endpoint (a provider with no listing endpoint); `"watch": "<ERE>"` compares only ids that
   match it. Cline lists a whole catalogue that changes about weekly, so it watches only
