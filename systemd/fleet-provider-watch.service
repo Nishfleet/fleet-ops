@@ -1,0 +1,131 @@
+[Unit]
+Description=Daily check of each router provider's model list against config/provider-catalog.json
+# Providers change their offerings and publish no change event: Command Code moved to
+# GLM-5.3-Flash only and OpenCode added a free deepseek-v4.1-flash-free slug, and nothing
+# on the box noticed until Nish said so. A schedule is the only way to see it, so this is
+# a daily timer (fleet-provider-watch.timer), not a poller.
+#
+# What one run does. It reads each distinct provider (api_base plus the os.environ key
+# name) from config/litellm-proxy.yaml, GETs its OpenAI-style model listing with that
+# provider's key (three tries 20 s apart, so a blip does not page), and compares the
+# sorted model ids with the committed snapshot config/provider-catalog.json.
+# - HTTP 401 or 403: the key or login is dead. The unit fails (OnFailure= pages) with one
+#   plain line naming the provider and what Nish must do. No issue is filed for that.
+# - An added or removed id: ONE issue per changed provider on Nishfleet/fleet-ops, from a
+#   fixed template (title, body and labels are built here; the only network text in it is
+#   the model ids, each checked against a strict character set, and a provider with an id
+#   outside it is refused and the unit fails). Labels provider-watch and needs-orchestrator
+#   (agent-dispatch.yml starts one hand-off run when the worker App adds that label). An
+#   open issue with the same title means the change is skipped. The body carries the
+#   acceptance bullets for the orchestrator.
+# - No change: one line per provider, "provider-watch: <name> ok, <n> models", exit 0.
+# A provider with "listing": "none" in the snapshot is skipped (none today). A snapshot
+# entry may carry "watch", an extended regex: only ids matching it are compared (cline lists
+# a whole catalogue that changes weekly, so only its free, deepseek, z-ai and cline-own ids count).
+#
+# Credentials: the issues-only token of the worker App (fleet-grafana-github-token.service
+# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so the human
+# gh login is never read, exactly as retro-weekly.service files its issues. The provider
+# keys come from the same per-provider key files the LiteLLM container reads
+# (containers/quadlet/fleet-litellm-proxy.container, EnvironmentFile=), listed one by one
+# so the master key and the Claude logins are not in this unit's environment. A key
+# goes to curl through a 0600 header file in the runtime dir (-H @file), never argv.
+#
+# Not covered: outages (litellm_deployment_state in Grafana already pages those) and price
+# or limit changes (no API on these providers).
+#
+# CONFIG, CATALOG, ISSUES_TOKEN, GH, YQ and PAUSE exist so CI can run this very ExecStart
+# against stub curl and gh (tests/test_provider_watch.py); the host never overrides them.
+# $$ and %%: systemd expands $ and % before any shell runs (ci.yml gate fleet-ops#8382).
+# The script is one single-quoted bash string with no single quote, backslash or backtick inside.
+#
+# Enabled by hand once after the proof run (README "Provider watch").
+# Switch off: systemctl --user disable --now fleet-provider-watch.timer
+# Delete: the README "Provider watch" section lists the files.
+After=fleet-grafana-github-token.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-provider-watch
+RuntimeDirectoryMode=0700
+Environment=LC_ALL=C
+Environment=CONFIG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml
+Environment=CATALOG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/provider-catalog.json
+Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
+Environment=GH=%h/.local/bin/gh
+Environment=YQ=%h/.local/bin/yq
+Environment=PAUSE=20
+UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
+EnvironmentFile=%E/fleet-ops/seats/commandcode.env
+EnvironmentFile=%E/fleet-ops/seats/opencode.env
+EnvironmentFile=%E/fleet-ops/seats/opencode-2.env
+EnvironmentFile=%E/fleet-ops/seats/pareto.env
+EnvironmentFile=%E/fleet-ops/seats/synthetic.env
+EnvironmentFile=%E/fleet-ops/seats/zai.env
+EnvironmentFile=%E/fleet-ops/seats/cline.env
+EnvironmentFile=%E/fleet-ops/seats/minimax.env
+EnvironmentFile=%E/fleet-ops/seats/ollama.env
+EnvironmentFile=%E/fleet-ops/seats/stepfun.env
+EnvironmentFile=%E/fleet-ops/seats/alibaba-coding.env
+ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; re="^~?[A-Za-z0-9._:/-]{1,100}$$"; bad=0; ready=0; mkdir -p "$$d/gh"; \
+test -s "$$CATALOG" || { echo "provider-watch: snapshot missing"; exit 1; }; \
+$$YQ -o=json . "$$CONFIG" | jq -r ".model_list[].litellm_params | [.api_base, .api_key] | @tsv" | sort -u > "$$d/targets"; \
+test -s "$$d/targets" || { echo "provider-watch: no providers found in the router config"; exit 1; }; \
+while read -r base var; do \
+case $$var in os.environ/*) var=$${var#os.environ/};; *) continue;; esac; \
+name=$$(echo "$$var" | tr "[:upper:]_" "[:lower:]-" | sed -E "s/-api-key//"); \
+case $$name in *[!a-z0-9-]*|"") echo "provider-watch: a provider name from the router config is not plain text"; bad=1; continue;; esac; \
+export NAME=$$name; \
+if [ "$$(jq -r ".[env.NAME].listing // empty" "$$CATALOG")" = none ]; then echo "provider-watch: $$name ok, listing none"; continue; fi; \
+case $$base in */v[0-9]*) url="$$base/models";; *) url="$$base/v1/models";; esac; \
+k=$${!var:-}; \
+if [ -z "$$k" ]; then echo "provider-watch: $$name has no key in the environment: Nish must restore the $$name key file"; bad=1; continue; fi; \
+echo "Authorization: Bearer $$k" > "$$d/hdr"; n=0; code=000; \
+while :; do \
+n=$$((n+1)); \
+code=$$(curl -sS -m 30 -o "$$d/body" -w "%%{http_code}" -H "@$$d/hdr" "$$url" 2>/dev/null) || code=000; \
+case $$code in 200|401|403) break;; esac; \
+[ "$$n" -lt 3 ] || break; \
+sleep "$$PAUSE"; \
+done; \
+rm -f "$$d/hdr"; \
+case $$code in \
+401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; bad=1; continue;; \
+200) ;; \
+*) echo "provider-watch: $$name listing failed (HTTP $$code after $$n tries)"; bad=1; continue;; \
+esac; \
+if ! jq -e ".data | arrays | length > 0" "$$d/body" > /dev/null 2>&1; then echo "provider-watch: $$name listing is not a non-empty data array"; bad=1; continue; fi; \
+jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u > "$$d/ids.all"; \
+w=$$(jq -r ".[env.NAME].watch // empty" "$$CATALOG"); \
+if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
+jq -r ".[env.NAME].models // [] | .[]" "$$CATALOG" | LC_ALL=C sort -u > "$$d/snap"; \
+if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id has characters outside the allowed set (not printed), nothing filed"; bad=1; continue; fi; \
+comm -13 "$$d/snap" "$$d/ids" > "$$d/add"; comm -23 "$$d/snap" "$$d/ids" > "$$d/del"; \
+na=$$(wc -l < "$$d/add"); nr=$$(wc -l < "$$d/del"); cnt=$$(wc -l < "$$d/ids"); \
+if [ "$$na" -eq 0 ] && [ "$$nr" -eq 0 ]; then echo "provider-watch: $$name ok, $$cnt models"; continue; fi; \
+t="Provider watch: $$name model list changed"; \
+{ \
+echo "The $$name model listing no longer matches config/provider-catalog.json: $$na added, $$nr removed, $$cnt listed now. Written by fleet-provider-watch.service from the provider API listing; the ids below passed a strict character check."; echo; \
+echo "Added (first 20 of $$na):"; head -n 20 "$$d/add" | sed "s/^/- /"; [ "$$na" -gt 0 ] || echo "- none"; echo; \
+echo "Removed (first 20 of $$nr):"; head -n 20 "$$d/del" | sed "s/^/- /"; [ "$$nr" -gt 0 ] || echo "- none"; echo; \
+echo "Acceptance, for the orchestrator hand-off:";  \
+echo "- (a) Make one real call to each added id (if any) through its own provider, using the router seat key for $$name. Record the HTTP status and the reply model.";  \
+echo "- (b) If a call works and the model is free or unlimited or inside an existing plan, eval-score it before it gets any router weight, with the repo eval mechanism: tests/evals (AGENTS.md AI-decision rule: held-out cases, scored by a model family other than the builder, no new script).";  \
+echo "- (c) Open a router PR only inside the standing rules in the config/litellm-proxy.yaml header: no new spend, stay at 3 to 5 providers, removing any router row needs a yes from Nish, and a model that scores lower than the one it replaces gets no extra weight.";  \
+echo "- (d) Update config/provider-catalog.json to the new listing for $$name in the same PR.";  \
+echo "- (e) Anything that costs money or needs a login from Nish goes back as one plain line with the needs-nish-decision label and no PR. A removed id that a router row still serves is the same: open it with the evidence and do not remove the row."; \
+} > "$$d/body.md"; \
+if [ "$$ready" -eq 0 ]; then \
+test -s "$$ISSUES_TOKEN" || { echo "provider-watch: $$name changed but the issues token is missing"; bad=1; continue; }; \
+tok=$$(cat "$$ISSUES_TOKEN"); export GH_CONFIG_DIR="$$d/gh" GH_TOKEN="$$tok"; \
+"$$GH" label create provider-watch -R Nishfleet/fleet-ops --color 1D76DB --description "A provider model list changed" --force < /dev/null > /dev/null || { echo "provider-watch: $$name changed but the provider-watch label could not be created"; bad=1; continue; }; \
+"$$GH" issue list -R Nishfleet/fleet-ops --label provider-watch --state open --limit 100 --json title -q ".[].title" < /dev/null > "$$d/known" || { echo "provider-watch: $$name changed but the open issues could not be listed"; bad=1; continue; }; \
+ready=1; \
+fi; \
+if grep -Fxq -- "$$t" "$$d/known"; then echo "provider-watch: $$name changed (+$$na -$$nr), issue already open, skipped"; continue; fi; \
+"$$GH" issue create -R Nishfleet/fleet-ops --title "$$t" --label provider-watch --label needs-orchestrator --body-file "$$d/body.md" < /dev/null || { echo "provider-watch: $$name changed (+$$na -$$nr) but filing the issue failed"; bad=1; continue; }; \
+echo "provider-watch: $$name changed (+$$na -$$nr), issue filed"; \
+done < "$$d/targets"; \
+[ "$$bad" -eq 0 ]'
+TimeoutStartSec=1800

@@ -107,6 +107,12 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #     unlink` the four retro-weekly units.
 ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
+# 2f. The daily provider watch: link the unit pair so every deploy carries edits to it,
+#     the same way as step 2e. The timer is NOT enabled here: README "Provider watch"
+#     enables it once, so a hand disable stays disabled. Off switch: delete this step,
+#     then `rm` the two links in ~/.config/systemd/user and `systemctl --user daemon-reload`.
+ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other

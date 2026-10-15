@@ -88,6 +88,10 @@ script, or prompt lands unseen.
   is the job; `config/retro-public-deny.txt` is the check every follow-up issue
   must pass before it is filed; `config/retro-weekly-claude.json` is the tool
   list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
+  daily provider watch: each router provider's model list is compared with
+  `config/provider-catalog.json`, and a change files one fleet-ops issue. README
+  "Provider watch" has the run, off and delete steps.
 - `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
   `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
@@ -821,3 +825,58 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
 - Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
   `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
+
+## Provider watch
+
+Providers change their offerings and publish no change event (Command Code moved to
+GLM-5.3-Flash only, OpenCode added a free slug), and nothing on the box noticed. A daily
+schedule is the only way to see it, so `fleet-provider-watch.timer` starts
+`fleet-provider-watch.service` every day at 06:30 IST (a few minutes of random delay,
+`Persistent=true`).
+
+- One run reads each distinct provider (api_base plus the `os.environ/` key name) from
+  `config/litellm-proxy.yaml`, GETs its OpenAI-style `<api_base>/models` listing with that
+  provider's key, and compares the sorted ids with `config/provider-catalog.json`. A base with no
+  `/v1`-style tail (`https://ollama.com`, the MiniMax `/anthropic` base) gets `/v1/models`.
+  Three tries 20 s apart, so a blip does not page. The key goes to curl in a 0600 header file in
+  the unit's runtime directory (`-H @file`), never argv.
+- The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
+  the eleven it needs one by one (not the whole directory), so the master key and the Claude
+  logins are not in its environment.
+- HTTP 401 or 403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with
+  one plain line naming the provider and what Nish must do. No issue is filed for that.
+- An added or removed id files ONE issue per changed provider, titled `Provider watch: <name>
+  model list changed`, labels `provider-watch` (created if missing) and `needs-orchestrator`
+  (the worker App adds it, which starts one hand-off run). Title, body and labels are built by
+  the unit; the only network text in the body is the model ids, each checked against
+  `^~?[A-Za-z0-9._:/-]{1,100}$` and refused (the unit fails, nothing is filed for that provider)
+  if it holds `//` or `www.`, so no link can be planted. At most 20 ids are listed each way. An
+  open issue with the same title means the change is skipped. The body carries the acceptance
+  bullets for the orchestrator: a real call to each new id, an eval-score before any router weight
+  (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
+  removing a router row needs Nish's yes, no extra weight for a lower score), the catalog update
+  in the same PR, and a plain `needs-nish-decision` line for anything that costs money or needs
+  his login.
+- No change prints `provider-watch: <name> ok, <n> models` per provider and exits 0.
+- The issues token is the one `retro-weekly.service` uses: the worker App's issues-only
+  installation token that `fleet-grafana-github-token.service` mints, with an empty `GH_CONFIG_DIR`
+  so the human gh login is never read.
+- Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing
+  endpoint (none today: all eleven answer HTTP 200); `"watch": "<ERE>"` compares only ids that
+  match it. Cline lists a whole catalogue of 462 ids that changes about weekly, so it watches only
+  `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids (48 today).
+- Not covered: outages (`litellm_deployment_state` in Grafana already pages those) and
+  `not covered: price/limit pages, no API`.
+
+- Run it now (it files a real issue on a change): `systemctl --user start fleet-provider-watch.service`, then
+  `journalctl --user -u fleet-provider-watch -f`.
+- Switch it on (once): `systemctl --user enable --now fleet-provider-watch.timer`. `fleet-sync.service`
+  links the pair on every deploy (step 2f) but never enables it.
+- Switch it off: `systemctl --user disable --now fleet-provider-watch.timer`.
+- After a provider change the orchestrator's PR updates `config/provider-catalog.json`; to refresh
+  it by hand, replace the ids for that provider with the live listing, sorted.
+- Delete it: switch it off, delete `systemd/fleet-provider-watch.service`,
+  `systemd/fleet-provider-watch.timer`, `config/provider-catalog.json`, `tests/test_provider_watch.py`
+  (and its name on the pytest line of the gh-login step in `ci.yml`), the two rows in
+  `.agents/skills/verify-fleet/fleet-map.md` and step 2f of `systemd/fleet-sync.service`, then
+  `rm` the two links in `~/.config/systemd/user/` and run `systemctl --user daemon-reload`.
