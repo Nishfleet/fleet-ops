@@ -145,8 +145,8 @@ jobs:
           echo "::notice::$msg"
           echo "$msg" >> "$GITHUB_STEP_SUMMARY"
   # An agent-ready label no longer starts a worker job of its own: the list
-  # job below lists that one issue, so the same closed, blocked, parked and
-  # strong-only-lane checks hold it before any runner starts (fleet-ops#9303).
+  # job below lists that one issue, so the same closed, blocked and parked
+  # checks hold it before any runner starts (fleet-ops#9303).
   # Red CI on a claim PR: post the failed run's ##[error] lines on the issue before
   # the rework run starts, so the worker reads what broke (fleet-ops#9063). The
   # rework run's own "agent run started:" comment counts toward the Gate's 3-run
@@ -546,28 +546,26 @@ jobs:
       # The one "nothing to do" decision, made before any runner starts (fleet-ops#9303):
       # a 0509 sweep emitted every agent-ready issue and 19 strong-only work jobs each
       # ended in ~11 s on the Gate's "skip (lanes-full)". ADMIT drops what the Gate
-      # would skip anyway: a closed, blocked or parked issue, a ref with no issue, and
-      # every strong-only ref past the one free Cursor slot; a held issue keeps
-      # agent-ready for the next sweep. stdin: {issues, prs: [claim refs], cursor_live: n};
+      # would skip anyway: a closed, blocked or parked issue, or a ref with no issue; a held
+      # issue keeps agent-ready for the next sweep. stdin: {issues, prs: [claim refs]};
       # out: {refs, held: [{ref, why}]}. ci.yml runs it against config/dispatch-admit-cases.json.
       ADMIT: |
         def has_label($l): any(.labels[]; .name == $l);
         def parked: any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"));
-        def num: ltrimstr("claim/issue-") | capture("^(?<n>[0-9]+)").n;
+        def num: ltrimstr("claim/issue-") | (capture("^(?<n>[0-9]+)")? // {n: ""}).n;
         (.issues | map(select(type == "object" and has("number"))) | map({key: (.number | tostring), value: .}) | from_entries) as $by
         | ([$by[] | select(has_label("agent-ready"))]
            | sort_by((if has_label("priority-now") then 0 else 1 end), .created_at)
            | map("claim/issue-\(.number)")) as $ready
-        | reduce ($ready + (.prs - $ready))[] as $r ({refs: [], held: [], cursor: .cursor_live};
+        | reduce ($ready + (.prs - $ready))[] as $r ({refs: [], held: []};
             $by[$r | num] as $i
             | (if $i == null then "no such issue"
                elif $i.state != "open" then "closed"
                elif ($i.issue_dependencies_summary.blocked_by // 0) != 0 then "blocked"
                elif ($i | parked) then "parked"
-               elif ($i | has_label("strong-only")) and .cursor >= 1 then "strong-only lane (Cursor, one at a time) is busy"
                else null end) as $why
             | if $why != null then .held += [{ref: $r, why: $why}]
-              else .refs += [$r] | if ($i | has_label("strong-only")) then .cursor += 1 else . end end)
+              else .refs += [$r] end)
         | {refs, held}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
@@ -782,21 +780,10 @@ jobs:
               prs='[]'
             fi
           fi
-          # The Cursor lane (strong-only issues) runs one worker at a time on
-          # the whole host. Count this repo's live one: an agent-in-progress
-          # strong-only issue whose newest "agent run started:" run is live.
-          cursor_live=0
-          for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -l strong-only -L 100 --json number --jq '.[].number'); do
-            body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-            [[ $body =~ actions/runs/([0-9]+) ]] || continue
-            case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-              queued|in_progress|requested|waiting|pending) cursor_live=$((cursor_live + 1)) ;;
-            esac
-          done
           # Every listed issue plus the issue behind each claim PR, so ADMIT
           # can hold a ref the Gate would skip at once. A 404 body has no
           # number, so ADMIT holds that ref as "no such issue".
-          pr_nums=$(jq -r '.[] | ltrimstr("claim/issue-") | capture("^(?<n>[0-9]+)").n' <<<"${prs:-[]}")
+          pr_nums=$(jq -r '.[] | ltrimstr("claim/issue-") | (capture("^(?<n>[0-9]+)")? // empty) | .n' <<<"${prs:-[]}")
           pages=''
           # shellcheck disable=SC2086 # word-split on purpose: one number per word
           for n in $(printf '%s\n' $nums $pr_nums | sort -un); do
@@ -809,9 +796,8 @@ jobs:
             pages="$pages$i"$'\n'
           done
           verdict=$(printf '%s' "$pages" |
-            jq -sc --argjson prs "${prs:-[]}" --argjson cursor "$cursor_live" '{issues: ., prs: $prs, cursor_live: $cursor}' |
+            jq -sc --argjson prs "${prs:-[]}" '{issues: ., prs: $prs}' |
             jq -c "$ADMIT")
-          echo "cursor lane live in this repo: $cursor_live"
           jq -r '.held[] | "held \(.ref): \(.why)"' <<<"$verdict"
           refs=$(jq -c '.refs | .[:256]' <<<"$verdict")
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
