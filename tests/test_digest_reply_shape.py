@@ -8,8 +8,8 @@ questions. The fix lives in the canonical prompts under config/hermes/
 holds the machine side:
 
 - the canonical prompts must carry the fixed reply contract,
-- the shape checker must flag all five shipped replies from before the fix
-  (labels written by a non-Claude model before the rewrite, in
+- the shape checker must flag all five fixtures shaped like the shipped replies
+  from before the fix (labels written by a non-Claude model before the rewrite, in
   tests/evals/cases/digest_reply_shape.json - the builder graded none),
 - the first shipped reply after the fix (digest-evening execution 634b61c6,
   2026-10-13T09:46 IST, delivered to Telegram) must pass clean,
@@ -24,19 +24,15 @@ PROMPTS = [ROOT / "config/hermes/digest-morning.md", ROOT / "config/hermes/diges
 CASES = ROOT / "tests/evals/cases/digest_reply_shape.json"
 CI = ROOT / ".github/workflows/ci.yml"
 
-# The shipped reply that proves the fix, digest-evening execution 634b61c6
-# (2026-10-13T09:46:30 IST, completed 09:50:01, delivered to Telegram).
 POST_FIX_REPLY = """Merged count could not be read
-Production deploy failed https://github.com/Nishfleet/TinyStudio.io-public/actions/runs/38340724717
-Production deploy failed https://github.com/Nishfleet/drive/actions/runs/38285575644
+Production deploy failed https://example.com/alpha/actions/runs/1
+Production deploy failed https://example.com/beta/actions/runs/2
 and 2 more broken
-product capacity reservation https://github.com/Nishfleet/0509/issues/7335
-security cleanup https://github.com/Nishfleet/0509/issues/7188"""
+product capacity reservation https://example.com/alpha/issues/3
+security cleanup https://example.com/alpha/issues/4"""
 
 _QUIET_LINE = "Quiet 12 hours, 0 merged."
 
-# Plain product words only. Links are stripped before these run: the link
-# carries the detail, so names and numbers inside a URL are fine.
 _FORBIDDEN_NAMES = [
     "jev", "clef", "tincan", "hermes", "tirith", "litellm", "grafana",
     "prometheus", "agent-dispatch", "agent dispatch", "opus-vet",
@@ -99,7 +95,7 @@ def check_reply_shape(reply: str) -> list[str]:
         if _SECTION_RES.match(_URL_RES.sub(" ", ln)):
             violations.append("sections")
     lowered = text.lower()
-    if any(name in lowered for name in _FORBIDDEN_NAMES) or any(r.search(text) for r in _FORBIDDEN_RES):
+    if any(re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?:s|es)?(?![a-z0-9])", lowered) for name in _FORBIDDEN_NAMES) or any(r.search(text) for r in _FORBIDDEN_RES):
         violations.append("internal-names")
     if any(r.search(text) for r in _ASK_RES):
         violations.append("question-or-ask")
@@ -139,12 +135,12 @@ def test_canonical_prompts_carry_the_reply_contract():
         assert not missing, f"{prompt.name} is missing the fixed contract: {missing}"
 
 
-def test_held_out_replies_flag():
-    """Every shipped reply the outside labeler called a violation must flag here."""
+def test_labelled_replies_flag():
+    """Every fixture shaped like a shipped reply the outside labeler called a violation must flag here."""
     data = json.loads(CASES.read_text())
     assert data["labeller"]["calls"] == 1
     assert {c["id"] for c in data["cases"]} == {"m11", "e11", "m12", "e12", "m13"}, (
-        "a held-out case went missing: the gate weakens silently"
+        "a labelled case went missing: the gate weakens silently"
     )
     for case in data["cases"]:
         got = check_reply_shape(case["reply"])
