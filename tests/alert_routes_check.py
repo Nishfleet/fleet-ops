@@ -82,7 +82,11 @@ def main(root):
     selftest()
     rules, policy, contacts = [], None, set()
     for f in sorted(Path(root).glob("*.y*ml")):
-        doc = yaml.safe_load(f.read_text()) or {}
+        text = f.read_text()
+        if "api.github.com" in text:
+            print(f"::error::{f}: a literal GitHub URL lets a scratch Grafana with a real token file real fleet-ops issues (fleet-ops#9795); use $__env{{FLEET_GITHUB_ISSUES_URL}}, which only the production quadlet sets, so a copy without the env fails provisioning at boot")
+            return 1
+        doc = yaml.safe_load(text) or {}
         for g in doc.get("groups") or []:
             rules += g["rules"]
         for p in doc.get("policies") or []:

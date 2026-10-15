@@ -13,6 +13,13 @@
 # The webhook posts the GitHub issues API body from the payload template. The
 # token is a file reference, never a literal: $__file{} is Grafana's own
 # provisioning expansion and re-reads the file at every provisioning load. The
+# issue URL is an environment reference for the same fail-closed reason
+# (fleet-ops#9795): a scratch Grafana (a drill or a test container) that copies
+# this provisioning but not the production env fails at boot with
+# "Module failed: starting module provisioning" and can post to nothing, where
+# a literal URL let it file real fleet-ops issues with a real token. Only the
+# production quadlet (containers/quadlet/fleet-grafana.container) sets
+# FLEET_GITHUB_ISSUES_URL. The
 # file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
 # only) that expires after one hour, so fleet-grafana-github-token.timer
 # re-mints it every 20 min and reloads provisioning (fleet-ops#9445; before
@@ -43,7 +50,7 @@ contactPoints:
         type: webhook
         disableResolveMessage: true
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: $__env{FLEET_GITHUB_ISSUES_URL}
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
@@ -62,7 +69,7 @@ contactPoints:
         type: webhook
         disableResolveMessage: true
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: $__env{FLEET_GITHUB_ISSUES_URL}
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
@@ -82,7 +89,7 @@ contactPoints:
         type: webhook
         disableResolveMessage: true
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: $__env{FLEET_GITHUB_ISSUES_URL}
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}

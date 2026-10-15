@@ -205,6 +205,16 @@ jobs:
           n=$(grep -c 'authorization_credentials:' "$c")
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
+          # The issue URL must come from the quadlet's FLEET_GITHUB_ISSUES_URL,
+          # never a literal in the provisioning files: a scratch Grafana that
+          # copies the provisioning without the env then fails at boot instead of
+          # filing real fleet-ops issues (fleet-ops#9795).
+          grep -q '^Environment=FLEET_GITHUB_ISSUES_URL=https://api.github.com/repos/Nishfleet/fleet-ops/issues$' "$q" || { echo "::error::$q must set FLEET_GITHUB_ISSUES_URL to the fleet-ops issues API"; exit 1; }
+          if grep -rq 'api.github.com' config/grafana/provisioning/; then
+            grep -rn 'api.github.com' config/grafana/provisioning/
+            echo "::error::a literal GitHub URL in config/grafana/provisioning bypasses FLEET_GITHUB_ISSUES_URL; a scratch Grafana with a real token would file real issues"
+            exit 1
+          fi
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
       - name: Only money and outage rules can page Nish (fleet-ops#9445)
         run: |
@@ -1651,8 +1661,13 @@ jobs:
             l=${l//%h\/workspaces\/tooling\/fleet-ops-deploy-clone/$PWD}
             args+=(-v "$l")
           done < <(sed -n 's/^Volume=//p' "$q" | grep 'config/grafana')
+          # Last --env wins: FLEET_GITHUB_ISSUES_URL from the quadlet would send
+          # the DatasourceError deliveries (every Prometheus rule errors here, no
+          # datasources) to the real GitHub issues API with the dummy token, so
+          # point them at a dead local port instead (fleet-ops#9795).
           docker run -d --name grafana --network host \
             "${args[@]}" \
+            --env FLEET_GITHUB_ISSUES_URL=http://127.0.0.1:9/ \
             -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
             -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
             --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
@@ -1755,8 +1770,10 @@ jobs:
           # container runs as that owner (on the host UserNS=keep-id maps the file
           # owner to the image's grafana uid), so a mode the reader cannot use fails here.
           chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
-          sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
-              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' \
+          # The real contact point file with only its timers rewritten; the issue
+          # URL comes from FLEET_GITHUB_ISSUES_URL on the docker run below, the
+          # same env the production quadlet sets (fleet-ops#9795).
+          sed -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' \
               config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
           cat > "$d/prov/fixture.yaml" <<'YAML'
           apiVersion: 1
@@ -1813,6 +1830,7 @@ jobs:
           image=$(sed -n 's/^Image=docker\.io\///p' containers/quadlet/fleet-grafana.container)
           docker run -d --name grafana-drill --network host --user "$(id -u):$(id -g)" \
             --env GF_SERVER_HTTP_ADDR=127.0.0.1 --env GF_SERVER_HTTP_PORT=3998 --env GF_SECURITY_ADMIN_PASSWORD="$(cat "$d/admin-pw")" \
+            --env FLEET_GITHUB_ISSUES_URL=http://127.0.0.1:18796/ \
             --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
             -v "$d/prov:/etc/grafana/provisioning/alerting:ro" \
             -v "$d/tok:/run/secrets/github-token:ro" \
