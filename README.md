@@ -88,6 +88,10 @@ script, or prompt lands unseen.
   is the job; `config/retro-public-deny.txt` is the check every follow-up issue
   must pass before it is filed; `config/retro-weekly-claude.json` is the tool
   list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
+  daily provider watch: each router provider's model list is compared with
+  the host snapshot, and a change files one fleet-ops issue with no model id in it. README
+  "Provider watch" has the run, off and delete steps.
 - `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
   `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
@@ -118,6 +122,21 @@ script, or prompt lands unseen.
   TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+- `systemd/later-sweep.service` and `systemd/later-sweep.timer` — promote an
+  issue to `agent-ready` once the `due: <date> <time> IST` line in its body has
+  passed, every 15 minutes, in the repos `config/intake-repos.json` enrols. A
+  one-shot transient `later-*` timer is lost when the user manager restarts, so
+  an issue due later the same day sat unread for a day (fleet-ops#9376); a
+  persistent timer cannot be lost that way. One `gh issue list` per repo, then
+  one `gh issue edit --add-label agent-ready` per promoted issue, at most five a
+  run. Each list is the repo's 300 newest open issues, so a repo that carries
+  more open issues than that is swept only inside that window. `jq` makes the
+  whole decision, so no model reads an issue body and there is no session to
+  jail: only an issue authored by `nish3451` or the worker App is promoted, and
+  an issue that already carries `agent-ready` or any park label is skipped.
+  `fleet-sync.service` step 2f links and enables it on every deploy. Off switch:
+  remove that step and its enable line, then `systemctl --user disable --now
+  later-sweep.timer`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
   page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
   revoked or not `nish3451`. The path unit checks on every change to
@@ -151,25 +170,29 @@ script, or prompt lands unseen.
   logs do.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the Hermes gateway page. Prometheus loads three rules:
-  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody) and
+  — the dead-man and the Hermes gateway page. Prometheus loads six rules:
+  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody),
+  `NodeExporterDown` (the `node` target down for 5 minutes, severity nish),
   `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
-  minutes). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  minutes while the `node` target is up), and `PrometheusConfigReloadFailed`
+  and `AlertmanagerConfigReloadFailed` (stock reload metrics, severity nish).
+  Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
   `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
-  config/prometheus-tests/`. Off switch, under 2 minutes: `sudo systemctl
+  config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl
   disable --now prometheus-alertmanager.service`, then pause the check on
-  healthchecks.io so it stops alerting; the next `fleet-host-config.service` run
-  starts it again while `ansible/host.yml` has the enable task, so the durable
-  off is a PR that removes that task and the `rule_files` and `alerting` blocks. Delete it: revert that PR (this
-  removes the rule file, the Alertmanager config and options, the playbook
-  tasks and the CI step), then `sudo rm /etc/prometheus/deadman_url
-  /etc/prometheus/telegram_bot_token /etc/prometheus/telegram_chat_id` and
-  delete the check on healthchecks.io. Stopping Alertmanager does not touch
+  healthchecks.io so it stops alerting. The next `fleet-host-config.service`
+  run starts Alertmanager again, so for a lasting off, merge a PR that removes
+  the enable task in `ansible/host.yml` and the `rule_files` and `alerting`
+  blocks. Delete it: that same PR also removes the rule file, the Alertmanager
+  config and options, the playbook tasks and the CI step; then `sudo rm
+  /etc/prometheus/deadman_url /etc/prometheus/telegram_bot_token
+  /etc/prometheus/telegram_chat_id` and delete the check on healthchecks.io.
+  Stopping Alertmanager does not touch
   `hermes-gateway.service`.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
@@ -619,6 +642,56 @@ holds both rules before merge.
   `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
   step and the install task in the same PR once no drop-in is left.
 
+## Browser tool: Chrome DevTools MCP
+
+One free browser tool for every agent CLI on the box: the Chrome DevTools MCP
+server driving the system `/usr/bin/google-chrome` headless (DISPLAY is unset),
+in a throwaway profile (`--isolated`, deleted on exit), with usage statistics
+and CrUX lookups off. Chrome starts on the first browser tool call and exits
+when the client disconnects; an idle server is one Node process (about 170 MB).
+A page load peaked at about 1.1 GB across the Node process and Chrome. This is
+the default browser (vault `global-standing-rules.md`); browser-use cloud stays
+for narrow fan-out only and its entries are not touched.
+
+`config/chrome-devtools-mcp/package.json` and `package-lock.json` own the pin
+(one exact version plus the lockfile's integrity hashes, bumped by a PR; no
+`npx` and no `@latest` at runtime); `ansible/host.yml` owns the argument list.
+The play copies both files under `~/.local/share/chrome-devtools-mcp`, runs
+`npm ci --ignore-scripts` there when they changed or `node_modules` is missing
+(not `npm -g`: the weekly `npm update --global` would move a global install
+past the pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
+
+Every task that touches nish's home runs `become_user: nish`, never as root:
+nish controls those paths, and a root task would follow a planted symlink
+(`~/.config/mcp` to `/etc`, `mcp.json` to a root-only file). The tasks sit
+after `flush_handlers` and before the credential assert, so a missing
+credential file does not hold them back.
+
+| Agent | How it gets the tool |
+|---|---|
+| Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` fetches and fast-forwards the claude-mods clone (a failure fails the unit). Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
+| Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
+| OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
+| Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its output lacks the command or any argument; a CLI that is not installed is skipped. |
+| Cursor | the play swaps the dead `camofox-browser` entry in `~/.cursor/mcp.json` for `chrome-devtools`, keeping the other servers. Cursor still asks for approval (`cursor-agent mcp enable chrome-devtools`). |
+| Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
+| Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
+
+- The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
+- Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
+- Switch off for one agent: remove its task (for Claude Code set
+  `chrome-devtools@nish-mods` to `false` in `enabledPlugins`); `copy` never
+  deletes, so also add `/etc/opencode/opencode.json` to `retired` for OpenCode.
+- Delete it all: remove the OpenCode tasks and the tasks from "Create the Chrome
+  DevTools MCP install directory" through "Add the chrome-devtools entry under
+  Hermes' mcp_servers" in `ansible/host.yml`, `config/chrome-devtools-mcp/`, the
+  `60-chrome-devtools.json` drop-in and
+  `tests/test_chrome_devtools_mcp.py` with its `ci.yml` step, then
+  `devin mcp remove` and `cmd mcp remove` the entry by hand.
+- The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
+  every agent": the args match in every fragment, and the Cursor, Codex and
+  Hermes tasks run twice against temp copies (the second run changes nothing).
+
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
@@ -686,7 +759,8 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 agent-dispatch. It is the single source of truth for which
 repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
-silently reverted without a record (fleet-ops#32).
+silently reverted without a record (fleet-ops#32). `later-sweep.service` reads
+this list too, so the overdue sweep follows enrolment without a second list.
 
 Each enrolled repo needs three preconditions:
 
@@ -821,3 +895,87 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
 - Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
   `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
+
+## Provider watch
+
+Providers change their offerings and publish no change event (Command Code moved to
+one model only, OpenCode added a free slug), and nothing on the box noticed. A daily
+schedule is the only way to see it, so `fleet-provider-watch.timer` starts
+`fleet-provider-watch.service` every day at 06:30 IST (a few minutes of random delay,
+`Persistent=true`).
+
+No model id is ever stored in or filed on this public repo. The snapshot, the changed-id
+lists and an optional ignore list live on the host, in the unit's `StateDirectory`
+(`~/.local/state/provider-watch`, mode 0700); the repo keeps only `config/provider-watch.json`.
+
+- One run reads each distinct provider (api_base plus the `os.environ/` key name, unique by key
+  variable) from `config/litellm-proxy.yaml` and GETs its OpenAI-style `<api_base>/models` listing
+  with that provider's key. A base with no `/v1`-style tail (`https://ollama.com`, the MiniMax
+  `/anthropic` base) gets `/v1/models`. `curl --retry 2 --retry-delay 20` (three tries, 20 s apart;
+  curl does not retry 401 or 403), so a blip does not page. The key goes to curl in a 0600 header
+  file in the unit's runtime directory (`-H @file`), never argv.
+- The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
+  the ones it needs one by one (not the whole directory), so the master key and the Claude logins
+  are not in its environment. A missing file fails the unit with a plain line naming that provider
+  while every other provider is still checked (`EnvironmentFile=-`); CI fails when a router key has
+  no file line in the unit.
+- First run for a provider: the sorted ids are saved to `catalog.json` in the state directory and
+  nothing is filed (`provider-watch: <name> seeded, <n> models, nothing filed`).
+- Later runs diff against that snapshot. A change writes the added and removed ids to
+  `changes/<UTC date>-<provider>.txt` in the state directory (no cap), files ONE issue per changed
+  provider, and then updates the snapshot, so a change is not filed twice. A provider whose filing
+  fails keeps its old snapshot and fails the unit.
+- The issue is fixed text only: title `Provider watch: <provider> model list changed`, the added and
+  removed counts, the sentence "The ids are in the host state file changes/<date>-<provider>.txt
+  under the StateDirectory of fleet-provider-watch.service." and the acceptance bullets. No text
+  from the network reaches it. Labels `provider-watch` (created if missing, never rewritten) and
+  `needs-orchestrator`: fleet-ops#8304 says control-plane work is never self-admitted, and the vault
+  standing rule (`global-standing-rules.md`, nish3451/nish-vault#23) makes this one exception, from
+  Nish on 2026-10-15, so the worker App's label starts one orchestrator hand-off run per issue (a
+  paid model session, capped by `ORCHESTRATE_DAILY_MAX`). That run is on this host as the runner
+  user, unjailed, so it reads `~/.local/state/provider-watch/changes/<file>` directly; the body
+  tells it to keep ids out of issue text, PR text and commits. An issue with the same title that is open, or was created in the last 7 days even if
+  closed, means the change is not filed again (the snapshot still updates). At most 3 issues per
+  run; the rest wait for the next run.
+- The acceptance bullets: a seat marked `"billing": "flat"` in `config/provider-watch.json` may get
+  a real call to free or in-plan ids only; every other seat's body forbids all calls and sends the
+  ids back as a `needs-nish-decision` line (the unit decides, not the model; MiniMax is marked flat
+  on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly
+  limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for
+  one DeepSeek flash model only, so they are not marked). Then an eval-score before any router weight
+  (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
+  removing a router row needs Nish's yes, no extra weight for a lower score), and a plain
+  `needs-nish-decision` line for anything that costs money or needs his login.
+- Every id must match `^~?[A-Za-z0-9._:/-]{1,64}$` and hold no `//` or `www.`, or that provider is
+  refused: the unit fails with a line showing the first offender sanitized to `[A-Za-z0-9_-]`, and
+  nothing is recorded or filed for it. Only a change to `ignore.txt` or to the provider's `watch`
+  clears it.
+- A listing that is still 5xx, 408, 429, a timeout, empty, or empty after the filters logs
+  `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
+  litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing
+  path or api_base, 400) fails it, so a provider cannot silently drop out of the check. HTTP 401 or
+  403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with one plain line
+  naming the provider and what Nish must do, and no issue is filed. A router row with a key but no
+  https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`, is refused.
+- `config/provider-watch.json` holds only generic per-provider settings: `watch` (an ERE; only ids
+  matching it are compared; Cline lists a large catalogue that changes about weekly, so it watches
+  only `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids), `billing` (`flat`) and `listing`
+  (`none` skips a provider with no listing endpoint). Ids to hide (early-access names) go one
+  extended regex per line in `ignore.txt` in the state directory, matched case-insensitively; they
+  never go in git.
+- Not covered: outages (`litellm_deployment_state` in Grafana already pages those) and
+  `not covered: price/limit pages, no API`.
+
+- Run it now (it files a real issue on a change): `systemctl --user start fleet-provider-watch.service`, then
+  `journalctl --user -u fleet-provider-watch -f`.
+- Switch it on (once): `systemctl --user enable --now fleet-provider-watch.timer`. `fleet-sync.service`
+  links the pair on every deploy (step 2g) but never enables it. The first run seeds the snapshot.
+- Switch it off: `systemctl --user disable --now fleet-provider-watch.timer`.
+- Read a change: `cat ~/.local/state/provider-watch/changes/<date>-<provider>.txt`. Reset a
+  provider: delete its key from `catalog.json` (the next run seeds it again).
+- Delete it: switch it off, delete `systemd/fleet-provider-watch.service`,
+  `systemd/fleet-provider-watch.timer`, `config/provider-watch.json`, `tests/test_provider_watch.py`
+  (and its name on the pytest line of the gh-login step in `ci.yml`), the two rows in
+  `.agents/skills/verify-fleet/fleet-map.md` and step 2g of `systemd/fleet-sync.service`, then
+  `rm` the two links in `~/.config/systemd/user/`, run `systemctl --user daemon-reload` and
+  `rm -r ~/.local/state/provider-watch`.

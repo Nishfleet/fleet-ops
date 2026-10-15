@@ -220,20 +220,20 @@ jobs:
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
-        # The report task renders every registered var with the idiom
-        # (var | default({})).results | default([]). A skipped non-looped
-        # registration carries no 'results' key, so the old pattern
-        # (x | default({'results': []})).results raised "'dict object' has no
-        # attribute 'results'" and the run died at its last task. This play
-        # reproduces that registration, renders the report expressions, and
-        # asserts no old pattern is left in ansible/update.yml.
+        # The report task renders every registered var with (var | default({})).results | default([]).
+        # A skipped non-looped registration has no 'results' key, so the old pattern (x | default({'results': []})).results
+        # killed the run at its last task. This play reproduces that registration, renders the report expressions,
+        # and asserts no old pattern is left in ansible/update.yml.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+      - name: Chrome DevTools MCP is pinned once and wired into every agent
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py
       - name: orchestrator hand-off cleanup keeps a worktree a running unit uses (fleet-ops#9377)
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
@@ -255,12 +255,12 @@ jobs:
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py
-      - name: needs-triage admission (Jev verdict, then queue)
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py
+      - name: needs-triage admission (Jev verdict, then queue) and digest reply shape (fleet-ops#9706)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
