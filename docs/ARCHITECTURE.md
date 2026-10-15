@@ -94,8 +94,20 @@ The rules still in force:
   (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
   runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
   an odd N keeps it (seat a), and a name with no number keeps seat a. The step
-  logs `claude lane: seat=a|b runner=<name>`. The jail exposes only the chosen
-  seat. Jobs split across both seats with no clock, and a job stays on one seat
+  logs `claude lane: seat=a|b auth=token|login runner=<name>`. A seat with a
+  one-year `claude setup-token` file (`claude-seat-<x>.env` in the seat config
+  directory, one line `CLAUDE_CODE_OAUTH_TOKEN=...`, mode 600) logs in with that
+  token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
+  (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
+  run as shell, and the token is masked and given to the claude command alone, so
+  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  error on that token, the lane retries once with the other seat's token (logged as
+  `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
+  so a backup copy restores it. With no such file the seat's login is used
+  (`auth=login`). Delete the token files and the lane goes back to logins.
+  The jail exposes only the chosen seat's login; token files and the backup dir
+  (`~/.local/share/claude-seat-backup`) are hidden from every jail, symlinks
+  included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
   limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
