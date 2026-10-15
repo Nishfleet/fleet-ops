@@ -863,12 +863,9 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
-    # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
-    # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
-    # so the PR cannot change the reviewer that judges it. A PR that adds its own
-    # workflow could post as the same bot; that is why a PR that edits the guard
-    # list or a workflow needs two independent reviews, not one (below). Arming is
-    # the arm job's, as the worker App.
+    # Comments are written with the job's own GITHUB_TOKEN (github-actions[bot]). This job runs from
+    # main, so the PR cannot change its reviewer; a PR that edits the guard list or a workflow needs
+    # two independent reviews (below). Arming is the arm job's, as the worker App.
     permissions:
       pull-requests: write
     outputs:
@@ -882,9 +879,6 @@ jobs:
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # The private-detail rules the PR text scan uses (secret-scan.yml,
-      # fleet-ops#9512); the review is scanned with the same file before it is
-      # posted (fleet-ops#9528). Read from main, so a PR cannot loosen them.
       PRIVATE_DETAIL_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -910,97 +904,42 @@ jobs:
           SECOND_FAMILY: GLM
         run: |
           set -euo pipefail
-          # The review is posted on a public PR and quotes diff lines, so every
-          # comment goes through the private-detail scan first (fleet-ops#9528):
-          # gitleaks with the shared rules file, over the whole comment text. A
-          # line a rule matches is replaced by a note, and a footer says how many
-          # lines were withheld. The workflow's own approval line is not scanned
-          # (it is a fixed string with a sha). The scan runs on a copy: the
-          # approve or block decision above never reads the redacted text, so
-          # redaction cannot turn a blocker line into an approval. If the rules
-          # cannot be read or gitleaks fails, nothing is posted and the job goes
-          # red, so a re-run reviews the head again. --ignore-gitleaks-allow
-          # because the text is quoted from a diff, which could carry the marker;
-          # --redact keeps matched values out of the job log.
-          redact() {
-            local in="$RUNNER_TEMP/scan-in.txt" rep="$RUNNER_TEMP/scan-report.json" rules="$RUNNER_TEMP/private-detail.toml" rc=0 n
-            # The unredacted text and the report must not outlive the scan on the runner's disk.
-            trap 'rm -f -- "$RUNNER_TEMP/scan-in.txt" "$RUNNER_TEMP/scan-report.json" "$RUNNER_TEMP/scan-lines.txt"' RETURN
-            command -v gitleaks > /dev/null || { echo "::error::gitleaks is not on this runner's PATH (it lives beside pi); the review comment cannot be scanned"; return 1; }
-            [ -s "$rules" ] || curl -fsSL --retry 3 --max-time 60 --output "$rules" "$PRIVATE_DETAIL_URL" || { echo "::error::the private-detail rules file could not be read"; return 1; }
-            [ -s "$rules" ] || return 1
+          scan() {
+            local in=$RUNNER_TEMP/scan.txt rep=$RUNNER_TEMP/scan.json rules=$RUNNER_TEMP/rules.toml rc=0
             printf '%s\n' "$1" > "$in"
-            (cd "$RUNNER_TEMP" && gitleaks stdin --config "$rules" --ignore-gitleaks-allow --redact --report-format json --report-path "$rep" \
-              --exit-code 2 --no-banner --log-level error < "$in" > /dev/null 2>&1) || rc=$?
+            curl -fsSL --retry 3 --max-time 60 -o "$rules" "$PRIVATE_DETAIL_URL" && [ -s "$rules" ] || rc=9
+            [ $rc != 0 ] || (cd "$RUNNER_TEMP" && gitleaks stdin --config "$rules" --ignore-gitleaks-allow --redact -f json -r "$rep" --exit-code 2 --no-banner --log-level error < "$in" > /dev/null 2>&1) || rc=$?
             case $rc in
               0) cat "$in" ;;
-              2)
-                jq -r '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$rep" > "$RUNNER_TEMP/scan-lines.txt" || return 1
-                [ -s "$RUNNER_TEMP/scan-lines.txt" ] || return 1
-                awk 'NR == FNR { bad[$1] = 1; next } FNR in bad { if (!prev) print "[a line was withheld: it matched a private-detail rule]"; prev = 1; next } { prev = 0; print }' \
-                  "$RUNNER_TEMP/scan-lines.txt" "$in"
-                n=$(wc -l < "$RUNNER_TEMP/scan-lines.txt" | tr -d ' ')
-                printf '\nNote: %s line(s) of this review were withheld because they matched a private-detail rule (%s).\n' "$n" \
-                  "$(jq -r '[.[].RuleID] | unique | join(", ")' "$rep")" ;;
-              *) return 1 ;;
+              2) jq -e 'length > 0' "$rep" > /dev/null && awk 'NR == FNR { bad[$1] = 1; next } FNR in bad { if (!prev) print "[a line was withheld: it matched a private-detail rule]"; prev = 1; next } { prev = 0; print }' <(jq -r '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$rep") "$in" || rc=9 ;;
             esac
+            rm -f "$in" "$rep"
+            [ $rc = 0 ] || [ $rc = 2 ]
           }
-          scan_body() {
-            local body=$1 first='' rest redacted
-            # The approval line is workflow-written; only the text after it is scanned.
-            first=${body%%$'\n'*}
-            if [[ $first =~ ^coordinator-approval:\ [0-9a-f]{40}$ ]]; then rest=${body#"$first"}; rest=${rest#$'\n'}; else first=; rest=$body; fi
-            redacted=$(redact "$rest") || return 1
-            [ -z "$first" ] || redacted=$first$'\n'$redacted
-            printf '%s' "$redacted"
-          }
-          scan_failed() {
-            echo "::error::the private-detail scan could not run; no review text was posted. Re-run the review-risky job."
-            # Fixed text written by this workflow, so it needs no scan; it names no verdict phrase, so the head is reviewed again on a re-run.
-            gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true
-            exit 1
-          }
-          say() { local out; out=$(scan_body "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
+          scan_failed() { echo "::error::the private-detail scan could not run; nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
+          say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; gh pr comment "$PR" -R "$REPO" --body "$out"; }
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
-          approve_say() { local out; out=$(scan_body "$1") || scan_failed; approve; gh pr comment "$PR" -R "$REPO" --body "$out"; }
-          # An infrastructure failure is retry-able: the comment avoids the
-          # "reviewer: <sha>" phrase the already-reviewed check looks for, and
-          # the job goes red so a re-run reviews the head again.
+          # An infrastructure failure: the comment avoids the "reviewer: <sha>" phrase, so a re-run reviews again.
           retry() {
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # Blocker lines of a review: the line starts with the word blocker or blockers
-          # (with or without markup) and its text after that is not a none-variant.
-          # blk_re finds a line that starts with the word; a slash after it ("blocker/risk/nit,
-          # one line each", a header the model echoes) is not a finding. none_re is a line whose
-          # text after the word is only a none-variant: none, none found, no blockers, nothing,
-          # n/a, nil, a dash, with optional markup before and punctuation after, or with a sentence
-          # of explanation after a full stop or dash ("Blockers: none. The diff only adds a job.").
-          # Both patterns are
-          # case-insensitive and are the only copies: grep reads them here and jq reads the same
-          # strings in the already-reviewed check. none_re is anchored at both ends, so a line with
-          # other words straight after the variant ("blocker: none of the callers check the token") still blocks.
-          # Dropping a none line never approves by itself: the judge must still be 90% sure, and
-          # a guard PR's second reviewer must still end on APPROVE.
+          # Blocker lines start with the word blocker(s) (markup allowed; "blocker/risk/nit" echoed
+          # headers do not count) and are not only a none-variant (none, nothing, n/a, nil, a dash,
+          # optionally followed by a sentence). Both patterns are case-insensitive and the only copies:
+          # grep reads them here, jq in the already-reviewed check. "blocker: none of the callers check
+          # the token" still blocks. Dropping a none line never approves alone: Jev must be 90% sure.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed: approved, not approved or blocked.
-          # The older hold comment and the "could not be judged" comment carry
-          # no verdict, so those heads are reviewed. The review then posts a
-          # verdict, which ends it: one review per head, not one per event. The
-          # verdict phrases end in a full stop, as the comments below write them.
-          # Each phrase must START a line of a comment by github-actions[bot]: the
-          # hold comment quotes the approval line inside a sentence, and that is
-          # not a verdict. A blocked verdict whose only blocker lines say "none"
-          # was a misread of the review (see blockers_of), so it does not count
-          # and the head is reviewed again, but only until five such verdicts
-          # stand on it, so a head that keeps getting one does not pay for a
-          # review per event. The pages are read as one list (jq -s).
+          # Only a real verdict (approved, not approved, blocked) counts as reviewed: one review per
+          # head. A phrase must START a line of a github-actions[bot] comment. A blocked verdict whose
+          # blocker lines all say "none" was a misread (blockers_of): the head is reviewed again, up to
+          # five such verdicts. The pages are read as one list (jq -s).
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
@@ -1011,18 +950,14 @@ jobs:
             | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
-          # The guard list decides how much review the head needs. If it cannot
-          # be read the head is not reviewed at all (fail closed), and no person
-          # is asked: the job fails and a re-run reads it again.
+          # The guard list decides how much review the head needs; unreadable means fail closed, re-run.
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
           jq -e '(.guard | type) == "array" and (.guard | length) > 0' <<<"$cfg" >/dev/null 2>&1 || retry "the guard list could not be read"
           hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
           guard=false
           [ "$hits" = 0 ] || guard=true
-          # The diff is read with git from a checkout, never through the diff API: the API
-          # refuses a PR over 20,000 diff lines (406, Nishfleet/drive#949), so size became a failure
-          # mode. Both SHAs are fetched whole and the three-dot diff is the merge base
-          # against the head, the change the review judges. A failed read is said on the PR.
+          # The diff is read with git, never the diff API (it refuses a PR over 20,000 lines, drive#949):
+          # the three-dot diff of the merge base against the head. A failed read is said on the PR.
           base=$(jq -r .base.sha <<<"$pr")
           bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
@@ -1046,12 +981,10 @@ jobs:
             done
           } | head -c 120000 > "$RUNNER_TEMP/context.txt" || true
           cat "$RUNNER_TEMP/context.txt" >> "$RUNNER_TEMP/diff.txt"
-          # Who built it: the worker App's "builder-engine: <list>" comments on the
-          # PR. Only the worker App's own comment counts (not any bot's); any claude in a list, or no such
-          # comment at all (the orchestrator, a person's session), is Claude-built.
+          # Who built it: only the worker App's "builder-engine: <list>" comments count; any claude, or
+          # none at all (orchestrator, a person), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
-          # Unknown counts as Claude-built. Both names are Opus 5.5 today; the
-          # verdict is Jev's (non-Claude) either way.
+          # Unknown counts as Claude-built; the verdict is Jev's either way.
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
