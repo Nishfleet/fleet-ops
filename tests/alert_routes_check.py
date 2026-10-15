@@ -24,6 +24,11 @@ RETIRED_DATASOURCES = {
     # The nishfleet-worker App installation behind it is gone (fleet-ops#9803).
     "fleet-github-personal": "fleet-github",
 }
+RETIRED_OWNERS = {
+    # Same cause: the App has no installation on the nish3451 account any more,
+    # so a panel that names it reads nothing whatever data source it picks.
+    "nish3451": "Nishfleet",
+}
 BUILTIN_DATASOURCES = {"-- Mixed --", "-- Grafana --", "-- Dashboard --", "__expr__"}
 
 URGENT = {
@@ -98,39 +103,55 @@ def provisioned_uids(provisioning):
     return uids
 
 
+def walk_refs(node, where, out):
+    """Every datasource uid and query owner in a Grafana panel tree or rule model."""
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        uid = ds.get("uid") if isinstance(ds, dict) else ds
+        if uid:
+            out.append((where, "datasource", uid))
+        if node.get("datasourceUid"):
+            out.append((where, "datasource", node["datasourceUid"]))
+        if node.get("queryType") and node.get("owner"):
+            out.append((where, "owner", node["owner"]))
+        for key, value in node.items():
+            if isinstance(value, (dict, list)):
+                walk_refs(value, where if key in ("model", "options") else f"{where} > {key}", out)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            walk_refs(value, f"{where}[{i}]", out)
+
+
 def datasource_refs(root, provisioning):
-    """{where: uid} for every alert rule and dashboard panel that names one."""
-    refs = {}
+    """[(where, kind, value)] for every alert rule and dashboard panel that names one."""
+    out = []
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for g in doc.get("groups") or []:
             for r in g["rules"]:
-                for d in r.get("data") or []:
-                    if d.get("datasourceUid"):
-                        refs[f"{f.name}: {r['title']}"] = d["datasourceUid"]
+                walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
     for f in sorted((Path(provisioning).parent / "dashboards").glob("*.json")):
-        doc = json.loads(f.read_text())
-        for p in doc.get("panels") or []:
-            for t in [p, *(p.get("targets") or [])]:
-                ds = t.get("datasource")
-                uid = ds.get("uid") if isinstance(ds, dict) else ds
-                if uid:
-                    refs[f"{f.name}: {p.get('title')}: {t.get('refId', 'panel')}"] = uid
-    assert refs, "no alert rule or dashboard panel names a data source"
-    return refs
+        walk_refs(json.loads(f.read_text()), f.name, out)
+    assert len(out) >= 10, f"only {len(out)} data source references found; the walk is broken"
+    return out
 
 
 def check_datasource_refs(root, provisioning):
     uids = provisioned_uids(provisioning)
-    for where, uid in sorted(datasource_refs(root, provisioning).items()):
-        if uid in RETIRED_DATASOURCES:
-            print(f"::error::{where}: data source {uid} was retired, read {RETIRED_DATASOURCES[uid]} instead")
-            return 1
-        if uid not in uids and uid not in BUILTIN_DATASOURCES:
-            print(f"::error::{where}: data source {uid} is not provisioned in provisioning/datasources")
-            return 1
-    print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
-    return 0
+    bad = 0
+    for where, kind, value in datasource_refs(root, provisioning):
+        if kind == "owner" and value in RETIRED_OWNERS:
+            print(f"::error::{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value]}")
+            bad = 1
+        elif kind == "datasource" and value in RETIRED_DATASOURCES:
+            print(f"::error::{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
+            bad = 1
+        elif kind == "datasource" and value not in uids and value not in BUILTIN_DATASOURCES:
+            print(f"::error::{where}: data source {value} is not provisioned in provisioning/datasources")
+            bad = 1
+    if not bad:
+        print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
+    return bad
 
 
 def main(root):
