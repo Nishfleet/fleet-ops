@@ -255,7 +255,7 @@ path to a unit file."_ Add the unit file to `systemd/`, merge it, then once:
 ```
 systemctl --user link  /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
 systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>   # timers and .path units
-XDG_RUNTIME_DIR="$(mktemp -d)" systemd-analyze verify systemd/<unit>
+XDG_RUNTIME_DIR="$(mktemp -d)" systemd-analyze verify /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
 ```
 
 Always give `systemd-analyze verify` a private `XDG_RUNTIME_DIR`, as above.
