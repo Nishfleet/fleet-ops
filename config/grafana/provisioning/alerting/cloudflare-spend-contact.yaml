@@ -28,8 +28,8 @@
 #   cloudflare-spend-delivery       the cost alarm could not file its issue
 #   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
 #   prompt-cache-hit                money: a route that stopped caching pays full price
-#   deploy-failed (9 rules)         outage: a product's production deploy on main failed
-#                                   (its read errors file an issue instead)
+#   deploy-failed-24h (8 rules)     outage: a product's production deploy on main red for a day
+#                                   (deploy-failed files the fleet issue first)
 # Rules that file an issue instead: router-dead-row (fleet-owned router rows),
 # cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
 # unit is an issue, not a page), and any new rule. A dead GitHub token is caught by
@@ -126,11 +126,11 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
-      # A product's latest production deploy on main failed: an outage, it
-      # pages. Its read errors skip this route and file an issue at the root.
+      # A product's production deploy on main has been red for 24 hours (the
+      # deploy-failed rules filed a fleet issue at the root first): it pages.
       - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", deploy-failed]
+          - [signal, "=", deploy-failed-24h]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, repo]
         group_wait: 0s
