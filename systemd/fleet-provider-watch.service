@@ -1,0 +1,155 @@
+[Unit]
+Description=Daily check of each router provider's model list against the host snapshot
+# Providers change their offerings and publish no change event: Command Code moved to
+# one model only and OpenCode added a free slug, and nothing on the box noticed until
+# Nish said so. A schedule is the only way to see it, so this is a daily timer
+# (fleet-provider-watch.timer), not a poller.
+#
+# What one run does. It reads each distinct provider (api_base plus the os.environ key
+# name, unique by key variable) from config/litellm-proxy.yaml, GETs its OpenAI-style model
+# listing with that provider's key (curl --retry 2 --retry-delay 20, so a blip does not
+# page; curl does not retry 401 or 403), and compares the sorted model ids with the host
+# snapshot $STATE_DIRECTORY/catalog.json (StateDirectory=provider-watch, mode 0700, so
+# ~/.local/state/provider-watch). NO MODEL ID IS EVER STORED IN, OR FILED ON, THE PUBLIC
+# REPO: the snapshot, the lists of changed ids and an optional ignore.txt (extended regexes,
+# one per line, for ids to hide) all live in the state directory.
+# - First run for a provider: the snapshot is seeded and nothing is filed.
+# - HTTP 401 or 403: the key or login is dead. The unit fails (OnFailure= pages) with one
+#   plain line naming the provider and what Nish must do. No issue is filed for that.
+# - An added or removed id: the ids go to changes/<UTC date>-<provider>.txt in the state
+#   directory, then ONE issue per changed provider is filed on Nishfleet/fleet-ops with the
+#   label provider-watch only (fleet-ops#8304: control-plane work is never self-admitted, so
+#   the issue waits for a scoped hand-off). Title, body and label are fixed text: the title
+#   is "Provider watch: <provider> model list changed", the body holds the added and removed
+#   counts, the path of the changes file and the acceptance bullets. No text from the
+#   network reaches the issue. The snapshot is updated once the issue is filed (or an issue
+#   with the same title is open, or was created in the last 7 days, even if closed), so a
+#   change is not filed twice. At most 3 issues are filed per run; the rest wait.
+#   An id outside ^~?[A-Za-z0-9._:/-]{1,64}$ (or holding // or www.) refuses that provider:
+#   the unit fails, and nothing is recorded or filed for it.
+#   config/provider-watch.json (no ids) holds per-provider "watch" regexes, "billing": "flat"
+#   (any other seat gets a body that forbids every call) and "listing": "none".
+# - A listing that is still 5xx, 408, 429, a timeout, empty or empty after the filters is
+#   logged as unavailable and skipped; it does not fail the unit (outages page through
+#   litellm_deployment_state). Any other non-200 (a wrong path), a bad config row, a missing
+#   key and a filing failure fail it.
+# - No change: one line per provider, "provider-watch: <name> ok, <n> models", exit 0.
+# A key variable must match ^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$ and the api_base must be
+# https://, or the row is refused and the unit fails, so a config row cannot send any other
+# variable to any host. tests/test_provider_watch.py fails CI when a router key has no
+# EnvironmentFile= below. The EnvironmentFile= lines have a - so one retired seat file fails
+# only that provider (a plain line names it); every other provider is still checked.
+#
+# Credentials: the issues-only token of the worker App (fleet-grafana-github-token.service
+# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so the human
+# gh login is never read, as retro-weekly.service files its issues. The provider keys come
+# from the same per-provider key files the LiteLLM container reads, listed one by one so the
+# master key and the Claude logins are not in this unit's environment. A key goes to curl
+# through a 0600 header file in the runtime dir (-H @file, a form AGENTS.md lists), never argv.
+#
+# Not covered: outages (litellm_deployment_state in Grafana already pages those) and price
+# or limit changes (no API on these providers).
+#
+# CONFIG, WATCH_CONFIG, ISSUES_TOKEN, GH and YQ exist so CI can run this very ExecStart
+# against stub curl and gh (tests/test_provider_watch.py); the host never overrides them.
+# $$ and %%: systemd expands $ and % before any shell runs (ci.yml gate fleet-ops#8382).
+# The script is one single-quoted bash string with no single quote, backslash or backtick inside.
+#
+# Enabled by hand once after the proof run (README "Provider watch").
+# Switch off: systemctl --user disable --now fleet-provider-watch.timer
+# Delete: the README "Provider watch" section lists the files.
+After=fleet-grafana-github-token.service
+Wants=fleet-grafana-github-token.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-provider-watch
+RuntimeDirectoryMode=0700
+StateDirectory=provider-watch
+StateDirectoryMode=0700
+Environment=LC_ALL=C
+Environment=CONFIG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml
+Environment=WATCH_CONFIG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/provider-watch.json
+Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
+Environment=GH=%h/.local/bin/gh
+Environment=YQ=%h/.local/bin/yq
+UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
+EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
+EnvironmentFile=-%E/fleet-ops/seats/opencode.env
+EnvironmentFile=-%E/fleet-ops/seats/opencode-2.env
+EnvironmentFile=-%E/fleet-ops/seats/pareto.env
+EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
+EnvironmentFile=-%E/fleet-ops/seats/zai.env
+EnvironmentFile=-%E/fleet-ops/seats/cline.env
+EnvironmentFile=-%E/fleet-ops/seats/minimax.env
+EnvironmentFile=-%E/fleet-ops/seats/ollama.env
+EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
+EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
+ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; st="$$STATE_DIRECTORY"; snap="$$st/catalog.json"; ign="$$st/ignore.txt"; re="^~?[A-Za-z0-9._:/-]{1,64}$$"; bad=0; ready=0; filed=0; mkdir -p "$$d/gh" "$$st/changes"; \
+test -s "$$WATCH_CONFIG" || { echo "provider-watch: config/provider-watch.json missing"; exit 1; }; \
+test -s "$$snap" || echo "{}" > "$$snap"; \
+$$YQ -o=json . "$$CONFIG" | jq -r ".model_list[].litellm_params | select(.api_key != null) | [.api_key, .api_base] | @tsv" | sort -u -k1,1 > "$$d/targets"; \
+test -s "$$d/targets" || { echo "provider-watch: no providers found in the router config"; exit 1; }; \
+while read -r var base; do \
+case $$var in os.environ/*) var=$${var#os.environ/};; *) echo "provider-watch: a router row has a key that is not an os.environ reference, refused"; bad=1; continue;; esac; \
+if ! [[ "$$var" =~ ^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$$ ]]; then echo "provider-watch: a router row names a key variable outside the allowed pattern, refused"; bad=1; continue; fi; \
+base=$${base%%/}; case $$base in https://*) ;; *) echo "provider-watch: a router row has an api_base that is not https, refused"; bad=1; continue;; esac; \
+name=$$(echo "$$var" | tr "[:upper:]_" "[:lower:]-" | sed -E "s/-api-key//"); \
+case $$name in *[!a-z0-9-]*|"") echo "provider-watch: a provider name from the router config is not plain text"; bad=1; continue;; esac; \
+export NAME=$$name; \
+if [ "$$(jq -r ".[env.NAME].listing // empty" "$$WATCH_CONFIG")" = none ]; then echo "provider-watch: $$name ok, listing none"; continue; fi; \
+case $$base in */v[0-9]*) url="$$base/models";; *) url="$$base/v1/models";; esac; \
+k=$${!var:-}; \
+if [ -z "$$k" ]; then echo "provider-watch: $$name has no key in the environment: Nish must restore the $$name key file"; bad=1; continue; fi; \
+echo "Authorization: Bearer $$k" > "$$d/hdr"; \
+code=$$(curl -sS -m 30 --retry 2 --retry-delay 20 -o "$$d/body" -w "%%{http_code}" -H "@$$d/hdr" "$$url" 2>/dev/null) || code=000; \
+rm -f "$$d/hdr"; \
+case $$code in \
+401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; bad=1; continue;; \
+200) ;; \
+000|408|429|5??) echo "provider-watch: $$name listing unavailable (HTTP $$code), skipped; outages page through litellm_deployment_state"; continue;; \
+*) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \
+esac; \
+if ! jq -e ".data | arrays | length > 0" "$$d/body" > /dev/null 2>&1; then echo "provider-watch: $$name listing unavailable (HTTP 200 without a model list), skipped; outages page through litellm_deployment_state"; continue; fi; \
+jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u > "$$d/ids.raw"; \
+if [ -s "$$ign" ]; then grep -Evi -f "$$ign" "$$d/ids.raw" > "$$d/ids.all" || true; else cp "$$d/ids.raw" "$$d/ids.all"; fi; \
+w=$$(jq -r ".[env.NAME].watch // empty" "$$WATCH_CONFIG"); \
+if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
+jq -r ".[env.NAME] // [] | .[]" "$$snap" | LC_ALL=C sort -u > "$$d/snap"; \
+if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id is outside the allowed set (first offender, sanitized: $$(cat "$$d/ids" "$$d/snap" | grep -E -e "//|www[.]" -e "[^A-Za-z0-9._:/~-]" -e "^.{65,}$$" | head -n 1 | cut -c1-40 | sed "s|[^A-Za-z0-9_-]|?|g")), nothing recorded or filed; only an ignore.txt or watch change clears it"; bad=1; continue; fi; \
+if [ ! -s "$$d/ids" ]; then echo "provider-watch: $$name listing unavailable (no ids left after the filters), skipped; outages page through litellm_deployment_state"; continue; fi; \
+cnt=$$(wc -l < "$$d/ids"); \
+if ! jq -e ".[env.NAME]" "$$snap" > /dev/null 2>&1; then jq -s ".[0] + {(env.NAME): .[1]}" "$$snap" <(jq -Rn "[inputs]" < "$$d/ids") > "$$d/snap.new" && mv "$$d/snap.new" "$$snap"; echo "provider-watch: $$name seeded, $$cnt models, nothing filed"; continue; fi; \
+comm -13 "$$d/snap" "$$d/ids" > "$$d/add"; comm -23 "$$d/snap" "$$d/ids" > "$$d/del"; \
+na=$$(wc -l < "$$d/add"); nr=$$(wc -l < "$$d/del"); \
+if [ "$$na" -eq 0 ] && [ "$$nr" -eq 0 ]; then echo "provider-watch: $$name ok, $$cnt models"; continue; fi; \
+day=$$(date -u +%%F); ch="changes/$$day-$$name.txt"; \
+{ sed "s/^/+ /" "$$d/add"; sed "s/^/- /" "$$d/del"; } > "$$st/$$ch"; \
+t="Provider watch: $$name model list changed"; \
+{ \
+echo "The $$name model list changed: $$na added, $$nr removed."; echo; \
+echo "The ids are in the host state file $$ch under the StateDirectory of fleet-provider-watch.service."; echo; \
+echo "Acceptance, for whoever takes this issue in a scoped hand-off:"; \
+if [ "$$(jq -r ".[env.NAME].billing // empty" "$$WATCH_CONFIG")" = flat ]; then echo "- (a) The $$name seat is flat-rate (a plan; billing recorded in config/provider-watch.json). Make one real call, through its own provider, only to an added id that is free or inside that plan, and if you are unsure treat it as paid. Record the HTTP status and the reply model. Any other id gets no call: send it back as one line with the needs-nish-decision label."; \
+else echo "- (a) The $$name seat is pay-per-use or its billing is not recorded in config/provider-watch.json. Make NO call to any id here: send them back as one line with the needs-nish-decision label."; fi; \
+echo "- (b) If a call worked, eval-score the model before it gets any router weight, with the repo eval mechanism: tests/evals (AGENTS.md AI-decision rule: held-out cases, scored by a model family other than the builder, no new script)."; \
+echo "- (c) Open a router PR only inside the standing rules in the config/litellm-proxy.yaml header: no new spend, stay at 3 to 5 providers, removing any router row needs a yes from Nish, and a model that scores lower than the one it replaces gets no extra weight. Never write a model id into an issue, a PR or a commit of a public repo."; \
+echo "- (d) Anything that costs money or needs a login from Nish goes back as one plain line with the needs-nish-decision label and no router PR. A removed id that a router row still serves is the same: open it with the evidence and do not remove the row."; \
+} > "$$d/body.md"; \
+if [ "$$ready" -eq 0 ]; then \
+test -s "$$ISSUES_TOKEN" || { echo "provider-watch: $$name changed but the issues token is missing"; bad=1; continue; }; \
+tok=$$(cat "$$ISSUES_TOKEN"); export GH_CONFIG_DIR="$$d/gh" GH_TOKEN="$$tok"; \
+"$$GH" label create provider-watch -R Nishfleet/fleet-ops --color 1D76DB --description "A provider model list changed" < /dev/null > /dev/null 2>&1 || "$$GH" label list -R Nishfleet/fleet-ops --search provider-watch --json name -q ".[].name" < /dev/null 2>/dev/null | grep -Fxq provider-watch || { echo "provider-watch: $$name changed but the provider-watch label could not be created"; bad=1; continue; }; \
+"$$GH" issue list -R Nishfleet/fleet-ops --label provider-watch --state open --limit 100 --json title -q ".[].title" < /dev/null > "$$d/known" || { echo "provider-watch: $$name changed but the open issues could not be listed"; bad=1; continue; }; \
+"$$GH" issue list -R Nishfleet/fleet-ops --label provider-watch --state all --search "created:>=$$(date -d "7 days ago" +%%F)" --limit 100 --json title -q ".[].title" < /dev/null >> "$$d/known" || { echo "provider-watch: $$name changed but the recent issues could not be listed"; bad=1; continue; }; \
+ready=1; \
+fi; \
+upd() { jq -s ".[0] + {(env.NAME): .[1]}" "$$snap" <(jq -Rn "[inputs]" < "$$d/ids") > "$$d/snap.new" && mv "$$d/snap.new" "$$snap"; }; \
+if grep -Fxq -- "$$t" "$$d/known"; then upd; echo "provider-watch: $$name changed (+$$na -$$nr), issue already open or recent, skipped; ids in $$ch"; continue; fi; \
+if [ "$$filed" -ge 3 ]; then echo "provider-watch: $$name changed (+$$na -$$nr), left for the next run (3 issues filed this run); ids in $$ch"; continue; fi; \
+"$$GH" issue create -R Nishfleet/fleet-ops --title "$$t" --label provider-watch --body-file "$$d/body.md" < /dev/null || { echo "provider-watch: $$name changed (+$$na -$$nr) but filing the issue failed"; bad=1; continue; }; \
+upd; filed=$$((filed+1)); echo "$$t" >> "$$d/known"; echo "provider-watch: $$name changed (+$$na -$$nr), issue filed; ids in $$ch"; \
+done < "$$d/targets"; \
+[ "$$bad" -eq 0 ]'
+TimeoutStartSec=3600
