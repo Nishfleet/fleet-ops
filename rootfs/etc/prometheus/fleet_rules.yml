@@ -1,0 +1,56 @@
+# Fleet alert rules: the dead-man heartbeat, failed units, and the Hermes
+# gateway. Deliberately three rules. The repair-dispatch machinery and the
+# 12 rules that fed it were cut on 2026-09-29 (fleet-ops#8958); nothing here
+# brings back a repair worker or a second page path.
+#
+# Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
+# unit-include covers .service and .timer) and Prometheus' own vector().
+#
+# Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
+#   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
+#   severity=nish     -> Telegram (a real outage, immediately)
+#   anything else     -> no receiver; visible as the ALERTS series and in
+#                        Alertmanager, pages nobody
+groups:
+  - name: fleet_watchdog
+    rules:
+      # Always firing. Its ABSENCE is the signal: Alertmanager forwards it to
+      # an outside service on a repeat interval, and when the pings stop
+      # (Prometheus dead, Alertmanager dead, or the box dead) that service
+      # alerts, which nothing on this box can do for itself.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Watchdog heartbeat for the alerting pipeline"
+          description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
+
+  - name: fleet_host
+    rules:
+      # Visible, not paged: a failed unit is not by itself an outage.
+      - alert: SystemUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "system unit {{ $labels.name }} failed"
+          description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
+
+  - name: fleet_hermes
+    rules:
+      # Not active for 5 minutes. max_over_time rather than `for:` so a crash
+      # loop that touches "active" for a moment between restarts does not reset
+      # the clock on a gateway that is plainly not serving. absent_over_time
+      # covers the series vanishing (the unit is gone, or the exporter is).
+      - alert: HermesGatewayDown
+        expr: |
+          max_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m]) == 0
+          or
+          absent_over_time(node_systemd_unit_state{name="hermes-gateway.service",state="active"}[5m])
+        labels:
+          severity: nish
+        annotations:
+          summary: "hermes-gateway.service has not been active for 5 minutes"
+          description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
