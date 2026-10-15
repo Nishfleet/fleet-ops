@@ -31,7 +31,9 @@
 #    the last day either). for: 10m only absorbs a passing read error. The
 #    route in cloudflare-spend-contact.yaml sends it to hermes-urgent
 #    (Telegram), re-sent once a day; its DatasourceError skips that route and
-#    files an issue at the root. inish-site has no 24h rule: its ci.yml runs
+#    files an issue at the root. A red streak whose start has no date returns
+#    two rows, which Grafana refuses for alerting, so it is an Error (an
+#    issue), never a silent 0. inish-site has no 24h rule: its ci.yml runs
 #    tests before the deploy job, and a run's result cannot say which failed,
 #    so it files issues only. tests/alert_routes_check.py lists the 24h rules
 #    as urgent.
@@ -47,7 +49,9 @@
 # the App cannot read would blind every other repo. The annotations name the
 # repo as literal text (the rule's own labels are not in the template data, and
 # an error has no $values), and `if $values` picks the failed-run text or the
-# cannot-read text.
+# cannot-read text. Grafana shares no query between rules, so a repo with a
+# 24h rule is read twice per interval; one rule for both steps would need a
+# label from the data to route on, which alert_routes_check.py cannot see.
 #
 # 7 days, not longer: the plugin pages through every run in the window, and
 # 0509 deploys about 40 times a day. Measured 2026-10-15 against the live API
@@ -264,13 +268,15 @@ groups:
                   ) AS runs
                   WHERE status = 'completed' AND conclusion <> 'skipped'
                     AND NOT (conclusion = 'cancelled' AND id < newest_done)
-                )
-                SELECT CASE WHEN UNIX_TIMESTAMP() - streak_start >= 86400 THEN 1 ELSE 0 END AS red_for_a_day
-                FROM (
-                  SELECT UNIX_TIMESTAMP(MIN(created_at)) AS streak_start
+                ),
+                streak AS (
+                  SELECT COUNT(*) AS failures, UNIX_TIMESTAMP(MIN(created_at)) AS streak_start
                   FROM counted
                   WHERE id > COALESCE((SELECT MAX(id) FROM counted WHERE ok = 1), 0)
-                ) AS streak
+                )
+                SELECT CASE WHEN UNIX_TIMESTAMP() - streak_start >= 86400 THEN 1 ELSE 0 END AS red_for_a_day
+                FROM streak
+                JOIN (SELECT 1 AS k UNION ALL SELECT 2) AS copies ON copies.k = 1 OR (failures > 0 AND streak_start IS NULL)
         noDataState: OK
         execErrState: Error
         for: 10m

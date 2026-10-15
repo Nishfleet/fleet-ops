@@ -152,3 +152,12 @@ def test_the_sql_branch_logic_in_sqlite_reads_the_newest_finished_run(runs, want
 ])
 def test_the_day_sql_branch_logic_in_sqlite_pages_only_on_a_red_streak_a_day_old(runs, want):
     assert _red_for_a_day(runs) == want
+
+
+@pytest.mark.parametrize("runs,want", [
+    ([(1, "2026-10-08T00:00:00Z", "completed", "success"), (2, None, "completed", "failure")], [0, 0]),
+    ([(1, None, "completed", "failure")], [0, 0]),
+    ([(1, None, "completed", "success")], [0]),
+])
+def test_the_day_sql_returns_two_rows_so_grafana_errors_when_a_red_streak_has_no_start_date(runs, want):
+    assert _red_for_a_day(runs) == want
