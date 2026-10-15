@@ -7,6 +7,9 @@ Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
 
 [Container]
 Image=docker.io/library/redis:7
+# Floating tag, so `podman auto-update` moves it inside the weekly paused window
+# (ansible/update.yml). A pinned tag must not carry this line (fleet-ops#9254).
+AutoUpdate=registry
 Network=host
 Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:ro
 Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf

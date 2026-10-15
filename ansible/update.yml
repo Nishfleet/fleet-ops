@@ -1,0 +1,715 @@
+# Weekly full update of the fleet box. fleet-update.service runs this as root
+# through ansible-pull, the same way fleet-host-config.service runs host.yml.
+#
+# Order, and why:
+#   1. pause   Stop new agent jobs (set the FLEET_DISPATCH_PAUSED variable
+#              to true in each queue repo; agent-dispatch stays enabled, so
+#              its hold-risky guard keeps running), stop the user timers that
+#              start work, wait until no runner has a job (agent jobs time out
+#              at 60 min), then stop the runner services so no CI job lands
+#              on a half-upgraded box.
+#   2. prune   apt's download cache, Docker containers stopped for a day,
+#              dangling images and old build cache, the npm and uv caches.
+#              Before the update, so the downloads have room. Volumes, repos,
+#              worktrees and backups are never touched.
+#   3. update  Every Ubuntu package (apt dist-upgrade), old kernels and unused
+#              packages after it, a service restart for what still runs old
+#              libraries (needrestart), then each user-level tool through its
+#              own official updater and the redis container through
+#              `podman auto-update`.
+#   4. resume  In `always:`, so it runs even when a step above failed: start the
+#              runners, clear the pause flag only where this run set it,
+#              restart the timers it stopped, sweep each queue. A run killed
+#              before this step leaves its pause marker, and the next run
+#              clears the flags it lists before step 1.
+#   5. verify  Every netcup runner online at GitHub, every queue sweep run
+#              accepted by GitHub, pi answering a real call with its
+#              extensions loaded and every one of them pinned, no failed
+#              unit, router ready, Remote Control up. One assert at the end
+#              fails the unit (and pages) if any check or tool update failed.
+#
+# Never reboots (standing rule: never auto-reboot). When a package needs a
+# reboot, the run opens one needs-nish-decision issue in fleet-ops instead.
+# Remote Control is never restarted either: that would end every open Claude
+# chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
+# new Claude version take effect at the next reboot.
+#
+# Container images move two ways. A tag changes in a PR, and that covers
+# postgres (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd,
+# so a rollback would only catch a start failure), the proxy, grafana and
+# aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
+# `podman auto-update` below moves it inside this paused window. podman reads
+# that label from the running container, so redis needs one restart in this
+# window before the first weekly run does anything:
+# `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
+# purpose: GitHub runners (they update themselves), syncthing (built-in
+# auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
+- name: Pause the fleet, prune, update everything, resume
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    paused_flag: /home/nish/workspaces/agent-state/FLEET-PAUSED
+    # Repo variable agent-dispatch.yml reads: "true" skips every job that
+    # starts a worker; hold-risky and close-claim run regardless.
+    pause_variable: FLEET_DISPATCH_PAUSED
+    # The repos this run set the flag on, one per line, written before the
+    # first set and removed once every flag is clear again. A run killed
+    # before its always: block (TimeoutStartSec, SIGKILL) leaves the file, and
+    # the next run clears those flags first. A flag set by hand has no line
+    # here, so no run touches it. Root-owned in the unit's StateDirectory: a
+    # job running as nish cannot write a repo into it.
+    pause_marker: /var/lib/fleet-ops/dispatch-paused-by-update
+    # Every repo with an agent-dispatch workflow (the agent-ready queue).
+    dispatch_repos:
+      - Nishfleet/fleet-ops
+      - Nishfleet/0509
+      - Nishfleet/drive
+    # Persistent user timers whose job calls a model or a CLI this run updates.
+    # The transient later-* reminder timers only add a label, and stopping a
+    # transient timer deletes it, so they stay untouched.
+    # Empty on purpose: blacksmith-flip.timer was the only one (fleet-ops#9670).
+    work_timers: []
+    # 150 one-minute polls: the 60-minute agent job timeout plus headroom.
+    drain_polls: 150
+    nish_env:
+      HOME: /home/nish
+      XDG_RUNTIME_DIR: /run/user/1000
+      PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # Each runs as nish with its own stdin; a failure is reported at the end,
+    # never skipped quietly. devin is updated by its official installer, the
+    # same script that installed it (the version dir's `distribution` file
+    # says curl-bash): `devin update` asks for confirmation on a terminal and
+    # exits 130 without one, even with "y" on stdin. The installer verifies
+    # the bundle's sha256 and needs no terminal. Every updater here ignores
+    # stdin.
+    tool_updates:
+      - argv: [npm, update, --global]
+        stdin: ""
+      - argv: [pi, update, --all]
+        stdin: ""
+      - argv: [claude, update]
+        stdin: ""
+      - argv: [claude, plugin, marketplace, update]
+        stdin: ""
+      - argv: [cursor-agent, update]
+        stdin: ""
+      - argv: [bash, -o, pipefail, -c, "curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
+        stdin: ""
+      - argv: [uv, self, update]
+        stdin: ""
+      - argv: [uv, tool, upgrade, --all]
+        stdin: ""
+      - argv: [bun, upgrade]
+        stdin: ""
+      - argv: [rclone, selfupdate]
+        stdin: ""
+    # Versioned before and after the update, and the report pairs the two
+    # lists by position. pi is not in this list on purpose: `pi --version`
+    # passes even when every pi start dies on a broken extension
+    # (fleet-ops#9262), so pi's check is the real call below.
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan]
+
+  tasks:
+    - name: Check for Nish's deliberate fleet pause
+      ansible.builtin.stat:
+        path: "{{ paused_flag }}"
+      register: fleet_paused
+
+    - name: Stop here, because the fleet is paused on purpose
+      ansible.builtin.meta: end_play
+      when: fleet_paused.stat.exists
+
+    - name: Look for a dispatch pause an earlier run left behind
+      ansible.builtin.stat:
+        path: "{{ pause_marker }}"
+      register: stale_pause
+
+    # Before the pause below, so its read sees the flags as people left them.
+    # A failed clear fails the run here and keeps the file for the next one.
+    - name: Clear the flags a killed earlier run left set
+      when: stale_pause.stat.exists
+      block:
+        - name: Read the repos it paused
+          ansible.builtin.slurp:
+            src: "{{ pause_marker }}"
+          register: stale_pause_repos
+
+        - name: Clear the pause flag on each of them
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
+          loop: "{{ (stale_pause_repos.content | b64decode).splitlines() | map('trim') | select | list }}"
+          register: stale_cleared
+
+        - name: Drop the stale marker
+          ansible.builtin.file:
+            path: "{{ pause_marker }}"
+            state: absent
+
+    - name: Pause, prune and update
+      block:
+        - name: Pause steps that act as nish (GitHub CLI)
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            # The pause is a repo variable, not `gh workflow disable`: a
+            # disabled workflow drops every trigger, hold-risky included, so no
+            # risky PR armed in the window could be held (2026-10-05,
+            # 08:11-10:47Z). With the flag set, agent-dispatch still runs and
+            # only its dispatch jobs skip. Per repo, not org: a repo-level flag
+            # pauses each queue alone, and nish's gh login needs only repo
+            # access for this. An unset variable (HTTP 404)
+            # reads as not paused; any other failed read stops the pause here.
+            - name: Read each repo's dispatch pause flag
+              ansible.builtin.command:
+                argv: [gh, api, "repos/{{ item }}/actions/variables/{{ pause_variable }}", --jq, .value]
+              loop: "{{ dispatch_repos }}"
+              register: dispatch_flag
+              changed_when: false
+              failed_when: dispatch_flag.rc != 0 and 'HTTP 404' not in dispatch_flag.stderr
+
+            # Written before the first set, so a kill at any point after it
+            # still leaves the list. Listing a repo whose set then fails is
+            # harmless: clearing it writes false where it was not true.
+            - name: Record which repos this run pauses, before pausing them
+              become: false
+              ansible.builtin.copy:
+                dest: "{{ pause_marker }}"
+                content: "{{ dispatch_flag.results | rejectattr('stdout', 'equalto', 'true') | map(attribute='item') | join('\n') }}\n"
+                owner: root
+                group: root
+                mode: "0600"
+
+            # A flag already true was set by someone else on purpose, so this
+            # run neither sets nor clears it.
+            - name: Pause agent dispatch where it is not paused (no new agent jobs)
+              ansible.builtin.command:
+                argv: [gh, variable, set, "{{ pause_variable }}", --body, "true", --repo, "{{ item.item }}"]
+              loop: "{{ dispatch_flag.results | rejectattr('stdout', 'equalto', 'true') | list }}"
+              loop_control:
+                label: "{{ item.item }}"
+              register: dispatch_paused
+
+        - name: Read which work timers are running
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, is-active, "{{ item }}"]
+          loop: "{{ work_timers }}"
+          register: timer_state
+          changed_when: false
+          failed_when: false
+
+        - name: Stop the running work timers
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, stop, "{{ item.item }}"]
+          loop: "{{ timer_state.results | selectattr('stdout', 'equalto', 'active') | list }}"
+          loop_control:
+            label: "{{ item.item }}"
+          register: timers_stopped
+
+        - name: Wait until no runner is running a job
+          ansible.builtin.command:
+            argv: [pgrep, --count, --exact, Runner.Worker]
+          register: busy
+          until: busy.stdout | int == 0
+          retries: "{{ drain_polls }}"
+          delay: 60
+          changed_when: false
+          failed_when: busy.rc > 1
+
+        - name: List the runner services that are up
+          ansible.builtin.command:
+            argv: [systemctl, list-units, --type=service, --state=active, --no-legend, --plain, actions.runner.*]
+          register: runner_units
+          changed_when: false
+
+        - name: Stop the runner services, so no CI job starts mid-update
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop: "{{ runner_units.stdout_lines | map('split') | map('first') | list }}"
+          register: runners_stopped
+
+        - name: Record tool versions before the update
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ item }}", --version]
+          loop: "{{ version_checks }}"
+          register: versions_before
+          changed_when: false
+          failed_when: false
+
+        # Bytes before anything is pruned, so the report can show what the
+        # prune freed next to what was pruned (fleet-ops#9262).
+        - name: Record free disk space before the prune
+          ansible.builtin.command:
+            argv: [df, --output=avail, -B1, /]
+          register: disk_before
+          changed_when: false
+
+        - name: Prune apt's cache of packages it no longer offers
+          ansible.builtin.apt:
+            autoclean: true
+
+        - name: Prune Docker containers stopped for over a day
+          ansible.builtin.command:
+            argv: [docker, container, prune, --force, --filter, until=24h]
+          register: prune_containers
+          changed_when: "'Total reclaimed space: 0B' not in prune_containers.stdout"
+
+        - name: Prune dangling Docker images
+          ansible.builtin.command:
+            argv: [docker, image, prune, --force]
+          register: prune_images
+          changed_when: "'Total reclaimed space: 0B' not in prune_images.stdout"
+
+        - name: Prune Docker build cache older than a week
+          ansible.builtin.command:
+            argv: [docker, builder, prune, --force, --filter, until=168h]
+          register: prune_builder
+          changed_when: "'Total: 0B' not in prune_builder.stdout"
+
+        - name: Prune steps that act as nish
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            - name: Prune dangling Podman images (the router's containers)
+              ansible.builtin.command:
+                argv: [podman, image, prune, --force]
+              register: prune_podman
+              changed_when: prune_podman.stdout | length > 0
+
+            - name: Garbage-collect the npm cache
+              ansible.builtin.command:
+                argv: [npm, cache, verify]
+              changed_when: false
+
+            - name: Prune the uv cache
+              ansible.builtin.command:
+                argv: [uv, cache, prune]
+              changed_when: false
+
+        - name: Upgrade every Ubuntu package (security and regular updates)
+          ansible.builtin.apt:
+            update_cache: true
+            upgrade: dist
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          timeout: 3600
+          register: apt_upgrade
+
+        - name: Remove packages nothing needs any more, old kernels included
+          ansible.builtin.apt:
+            autoremove: true
+            purge: true
+          register: apt_autoremove
+
+        - name: Record free disk space after the autoremove
+          ansible.builtin.command:
+            argv: [df, --output=avail, -B1, /]
+          register: disk_after
+          changed_when: false
+
+        # needrestart only lists after apt (50-fleet.conf), so the daily
+        # security patches never restart a service mid-job. Here the fleet is
+        # paused, so restart what still runs old libraries, except the
+        # services 50-fleet.conf and the package defaults exclude.
+        - name: Restart services still running old libraries
+          ansible.builtin.command:
+            argv: [/usr/sbin/needrestart, -r, a]
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: needrestart_run
+          changed_when: "'Restarting services' in needrestart_run.stdout"
+
+        - name: Update each user-level tool through its own updater
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: "{{ item.argv }}"
+            stdin: "{{ item.stdin }}"
+          loop: "{{ tool_updates }}"
+          loop_control:
+            label: "{{ item.argv | join(' ') }}"
+          timeout: 600
+          register: tool_results
+          ignore_errors: true
+
+        # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
+        # image and restarts the unit; a unit that fails to start is rolled
+        # back, and podman auto-update then exits non-zero (the assert at the
+        # end of the run fails loud on it). A unit that starts but is broken is
+        # not rolled back: no quadlet has a HealthCmd. As nish, because the
+        # quadlets are systemd user units. The dry-run on either side shows the
+        # pending updates in the report; the real check runs on the box, not in
+        # a workspace harness where newuidmap is blocked (fleet-ops#9254).
+        - name: Record container images podman can auto-update, before
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_before
+          changed_when: false
+          # A recording probe: a transient registry outage must not abort the
+          # update block before the tools and plugin steps run. The real task
+          # below is the gate.
+          failed_when: false
+
+        - name: Update the redis container image
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update]
+          register: podman_autoupdate
+          # No image moved when every row reads `registry false`; a moved row
+          # reads `registry true`. A failed restart reads `registry failed`
+          # and the assert below fails loud on it.
+          changed_when: "podman_autoupdate.stdout is search('registry\\s+(true|failed)')"
+          ignore_errors: true
+          timeout: 900
+
+        - name: Record container images podman can auto-update, after
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_after
+          changed_when: false
+          failed_when: false
+
+        # No --yes: a plugin whose update needs a new marketplace command
+        # fails here (and in the final assert) instead of being accepted blind.
+        # Only marketplace installs (they carry installedAt) can update.
+        # Plugins loaded with --plugin-dir (scope "session") or from
+        # ~/.claude/skills/ have no marketplace, and `claude plugin update`
+        # refuses them by design.
+        - name: Update every installed Claude Code plugin
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail;
+              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
+              xargs -r -n1 claude plugin update
+            executable: /bin/bash
+          timeout: 600
+          register: plugin_results
+          ignore_errors: true
+
+        - name: Check each tool still starts
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ item }}", --version]
+          loop: "{{ version_checks }}"
+          register: versions_after
+          changed_when: false
+          ignore_errors: true
+
+        # A real call, not a version read: `pi update --all` moved an unpinned
+        # extension and every pi start then died with "Cannot find module"
+        # while `pi --version` still passed (fleet-ops#9262). Only a call that
+        # loads the extensions proves pi works, and it must answer OK.
+        # FLEET_TASK_ID is what the litellm provider needs to sign the call.
+        - name: Call pi for real, so a broken extension fails here
+          become: true
+          become_user: nish
+          environment: "{{ nish_env | combine({'FLEET_TASK_ID': 'fleet-update-smoke'}) }}"
+          ansible.builtin.command:
+            argv: [pi, --print, --provider, litellm, --model, worker-cheap]
+            stdin: "Reply with exactly: OK"
+          register: pi_smoke
+          changed_when: false
+          ignore_errors: true
+          timeout: 300
+
+        # `pi update --all` moves any extension whose pin is not exact, and a
+        # moved git or npm version broke every pi start (fleet-ops#9262, the
+        # same failure as the call above). So every `git:` entry in pi's
+        # settings must end in the full 40-char SHA (an abbreviated SHA cannot
+        # even be fetched) and every `npm:` entry in an exact version. The
+        # assert below prints the offenders, so a bad pin is fixed by hand.
+        - name: Check every pi extension in settings.json is pinned
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv:
+              - jq
+              - --raw-output
+              - '[.packages[] | select((startswith("git:") and (test("@[0-9a-f]{40}$") | not)) or (startswith("npm:") and (test("@[0-9]+[.][0-9]+[.][0-9]+$") | not)))] | .[]'
+              - /home/nish/.pi/agent/settings.json
+          register: unpinned_extensions
+          changed_when: false
+          ignore_errors: true
+
+      always:
+        - name: Start the runner services this run stopped
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: started
+          loop: "{{ (runners_stopped | default({})).results | default([]) | map(attribute='item') | list }}"
+          ignore_errors: true
+
+        - name: Restart the work timers this run stopped
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, start, "{{ item }}"]
+          loop: "{{ (timers_stopped | default({})).results | default([]) | map(attribute='item.item') | list }}"
+          ignore_errors: true
+
+        - name: Resume and check as nish (GitHub CLI)
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            # false, not a delete: setting is idempotent, and false and unset
+            # both read as not paused.
+            - name: Clear the dispatch pause flag where this run set it
+              ansible.builtin.command:
+                argv: [gh, variable, set, "{{ pause_variable }}", --body, "false", --repo, "{{ item }}"]
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              register: dispatch_resumed
+              # A blip in the API must not leave a queue paused for a week.
+              until: dispatch_resumed is succeeded
+              retries: 3
+              delay: 20
+              # ignore_errors only so the sweeps and checks below still run.
+              # The flag is read back next, and a repo still paused fails the
+              # unit (the assert at the end), which pages.
+              ignore_errors: true
+
+            # The real state, not only the set's exit code. 404 (unset) is not
+            # paused; any other failed read counts as still paused.
+            - name: Read the pause flag back on each repo this run paused
+              ansible.builtin.command:
+                argv: [gh, api, "repos/{{ item }}/actions/variables/{{ pause_variable }}", --jq, .value]
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              register: dispatch_flag_after
+              changed_when: false
+              failed_when: dispatch_flag_after.rc != 0 and 'HTTP 404' not in dispatch_flag_after.stderr
+              ignore_errors: true
+
+            - name: Name every repo whose dispatch is still paused
+              ansible.builtin.set_fact:
+                dispatch_still_paused: >-
+                  {{ ((dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list
+                     + (dispatch_flag_after | default({})).results | default([]) | selectattr('stdout', 'defined') | selectattr('stdout', 'equalto', 'true') | map(attribute='item') | list)
+                     | unique }}
+
+            # Only once every flag is clear: a still-paused repo keeps the
+            # file, so the next run clears it before it pauses anything.
+            - name: Drop the pause marker once every flag it lists is clear
+              become: false
+              ansible.builtin.file:
+                path: "{{ pause_marker }}"
+                state: absent
+              when: dispatch_still_paused | length == 0
+
+            - name: Sweep each queue now, so waiting work starts at once
+              ansible.builtin.command:
+                argv: [gh, workflow, run, agent-dispatch.yml, --repo, "{{ item }}"]
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              register: sweeps
+              ignore_errors: true
+
+            # agent-dispatch runs behind its workflow's concurrency group, so a
+            # sweep can stay queued or in_progress for hours and "wait until
+            # completed" timed out on every run (fleet-ops#9262). A sweep did
+            # its job once GitHub accepted the run, so poll briefly until the
+            # run exists; the assert at the end fails only on a conclusion
+            # other than success, or no run at all.
+            - name: Check each sweep run was accepted
+              ansible.builtin.command:
+                argv: [gh, run, list, --repo, "{{ item }}", --workflow, agent-dispatch.yml, --event, workflow_dispatch,
+                       --limit, "1", --json, "status,conclusion",
+                       --jq, 'if length == 0 then "no sweep run" elif .[0].status == "completed" then (.[0].conclusion // "no-conclusion") else "accepted: " + .[0].status end']
+              loop: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              register: sweep_result
+              until: sweep_result.stdout != 'no sweep run'
+              retries: 20
+              delay: 10
+              changed_when: false
+              ignore_errors: true
+
+            # --paginate: the org endpoint pages at 30 registrations, so reading
+            # one page alone undercounted the online runners (35 registrations,
+            # 20 of them ephemeral Blacksmith ones, reported 10 when all 15
+            # netcup runners were online, fleet-ops#9262). Only the netcup
+            # runners are counted: they are the fleet's own machines.
+            - name: Count the netcup runners GitHub sees online
+              ansible.builtin.command:
+                argv: [gh, api, "{{ item }}", --paginate, --jq,
+                       '[.runners[] | select(.status == "online" and (.name | startswith("netcup-")))] | length']
+              loop:
+                # drive's runners are org runners since it moved to Nishfleet
+                # (2026-10-06); its repo endpoint now lists 0 and would fail this.
+                - orgs/Nishfleet/actions/runners
+              register: online
+              until: online.stdout | int > 0
+              retries: 20
+              delay: 15
+              changed_when: false
+              ignore_errors: true
+
+        - name: Wait for every runner service to be up again
+          ansible.builtin.command:
+            argv: [systemctl, list-units, --type=service, --state=active, --no-legend, --plain, actions.runner.*]
+          register: runners_up
+          until: "runners_up.stdout_lines | length >= (runner_units | default({'stdout_lines': []})).stdout_lines | length"
+          retries: 20
+          delay: 15
+          changed_when: false
+          ignore_errors: true
+
+        - name: List failed system units
+          ansible.builtin.command:
+            argv: [systemctl, list-units, --state=failed, --no-legend, --plain]
+          register: failed_system
+          changed_when: false
+
+        - name: List failed user units
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, list-units, --state=failed, --no-legend, --plain]
+          register: failed_user
+          changed_when: false
+
+        - name: Check the model router answers
+          ansible.builtin.uri:
+            url: http://127.0.0.1:4000/health/readiness
+          register: router
+          until: router.status == 200
+          retries: 20
+          delay: 15
+          ignore_errors: true
+
+        - name: Check Remote Control is up
+          ansible.builtin.command:
+            argv: [systemctl, is-active, claude-remote-control.service]
+          register: rc_state
+          changed_when: false
+          failed_when: false
+
+        - name: Count runner jobs now running
+          ansible.builtin.command:
+            argv: [pgrep, --count, --exact, Runner.Worker]
+          register: busy_after
+          changed_when: false
+          failed_when: busy_after.rc > 1
+
+        - name: Check whether a package needs a reboot
+          ansible.builtin.stat:
+            path: /run/reboot-required
+          register: reboot_flag
+
+        - name: Ask Nish for the reboot (one open issue at a time)
+          when: reboot_flag.stat.exists
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            - name: Look for an open reboot issue
+              ansible.builtin.command:
+                argv: [gh, issue, list, --repo, Nishfleet/fleet-ops, --state, open, --label, needs-nish-decision,
+                       --search, 'in:title "VPS reboot needed"', --json, number, --jq, length]
+              register: reboot_issue
+              changed_when: false
+
+            - name: Read which packages want the reboot
+              ansible.builtin.command:
+                argv: [cat, /run/reboot-required.pkgs]
+              register: reboot_pkgs
+              changed_when: false
+              failed_when: false
+
+            - name: Open the reboot issue
+              ansible.builtin.command:
+                argv:
+                  - gh
+                  - issue
+                  - create
+                  - --repo
+                  - Nishfleet/fleet-ops
+                  - --label
+                  - needs-nish-decision
+                  - --title
+                  - VPS reboot needed to finish updates
+                  - --body
+                  - |-
+                    fleet-update.service installed updates that only take effect after a reboot.
+                    Packages asking for it: {{ reboot_pkgs.stdout_lines | join(', ') | default('see /run/reboot-required.pkgs', true) }}.
+
+                    The routine never reboots by itself. Say "reboot" in the VPS project and Claude pauses the fleet, reboots and resumes it.
+              when: reboot_issue.stdout | int == 0
+
+        - name: Report the run
+          ansible.builtin.debug:
+            msg:
+              dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
+              stale_pause_cleared: "{{ (stale_cleared | default({})).results | default([]) | map(attribute='item') | list }}"
+              dispatch_paused: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
+              runners_restarted: "{{ (runners_stopped | default({})).results | default([]) | length }}"
+              apt_upgrade: "{{ (apt_upgrade | default({})).stdout_lines | default([]) | select('match', '^(Inst|Setting up) ') | list }}"
+              apt_autoremove: "{{ (apt_autoremove | default({})).stdout_lines | default([]) | select('match', '^Removing ') | list }}"
+              needrestart: "{{ (needrestart_run | default({})).stdout_lines | default([]) }}"
+              disk_free_before_bytes: "{{ (disk_before | default({})).stdout_lines | default([]) | last | default('unknown') }}"
+              disk_free_after_bytes: "{{ (disk_after | default({})).stdout_lines | default([]) | last | default('unknown') }}"
+              disk_freed_bytes: "{{ ((disk_after | default({})).stdout_lines | default(['0']) | last | default('0') | int) - ((disk_before | default({})).stdout_lines | default(['0']) | last | default('0') | int) }}"
+              # What the Docker prunes freed, one line per prune.
+              docker_prune_reclaimed:
+                containers: "{{ (prune_containers | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+                images: "{{ (prune_images | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+                build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+              podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
+              versions_before: "{{ (versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
+              versions_after: "{{ (versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
+              sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
+              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
+              runner_jobs_running: "{{ busy_after.stdout }}"
+              reboot_required: "{{ reboot_flag.stat.exists }}"
+
+        - name: Fail loudly if any step or check went wrong
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not ((podman_autoupdate | default({})).failed | default(false))"
+              - "not (plugin_results | default({})).failed | default(false)"
+              - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(pi_smoke | default({})).stdout | default('') is search('OK')"
+              - "(unpinned_extensions | default({})).rc | default(0) == 0"
+              - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
+              - "(dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
+              - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
+              - "(online | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not (runners_up | default({})).failed | default(false)"
+              - "failed_system.stdout_lines | length == 0"
+              - "failed_user.stdout_lines | length == 0"
+              - "not (router | default({})).failed | default(false)"
+              - "rc_state.stdout == 'active'"
+            fail_msg: >-
+              {{ 'DISPATCH STILL PAUSED (FLEET_DISPATCH_PAUSED is not cleared) on: ' ~ (dispatch_still_paused | default(['unknown, the resume block did not finish']) | join(', '))
+                 ~ '. Clear it with gh variable set FLEET_DISPATCH_PAUSED --body false --repo <repo>. '
+                 if (dispatch_still_paused | default(['unknown']) | length > 0) else '' }}fleet-update finished with problems (runners resumed). Failed tools:
+              {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
+              pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
+              unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
+              failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
+              sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};
+              Remote Control: {{ rc_state.stdout }}

@@ -1,5 +1,18 @@
 # All agent runners together. A single job may peak at ~3G (tests);
 # the slice throttles the group before it can starve the host.
+# Size (2026-10-05, host upgraded to netcup RS 4000: 12 vCPU, 31.3G RAM, 8G
+# swap): 10G/11G -> 26G/28G. The runners get all RAM except a measured
+# reserve, and the reserve is held by protection, not by a low cap here:
+# claude.slice MemoryMin=2G, user-1000.slice MemoryLow=6G, system.slice
+# MemoryLow=3G (system.slice.d/50-memory-protect.conf). memory_recursiveprot
+# is on, so under pressure the kernel reclaims from this slice first. The
+# reserve is the non-runner anon (unreclaimable) memory measured at 18:30 IST,
+# 5h after the upgrade boot and after the weekly update run: user-1000.slice
+# 5351M (router 3345M), system.slice 2154M, claude.slice 1083M, plus kernel
+# SUnreclaim 442M and PageTables 138M. 28G leaves 3.3G that this slice can
+# never take. With the old 10G cap the slice was throttled 5643144 times
+# (memory.events high) in those 5h, and the runners themselves only held
+# 1176M anon; the rest was page cache.
 # MemorySwapMax is the swap half of that bargain (fleet-ops#8638): the two
 # RAM caps above say nothing about swap, so on 2026-09-24/25 32 runners
 # filled all 8G of host swap (1000-2500 pages/s in and out, 14.6% iowait,
@@ -8,6 +21,6 @@
 # host. Verify after install: systemctl show agent.slice -p MemorySwapMax
 # must read 1073741824, not infinity.
 [Slice]
-MemoryHigh=10G
-MemoryMax=11G
+MemoryHigh=26G
+MemoryMax=28G
 MemorySwapMax=1G

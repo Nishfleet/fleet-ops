@@ -52,7 +52,63 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
+# 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
+#     pair here so every deploy carries edits to it, and enable one instance per
+#     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
+#     delete this step and the enable line, then `systemctl --user disable --now
+#     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
+# 2a''. The detached worker's token mint (fleet-ops#9738): link the template so every
+#     deploy carries edits to it. Nothing to enable: a worker launch line pulls an
+#     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
+#     delete this step and `systemctl --user unlink` it by hand.
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-worker-github-token@.service
+# 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
+#     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
+#     lines then drop its live links and installed prompt dir. Delete these three lines
+#     once every host has deployed this (the checklist is Nishfleet/fleet-ops#9703).
+ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
+ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
+ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
+# 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
+#     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
+#     so the user manager reads it on this run.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/environment.d/60-pi-xai-client-version.conf /home/nish/.config/environment.d/60-pi-xai-client-version.conf
+# 2c. The leviathan index units, their configs and the tmpfiles rule are
+#     user-scope COPYs (fleet-ops#9313), same class as 2b/6/7/8: the
+#     leviathan-index@.timer runs every 15 minutes, so the config must exist
+#     before the PR that ships the units merges (a git merge refuses a clone
+#     with untracked files in the way, so no unit may read its config from the
+#     deploy clone). Live links are hand-set once into ~/.local/share/leviathan/
+#     and ~/.config/systemd/user (a stable tree, so LINK-GUARD passes); the
+#     installs here keep the bytes on main, before the daemon-reload so an
+#     edited unit reloads in this run. systemd-tmpfiles (step 5) then enforces
+#     the index dir's 0700 mode on every sync.
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.service /home/nish/.local/share/leviathan/leviathan-index@.service
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.timer /home/nish/.local/share/leviathan/leviathan-index@.timer
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/claude.toml /home/nish/.local/share/leviathan/claude.toml
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/pi.toml /home/nish/.local/share/leviathan/pi.toml
+ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/leviathan.conf /home/nish/.config/user-tmpfiles.d/leviathan.conf
+# 2d. The helper and scout subagents (the only lanes model-lanes allows) are
+#     COPYs of config/claude-agents/, same class as 6/7/8: they lived only as
+#     hand-placed files. Remote Control runs on the Max config dir
+#     (~/.claude-max), which reads subagents from its own agents/ dir, so every
+#     Remote Control thread got "helper not found". The tmpfiles rule links
+#     ~/.claude-max/agents to ~/.claude/agents (step 5) and step 5b checks it.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
+# 2e. The weekly retro (fleet-ops#9314, #9641): link the unit pair so every
+#     deploy carries edits to it. The first run replaces the hand-made real
+#     files of the same name (a regular file, or a link to anywhere else,
+#     blocks `link`; a link to the deploy clone is left alone), which is the delete step of fleet-ops#9641. The timer is NOT
+#     enabled here: README "Weekly retro" enables it once, so a hand disable
+#     stays disabled. Off switch: delete this step, then `systemctl --user
+#     unlink` the four retro-weekly units.
+ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
@@ -64,6 +120,9 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 #    (fleet-ops#8584). man systemd-tmpfiles: --create creates and links;
 #    it leaves the age-only e lines alone.
 ExecStart=/usr/bin/systemd-tmpfiles --user --create
+# 5b. Plain L never replaces a path that is already there, so a hand-made
+#     ~/.claude-max/agents would quietly hide the lanes again. Fail loud instead.
+ExecStart=/bin/sh -c 'test "$$(readlink %h/.claude-max/agents)" = %h/.claude/agents || { echo "[fleet-sync] ~/.claude-max/agents is not the link to ~/.claude/agents; remove it and re-run"; exit 1; }'
 # 6. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an
@@ -78,13 +137,6 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 #     on every sync. 2026-09-28..10-02: 28 restarts, ~6 from real config edits,
 #     each ~60 s with no router (11:16 IST 10-02 came from a prompt-only merge).
 ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml || /usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml'
-# 8. ~/.local/share/blacksmith-flip/prompt.yml is a COPY of
-#    prompts/blacksmith-flip.yml, same class as 6 and 7 (fleet-ops#8936): the
-#    hourly blacksmith-flip.service cats it into `pi --print`, so a prompt edit
-#    that stayed only on a branch would leave the hourly flip deciding on the
-#    previous text. The repo is the only way in. ~/.local/share is an
-#    allowlisted stable tree, so the installed prompt outlives a re-clone.
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/blacksmith-flip.yml /home/nish/.local/share/blacksmith-flip/prompt.yml
 # 9. LINK-GUARD (fleet-ops#7743): machine wiring is hand-set symlinks, so a
 #    session CAN still point a live path at a throwaway checkout — the
 #    2026-09-18 incident linked standing-rules-render into a churning clone

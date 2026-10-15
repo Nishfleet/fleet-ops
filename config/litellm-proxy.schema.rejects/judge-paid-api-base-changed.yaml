@@ -1,0 +1,34 @@
+# fleet-ops#9374: the paid row aimed at the wrong host. Only api_base moves, so
+# this file is refused by the paid row's api_base pin alone. The Token Plan
+# seat is paid for on Alibaba's endpoint, and paying for it while the row points
+# elsewhere is the shape this rules out.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+  model_info:
+    id: alibaba-qwen38max-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    order: 2
+  model_info:
+    id: opencodego-ds41flash-judge
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    order: 2
+  model_info:
+    id: opencodego2-ds41flash-judge
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60

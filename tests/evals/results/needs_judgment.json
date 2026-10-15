@@ -1,0 +1,474 @@
+{
+  "question": "needs_judgment (agent.yml Gate, typed choice judgment|mechanical)",
+  "cases_file": "tests/evals/cases/needs_judgment.json",
+  "source": "Nishfleet/0509 issues labelled agent-ready (open or closed), minus strong-only (the Gate never asks Jev about those); 60 drawn with random.Random(20261010) from the 188 eligible",
+  "labeller": {
+    "group": "judge",
+    "served_model": "openai/qwen3.8-max",
+    "router_row": "alibaba-qwen38max-judge",
+    "calls": 60,
+    "note": "labels written by the router judge group before any Jev call; the builder wrote none. The labeller saw the Gate's own definitions and the same title+body text (first 6000 chars) Jev sees."
+  },
+  "scorer": {
+    "endpoint": "POST /jev, model jev-latest",
+    "served_model": "typesafe-ai/jev",
+    "calls": 60,
+    "repeats": 1,
+    "request": "the Gate's own body, built with the same jq program"
+  },
+  "tuning": "none: the question and criteria were not changed after labels existed, so all 60 rows are held out (split test)",
+  "bands": {
+    "claude": "p(judgment) >= 0.9",
+    "free": "p(judgment) <= 0.1",
+    "middle": "otherwise (routes to the free lanes)"
+  },
+  "summary": {
+    "cases": 60,
+    "labelled_judgment": 32,
+    "labelled_mechanical": 28,
+    "agreement_argmax": "52/60",
+    "claude_band": {
+      "n": 24,
+      "correct": 24,
+      "precision": 1.0,
+      "recall": "24/32"
+    },
+    "free_band": {
+      "n": 3,
+      "correct": 3,
+      "precision": 1.0,
+      "recall": "3/28"
+    },
+    "middle_band": {
+      "n": 33,
+      "rate": 0.55,
+      "labelled_judgment": 8,
+      "labelled_mechanical": 25
+    },
+    "routing_agreement_before": "28/60 (main: nothing goes to claude, so only the mechanical rows are right)",
+    "routing_agreement_after": "52/60",
+    "mechanical_sent_to_claude": 0
+  },
+  "rows": [
+    {
+      "id": "0509#914",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.57,
+      "band": "middle"
+    },
+    {
+      "id": "0509#948",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.99,
+      "band": "claude"
+    },
+    {
+      "id": "0509#1258",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.98,
+      "band": "claude"
+    },
+    {
+      "id": "0509#1420",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.79,
+      "band": "middle"
+    },
+    {
+      "id": "0509#1432",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.85,
+      "band": "middle"
+    },
+    {
+      "id": "0509#1728",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.9,
+      "band": "claude"
+    },
+    {
+      "id": "0509#1894",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#2025",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.86,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2112",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.8,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2116",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.28,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2140",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.59,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2181",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.73,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2293",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.51,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2306",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.25,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2325",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.22,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2358",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.16,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2400",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.7,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2424",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.56,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2516",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.15,
+      "band": "middle"
+    },
+    {
+      "id": "0509#2837",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.45,
+      "band": "middle"
+    },
+    {
+      "id": "0509#3018",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3146",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3412",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.77,
+      "band": "middle"
+    },
+    {
+      "id": "0509#3613",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.97,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3617",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.45,
+      "band": "middle"
+    },
+    {
+      "id": "0509#3621",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3678",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.17,
+      "band": "middle"
+    },
+    {
+      "id": "0509#3681",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.98,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3750",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.18,
+      "band": "middle"
+    },
+    {
+      "id": "0509#3753",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3782",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3982",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.93,
+      "band": "claude"
+    },
+    {
+      "id": "0509#3986",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.45,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4022",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.94,
+      "band": "claude"
+    },
+    {
+      "id": "0509#4244",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#4272",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.98,
+      "band": "claude"
+    },
+    {
+      "id": "0509#4290",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 1,
+      "band": "claude"
+    },
+    {
+      "id": "0509#4313",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.95,
+      "band": "claude"
+    },
+    {
+      "id": "0509#4332",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.36,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4418",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.37,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4422",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.03,
+      "band": "free"
+    },
+    {
+      "id": "0509#4435",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.61,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4482",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.39,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4521",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.47,
+      "band": "middle"
+    },
+    {
+      "id": "0509#4954",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.99,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5114",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.98,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5164",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.69,
+      "band": "middle"
+    },
+    {
+      "id": "0509#5234",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.16,
+      "band": "middle"
+    },
+    {
+      "id": "0509#5432",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.04,
+      "band": "free"
+    },
+    {
+      "id": "0509#5621",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.94,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5625",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.91,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5667",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.91,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5755",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.99,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5803",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.16,
+      "band": "middle"
+    },
+    {
+      "id": "0509#5886",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.28,
+      "band": "middle"
+    },
+    {
+      "id": "0509#5918",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.9,
+      "band": "claude"
+    },
+    {
+      "id": "0509#5943",
+      "label": "mechanical",
+      "jev_choice": "mechanical",
+      "p_judgment": 0.09,
+      "band": "free"
+    },
+    {
+      "id": "0509#6138",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.78,
+      "band": "middle"
+    },
+    {
+      "id": "0509#7024",
+      "label": "judgment",
+      "jev_choice": "judgment",
+      "p_judgment": 0.75,
+      "band": "middle"
+    },
+    {
+      "id": "0509#7067",
+      "label": "mechanical",
+      "jev_choice": "judgment",
+      "p_judgment": 0.77,
+      "band": "middle"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Weekly Cloudflare token renewal (cloudflare-tokens-apply.service)
+# Weekly, not monthly: tokens rotate 30 days after they were made and expire at
+# 45, so a weekly apply leaves 15 days of slack, about two missed runs. The
+# apply does nothing until the 30 days are up. Persistent=true: a tick missed
+# while the box was down fires on the next boot. RandomizedDelaySec spreads it.
+# Switch off: `systemctl --user disable --now cloudflare-tokens-apply.timer`
+# (infra/cloudflare-tokens/README.md, "Renewal").
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
