@@ -75,6 +75,18 @@
 {{ nish_home }}/workspaces/products/*/playwright-report
 {{ nish_home }}/workspaces/products/*/test-results
 
+# Local database files and dumps in product trees can hold real customer
+# rows. The locked copy can never be deleted, so a customer deletion request
+# could not reach them there. Keep them out; product data lives in D1 and R2,
+# which have their own backups.
+{{ nish_home }}/workspaces/products/**/*.sqlite
+{{ nish_home }}/workspaces/products/**/*.sqlite3
+{{ nish_home }}/workspaces/products/**/*.sqlite-*
+{{ nish_home }}/workspaces/products/**/*.db
+{{ nish_home }}/workspaces/products/**/*.db-*
+{{ nish_home }}/workspaces/products/**/*.dump
+{{ nish_home }}/workspaces/products/**/*.sql.gz
+
 # Python caches.
 /home/nish/__pycache__
 /home/nish/**/__pycache__
