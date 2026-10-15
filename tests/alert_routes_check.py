@@ -91,6 +91,14 @@ def selftest():
     assert route(tree, {"x": "11"}) == {"root"}  # =~ is anchored
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    refs = []
+    walk_refs({"datasource": {"uid": "x"}, "targets": [
+        {"datasource": ["a", "b"]},
+        {"datasource": {"uid": "fleet-github-personal"}, "queryType": "Issues", "owner": "nish3451"}]}, "f", refs)
+    assert ("f", "datasource", "x") in refs
+    assert ("f > targets[0]", "datasource", "a") not in refs
+    assert ("f > targets[1]", "datasource", "fleet-github-personal") in refs
+    assert ("f > targets[1]", "owner", "nish3451") in refs
 
 
 def provisioned_uids(provisioning):
@@ -98,6 +106,7 @@ def provisioned_uids(provisioning):
     for f in sorted((Path(provisioning) / "datasources").glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for d in doc.get("datasources") or []:
+            assert d.get("uid"), f"{f.name}: a data source without a uid cannot be referenced"
             uids.add(d["uid"])
     assert uids, f"no data source provisioned under {provisioning}/datasources"
     return uids
@@ -108,7 +117,7 @@ def walk_refs(node, where, out):
     if isinstance(node, dict):
         ds = node.get("datasource")
         uid = ds.get("uid") if isinstance(ds, dict) else ds
-        if uid:
+        if isinstance(uid, str) and uid:
             out.append((where, "datasource", uid))
         if node.get("datasourceUid"):
             out.append((where, "datasource", node["datasourceUid"]))
@@ -130,7 +139,10 @@ def datasource_refs(root, provisioning):
         for g in doc.get("groups") or []:
             for r in g["rules"]:
                 walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
-    for f in sorted((Path(provisioning).parent / "dashboards").glob("*.json")):
+    dash = Path(provisioning).parent / "dashboards"
+    files = sorted(dash.glob("*.json"))
+    assert files, f"no dashboard json under {dash}"
+    for f in files:
         walk_refs(json.loads(f.read_text()), f.name, out)
     assert len(out) >= 10, f"only {len(out)} data source references found; the walk is broken"
     return out
@@ -140,8 +152,8 @@ def check_datasource_refs(root, provisioning):
     uids = provisioned_uids(provisioning)
     bad = 0
     for where, kind, value in datasource_refs(root, provisioning):
-        if kind == "owner" and value in RETIRED_OWNERS:
-            print(f"::error::{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value]}")
+        if kind == "owner" and value.lower() in RETIRED_OWNERS:
+            print(f"::error::{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value.lower()]}")
             bad = 1
         elif kind == "datasource" and value in RETIRED_DATASOURCES:
             print(f"::error::{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
