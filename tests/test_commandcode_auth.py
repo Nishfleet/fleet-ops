@@ -23,6 +23,7 @@ NAMES = [
     "Read the Command Code seat",
     "Create the Command Code login directory",
     "Read the Command Code login",
+    "Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)",
     "Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)",
 ]
 
@@ -72,11 +73,13 @@ def _mode(path):
 def test_every_login_task_runs_as_nish_and_hides_the_key():
     for name in NAMES:
         task = TASKS[name]
+        if name == NAMES[3]:
+            continue
         assert task.get("become") is True and task.get("become_user") == "nish", name
         assert "owner" not in json.dumps(task) and "group" not in json.dumps(task), name
         modules = [k for k in task if "." in k]
         assert all(k.startswith("ansible.builtin.") for k in modules), name
-    for name in (NAMES[0], NAMES[2], NAMES[3]):
+    for name in (NAMES[0], NAMES[2], NAMES[3], NAMES[4]):
         assert TASKS[name]["no_log"] is True, name
     names = [t["name"] for t in PLAY["tasks"]]
     assert [n for n in names if n in NAMES] == NAMES
@@ -155,6 +158,16 @@ def test_a_login_file_that_is_not_an_object_is_replaced(tmp_path):
     _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
     _auth(tmp_path).parent.mkdir(mode=0o700)
     _auth(tmp_path).write_text("[]")
+    _run(tmp_path)
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+    assert "changed=0" in _run(tmp_path)
+
+
+@pytest.mark.parametrize("broken", ['{"apiKey": "user_ol', "{", "not json", ""])
+def test_a_truncated_login_file_is_replaced_and_the_run_still_succeeds(tmp_path, broken):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    _auth(tmp_path).write_text(broken)
     _run(tmp_path)
     assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
     assert "changed=0" in _run(tmp_path)

@@ -758,6 +758,13 @@
       no_log: true
       diff: false
 
+    - name: Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)
+      ansible.builtin.set_fact:
+        commandcode_parsed: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) if (commandcode_auth.content | default('e30=') | b64decode) is match(commandcode_object_re) else {} }}"
+      when: commandcode_seat_key != ''
+      ignore_errors: true
+      no_log: true
+
     - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
       become: true
       become_user: nish
@@ -766,7 +773,7 @@
         dest: "{{ commandcode_auth_file }}"
         mode: "0600"
       vars:
-        commandcode_now: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) if (commandcode_auth.content | default('e30=') | b64decode) is match(commandcode_object_re) else {} }}"
+        commandcode_now: "{{ commandcode_parsed | default({}) }}"
         commandcode_kept: "{{ commandcode_now | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
         commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
       when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
