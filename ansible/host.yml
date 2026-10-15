@@ -240,13 +240,21 @@
 
     # Root-owned and not writable by the service: its bytes go into a root-owned
     # config, so the prometheus user must not be able to change them.
+    - name: Look for the telegram chat id file
+      ansible.builtin.stat:
+        path: /etc/prometheus/telegram_chat_id
+      register: telegram_chat_id_stat
+
     - name: Keep the telegram chat id file root-owned
       ansible.builtin.file:
         path: /etc/prometheus/telegram_chat_id
         owner: root
         group: root
         mode: "0600"
-      failed_when: false
+      when: telegram_chat_id_stat.stat.exists
+
+    - name: Apply the queued reloads before the chat id check can stop the play
+      ansible.builtin.meta: flush_handlers
 
     - name: Read the telegram chat id
       ansible.builtin.slurp:

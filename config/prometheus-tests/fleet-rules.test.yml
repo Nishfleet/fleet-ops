@@ -180,3 +180,18 @@ tests:
             exp_annotations:
               summary: "Alertmanager rejected its last config reload"
               description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
+
+  - interval: 30s
+    input_series:
+      - series: 'node_systemd_unit_state{name="hermes-gateway.service",state="active"}'
+        values: '1x50'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: NodeExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: node
+            exp_annotations:
+              summary: "node_exporter is not being scraped"
+              description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."

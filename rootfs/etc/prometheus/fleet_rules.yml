@@ -66,7 +66,7 @@ groups:
       # Pages: without node_exporter the gateway rule is gated off and cannot see, so the
       # exporter's own loss must reach Telegram (it did through absent_over_time before).
       - alert: NodeExporterDown
-        expr: up{job="node"} == 0
+        expr: up{job="node"} == 0 or absent(up{job="node"})
         for: 5m
         labels:
           severity: nish
