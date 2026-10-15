@@ -1,0 +1,19 @@
+# Daily provider model-list check (fleet-provider-watch.service). Providers publish no
+# change event, so a daily schedule is the only way to see an offering change: 06:30 IST,
+# a few minutes of random delay.
+#
+# Persistent=true: a slot the host missed (power cut, reboot) catches up on the next boot
+# instead of being dropped.
+#
+# Enabled by hand once after the proof run (README "Provider watch"); fleet-sync links the
+# pair but does not enable it, so a hand disable stays disabled.
+[Unit]
+Description=Daily provider model-list check (06:30 IST)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Asia/Kolkata
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
