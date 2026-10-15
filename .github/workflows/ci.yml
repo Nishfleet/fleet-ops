@@ -17,16 +17,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci: every step is one vendor command. Required check by this name.
-  #
-  # `ci` is also the aggregate gate: it needs every other job in this file that
-  # runs on pull_request or merge_group, so a red grafana-boot or
-  # cloudflare-tokens-tofu fails the required check (PR #9507 merged with
-  # grafana-boot red). coordinator-approval is its own required check and stays
-  # out. `!cancelled()` so a failed need still runs this job and turns it red:
-  # a skipped required check would pass. A need that skips on its own (a job-level
-  # `if:`) counts as a pass; failure and cancelled do not. grafana-boot's path
-  # gate skips its steps, not the job, so it reports success.
+  # ci: every step is one vendor command. Required check by this name. It is also the
+  # aggregate gate: it needs every other job here that runs on pull_request or
+  # merge_group (so a red grafana-boot or cloudflare-tokens-tofu fails it, PR #9507);
+  # coordinator-approval is its own required check and stays out. `!cancelled()` so a
+  # failed need turns it red; a job-level skip counts as a pass, failure and cancelled do not.
   ci:
     name: ci
     needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
@@ -130,28 +125,22 @@ jobs:
             install -D -m0755 /bin/true "$HOME/.local/bin/$b"
           done
       - name: systemd-analyze verify over unit files
-        # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
-        # glob reaches systemd-analyze as a literal filename -> rc 1. With
-        # nullglob an empty set expands to nothing and a future .path unit is
-        # verified again by this same line.
-        # systemd/system/*.slice too (fleet-ops#8638): the root glob never
-        # matched systemd/system/, so agent.slice and claude.slice shipped
-        # unverified. Slices carry no Exec line, so they need none of the
-        # binary stubs above. Root-owned units moved to rootfs/etc/systemd/system/
-        # (fleet-host-config, thread "fix everything like pro devs"); the
-        # host-config service and timer are verified with the slices.
+        # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched glob
+        # reaches systemd-analyze as a literal filename (rc 1). systemd/system/*.slice too
+        # (fleet-ops#8638): agent.slice and claude.slice shipped unverified, and slices need
+        # none of the binary stubs above. Root-owned units live in rootfs/etc/systemd/system/;
+        # the host-config service and timer are verified with the slices.
         if: always()
         run: |
           shopt -s nullglob
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
-        # Runs the unit's real ExecStart under systemd (system scope here, user
-        # scope on the host: same parser) against tests/github_app_stub.py, which
-        # verifies the RS256 App JWT and the token request body the way GitHub
-        # does. Proves: a mint writes the token 0600 in a 0700 dir, a second run
-        # replaces it, a 401 fails the unit and keeps the previous token, a
-        # failed first run still leaves the empty file Grafana's $__file{}
-        # needs, and neither the token nor the JWT reaches the journal.
+        # Runs the unit's real ExecStart under systemd (system scope here, user scope on
+        # the host) against tests/github_app_stub.py, which verifies the RS256 App JWT and
+        # request body like GitHub. Proves: a mint writes the token 0600 in a 0700 dir, a
+        # second run replaces it, a 401 fails the unit and keeps the previous token, a failed
+        # first run still leaves the empty file Grafana's $__file{} needs, and neither token
+        # nor JWT reaches the journal.
         if: always()
         run: |
           set -euo pipefail
@@ -269,15 +258,12 @@ jobs:
         if: always()
         run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f rootfs/etc/nftables.conf
       - name: Worker jail hides the gh login, Cloudflare tokens and Claude seat logins (fleet-ops#9274)
-        # Runs agent.yml's own jail_base line, so a change there is what is
-        # tested. Workers read outsider comments; only the filesystem view
-        # keeps Nish's admin login and the deploy token out of their reach.
-        # Every bwrap line must be a jail_base=, claude_jail_a= or claude_jail_b=
-        # assignment, so each is tested here. jail_base is every engine but claude
-        # and must hide both Claude seat logins; claude_jail_a (seat a, the runner's
-        # CLAUDE_CONFIG_DIR) hides the default login only, claude_jail_b the other way round.
-        # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
-        # VPS allows them, so the runner is set to match.
+        # Runs agent.yml's own jail lines, so a change there is what is tested. Workers read
+        # outsider comments; only the filesystem view keeps Nish's admin login and the deploy
+        # token out of their reach. Every bwrap line must be a jail_base=, claude_jail_a= or
+        # claude_jail_b= assignment: jail_base (every engine but claude) hides both Claude seat
+        # logins, claude_jail_a the default login only, claude_jail_b seat a. Ubuntu 24.04 blocks
+        # unprivileged user namespaces by default; the VPS allows them, so the runner matches.
         if: always()
         run: |
           # This step plants fake logins over $HOME's real login files and its
@@ -531,6 +517,28 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Dispatch list holds what the Gate would skip (fleet-ops#9303)
+        # The ADMIT jq is read out of the list job itself, so this checks the
+        # filter that runs, not a copy of it.
+        if: always()
+        run: |
+          set -euo pipefail
+          admit=$(yq '.jobs.list.env.ADMIT' .github/workflows/agent-dispatch.yml)
+          [ -n "$admit" ] && [ "$admit" != null ] || { echo "list job has no ADMIT filter"; exit 1; }
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            got=$(jq -c '.input' <<<"$c" | jq -c "$admit")
+            jq -e --argjson got "$got" '.want_refs == $got.refs and .want_held == [$got.held[].ref]' <<<"$c" >/dev/null ||
+              { echo "ADMIT case $id: got $got"; bad=1; }
+          done < <(jq -c '.cases[]' config/dispatch-admit-cases.json)
+          # No job may hand a bare agent-ready label straight to agent.yml: it
+          # would start a runner the Gate then skips.
+          if yq -o=json '.jobs' .github/workflows/agent-dispatch.yml |
+            jq -e 'to_entries[] | select(.value.uses != null and ((.value.if // "") | contains("agent-ready")))' >/dev/null; then
+            echo "a uses: agent.yml job fires on an agent-ready label; route it through list"; bad=1
+          fi
+          [ "$bad" = 0 ]
       - name: Orchestrate cap and session args (fleet-ops#9351)
         # Runs the orchestrate job's own scripts, read out of the workflow with
         # yq, never a copy: the "Check the issue is still parked" step against
@@ -826,7 +834,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
+          gated="rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -1499,15 +1507,12 @@ jobs:
           echo "ci: needed jobs green: $(jq -r 'keys | join(", ")' <<<"$NEEDS")"
 
   # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
-  # config/grafana/provisioning/alerting as alert provisioning, so a promtool
-  # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
-  # rule group has no folder set"). This job starts the image tag and plugin
-  # versions pinned in containers/quadlet/fleet-grafana.container with the
-  # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
-  # for the secrets and tokens), waits for /api/health, and fails when Grafana
-  # exits or logs a provisioning error. Pull requests run it only when a path
-  # under config/grafana/, the quadlet or this workflow changed; push and merge_group runs
-  # always run it.
+  # config/grafana/provisioning/alerting as alert provisioning, so a promtool fixture
+  # dropped there crash-looped fleet-grafana. This job starts the image and plugins pinned
+  # in containers/quadlet/fleet-grafana.container with the provisioning dirs mounted as
+  # the quadlet mounts them (dummy secrets), waits for /api/health, and fails when Grafana
+  # exits or logs a provisioning error. Pull requests run it only when config/grafana/,
+  # the quadlet or this workflow changed; push and merge_group runs always run it.
   grafana-boot:
     name: grafana-boot
     runs-on: ubuntu-latest
@@ -1596,16 +1601,13 @@ jobs:
           fi
           echo "grafana-boot: $image healthy, no provisioning error"
       - name: Provisioning reload path unit covers every mounted dir and its reload call works
-        # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so
-        # a merged rule change sat unloaded for 31 hours and paged a false
-        # alarm. systemd/fleet-grafana-provisioning.path watches the clone's
-        # provisioning dirs and the .service POSTs the stock admin reload API.
-        # (1) every config/grafana/provisioning/<dir> the quadlet mounts must be
-        # a PathChanged= in the .path unit, so a new mount cannot ship unwatched
-        # (dashboards is skipped: its provider polls every 60 s);
-        # (2) the .service's reload URLs, called with the dummy admin password
-        # against the booted pinned image, must answer 2xx and leave Grafana
-        # healthy with no provisioning error.
+        # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so a merged
+        # rule change sat unloaded for 31 hours. The .path unit watches the clone's
+        # provisioning dirs and the .service POSTs the admin reload API. (1) every mounted
+        # config/grafana/provisioning/<dir> must be a PathChanged= in the .path unit
+        # (dashboards is skipped: its provider polls every 60 s); (2) the reload URLs, called
+        # with the dummy admin password against the booted image, must answer 2xx and leave
+        # Grafana healthy with no provisioning error.
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
