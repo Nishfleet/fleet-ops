@@ -89,7 +89,8 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    commandcode_seat_file: "{{ nish_home }}/.config/fleet-ops/seats/commandcode.env"
+    nish_config: "{{ nish_home }}/.config"
+    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'

@@ -56,7 +56,7 @@ def _run(home):
 
 
 def _seat(home, text):
-    seat = home / ".config/fleet-ops/seats/commandcode.env"
+    seat = home / ".config" / "fleet-ops" / "seats" / "commandcode.env"
     seat.parent.mkdir(parents=True, exist_ok=True)
     seat.write_text(text)
 
