@@ -92,6 +92,9 @@ def _router_rows():
     return [row["litellm_params"] for row in json.loads(out)]
 
 
+SEAT_FILE = {"command-code": "commandcode"}
+
+
 def _provider_name(var):
     return re.sub(r"-api-key", "", var.lower().replace("_", "-"))
 
@@ -623,7 +626,7 @@ def test_every_router_key_has_an_environment_file_in_the_unit():
     assert keys
     for var in sorted(keys):
         assert key_re.match(var), var
-        assert f"EnvironmentFile=-%E/fleet-ops/seats/{_provider_name(var)}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
+        assert f"EnvironmentFile=-%E/fleet-ops/seats/{SEAT_FILE.get(_provider_name(var), _provider_name(var))}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
 
 
 def test_every_router_row_with_a_key_has_an_https_api_base():

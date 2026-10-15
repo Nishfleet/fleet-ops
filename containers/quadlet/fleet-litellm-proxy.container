@@ -45,7 +45,7 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # is already covered by the seats/*.env EnvironmentFile below.
 PodmanArgs=--env=ALIBABA_CODING_API_KEY
 PodmanArgs=--env=CLINE_API_KEY
-PodmanArgs=--env=COMMANDCODE_API_KEY
+PodmanArgs=--env=COMMAND_CODE_API_KEY
 PodmanArgs=--env=LITELLM_MASTER_KEY
 PodmanArgs=--env=MINIMAX_API_KEY
 PodmanArgs=--env=OLLAMA_API_KEY

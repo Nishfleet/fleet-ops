@@ -92,19 +92,14 @@
     commandcode_shell_files:
       - "{{ nish_home }}/.zshenv"
       - "{{ nish_home }}/.bashrc"
+    commandcode_seat_file: "{{ nish_home }}/.config/fleet-ops/seats/commandcode.env"
+    litellm_live_config: "{{ nish_home }}/.config/fleet-ops/litellm-proxy.yaml"
+    commandcode_seat_line_re: '^(?:#.*|(?:export +)?[A-Za-z_][A-Za-z0-9_]*=["'']?[A-Za-z0-9_.:/+=@%,-]*["'']?|)$'
     commandcode_shell_block: |
       if [ -r "$HOME/.config/fleet-ops/seats/commandcode.env" ]; then
-        _fleet_ops_cc_key=
-        while IFS= read -r _fleet_ops_cc_line || [ -n "$_fleet_ops_cc_line" ]; do
-          case "$_fleet_ops_cc_line" in
-            COMMANDCODE_API_KEY=*|"export COMMANDCODE_API_KEY="*) _fleet_ops_cc_key="${_fleet_ops_cc_line#*=}" ;;
-          esac
-        done < "$HOME/.config/fleet-ops/seats/commandcode.env"
-        case "$_fleet_ops_cc_key" in
-          \"*\"|\'*\')_fleet_ops_cc_key="${_fleet_ops_cc_key#?}"; _fleet_ops_cc_key="${_fleet_ops_cc_key%?}" ;;
-        esac
-        if [ -n "$_fleet_ops_cc_key" ]; then export COMMAND_CODE_API_KEY="$_fleet_ops_cc_key"; fi
-        unset _fleet_ops_cc_key _fleet_ops_cc_line
+        set -a
+        . "$HOME/.config/fleet-ops/seats/commandcode.env"
+        set +a
       fi
 
   tasks:
@@ -738,14 +733,64 @@
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
-    - name: Export COMMAND_CODE_API_KEY from the seat in nish's zsh and bash startup files
+    - name: Look for the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.stat:
+        path: "{{ commandcode_seat_file }}"
+      register: commandcode_seat
+
+    - name: Read the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_seat_file }}"
+      register: commandcode_seat_text
+      when: commandcode_seat.stat.exists
+      no_log: true
+      diff: false
+
+    - name: Require the Command Code seat to hold only NAME=VALUE lines (shells source it)
+      ansible.builtin.assert:
+        that: commandcode_seat_text.content | b64decode | trim | split('\n') | reject('match', commandcode_seat_line_re) | list | length == 0
+        quiet: true
+        fail_msg: the Command Code seat has a line that is not a comment, a blank or NAME=VALUE with a plain value
+      when: commandcode_seat.stat.exists
+      no_log: true
+
+    - name: Rename COMMANDCODE_API_KEY to COMMAND_CODE_API_KEY in the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.replace:
+        path: "{{ commandcode_seat_file }}"
+        regexp: '^(export +)?COMMANDCODE_API_KEY='
+        replace: '\1COMMAND_CODE_API_KEY='
+      register: commandcode_seat_renamed
+      when: commandcode_seat.stat.exists
+      no_log: true
+      diff: false
+
+    - name: Look for the new name in the live LiteLLM config
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/grep, -qF, "os.environ/COMMAND_CODE_API_KEY", "{{ litellm_live_config }}"]
+      register: litellm_live_new_name
+      changed_when: false
+      failed_when: false
+
+    - name: Restart the LiteLLM proxy so it reads the renamed seat line
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
+      when: commandcode_seat_renamed is changed and litellm_live_new_name.rc == 0
+
+    - name: Export the Command Code seat in nish's zsh and bash startup files
       become: true
       become_user: nish
       ansible.builtin.blockinfile:
         path: "{{ item }}"
         create: true
         insertbefore: BOF
-        marker: "# {mark} fleet-ops: COMMAND_CODE_API_KEY for cmd, from COMMANDCODE_API_KEY in the seat"
+        marker: "# {mark} fleet-ops: Command Code seat for cmd"
         block: "{{ commandcode_shell_block }}"
       loop: "{{ commandcode_shell_files }}"
 
