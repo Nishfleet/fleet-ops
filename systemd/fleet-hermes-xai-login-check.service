@@ -4,26 +4,29 @@ Description=Fail loud when Hermes's xAI (SuperGrok) login is gone or expired
 # relogin_required) and Hermes's x_search tool hid itself without an error;
 # nobody noticed for three weeks. This oneshot fails, and OnFailure= pages
 # through the existing failed-unit route, when `hermes auth status xai-oauth`
-# does not say `xai-oauth: logged in`. Triggers:
+# does not say `xai-oauth: logged in`. That command reads the local auth store
+# only (no refresh, no write), so it cannot re-trigger the path unit. Triggers:
 # fleet-hermes-xai-login-check.path (the file changed or went away) and
-# fleet-hermes-xai-login-check.timer (hourly: an expired refresh token changes
-# no local file).
+# fleet-hermes-xai-login-check.timer (hourly).
 #
 # Switch off: systemctl --user disable --now fleet-hermes-xai-login-check.timer
 # fleet-hermes-xai-login-check.path, then delete the three unit files.
 OnFailure=fleet-unit-failed@%N.service
+# Three tries 20 s apart, so one blip does not page: RestartMode=direct
+# (systemd 254+) restarts without the failed state, so OnFailure= fires once,
+# when the start limit is spent.
+StartLimitIntervalSec=2min
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
-# HERMES and PAUSE exist so CI can run this very ExecStart against a stub hermes
-# (tests/test_hermes_xai_login_check.py); the host never overrides them.
+Restart=on-failure
+RestartMode=direct
+RestartSec=20
+# HERMES exists so CI can run this very ExecStart against a stub hermes
+# (tests/test_hermes_xai_login_check.py); the host never overrides it.
 Environment=HERMES=%h/.local/bin/hermes
-Environment=PAUSE=20
-# Three tries 20 s apart, so one network blip does not page.
-ExecStart=/bin/sh -c 'for i in 1 2 3; do \
-  got=$$("$$HERMES" auth status xai-oauth 2>&1); \
-  case "$$got" in *"xai-oauth: logged in"*) echo "hermes xai login ok: $$got"; exit 0;; esac; \
-  [ "$$i" = 3 ] || sleep "$$PAUSE"; \
-done; \
+ExecStart=/bin/sh -c 'got=$$("$$HERMES" auth status xai-oauth 2>&1); \
+case "$$got" in *"xai-oauth: logged in"*) echo "hermes xai login ok"; exit 0;; esac; \
 echo "hermes xai login BROKEN: $${got:-no output}. Fix: hermes auth add xai-oauth --no-browser (Nish approves the device code)"; exit 1'
-TimeoutStartSec=180
+TimeoutStartSec=60

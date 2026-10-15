@@ -1,8 +1,8 @@
 """fleet-hermes-xai-login-check.service pages when Hermes's xai-oauth login is gone.
 
 Runs the unit's own ExecStart (read from the unit file, never a copy) with a
-stub hermes: a logged-in status passes, a logged-out status, a missing binary
-and empty output fail loud, and one blip followed by success passes.
+stub hermes: a logged-in status passes; a logged-out status, a missing binary
+and empty output fail loud. The three tries are systemd's Restart=, not tested here.
 """
 import pathlib
 import shlex
@@ -25,13 +25,13 @@ def _run(tmp_path, stub_body):
     hermes = tmp_path / "hermes"
     hermes.write_text("#!/bin/sh\n" + stub_body)
     hermes.chmod(0o755)
-    env = {"HERMES": str(hermes), "PAUSE": "0", "PATH": "/usr/bin:/bin", "STATE": str(tmp_path / "n")}
+    env = {"HERMES": str(hermes), "PATH": "/usr/bin:/bin"}
     return subprocess.run(_exec_start(), env=env, capture_output=True, text=True, timeout=30)
 
 
 def test_logged_in_passes(tmp_path):
     r = _run(tmp_path, 'test "$*" = "auth status xai-oauth" && echo "xai-oauth: logged in"\n')
-    assert r.returncode == 0 and "hermes xai login ok: xai-oauth: logged in" in r.stdout
+    assert r.returncode == 0 and "hermes xai login ok" in r.stdout
 
 
 @pytest.mark.parametrize(
@@ -51,12 +51,7 @@ def test_logged_out_fails_loud(tmp_path, body):
 
 
 def test_missing_binary_fails_loud(tmp_path):
-    env = {"HERMES": str(tmp_path / "nope"), "PAUSE": "0", "PATH": "/usr/bin:/bin"}
+    env = {"HERMES": str(tmp_path / "nope"), "PATH": "/usr/bin:/bin"}
     r = subprocess.run(_exec_start(), env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 1 and "hermes xai login BROKEN" in r.stdout
 
-
-def test_one_blip_then_ok_passes(tmp_path):
-    body = 'n=$(cat "$STATE" 2>/dev/null || echo 0); echo $((n+1)) > "$STATE"; [ "$n" -ge 1 ] || exit 1; echo "xai-oauth: logged in"\n'
-    r = _run(tmp_path, body)
-    assert r.returncode == 0, r.stdout
