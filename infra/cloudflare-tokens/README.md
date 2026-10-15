@@ -157,8 +157,7 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
 
 - Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
   file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
-  `gh auth token` (the `~/.config/gh/hosts.yml` login, the same source
-  `blacksmith-flip.service` uses). That login needs admin on each repo.
+  `gh auth token` (the `~/.config/gh/hosts.yml` login). That login needs admin on each repo.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to

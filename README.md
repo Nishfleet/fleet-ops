@@ -7,8 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
-  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, four `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
+  `fleet-hermes-xai-login-check.path`, `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
@@ -27,9 +27,6 @@ script, or prompt lands unseen.
   every 30 days. Its README says how to apply, rotate and delete it.
 - `containers/quadlet/` — `*.container` Podman quadlet units for the
   LiteLLM proxy, its Postgres and Redis, Grafana and aiostreams.
-- `patches/` — `litellm-1.98.0-gchunk-usage-union.patch`, a source patch for
-  LiteLLM 1.98.0 that no unit in this repo applies (the proxy runs a pinned
-  container image).
 - `docs/` — `ARCHITECTURE.md`, `RUNBOOK.md`, `jev-call-sites.md`,
   `mac-rescue-2026-10-09.md` (the disposition of the Mac rescue bundles),
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
@@ -84,22 +81,41 @@ script, or prompt lands unseen.
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `systemd/blacksmith-flip.service` and `systemd/blacksmith-flip.timer` — one
-  hourly decision on the cheap seat: does this calendar month still have
-  Blacksmith free minutes, and does the org Actions variable `CI_RUNNER` point
-  at Blacksmith accordingly (fleet-ops#8936). The decision lives in
-  `prompts/blacksmith-flip.yml`, which `fleet-sync.service` installs, and a
-  model runs `blacksmith usage` rather than a checked-in script, because
-  "no glue or scripts" was Nish's condition on approval.
+- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
+  /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
+  Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
+  no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
+  is the job; `config/retro-public-deny.txt` is the check every follow-up issue
+  must pass before it is filed; `config/retro-weekly-claude.json` is the tool
+  list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
+  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  second-login env line for the Tincan listener. They were hand-placed on the
+  host with no repo copy (fleet-ops#9645); they decide nothing and wrap
+  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
+  the link. Install on a fresh host: `ln -s` each file from the deploy clone's
+  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
+  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  and `enable --now`. The files match what ran before (only the two Amp
+  `Description=` lines lost their account names), so adopting them restarted
+  nothing: a unit edit applies at the unit's next restart (never restart
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
+  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  so only its parent unit is verified. Switch one off with
+  `systemctl --user disable --now <unit>`; delete it by removing its file here
+  and the live link, then `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
   times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
-  any PR left waiting over an hour: it arms a head a reviewer approved, asks
+  any PR left waiting over 15 minutes: it arms a head a reviewer approved, asks
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
-  stub (fleet-ops, 0509, drive, inish-site, aiconverter-app, tinystudio-in,
-  TinyStudio.io-public, siterep-public), linked and enabled by
+  stub (fleet-ops, 0509, drive, aiconverter-app,
+  TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
@@ -109,6 +125,14 @@ script, or prompt lands unseen.
   link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
   `systemctl --user disable --now fleet-gh-login-check.timer
   fleet-gh-login-check.path` and delete the files.
+- `systemd/fleet-hermes-xai-login-check.service`, `.path` and `.timer` — fail, and
+  so page through `fleet-unit-failed@`, when `hermes auth status xai-oauth` does
+  not say `xai-oauth: logged in` (the SuperGrok login behind Hermes's `x_search`,
+  which hides itself silently when it dies). The path unit checks on every change
+  to `~/.hermes/auth.json`, the timer hourly. Wire once like the gh check above.
+  Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
+  `systemctl --user disable --now fleet-hermes-xai-login-check.timer
+  fleet-hermes-xai-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
@@ -157,7 +181,6 @@ script, or prompt lands unseen.
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  `prompts/blacksmith-flip.yml` to `~/.local/share/blacksmith-flip/prompt.yml`,
   and the leviathan index units, their configs and the tmpfiles rule to
   `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
@@ -323,10 +346,23 @@ replaced by two stock `systemd-run` properties.
 ```
 systemd-run --user --collect --unit <name> \
   -p RuntimeMaxSec=<seconds> \
+  -p Requires=fleet-worker-github-token@<repo>.service \
+  -p After=fleet-worker-github-token@<repo>.service \
+  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env" \
+  -p "TemporaryFileSystem=$HOME/.config/gh" \
+  -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
   -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
   -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
 ```
+
+`<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
+`fleet-worker-github-token@<repo>.service`, which mints a one-hour nishfleet-worker
+App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env`;
+the `EnvironmentFile=` is required (no `-`), so a failed mint means the worker never
+starts, and `ExecStartPre=` fails an empty `GH_TOKEN` before any work. `TemporaryFileSystem=`
+blanks the human gh login for the run, as agent.yml's jail does, so a worker cannot fall
+back to it (fleet-ops#9738). The launch line exits non-zero when it refuses.
 
 `RuntimeMaxSec=` is the deadline: systemd kills an over-running unit into
 `Result=timeout`. The `ExecStopPost=` line is the deliverable check: a stop at
@@ -586,7 +622,7 @@ holds both rules before merge.
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
-checks are stock: semgrep `--config p/default`, the secret-expansion grep,
+checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
@@ -602,6 +638,26 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Ratchet: workflow and script code only shrinks
+
+The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
+deletions, `git diff --numstat` against the merge base) under `.github/workflows/`,
+`.github/actions/`, `scripts/` and `bin/` are greater than 0. A PR that adds lines must delete at least
+as many, so removing glue earns room. There are no exceptions in this repo: a new
+mechanism is a component in its own repo, behind an official extension point. The job
+self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+A web or product repo adds a workflow with one job named `ratchet` that calls
+`uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
+and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
+the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
+Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
+403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
+`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
+ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
+the job alone does not switch it off: a required check that never reports blocks the PR.
+
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
@@ -615,7 +671,7 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions.
+`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 
 ## Allowlist
 
@@ -632,7 +688,7 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
-Each enrolled repo needs two preconditions:
+Each enrolled repo needs three preconditions:
 
 1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
    creates its worktree from it. Packet clones (when a worker clones instead
@@ -645,6 +701,15 @@ https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    `needs-orchestrator`, `strong-only` — must be present on the repo —
    agent-dispatch fires only on the `agent-ready` label, so on a repo missing
    any required label an issue looks queued and is inert (fleet-ops#25).
+3. An `.github/workflows/agent-dispatch.yml` stub whose
+   `on.pull_request_target.types` lists all nine events — `dequeued`,
+   `auto_merge_disabled`, `closed`, `auto_merge_enabled`, `synchronize`,
+   `labeled`, `opened`, `reopened`, `ready_for_review`. `hold-risky` is the
+   only door into `review-risky`, a `pull_request_target` trigger fires only
+   for the types its own repo's stub lists, and `pull_request_target` reads
+   that stub from the base branch — so a short list leaves the repo with no
+   review and no coordinator gate on risky PRs (fleet-ops#9722, #9726).
+   fleet-ops's own stub is the reference.
 
 `excluded` in the file lists repos that are never enrolled (fleet2: no
 second dispatcher, ever; archived repos). `deferred` lists repos paused with
@@ -721,3 +786,38 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 - The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
   that name by itself and the full-history scans would start failing on old
   commits.
+
+## Weekly retro
+
+`retro-weekly.timer` starts `retro-weekly.service` every Monday at 07:00 IST.
+It is built so a fooled model cannot do harm, not so it is asked not to.
+
+- The model runs in a bwrap jail: the system is read-only, `/home` is an empty
+  tmpfs, and only the session logs and steering files are bound back read-only. The gh login, the Cloudflare tokens, the
+  seat files, the App key and the other Claude logins are not there.
+- It has no GitHub token. A later step in the unit files at most three
+  follow-up issues using the worker App's issues-only installation token
+  (`fleet-grafana-github-token.service` mints it) with an empty `gh` config
+  directory. Repo and labels are fixed in the unit.
+- The report goes to the vault's `_system/retro/` and syncs to the Mac. A
+  follow-up issue is a fixed five-line file (class, count, fix rung, owning
+  repo and fix kind, each from a list); the unit builds the public title and
+  body from a template, then `config/retro-public-deny.txt` must find no session
+  id, path, quote, time of day, link, email or secret shape in it. One refusal
+  fails the unit and files nothing.
+- The jail has no network. The only way out is `retro-weekly-api.socket`, served
+  by `systemd-socket-proxyd` to `api.anthropic.com:443` and nothing else.
+- Follow-up issues carry only the label `retro` (`needs-orchestrator` would start
+  a paid orchestrator run per issue), one open issue per class.
+- The call is Claude Code to the Anthropic API with the model pinned in the unit.
+  The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
+  it is not used. The pin check fails the unit if the call was anything else
+  and prints a `retro-provider:` line.
+
+- Run it now: `systemctl --user start retro-weekly.service`, then
+  `journalctl --user -u retro-weekly -f`.
+- Switch it on: `systemctl --user enable --now retro-weekly.timer`.
+- Switch it off: `systemctl --user disable --now retro-weekly.timer`.
+- Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
+  `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
+  `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.

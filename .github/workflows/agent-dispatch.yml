@@ -103,12 +103,8 @@ on:
   # data and never checks out or runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
-  # approval-signal (approval-signal.yml) is the untrusted half of one-tap
-  # approval (fleet-ops#9505): it only uploads a PR number. Its completed run
-  # lands here, in base-branch code, where hold-risky re-reads the review and
-  # arm-approved arms the PR.
   workflow_run:
-    workflows: [CI, approval-signal]
+    workflows: [CI]
     types: [completed]
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
@@ -136,7 +132,6 @@ jobs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED == 'true' &&
       (github.event_name != 'pull_request_target' || github.event.action == 'dequeued' || github.event.action == 'closed') &&
-      (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'approval-signal') &&
       (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
       (github.event_name != 'issues' || github.event.action != 'labeled' ||
        contains(fromJSON('["agent-ready","agent-failed","needs-orchestrator","needs-triage"]'), github.event.label.name))
@@ -319,44 +314,31 @@ jobs:
   # and APPROVAL below against every case in config/risky-paths.json.
   hold-risky:
     if: >-
-      (github.event_name == 'pull_request_target' &&
-       contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened","ready_for_review"]'), github.event.action)) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'approval-signal' &&
-       github.event.workflow_run.conclusion == 'success')
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["auto_merge_enabled","synchronize","labeled","opened","reopened","ready_for_review"]'), github.event.action)
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
       review_sha: ${{ steps.hold.outputs.review_sha }}
-      arm_pr: ${{ steps.hold.outputs.arm_pr }}
-      arm_sha: ${{ steps.hold.outputs.arm_sha }}
     concurrency:
-      group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number || github.event.workflow_run.id }}
+      group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     # pull-requests: write labels the PR and disables auto-merge. contents:
     # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
     # like arming does). statuses: read and pull-requests (which covers a PR's
-    # issue comments, and a PR's reviews) read the approval. actions: read
-    # lets the approval-signal path fetch its one-number artifact. Nothing here
-    # checks out code, so contents: write never meets PR head code.
+    # issue comments) read the approval. Nothing here checks out code, so
+    # contents: write never meets PR head code.
     permissions:
       contents: write
       pull-requests: write
       statuses: read
-      actions: read
     env:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts. Any token with
-      # statuses: write can post a status, and anyone who can comment can
-      # write the approval line, so the context name or line alone is not an
-      # approval.
-      # github-actions[bot] is the approver (review-risky below): its approval
-      # comment is written by agent.yml's review job with GITHUB_TOKEN, after a
-      # judge review (and, for a PR that edits the guard or a workflow, a second
-      # review by another model family). Nobody has to be asked. nish3451 stays
-      # as an optional override: his typed comment, or his GitHub "Approve"
-      # review (the review path below never counts a [bot] login, so the
-      # reviewer's own approval stays a comment).
+      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
+      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
+      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
+      # nish3451 is an optional override: a typed comment.
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
@@ -389,19 +371,13 @@ jobs:
            + ($hits | unique | .[:10] | map("path \(.)"))
            + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments, reviews}. sha is the current head;
+      # stdin: {sha, statuses, comments}. sha is the current head;
       # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments; reviews are the PR's reviews, oldest first,
-      # as {user: {login}, state, commit_id, submitted_at}. Status path: only
-      # the newest status for CONTEXT counts, so a later failure revokes it.
-      # Comment path: an approver's comment, never edited (updated_at ==
-      # created_at, so an old comment cannot be edited onto a new sha), with a
-      # line exactly "CONTEXT: <sha>" for the full 40-hex head sha. Review
-      # path (optional override in the GitHub app): a human approver's newest APPROVED or
-      # CHANGES_REQUESTED review (a COMMENTED, PENDING or DISMISSED one is not
-      # a vote) must be APPROVED with commit_id equal to the full head sha, so
-      # a review of an older commit never counts and a later change request
-      # revokes. A [bot] login never counts here. Any path approves.
+      # the PR's issue comments. Status path: only the newest status for
+      # CONTEXT counts, so a later failure revokes it. Comment path: an
+      # approver's comment, never edited (updated_at == created_at, so an old
+      # comment cannot be edited onto a new sha), with a line exactly
+      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
       APPROVAL: |
         . as $in
         | ($who | split(" ") | map(select(length > 0))) as $approvers
@@ -413,41 +389,13 @@ jobs:
             | any($approvers[]; . == $l)
               and .created_at != null and .updated_at == .created_at
               and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | (([($in.reviews // [])[]
-              | select((.user.login // "") as $l
-                       | any($approvers[]; . == $l) and ($l | endswith("[bot]") | not)
-                       and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
-            | sort_by(.submitted_at // "") | group_by(.user.login) | map(last))
-           | any(.[]; .state == "APPROVED" and $full and .commit_id == $in.sha)) as $by_review
-        | $by_status or $by_comment or $by_review
+        | $by_status or $by_comment
     steps:
-      # approval-signal's completed run names the PR in a one-number artifact.
-      # The number is untrusted: it must be digits, and everything after it
-      # (state, head, approval) is read from the API, never from the artifact.
-      - name: Read the PR that approval-signal names
-        id: signal
-        if: github.event_name == 'workflow_run'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          aid=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/artifacts" --jq '[.artifacts[] | select(.name == "approval-pr" and (.expired | not))][0].id // empty')
-          [ -n "$aid" ] || { echo "approval-signal run $RUN has no approval-pr artifact; nothing to do"; exit 0; }
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$aid/zip" > "$RUNNER_TEMP/signal.zip"
-          n=$(unzip -p "$RUNNER_TEMP/signal.zip" pr.txt | head -c 16 | tr -d '[:space:]')
-          [[ "$n" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "::warning::approval-signal artifact is not a PR number; ignored"; exit 0; }
-          echo "number=$n" >> "$GITHUB_OUTPUT"
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
-        if: github.event_name != 'workflow_run' || steps.signal.outputs.number != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number || steps.signal.outputs.number }}
-          # true on the approval-signal path and when a draft turns ready:
-          # never hold there, only report an approved, unarmed, non-draft risky
-          # PR to arm-approved. (A draft's approval comment could not arm it.)
-          REARM: ${{ (github.event_name == 'workflow_run' || github.event.action == 'ready_for_review') && 'true' || 'false' }}
+          PR: ${{ github.event.pull_request.number }}
         # Fails closed: a read that fails (the PR, its files, the path list,
         # its statuses or comments, the merge state) never skips the hold. It
         # counts as risky or not approved, gets a ::warning:: naming the read,
@@ -485,7 +433,8 @@ jobs:
           # An unread PR has no labels or file count to classify, so it holds.
           [ "$pr" != null ] || verdict=$(jq -c '.risky = true | .why += ["PR read failed"]' <<<"$verdict")
           echo "hold-risky: #$PR at $sha: $verdict"
-          jq -e .risky <<<"$verdict" >/dev/null || exit 0
+          # Not risky: the merge list says these merge on green checks (as before), so the review the ruleset now requires on every PR is given here, for a same-repo head only; a fork PR waits for a person. The API refuses a commit_id that is no longer the head (HTTP 422, checked 2026-10-12), so a push after the read gets no approval. The repo setting "Allow GitHub Actions to create and approve pull requests" is on.
+          jq -e .risky <<<"$verdict" >/dev/null || { [ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ] || gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
           # Either approval read failing means not approved, even if the other
           # read alone would approve.
           approved=false
@@ -496,34 +445,13 @@ jobs:
           elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments?per_page=100" \
             --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt"; then
             echo "::warning::hold-risky: comments read failed for #$PR; not approved"
-          elif ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" \
-            --jq '.[] | {user: {login: .user.login}, state, commit_id, submitted_at}' > "$RUNNER_TEMP/reviews.txt"; then
-            echo "::warning::hold-risky: reviews read failed for #$PR; not approved"
           else
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" --slurpfile r "$RUNNER_TEMP/reviews.txt" \
-              '{sha: $sha, statuses: $s, comments: $m, reviews: $r}' |
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
               jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
           fi
           if [ "$approved" = true ]; then
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
-            # Hand the approved head to arm-approved. A draft, an armed PR or
-            # one already in the queue has nothing to arm.
-            if [ "$REARM" = true ]; then
-              if [ "$(jq -r '.draft' <<<"$pr")" = true ]; then
-                echo "hold-risky: #$PR is a draft; not arming"
-              elif [ "$(jq -r '.auto_merge != null' <<<"$pr")" = true ]; then
-                echo "hold-risky: #$PR is already armed"
-              else
-                { echo "arm_pr=$PR"; echo "arm_sha=$sha"; } >> "$GITHUB_OUTPUT"
-                echo "hold-risky: #$PR approved at $sha; arm-approved arms it"
-              fi
-            fi
-            exit 0
-          fi
-          # The approval-signal path only arms. A review that does not approve
-          # this head is not a reason to hold: the PR events do that.
-          if [ "$REARM" = true ]; then
-            echo "hold-risky: #$PR at $sha has no approval on this head; nothing to arm"
             exit 0
           fi
           # Label first, so a dequeued event raised by the steps below already
@@ -603,22 +531,6 @@ jobs:
     with:
       review_pr: ${{ github.event.pull_request.number }}
       review_sha: ${{ needs.hold-risky.outputs.review_sha }}
-  # Optional person override (fleet-ops#9505): hold-risky, run by a completed
-  # approval-signal, found a risky PR whose current head carries an approver's
-  # approval and that is not armed. agent.yml's arm job re-reads the head and
-  # arms it as the worker App, the same arm job that follows an automatic approval. The
-  # arm fires auto_merge_enabled, so hold-risky checks the approval once more.
-  arm-approved:
-    needs: hold-risky
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.arm_sha != ''
-    permissions:
-      pull-requests: write
-      # See review-risky: a caller job must grant what the called workflow's other jobs request.
-      issues: write
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    with:
-      arm_pr: ${{ needs.hold-risky.outputs.arm_pr }}
-      arm_sha: ${{ needs.hold-risky.outputs.arm_sha }}
   # A closed blocker frees the issues it was blocking; a manual run sweeps
   # every ready, unblocked issue (cutover backfill and missed-event recovery),
   # then open claim PRs that are unarmed, conflicting, missing a required-check
@@ -833,8 +745,8 @@ jobs:
                     *) exit 1 ;;
                   esac
                   comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
-                  verdict=$(jq -nc --argjson pr "$v" --argjson issue "$issue" --argjson comments "$comments" \
-                    '{pr: $pr, issue: $issue, comments: $comments}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                  verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
+                    '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
                     status=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
@@ -903,7 +815,7 @@ jobs:
       pull-requests: write
     with:
       ref: ${{ matrix.ref }}
-  # Any open PR that has waited over an hour, on any branch (2026-10-11: 53
+  # Any open PR that has waited over 15 minutes, on any branch (2026-10-11: 53
   # fleet PRs idle and unarmed, 40 of them not claim branches, which every
   # path above skips; approved heads from before the arm job existed, #9486
   # #9509, were never armed; reviewer blocks on session PRs had no owner).
@@ -911,8 +823,7 @@ jobs:
   # approver approved, send an unreviewed head to the review job, or hand a
   # stuck one to its owner. Nothing is armed without an approval of its exact
   # head, and hold-risky still re-reads it on auto_merge_enabled.
-  # updatedAt moves on every push, comment, label and review, so a PR anyone
-  # touched in the last hour is left alone.
+  # updatedAt moves on every push, comment, label and review, so a PR anyone touched in the last 15 minutes is left alone.
   stuck-prs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -953,7 +864,7 @@ jobs:
           # check is stuck whatever the review said. Each review the sweep asks
           # for leaves a `stuck-review: <sha>` comment, so after three asks
           # with no verdict (a review job that died before it wrote one) the
-          # head is stuck, not reviewed again every hour.
+          # head is stuck: STUCK re-asks once the marker is 15 minutes old.
           # config/stuck-pr-cases.json runs this program in CI.
           STUCK: |
             .pr.headRefOid as $sha
@@ -974,7 +885,7 @@ jobs:
               else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
         run: |
           set -euo pipefail
-          cutoff=$(( $(date +%s) - 3600 ))
+          cutoff=$(( $(date +%s) - 900 ))
           queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
             --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
           # A draft is its author saying "not yet"; Dependabot PRs follow the
@@ -1025,25 +936,24 @@ jobs:
               esac
             fi
             # One unreadable PR is skipped, never fatal to the sweep (the
-            # fleet-ops#9553 lesson); every PR unreadable fails it below.
+            # fleet-ops#9553 lesson); any skipped PR fails the job at the end.
             if ! jq -e 'type == "array"' <<<"$red" >/dev/null 2>&1 ||
               ! comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" | jq -sc 'add // []'); then
               echo "::warning::#$n: checks or comments unreadable, skipped"
               errs=$((errs + 1)); continue
             fi
-            v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" \
-              '{pr: $pr, comments: $comments, red: $red}' | jq -c --arg who "$APPROVERS" "$STUCK")
+            v=$(jq -nc --slurpfile pr <(printf '%s' "$p") --slurpfile comments <(printf '%s' "$comments") --slurpfile red <(printf '%s' "$red") '{pr: ($pr[0] | objects // error("pr")), comments: ($comments[0] | arrays // error("comments")), red: ($red[0] | arrays // error("red"))}' |
+              jq -c --arg who "$APPROVERS" "$STUCK") || { echo "::warning::#$n: verdict failed, skipped"; errs=$((errs + 1)); continue; }
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
               arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
-                # Four paid reviews a sweep at most; the rest wait an hour.
-                # The marker comment is what STUCK counts toward its cap of
-                # three asks per head, and it moves updatedAt, so the head
-                # waits a full hour before the next ask.
+                # Four paid reviews a sweep at most; the rest wait for the next
+                # sweep that sees them. The marker comment is what STUCK counts
+                # toward its cap of three asks per head, and it moves updatedAt.
                 if [ "$(jq length <<<"$review")" -lt 4 ]; then
-                  gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over an hour with no review verdict on its head, so the sweep asked for one.' "$sha")"
+                  gh pr comment "$n" -R "$GITHUB_REPOSITORY" --body "$(printf 'stuck-review: %s\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.' "$sha")"
                   review=$(add "$review" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')" 4)
                 fi
                 continue ;;
@@ -1061,8 +971,8 @@ jobs:
                     echo "#$n: issue #$i is parked or blocked, its owner has it"; continue
                   fi
                   bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body]') || { errs=$((errs + 1)); continue; }
-                  note="rework: PR #$n at ${sha:0:7} has waited over an hour"
-                  if jq -e --arg x "$note" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
+                  note="rework: PR #$n at ${sha:0:7} has waited over 15 minutes"
+                  if jq -e --arg x "rework: PR #$n at ${sha:0:7}" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
                     echo "#$n: issue #$i already has this rework note"; continue
                   fi
                   last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
@@ -1091,12 +1001,12 @@ jobs:
             # closes these.
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
-          echo "waiting over an hour: $seen, unreadable: $errs"
+          echo "waiting over 15 minutes: $seen, unreadable: $errs"
           echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
           {
             echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
           } >> "$GITHUB_OUTPUT"
-          [ "$seen" = 0 ] || [ "$errs" -lt "$seen" ] || { echo "::error::every waiting PR was unreadable"; exit 1; }
+          [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group, so they bound how long
   # a sweep holds it: at most 4 reviews, 2 at a time, each under agent.yml's
   # 20-minute review timeout, is 40 minutes on top of stuck-prs. A sweep started
@@ -1104,7 +1014,7 @@ jobs:
   # not dropped, so the next hourly start still finds every PR.
   stuck-review:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1120,7 +1030,7 @@ jobs:
       review_sha: ${{ matrix.x.sha }}
   stuck-arm:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'"
     strategy:
       fail-fast: false
       # An arm takes seconds, but on a [self-hosted, agent] slot a worker could use.
@@ -1136,7 +1046,7 @@ jobs:
       arm_sha: ${{ matrix.x.sha }}
   stuck-rework:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'"
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
@@ -1150,7 +1060,7 @@ jobs:
       ref: ${{ matrix.ref }}
   stuck-file:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -1185,6 +1095,7 @@ jobs:
       # --delete-branch needs to delete the ref (fleet-ops#8457).
       pull-requests: write
       contents: write
+      issues: write
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -1193,6 +1104,7 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
+          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
