@@ -320,6 +320,28 @@ tests:
               summary: "https://example.test/ has not answered for 10 minutes"
               description: "Every blackbox probe of https://example.test/ (job site-products) failed, or could not run, for 10 minutes."
 
+  # SiteDown on a newly added target: three failed probes are not enough
+  # samples to page; ten minutes of them at the one-minute site-products
+  # interval are.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="site-products",instance="https://new.test/"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SiteDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SiteDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: site-products
+              instance: https://new.test/
+            exp_annotations:
+              summary: "https://new.test/ has not answered for 10 minutes"
+              description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 10 minutes."
+
   # AISpendHigh: 1 USD an hour (24 USD a day) never fires; 3 USD an hour
   # crosses 40 USD within the day and pages.
   - interval: 1h
