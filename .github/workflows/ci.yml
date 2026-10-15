@@ -1386,17 +1386,12 @@ jobs:
           CASES
           test "$bad" -eq 0
       - name: Infra-wall classifier (fake gh)
-        # Runs the work job's own `Strike or requeue` run block, read out of
-        # agent.yml, against a fake gh. Cases in config/infra-wall-events.json
-        # carry the real Worker times of the 2026-10-05 overload (runs
-        # 37267338065 and 37276581999, public on fleet-ops): the 55-minute cap
-        # death that was wrongly struck into the strong-only lane
-        # (fleet-ops#9291). Controls prove the strike path is unchanged: a
-        # healthy host, a missing guard sample, an early worker failure, a
-        # cancelled Worker, a later-step failure all still strike, the second
-        # strike still parks, and a fourth infra death in a row strikes (the
-        # requeue cap). The strike runs inside the work job, not a separate
-        # report job that queues behind busy runners (fleet-ops#9275).
+        # Runs the work job's own `Strike or requeue` run block, read out of agent.yml,
+        # against a fake gh. Cases in config/infra-wall-events.json carry the real Worker
+        # times of the 2026-10-05 overload (runs 37267338065 and 37276581999): the 55-minute
+        # cap death that was wrongly struck (fleet-ops#9291). Controls: a healthy host, a
+        # missing guard sample, an early failure and a later-step failure still strike, the
+        # second strike still parks, and a fourth infra death in a row strikes (requeue cap).
         if: always()
         run: |
           set -euo pipefail

@@ -190,28 +190,16 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
-          # A deliverable that edits .github/workflows/** is one no worker can ever
-          # land: the worker App has no workflows permission by design (Nish,
-          # 2026-10-04), so every push is refused with
-          # "refusing to allow a GitHub App to create or update workflow ...
-          # without 'workflows' permission". Two runs each burned their walls
-          # hitting that refusal before the cap parked them (fleet-ops #8877,
-          # #8861, #8902, #8990, #8995, #9211; 0509#4259). Detect and route it
-          # instead of retrying it (fleet-ops#8900): the orchestrate job in
-          # agent-dispatch.yml runs the orchestrator, which pushes as the runner
-          # user's own gh login, and that login CAN push workflow files.
-          # The park loop above already skipped an issue that carries the label,
-          # so this only re-routes one a worker claimed by mistake.
-          # Substring, not a parse: the acceptance is "title/body contains
-          # .github/workflows/". That over-matches a body that only *mentions* a
-          # workflow file in prose (a docs issue quoting a CI path). Tolerable
-          # here because the cost is one orchestrator run, not a wrong push; a
-          # narrower "Files in scope" test is a follow-up issue.
-          # fleet-ops itself is the one repo whose issues name its workflows by
-          # bare file name ("fix agent.yml"), with no .github/workflows/ in the
-          # text, and #9275 slipped onto a worker that way. There a whole-word
-          # file name of one of its own workflows counts too. Other repos keep
-          # the path test only: their file names are not fleet-ops'.
+          # A deliverable that edits .github/workflows/** is one no worker can ever land: the
+          # worker App has no workflows permission by design (Nish, 2026-10-04), so every push is
+          # refused and two runs each burned their walls on it (fleet-ops #8877, #8861, #8902,
+          # #8990, #8995, #9211). Route it instead (fleet-ops#8900): the orchestrate job pushes as
+          # the runner user's own gh login, which CAN push workflow files. The park loop above
+          # already skipped an issue with the label, so this only re-routes one a worker claimed
+          # by mistake. Substring, not a parse: a body that only mentions a workflow path in
+          # prose over-matches, which costs one orchestrator run, not a wrong push. fleet-ops
+          # issues also name workflows by bare file name ("fix agent.yml"; #9275 slipped onto a
+          # worker that way), so there a whole-word file name of its own workflows counts too.
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
@@ -642,14 +630,11 @@ jobs:
           permission-pull-requests: write
       - name: Router wall
         id: wall
-        # A router seat wall or a Devin capacity refusal is infra, not a bad
-        # packet (fleet-ops#8543): no strike, back to agent-ready. Devin fails
-        # before it writes anything, so a claim branch that is already ahead of
-        # main is requeued too. GITHUB_TOKEN on purpose: its label fires no
-        # workflow, so the issue waits for the next sweep instead of going
-        # straight back to the lane that refused it (~50 runs an issue on
-        # 2026-09-29, 0509#6133). Walls are not counted, so the Gate cap never
-        # bounded that loop.
+        # A router seat wall or a Devin capacity refusal is infra, not a bad packet
+        # (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes
+        # anything, so a claim branch already ahead of main is requeued too. GITHUB_TOKEN on
+        # purpose: its label fires no workflow, so the issue waits for the next sweep instead
+        # of going straight back to the lane that refused it (0509#6133, ~50 runs an issue).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
@@ -693,17 +678,12 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
-              # A head whose required checks are red is not armed, the same
-              # test Deliverable fails on (fleet-ops#9315). The step disarms
-              # an arm left by an earlier run, so a mid-rework push cannot
-              # merge before a run has judged it, and fails, so report
-              # requeues the issue and the next run arms the fixed head.
-              # Pending checks still arm: nothing re-arms a head that later
-              # goes green, and the required checks hold the merge. A repo
-              # with no required checks judges all of them, as Deliverable
-              # does. An unreadable result is treated as red. The runner
-              # user's own gh login reads the checks: the App token has no
-              # checks: read.
+              # A head whose required checks are red is not armed, the test Deliverable fails
+              # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
+              # the strike step requeues the issue and the next run arms the fixed head. Pending
+              # checks still arm (nothing re-arms a head that later goes green; the required checks
+              # hold the merge). No required checks judges all of them; an unreadable result is
+              # red. The runner user's gh login reads the checks: the App token has no checks: read.
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq still printed any red names, empty if none
@@ -756,16 +736,12 @@ jobs:
             echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
             exit 1
           fi
-          # An open PR is not a delivery while its head is still red or
-          # conflicting: the run ended success and the issue kept
-          # agent-in-progress with nothing live (fleet-ops#9063: drive #200
-          # #180 #136). Fail it, so the strike step strikes and requeues it. Pending
-          # checks pass here: a fresh push's CI is still running. A red result
-          # from the workflow named CI fires rework, because agent-dispatch's
-          # workflow_run trigger lists only CI. A red check from any other
-          # workflow (fleet-ops' Gitleaks) fires nothing, and holds the merge
-          # only if that check is required (fleet-ops#9315). The runner user's own gh login
-          # reads the checks, because the App token has no checks: read.
+          # An open PR is not a delivery while its head is still red or conflicting: the run
+          # ended success and the issue kept agent-in-progress with nothing live (fleet-ops#9063).
+          # Fail it, so the strike step strikes and requeues it. Pending checks pass here. A red
+          # result from the workflow named CI fires rework (agent-dispatch's workflow_run lists
+          # only CI); a red check from another workflow fires nothing and holds the merge only if
+          # required (fleet-ops#9315). The runner user's gh login reads the checks (no checks: read).
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
           if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
@@ -791,20 +767,15 @@ jobs:
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
           fi
-      # The strike used to be a separate `report` job (needs: work) on
-      # [self-hosted, agent]. After a failed run it queued behind busy runners
-      # for up to an hour, with the issue claimed and nothing live (fleet-ops#9275,
-      # 0509 run 37258490012). It runs here now, on the runner this job already
-      # holds. A run the concurrency group displaced never starts these steps
-      # (its job is cancelled while queued), and the never-claimed guard below
-      # covers one that starts anyway. A runner that dies (systemd-oomd, a lost
-      # runner) runs no further steps at all, so no strike is written and no
-      # infra-failed comment either: the sweep's stalled (no claim PR) and
-      # orphans (claim PR) paths in agent-dispatch.yml find the issue still
-      # agent-in-progress with a dead run, and requeue it without a strike.
-      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so a workflow listening for the label never ran on a park (fleet-ops#8552).
-      # Minted fresh: the first token is an hour old after a 55-minute Worker
-      # step, and arm-token above skips on cancel.
+      # The strike used to be a separate `report` job on [self-hosted, agent] that queued
+      # behind busy runners for up to an hour with the issue claimed and nothing live
+      # (fleet-ops#9275, 0509 run 37258490012). It runs here now, on the runner this job holds.
+      # A run the concurrency group displaced never starts these steps, and the never-claimed
+      # guard below covers one that starts anyway. A runner that dies runs no further steps, so
+      # no strike or infra-failed comment is written: the sweep's stalled and orphans paths in
+      # agent-dispatch.yml find the issue agent-in-progress with a dead run and requeue it
+      # without a strike. App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow
+      # (fleet-ops#8552). Minted fresh: the first token is an hour old after a 55-minute Worker.
       - name: App token for strike
         id: strike-token
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
@@ -821,14 +792,11 @@ jobs:
           # same reason Router wall uses it: its label fires no workflow. Every
           # other gh call here passes GH_TOKEN, which gh prefers.
           GITHUB_TOKEN: ${{ github.token }}
-          # fleet-ops#9291: the Worker step's outcome and clock (start from the
-          # Worker clock step, end from the Host sample taken at its death),
-          # and the classifier's guard constants. The Worker step caps at
-          # timeout-minutes: 55, so a cap death ends within seconds of 55 min
-          # and 54 min (3240s) separates it from an early failure. CPU guard:
-          # healthy load1 averages ~6 on the host (fleet-ops#8860) and the
-          # 2026-10-05 overload ran 50-374 (fleet-ops#9264), so 5x cores sits
-          # between. RAM guard: the sessions' designed swap paging stays under
+          # fleet-ops#9291: the Worker step's outcome and clock (start from the Worker clock
+          # step, end from the Host sample taken at its death) and the guard constants. The
+          # Worker caps at 55 min, so 54 min (3240s) separates a cap death from an early failure.
+          # CPU guard: healthy load1 averages ~6 (fleet-ops#8860), the 2026-10-05 overload ran
+          # 50-374 (#9264), so 5x cores sits between. RAM guard: designed swap paging stays under
           # ~4G (user-1000.slice MemoryHigh) and the overload crossed 7G of 8G.
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           STARTED: ${{ steps.clock.outputs.started }}
@@ -865,19 +833,13 @@ jobs:
           comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
           jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
             { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
-          # fleet-ops#9291: a Worker death under host overload is infra, not a
-          # bad packet. In the 2026-10-05 overload (load 50-374, 7-8G swap,
-          # fleet-ops#9264) 52 drive fixes hit the 55-minute step cap, and each
-          # was struck as a normal `agent run failed:` into the 1-slot
-          # strong-only lane while 93 pi slots sat free. Three signatures count
-          # as infra here, a cancelled Worker (the runner's shutdown signal),
-          # a Worker that failed in under 10 minutes on a router 429/500
-          # (fleet-ops#9372), and this one: the Worker step failed after running to its
-          # 55-minute cap (elapsed >= 54 min) while load1 was above 5x cores or
-          # swap in use was above 4G (the numbers' provenance is in the env
-          # above). A runner that died mid-worker never gets here (see the
-          # comment above the App token step). Everything else strikes: an
-          # early worker failure, a timeout with no guard sample.
+          # fleet-ops#9291: a Worker death under host overload is infra, not a bad packet (the
+          # 2026-10-05 overload struck 52 drive fixes into the 1-slot strong-only lane while 93 pi
+          # slots sat free). Three signatures count as infra: a cancelled Worker (the runner's
+          # shutdown signal), a Worker that failed in under 10 minutes on a router 429/500
+          # (fleet-ops#9372), and one that failed at the 55-minute cap (>= 54 min) while load1
+          # was above 5x cores or swap above 4G. A runner that died never gets here. Everything
+          # else strikes: an early worker failure, a timeout with no guard sample.
           verdict=strike
           if [ "$WORKER_OUTCOME" = cancelled ]; then
             verdict=infra
@@ -962,14 +924,10 @@ jobs:
             exit 0
           done
           echo "next: none ready for a free lane"
-          # Nothing ready can still mean stuck work: an issue left
-          # agent-in-progress whose claim PR is red or conflicting after its run
-          # ended sends no event, and only the 6h sweep re-lists it (drive #106
-          # #117 #298, all 10 builders idle at 06:36Z on 2026-10-03). Run that
-          # sweep now. It starts no worker when nothing is stuck, so the chain
-          # ends, and the sweep concurrency group keeps one waiting at most.
-          # The runner user's own gh login dispatches it, as the runner-start
-          # refill does, because the App token may lack actions: write.
+          # Nothing ready can still mean stuck work: an issue left agent-in-progress whose
+          # claim PR is red or conflicting after its run ended sends no event, and only the 6h
+          # sweep re-lists it (drive #106 #117 #298). Run that sweep now; it starts no worker
+          # when nothing is stuck. The runner user's gh login dispatches it (App token may lack actions: write).
           env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
           # Lane counts above are host-wide but the listing is this repo's
           # only: a strong-only issue waiting in another repo sat until that
@@ -1028,14 +986,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
-          # The first review is a no-tools Claude call on a Claude seat: Opus 5.5
-          # for all work, Claude-built or not (Nish approved that exception to
-          # "Claude never grades Claude", 2026-10-10). Fable is never a reviewer:
-          # as the default it used 44% of a seat's weekly Fable limit in ~2 days.
-          # The verdict is always Jev's (not Claude) and a PR that edits the merge
-          # guard or a workflow also needs a second review by a different model
-          # family than the Jev judge and than Claude. The senior seat is a single
-          # GLM (Z.ai) row. The comment names both families.
+          # The first review is a no-tools Claude call on a Claude seat: Opus 5.5 for all work,
+          # Claude-built or not (Nish 2026-10-10); Fable is never a reviewer (44% of a seat's weekly
+          # limit in ~2 days). The verdict is always Jev's, and a PR that edits the merge guard or
+          # a workflow also needs a second review by a different family than Jev and Claude (a
+          # single GLM row). The comment names both families.
           FIRST_MODEL_OTHER: claude-opus-5-5
           FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
@@ -1053,36 +1008,28 @@ jobs:
             exit 1
           }
           # Blocker lines of a review: the line starts with the word blocker or blockers
-          # (with or without markup) and its text after that is not a none-variant.
-          # blk_re finds a line that starts with the word; a slash after it ("blocker/risk/nit,
-          # one line each", a header the model echoes) is not a finding. none_re is a line whose
-          # text after the word is only a none-variant: none, none found, no blockers, nothing,
-          # n/a, nil, a dash, with optional markup before and punctuation after, or with a sentence
-          # of explanation after a full stop or dash ("Blockers: none. The diff only adds a job.").
-          # Both patterns are
-          # case-insensitive and are the only copies: grep reads them here and jq reads the same
-          # strings in the already-reviewed check. none_re is anchored at both ends, so a line with
-          # other words straight after the variant ("blocker: none of the callers check the token") still blocks.
-          # Dropping a none line never approves by itself: the judge must still be 90% sure, and
-          # a guard PR's second reviewer must still end on APPROVE.
+          # (with or without markup) and its text after that is not a none-variant. blk_re
+          # finds a line that starts with the word (a slash after it, as in the echoed header
+          # "blocker/risk/nit", is not a finding). none_re is a line whose text after the word
+          # is only a none-variant (none, none found, no blockers, nothing, n/a, nil, a dash,
+          # optionally with markup or a sentence of explanation after a full stop or dash). Both
+          # are case-insensitive, the only copies (grep reads them here, jq in the
+          # already-reviewed check), and none_re is anchored at both ends, so "blocker: none of
+          # the callers check the token" still blocks. Dropping a none line never approves by
+          # itself: the judge must still be 90% sure and a guard PR's second reviewer must end on APPROVE.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed: approved, not approved or blocked.
-          # The older hold comment and the "could not be judged" comment carry
-          # no verdict, so those heads are reviewed. The review then posts a
-          # verdict, which ends it: one review per head, not one per event. The
-          # verdict phrases end in a full stop, as the comments below write them.
-          # Each phrase must START a line of a comment by github-actions[bot]: the
-          # hold comment quotes the approval line inside a sentence, and that is
-          # not a verdict. A blocked verdict whose only blocker lines say "none"
-          # was a misread of the review (see blockers_of), so it does not count
-          # and the head is reviewed again, but only until five such verdicts
-          # stand on it, so a head that keeps getting one does not pay for a
-          # review per event. The pages are read as one list (jq -s).
+          # Only a real verdict counts as reviewed: approved, not approved or blocked. The older
+          # hold comment and the "could not be judged" comment carry none, so those heads are
+          # reviewed, and the verdict ends it: one review per head, not per event. Each phrase
+          # must START a line of a github-actions[bot] comment (the hold comment quotes the
+          # approval line inside a sentence). A blocked verdict whose only blocker lines say
+          # "none" was a misread (see blockers_of): the head is reviewed again, but only until
+          # five such verdicts stand on it. The pages are read as one list (jq -s).
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
@@ -1137,16 +1084,12 @@ jobs:
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
-          # The model gets the diff as text and no tools (--tools ""): a tool could
-          # open the runner's own key files, and the review is posted publicly. The
-          # installed claude honors an empty --tools: asked to run a shell command it
-          # answered that it had no tools (checked 2026-10-10 on this host). The
-          # call runs on the runner's own login (CLAUDE_CONFIG_DIR, or the default login
-          # when it has none). A call that fails or answers nothing, a usage limit included,
-          # means the review did not finish: retry comments that and fails the job,
-          # and a re-run reviews the head again.
-          # There is no fallback to another family's model, and a head is never
-          # approved without this review.
+          # The model gets the diff as text and no tools (--tools ""): a tool could open the
+          # runner's own key files and the review is posted publicly (the installed claude honors
+          # an empty --tools, checked 2026-10-10). The call runs on the runner's own login. A call
+          # that fails or answers nothing, a usage limit included, means the review did not finish:
+          # retry comments that and fails the job, and a re-run reviews the head again. There is
+          # no fallback to another family's model, and a head is never approved without this review.
           review=
           review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local \
@@ -1271,15 +1214,12 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
-          # The App has no workflows permission, so GitHub refuses its arm on a PR
-          # that edits .github/workflows/**. For such a PR the arm uses the
-          # runner user's gh login (GH_TOKEN and GITHUB_TOKEN unset), the way the
-          # orchestrator job does, but only when this same run's review job just
-          # approved this exact head (REVIEWED, from the review job's output).
-          # No comment or dispatch input can switch it on. Any other arm, including
-          # the sweep's arm_pr, keeps the App token. A
-          # failed read of the file list fails the step; it never falls to the
-          # wider login.
+          # The App has no workflows permission, so GitHub refuses its arm on a PR that edits
+          # .github/workflows/**. For such a PR the arm uses the runner user's gh login
+          # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
+          # run's review job just approved this exact head (REVIEWED). No comment or dispatch
+          # input switches it on, any other arm keeps the App token, and a failed file-list read
+          # fails the step instead of falling to the wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
           if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
@@ -1288,14 +1228,10 @@ jobs:
             GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
             echo "armed #$PR at $SHA"
           fi
-  # Files one orchestrator issue for a PR that has waited over an hour and that
-  # no worker owns: a session's own branch, or a claim PR whose issue is closed
-  # or deleted (agent-dispatch stuck-prs). 40 of 53 waiting fleet PRs on
-  # 2026-10-11 were such PRs, some idle for days, because every sweep path
-  # followed claim branches only. The App token files it so the
-  # needs-orchestrator label fires the orchestrate job; a GITHUB_TOKEN label
-  # fires no workflow. One open issue per PR: a new head comments on it, the
-  # same head does nothing.
+  # Files one orchestrator issue for a PR that has waited over an hour and that no worker
+  # owns: a session's own branch, or a claim PR whose issue is closed or deleted (40 of 53
+  # waiting fleet PRs on 2026-10-11). The App token files it so the needs-orchestrator label
+  # fires the orchestrate job. One open issue per PR: a new head comments on it, the same head does nothing.
   stuck:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
     runs-on: [self-hosted, agent]
@@ -1364,19 +1300,14 @@ jobs:
           GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
           echo "filed $url for #$PR at $SHA"
   inish-daily:
-    # The Daily edition, published to https://nish.sh/daily (inish.in is retired
-    # and only redirects). Its runner was a Hermes cron job, disabled 2026-08-20
-    # (seat quota), then this job was deleted by #8954 and the page sat stale from
-    # 2026-09-29. Restored 2026-10-10. The editorial standard lives in the product
-    # repo (automation/HERMES_DAILY.md); the mechanical contract lives in
-    # prompts/inish-daily.md here, so an edit to the product repo cannot widen
-    # what the job may do.
-    # The model never holds a write credential and nothing it writes is trusted:
-    # it runs jailed with a read-only token, the workflow takes two data files
-    # from its checkout into a fresh clone of main, rebuilds and tests there,
-    # then commits and pushes from that clone.
-    # The 10:30 IST catch-up covers a runner or host that was down at 07:30; the
-    # first step is a cheap live check, so a published day costs no model call.
+    # The Daily edition, published to https://nish.sh/daily (inish.in only redirects).
+    # Restored 2026-10-10 after #8954 deleted the job and the page sat stale from 2026-09-29.
+    # The editorial standard lives in the product repo (automation/HERMES_DAILY.md); the
+    # mechanical contract lives in prompts/inish-daily.md here, so a product-repo edit cannot
+    # widen what the job may do. The model never holds a write credential and nothing it writes
+    # is trusted: it runs jailed with a read-only token, and the workflow takes two data files
+    # into a fresh clone of main, rebuilds and tests there, then commits and pushes. The 10:30
+    # IST catch-up covers a runner down at 07:30; the first step is a cheap live check.
     if: ${{ !inputs.ref && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 150
