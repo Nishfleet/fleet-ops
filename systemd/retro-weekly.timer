@@ -1,5 +1,5 @@
 # Weekly /retro schedule (fleet-ops#9314): Monday 07:00 IST, one week of fleet
-# sessions per run. Same shape as blacksmith-flip.timer (fleet-ops#8936).
+# sessions per run.
 #
 # Persistent=true: a slot the host missed (power cut, a run killed by the
 # service's TimeoutStartSec) catches up on the next boot or manager reload

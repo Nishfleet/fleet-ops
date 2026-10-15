@@ -16,8 +16,7 @@
 # Credentials: the Cloudflare minter token comes from EnvironmentFile (never
 # argv, never GitHub). The GitHub provider needs GITHUB_TOKEN; no env file holds
 # one on this host, so it is the nish3451 login's token, read from
-# ~/.config/gh/hosts.yml by `gh auth token` the way blacksmith-flip.service
-# gets its gh auth. That login needs admin on each repo to write its secrets.
+# ~/.config/gh/hosts.yml by `gh auth token`. That login needs admin on each repo to write its secrets.
 #
 # Failure is loud: OnFailure= fires the healthchecks.io fail ping
 # (fleet-unit-failed@.service, fleet-ops#9033), and `systemctl --user
