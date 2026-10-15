@@ -255,7 +255,7 @@ jobs:
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py
       - name: needs-triage admission (Jev verdict, then queue) and digest reply shape (fleet-ops#9706)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
@@ -403,15 +403,6 @@ jobs:
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
-      - name: Every paid plan keeps a router row and every prepaid row is a listed plan (fleet-ops#9224)
-        if: always()
-        run: |
-          jq -n -e --slurpfile plans config/paid-plans.json --argjson rows "$(yq -o=json '[.model_list[].litellm_params | {"b": (.api_base // ""), "t": (.tags // [])}]' config/litellm-proxy.yaml)" '
-            ($plans[0] | map(select(.rows_pending == null))) as $live
-            | ($live | map(.api_base as $p | select([$rows[].b | startswith($p)] | any | not) | .name)) as $gone
-            | ($rows | map(select(.t | index("prepaid")) | .b as $b | select([$plans[0][].api_base as $p | $b | startswith($p)] | any | not) | $b) | unique) as $unlisted
-            | if ($gone + $unlisted | length) == 0 then true
-              else error("paid plans with no router row: \($gone | join(", ")); prepaid rows not in config/paid-plans.json: \($unlisted | join(", ")). Changing config/paid-plans.json needs Nish (CODEOWNERS)") end'
       # Native provider only (fleet-ops#9253): openai/ on ollama.com/v1 returns reply ids
       # chatcmpl-<0..999> that collide in LiteLLM_SpendLogs, so its calls never log.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
