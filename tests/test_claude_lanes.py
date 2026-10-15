@@ -280,7 +280,7 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "LIVE_cursor_agent": str(cursor_live),
         "RUNNER_NAME": runner_name,
     }
-    env["CLAUDE_CONFIG_DIR"] = str(seat_a)  # every runner carries seat a; the lane drops it on an even issue
+    env["CLAUDE_CONFIG_DIR"] = str(seat_a)  # every runner carries seat a; the lane drops it on an even runner
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
 
     def rd(n):
@@ -304,8 +304,6 @@ def test_claude_lane_invocation(tmp_path):
 
 @pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-2", "netcup-agent-3", "netcup-agent-4", "netcup-agent-11", "netcup-agent-09", "runner-without-a-number"])
 def test_odd_issue_keeps_seat_a_on_every_runner(tmp_path, name):
-    # An odd issue is seat a even on an even runner (netcup-agent-2, netcup-agent-4): the seat
-    # follows the issue, not the runner number.
     r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name, issue=5)
     assert r.returncode == 0, r.stderr
     assert f"CCD={seat_a}" in claude
@@ -318,8 +316,6 @@ def test_odd_issue_keeps_seat_a_on_every_runner(tmp_path, name):
 
 @pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-2", "netcup-agent-4", "netcup-agent-12", "netcup-agent-22", "netcup-agent-08", "runner-without-a-number"])
 def test_even_issue_unsets_the_config_dir_on_every_runner(tmp_path, name):
-    # An even issue is seat b even on an odd runner (netcup-agent-1): the seat follows the
-    # issue, not the runner number.
     r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name, issue=6)
     assert r.returncode == 0, r.stderr
     assert "CCD=unset" in claude
@@ -330,24 +326,27 @@ def test_even_issue_unsets_the_config_dir_on_every_runner(tmp_path, name):
 
 
 def test_seat_follows_the_issue_not_the_runner(tmp_path):
-    """fleet-ops#9696: the seat is keyed on the issue number's parity, so the same issue lands
-    on the same seat on every runner. A retry that moves to a different runner keeps the seat,
-    and `claude -p --continue` then resumes the earlier session. Under the old runner-parity
-    rule the seat flipped with the runner number, so a retry on another runner started fresh on
-    the other login."""
     runners = ["netcup-agent-1", "netcup-agent-2", "netcup-agent-13", "netcup-agent-99", "runner-without-a-number"]
     for i, runner in enumerate(runners):
         d = tmp_path / f"even-{i}"; d.mkdir()
         r, _, claude, _, _, _, _ = _worker(d, "claude", runner_name=runner, issue=9696)
         assert r.returncode == 0, r.stderr
         assert f"claude lane: seat=b issue=9696 runner={runner}" in r.stdout
-        assert "CCD=unset" in claude  # even issue -> seat b on every runner
+        assert "CCD=unset" in claude
     for i, runner in enumerate(runners):
         d = tmp_path / f"odd-{i}"; d.mkdir()
         r, _, claude, _, _, seat_a, _ = _worker(d, "claude", runner_name=runner, issue=9695)
         assert r.returncode == 0, r.stderr
         assert f"claude lane: seat=a issue=9695 runner={runner}" in r.stdout
-        assert f"CCD={seat_a}" in claude  # odd issue -> seat a on every runner
+        assert f"CCD={seat_a}" in claude
+
+
+@pytest.mark.parametrize("issue,seat", [("08", "b"), ("09", "a")])
+def test_a_leading_zero_issue_is_read_as_decimal(tmp_path, issue, seat):
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "claude", issue=issue)
+    assert r.returncode == 0, r.stderr
+    assert f"claude lane: seat={seat} issue={issue}" in r.stdout
+    assert ran == ["claude"]
 
 
 def test_own_seat_with_a_login_is_used_without_a_warning(tmp_path):
@@ -501,9 +500,8 @@ def _hides(home, keep):
 
 
 def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
-    """Runs the lane's own seat lines (issue parity, then the login check) against real
-    files under home and returns (seat, whether CLAUDE_CONFIG_DIR survives). The runner name
-    is passed only so the step sees one; it no longer chooses the seat."""
+    """Runs the lane's own seat lines (parity, then the login check) against real
+    files under home and returns (seat, whether CLAUDE_CONFIG_DIR survives)."""
     lines = _step("work", "Worker").splitlines()
     a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a_dir="))
     b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
@@ -515,9 +513,6 @@ def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
 
 
 def test_a_non_numeric_id_keeps_seat_a(tmp_path):
-    """A ref whose issue field is not a number keeps the runner's CLAUDE_CONFIG_DIR (seat a):
-    the defensive `*[!0-9]*)` arm, the same shape the Cursor lane uses. A normal claim ref is
-    always `claim/issue-<number>-...`, so this arm is a fallback, not a live path."""
     home = tmp_path / "home"
     seat_a = home / ".claude-seat"
     (home / ".claude").mkdir(parents=True)

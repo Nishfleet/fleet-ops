@@ -444,7 +444,7 @@ jobs:
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}
-            case ${id##*-} in *[!0-9]*) ;; *) [ $(( ${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;; esac
+            case ${id##*-} in ''|*[!0-9]*) ;; *) [ $(( 10#${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;; esac
             if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
             # A seat whose login file is missing or empty fails every job on it, so a
             # missing login costs one seat, never both. Only the file's presence and
