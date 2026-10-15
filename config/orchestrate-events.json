@@ -872,6 +872,27 @@
       "issues": [],
       "refs": [],
       "want": null
+    },
+    {
+      "id": "tried-and-branch-skipped",
+      "issues": [
+        {
+          "number": 9354,
+          "createdAt": "2026-10-06T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            },
+            {
+              "name": "orchestrator-tried"
+            }
+          ]
+        }
+      ],
+      "refs": [
+        "refs/heads/orch/issue-9354"
+      ],
+      "want": null
     }
   ]
 }

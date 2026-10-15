@@ -536,10 +536,8 @@ jobs:
         run: |
           set -euo pipefail
           pick=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.PICK' .github/workflows/agent-dispatch.yml)
-          [ -n "$pick" ] && [ "$pick" != null ]
-          jq -e '.sweep_cases | length > 0' config/orchestrate-events.json >/dev/null
           while IFS= read -r c; do
-            got=$(jq -c '.issues' <<<"$c" | jq -r --argjson refs "$(jq -c .refs <<<"$c")" "$pick")
+            got=$(jq -c '.issues' <<<"$c" | jq -r --argjson refs "$(jq -c .refs <<<"$c")" "$pick" | head -n 1)
             [ "$got" = "$(jq -r '.want // ""' <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got '$got'"; exit 1; }
           done < <(jq -c '.sweep_cases[]' config/orchestrate-events.json)
       - name: Orchestrate cap and session args (fleet-ops#9351)

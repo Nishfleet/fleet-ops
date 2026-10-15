@@ -1443,14 +1443,12 @@ jobs:
           MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
           RUN_ID: ${{ github.run_id }}
-          # The hourly schedule picks the oldest stranded issue itself (fleet-ops#9354):
-          # one the daily cap held keeps needs-orchestrator and, with no label event
-          # or dispatch coming, would wait forever. Input: gh issue list JSON, $refs
-          # the repo's refs/heads/orch/issue-* refs. Out: one number or nothing.
+          # Schedule sweep (fleet-ops#9354): a cap-held issue would wait forever for
+          # an event. In: gh issue list JSON and $refs (orch/issue-* refs). Out: numbers, oldest first.
           PICK: >-
             map(select(any(.labels[]; .name == "orchestrator-tried") | not)
               | select(.number as $n | any($refs[]; . == "refs/heads/orch/issue-\($n)") | not))
-            | sort_by(.createdAt) | .[0].number // empty
+            | sort_by(.createdAt) | .[].number
           # Counts the jobs of earlier runs whose session step ended (success
           # or failure). Input: a slurped array of job objects from the
           # actions jobs API. The name match covers a caller stub, whose job
@@ -1463,16 +1461,17 @@ jobs:
           set -euo pipefail
           if [ -z "$ISSUE" ] && [ "$GITHUB_EVENT_NAME" = schedule ]; then
             refs=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/orch/issue-" --jq '.[].ref' | jq -Rsc 'split("\n") | map(select(length > 0))')
-            ISSUE=$(gh issue list -R "$REPO" -l needs-orchestrator -L 1000 --json number,createdAt,labels | jq -r --argjson refs "$refs" "$PICK")
-            [ -z "$ISSUE" ] || echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"
+            for n in $(gh issue list -R "$REPO" -l needs-orchestrator -L 1000 --json number,createdAt,labels | jq -r --argjson refs "$refs" "$PICK"); do
+              who=$(gh api --paginate "repos/$REPO/issues/$n/events" --jq '.[] | select(.event == "labeled" and .label.name == "needs-orchestrator") | .actor.login' | tail -n 1)
+              case $who in nish3451|'nishfleet-worker[bot]'|'github-actions[bot]') ISSUE=$n; break ;; esac
+            done
+            [ -z "$ISSUE" ] || { echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"; echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"; }
           fi
           [ -n "$ISSUE" ] || { echo "orchestrate: no issue to hand off; skip"; echo idle=true >> "$GITHUB_OUTPUT"; exit 0; }
           state=$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state)
           labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
           [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
-          # Relabelled back to agent-ready (someone picked it up), or a previous
-          # hand-off already ran and produced no PR: both end the loop here
-          # rather than in the always() step, so nothing is built.
+          # Relabelled to agent-ready, or a hand-off already ran with no PR: stop here.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
@@ -1480,12 +1479,10 @@ jobs:
             echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
             exit 0
           fi
-          # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
-          # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
-          # since 00:00 IST, whose session step concluded, over this workflow's
-          # `issues`, `workflow_dispatch` and `schedule` runs (the only events
-          # that can start this job). Over the cap the run skips and the issue keeps
-          # needs-orchestrator for a later dispatch. 0 = no cap.
+          # Daily cap (fleet-ops#9351): 26 Opus hand-offs in one day used ~31% of the
+          # weekly Claude limit. Counts runs since 00:00 IST whose session step concluded
+          # (`issues`, `workflow_dispatch`, `schedule`); over it the issue keeps
+          # needs-orchestrator. 0 = no cap.
           DAILY_MAX=${DAILY_MAX:-10}
           case $DAILY_MAX in
             ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
@@ -1630,7 +1627,7 @@ jobs:
         env:
           # The prompt is a file, not a ${{ }} inline: zizmor's
           # template-injection rule fails the workflow otherwise.
-          ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
+          ISSUE_N: ${{ github.event.issue.number || inputs.issue || steps.issue.outputs.issue }}
           REPO_NAME: ${{ github.repository }}
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
           MODEL: ${{ steps.issue.outputs.model }}
