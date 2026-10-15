@@ -1,0 +1,36 @@
+# Monthly full restore drill (fleet-ops#9770). Restores the whole latest
+# snapshot into a scratch directory, never over live paths, then compares one
+# file per included path with the live copy and logs size, duration and result
+# to the journal. A failed unit is the signal (fleet-unit-failed@).
+# `restic restore --verify` re-reads every restored file and checks it against
+# the repository; the ExecStartPost loop is the live-copy spot check.
+[Unit]
+Description=Restic restore drill: restore the latest snapshot to a scratch dir and verify it
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/netcup-r2.env
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/netcup-r2.env
+Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
+Environment=DRILL_DIR=/var/tmp/restic-restore-drill
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=3h
+ExecStartPre=/usr/bin/rm -rf ${DRILL_DIR}
+ExecStartPre=/usr/bin/mkdir -p ${DRILL_DIR}
+ExecStart=/usr/bin/restic restore latest --target ${DRILL_DIR} --verify
+# One regular file (under 1 MiB, first found) per include.txt path, compared
+# with the live copy. A path with no such file is skipped; a differing file
+# fails the unit. The two lists excluded by exclude.txt are not compared.
+ExecStartPost=/bin/sh -c 'n=0; while read -r p; do case "$$p" in ""|"#"*) continue;; esac; f=$$(find "${DRILL_DIR}$$p" -type f -size -1024k 2>/dev/null | head -n 1); [ -n "$$f" ] || continue; cmp -s "$$f" "$${f#${DRILL_DIR}}" || { echo "restore drill: MISMATCH $${f#${DRILL_DIR}}"; exit 1; }; n=$$((n+1)); done < /etc/restic/include.txt; echo "restore drill ok: $$n paths compared, $$(du -sb ${DRILL_DIR} | cut -f1) bytes restored"'
+ExecStopPost=/usr/bin/rm -rf ${DRILL_DIR}
+Nice=19
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectSystem=strict
+NoNewPrivileges=true
+ProtectHome=read-only
+ReadWritePaths=/var/cache/restic-live /var/tmp

@@ -1,0 +1,12 @@
+# Monthly trigger for restic-r2-restore-drill.service (fleet-ops#9770).
+# Persistent=true runs a missed month at next boot. Off: systemctl disable --now.
+[Unit]
+Description=Monthly restic restore drill
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -482,6 +482,14 @@
       # Under --check the copy above did not really install the timer yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
+    - name: Enable the monthly restic restore drill
+      ansible.builtin.systemd_service:
+        name: restic-r2-restore-drill.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      ignore_errors: "{{ ansible_check_mode }}"
+
     # Starting the timer only schedules ansible/update.yml; it never runs it now.
     - name: Enable the weekly update
       ansible.builtin.systemd_service:
