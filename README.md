@@ -924,9 +924,13 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
 - The issue is fixed text only: title `Provider watch: <provider> model list changed`, the added and
   removed counts, the sentence "The ids are in the host state file changes/<date>-<provider>.txt
   under the StateDirectory of fleet-provider-watch.service." and the acceptance bullets. No text
-  from the network reaches it. Label `provider-watch` only (created if missing, never rewritten);
-  fleet-ops#8304: control-plane work is never self-admitted, so the issue waits for a scoped
-  hand-off. An issue with the same title that is open, or was created in the last 7 days even if
+  from the network reaches it. Labels `provider-watch` (created if missing, never rewritten) and
+  `needs-orchestrator`: fleet-ops#8304 says control-plane work is never self-admitted, and the vault
+  standing rule (`global-standing-rules.md`, nish3451/nish-vault#23) makes this one exception, from
+  Nish on 2026-10-15, so the worker App's label starts one orchestrator hand-off run per issue (a
+  paid model session, capped by `ORCHESTRATE_DAILY_MAX`). That run is on this host as the runner
+  user, unjailed, so it reads `~/.local/state/provider-watch/changes/<file>` directly; the body
+  tells it to keep ids out of issue text, PR text and commits. An issue with the same title that is open, or was created in the last 7 days even if
   closed, means the change is not filed again (the snapshot still updates). At most 3 issues per
   run; the rest wait for the next run.
 - The acceptance bullets: a seat marked `"billing": "flat"` in `config/provider-watch.json` may get
