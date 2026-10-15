@@ -38,7 +38,6 @@
       "deepseek/deepseek-v4-pro-0813",
       "deepseek/deepseek-v4.1-flash",
       "deepseek/deepseek-v4.1-flash:batch",
-      "dots-studio/dots-3-note-preview:free",
       "google/gemma-4-26b-a4b-it:free",
       "google/gemma-4-31b-it:free",
       "liquid/lfm-2.5-2.6b:free",
@@ -111,7 +110,6 @@
       "google/gemini-3.6-flash",
       "google/gemini-3.7-flash",
       "google/gemini-3.8-flash",
-      "google/gemini-4-argon",
       "gpt-5.3-codex",
       "gpt-5.4",
       "gpt-5.4-mini",
@@ -119,7 +117,6 @@
       "gpt-5.6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
-      "gpt-6-astra",
       "gpt-6-luna",
       "gpt-6-sol",
       "gpt-6.1-sol",
@@ -129,7 +126,6 @@
       "meta/muse-spark-1.1",
       "meta/muse-spark-1.2",
       "meta/muse-spark-1.3",
-      "meta/muse-wonder-1.0",
       "mistral/mistral-large-4",
       "moonshotai/Kimi-K2.5",
       "moonshotai/Kimi-K2.6",
@@ -143,7 +139,6 @@
       "stepfun/Step-3.7-Flash",
       "stepfun/Step-5-Preview",
       "tencent/hy3-paid",
-      "tencent/hy4-preview",
       "thinkingmachines/inkling",
       "thinkingmachines/inkling-small",
       "xai/grok-4.5",
@@ -200,7 +195,6 @@
   },
   "opencode": {
     "models": [
-      "cat-jam-free",
       "claude-haiku-5-5",
       "deepseek-v4-pro",
       "deepseek-v4.1-flash",
@@ -213,12 +207,10 @@
       "grok-4.6",
       "grok-4.7",
       "hy3",
-      "hy4-preview",
       "kimi-k2.6",
       "kimi-k2.7-code",
       "kimi-k3",
       "longcat-2.0",
-      "longcat-2.5-preview-free",
       "mimo-v2.5",
       "mimo-v2.5-pro",
       "mimo-v2.6-flash",
@@ -230,14 +222,11 @@
       "qwen3.7-max",
       "qwen3.7-plus",
       "qwen3.8-flash",
-      "qwen3.8-max",
-      "space-bunny",
-      "step-5-preview-free"
+      "qwen3.8-max"
     ]
   },
   "opencode-2": {
     "models": [
-      "cat-jam-free",
       "claude-haiku-5-5",
       "deepseek-v4-pro",
       "deepseek-v4.1-flash",
@@ -250,12 +239,10 @@
       "grok-4.6",
       "grok-4.7",
       "hy3",
-      "hy4-preview",
       "kimi-k2.6",
       "kimi-k2.7-code",
       "kimi-k3",
       "longcat-2.0",
-      "longcat-2.5-preview-free",
       "mimo-v2.5",
       "mimo-v2.5-pro",
       "mimo-v2.6-flash",
@@ -267,9 +254,7 @@
       "qwen3.7-max",
       "qwen3.7-plus",
       "qwen3.8-flash",
-      "qwen3.8-max",
-      "space-bunny",
-      "step-5-preview-free"
+      "qwen3.8-max"
     ]
   },
   "pareto": {
@@ -282,7 +267,6 @@
       "step-3.5-flash",
       "step-3.5-flash-2603",
       "step-3.7-flash",
-      "step-5-preview",
       "stepaudio-2.5-asr",
       "stepaudio-2.5-tts"
     ]

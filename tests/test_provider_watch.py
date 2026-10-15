@@ -318,6 +318,7 @@ def test_hostile_id_is_refused_and_never_printed(box, hostile):
     assert r.returncode == 1
     assert "provider-watch: alpha REFUSED" in r.stdout
     assert hostile not in r.stdout + r.stderr
+    assert "sanitized:" in r.stdout
     assert "issue create" not in box.log("gh.log")
     assert "provider-watch: beta ok, 1 models" in r.stdout
 
@@ -566,3 +567,34 @@ def test_a_listing_that_is_empty_after_the_filters_is_skipped(box):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "provider-watch: alpha listing unavailable (no ids left after the filters), skipped" in r.stdout
     assert box.log("gh.log") == ""
+
+
+def test_the_refusal_line_shows_a_sanitized_prefix_of_the_offender(box):
+    box.serve("alpha.test", ["a1", "a2", "bad@id and **bold**"])
+    r = box.run()
+    assert r.returncode == 1
+    assert "sanitized: bad?id?and???bold??" in r.stdout
+    assert "**" not in r.stdout and "@" not in r.stdout
+
+
+def test_a_trailing_slash_on_the_api_base_is_trimmed(box):
+    box.config(CONFIG.replace("https://alpha.test/v1", "https://alpha.test/v1/"))
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "https://alpha.test/v1/models" in box.log("urls.log").split()
+
+
+def test_every_router_key_has_a_catalog_entry():
+    config = (ROOT / "config/litellm-proxy.yaml").read_text()
+    catalog = json.loads((ROOT / "config/provider-catalog.json").read_text())
+    for var in sorted(set(re.findall(r"api_key:\s*os\.environ/([A-Z0-9_]+)", config))):
+        name = re.sub(r"-api-key", "", var.lower().replace("_", "-"))
+        assert name in catalog, f"{var}: add a {name} entry to config/provider-catalog.json"
+
+
+def test_every_catalog_id_passes_the_id_check():
+    catalog = json.loads((ROOT / "config/provider-catalog.json").read_text())
+    ok = re.compile(r"^~?[A-Za-z0-9._:/-]{1,64}$")
+    for name, entry in catalog.items():
+        for model in entry.get("models", []):
+            assert ok.match(model) and "//" not in model and "www." not in model, f"{name}: {model}"

@@ -75,7 +75,7 @@ Environment=CATALOG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/provider
 Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
 Environment=GH=%h/.local/bin/gh
 Environment=YQ=%h/.local/bin/yq
-Environment=IGNORE=contributor|stealth|alpha
+Environment=IGNORE=contributor|stealth|alpha|preview|space-bunny|cat-jam|astra|argon|muse-wonder
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
@@ -95,7 +95,7 @@ test -s "$$d/targets" || { echo "provider-watch: no providers found in the route
 while read -r var base; do \
 case $$var in os.environ/*) var=$${var#os.environ/};; *) echo "provider-watch: a router row has a key that is not an os.environ reference, refused"; bad=1; continue;; esac; \
 if ! [[ "$$var" =~ ^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$$ ]]; then echo "provider-watch: a router row names a key variable outside the allowed pattern, refused"; bad=1; continue; fi; \
-case $$base in https://*) ;; *) echo "provider-watch: a router row has an api_base that is not https, refused"; bad=1; continue;; esac; \
+base=$${base%%/}; case $$base in https://*) ;; *) echo "provider-watch: a router row has an api_base that is not https, refused"; bad=1; continue;; esac; \
 name=$$(echo "$$var" | tr "[:upper:]_" "[:lower:]-" | sed -E "s/-api-key//"); \
 case $$name in *[!a-z0-9-]*|"") echo "provider-watch: a provider name from the router config is not plain text"; bad=1; continue;; esac; \
 export NAME=$$name; \
@@ -117,7 +117,7 @@ jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u | { grep -Ev -e "$$IG
 w=$$(jq -r ".[env.NAME].watch // empty" "$$CATALOG"); \
 if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
 jq -r ".[env.NAME].models // [] | .[]" "$$CATALOG" | LC_ALL=C sort -u > "$$d/snap"; \
-if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id has characters outside the allowed set (not printed), nothing filed"; bad=1; continue; fi; \
+if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id is outside the allowed set (first offender, sanitized: $$(cat "$$d/ids" "$$d/snap" | grep -E -e "//|www[.]" -e "[^A-Za-z0-9._:/~-]" -e "^.{65,}$$" | head -n 1 | cut -c1-40 | sed "s|[^A-Za-z0-9_-]|?|g")), nothing filed"; bad=1; continue; fi; \
 if [ ! -s "$$d/ids" ]; then echo "provider-watch: $$name listing unavailable (no ids left after the filters), skipped; outages page through litellm_deployment_state"; continue; fi; \
 comm -13 "$$d/snap" "$$d/ids" > "$$d/add"; comm -23 "$$d/snap" "$$d/ids" > "$$d/del"; \
 na=$$(wc -l < "$$d/add"); nr=$$(wc -l < "$$d/del"); cnt=$$(wc -l < "$$d/ids"); \
