@@ -106,8 +106,8 @@ script, or prompt lands unseen.
   and `enable --now`. The files match what ran before (only the two Amp
   `Description=` lines lost their account names), so adopting them restarted
   nothing: a unit edit applies at the unit's next restart (never restart
-  `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  `tigervnc.service` while a remote-desktop session is live). `ci.yml` checks
+  the five units with `systemd-analyze` in a private runtime dir; the drop-in is not a unit file,
   so only its parent unit is verified. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
@@ -251,8 +251,14 @@ path to a unit file."_ Add the unit file to `systemd/`, merge it, then once:
 ```
 systemctl --user link  /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
 systemctl --user enable --now /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>   # timers and .path units
-systemd-analyze verify /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/<unit>
+XDG_RUNTIME_DIR="$(mktemp -d)" systemd-analyze verify systemd/<unit>
 ```
+
+Always give `systemd-analyze verify` a private `XDG_RUNTIME_DIR`, as above.
+Without one it starts a throwaway manager that unlinks and rebinds
+`$XDG_RUNTIME_DIR/systemd/private`, which orphans the live user manager's
+socket: `podman auto-update` and anything else that dials it then fails with
+`connection refused` until the user manager is re-executed.
 
 `systemctl --user list-unit-files | grep linked` shows the linked set.
 Retiring a unit is the mirror image: `systemctl --user disable --now <unit>`
@@ -692,8 +698,8 @@ credential file does not hold them back.
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
 checks are stock: the secret-expansion grep,
-`jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
-over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
+`jq` config sanity, actionlint, zizmor, shellcheck, and a unit-file check
+with `systemd-analyze` over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 (PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml` and `ansible/update.yml`, a no shell `${...}` or bare
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
