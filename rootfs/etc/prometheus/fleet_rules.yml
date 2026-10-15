@@ -1,7 +1,10 @@
 # Fleet alert rules: the dead-man heartbeat, failed units, and the Hermes
-# gateway. Deliberately three rules. The repair-dispatch machinery and the
-# 12 rules that fed it were cut on 2026-09-29 (fleet-ops#8958); nothing here
-# brings back a repair worker or a second page path.
+# gateway, plus node_exporter and config-reload health. Deliberately six small
+# rules, three of which page (HermesGatewayDown and the two reload alerts) and
+# one is the heartbeat. The repair-dispatch machinery and the 12 rules that fed
+# it were cut on 2026-09-29 (fleet-ops#8958); nothing here brings back a repair
+# worker or a second page path. NodeExporterDown is visible and pages nobody, so
+# a gateway that is down while node_exporter is also down is not paged.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer) and Prometheus' own vector().

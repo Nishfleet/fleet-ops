@@ -151,10 +151,12 @@ script, or prompt lands unseen.
   logs do.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the Hermes gateway page. Prometheus loads three rules:
-  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody) and
-  `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
-  minutes). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  — the dead-man and the Hermes gateway page. Prometheus loads six rules:
+  `Watchdog` (always firing), `SystemUnitFailed` and `NodeExporterDown` (visible,
+  page nobody), `HermesGatewayDown` (`hermes-gateway.service` has no active
+  sample for 5 minutes while the `node` target is up), and
+  `PrometheusConfigReloadFailed` and `AlertmanagerConfigReloadFailed` (stock
+  reload metrics, severity nish). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
