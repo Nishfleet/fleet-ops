@@ -68,15 +68,22 @@
 {{ nish_home }}/workspaces/products/**/.wrangler
 {{ nish_home }}/workspaces/products/**/.next
 {{ nish_home }}/workspaces/products/**/.turbo
+{{ nish_home }}/workspaces/products/**/.venv
+{{ nish_home }}/workspaces/products/**/.svelte-kit
+{{ nish_home }}/workspaces/products/**/.astro
+{{ nish_home }}/workspaces/products/**/.output
+{{ nish_home }}/workspaces/products/**/.vercel
 {{ nish_home }}/workspaces/products/*/dist
 {{ nish_home }}/workspaces/products/*/build
 {{ nish_home }}/workspaces/products/*/coverage
 {{ nish_home }}/workspaces/products/*/.cache
 {{ nish_home }}/workspaces/products/*/playwright-report
 {{ nish_home }}/workspaces/products/*/test-results
+{{ nish_home }}/workspaces/products/*/target
 
-# Local database files and dumps in product trees can hold real customer
-# rows. The locked copy can never be deleted, so a customer deletion request
+# Local database files, dumps and data exports (`cf d1 export` writes .sql)
+# in product trees can hold real customer rows. Committed migrations and
+# fixtures with these endings are still in git on GitHub. The locked copy can never be deleted, so a customer deletion request
 # could not reach them there. Keep them out; product data lives in D1 and R2,
 # which have their own backups.
 {{ nish_home }}/workspaces/products/**/*.sqlite
@@ -86,6 +93,10 @@
 {{ nish_home }}/workspaces/products/**/*.db-*
 {{ nish_home }}/workspaces/products/**/*.dump
 {{ nish_home }}/workspaces/products/**/*.sql.gz
+{{ nish_home }}/workspaces/products/**/*.sql
+{{ nish_home }}/workspaces/products/**/*.csv
+{{ nish_home }}/workspaces/products/**/*.ndjson
+{{ nish_home }}/workspaces/products/**/*.jsonl
 
 # Python caches.
 /home/nish/__pycache__

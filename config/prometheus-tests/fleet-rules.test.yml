@@ -237,3 +237,22 @@ tests:
             exp_annotations:
               summary: "AI spend is over 40 USD in the last 24 hours"
               description: "sum(increase(litellm_spend_metric_total[24h])) is 60.00 USD, above the 40 USD daily line."
+
+  # AISpendMetricMissing: a counter that stops for a few hours is silent; a
+  # whole day with no series pages.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_spend_metric_total{model="a"}'
+        values: '0+1x5 _x40'
+    alert_rule_test:
+      - eval_time: 20h
+        alertname: AISpendMetricMissing
+        exp_alerts: []
+      - eval_time: 33h
+        alertname: AISpendMetricMissing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "AI spend metric has been missing for over a day"
+              description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."

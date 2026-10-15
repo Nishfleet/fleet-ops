@@ -1,6 +1,7 @@
 # Fleet alert rules: the dead-man heartbeat, failed units, the Hermes
 # gateway, stale or failed off-site backups, public sites that stop
-# answering and a same-day AI spend line. Kept deliberately small. The
+# answering and a same-day AI spend line (plus a page if that metric goes
+# missing). Kept deliberately small. The
 # repair-dispatch machinery and the 12 rules that fed it were cut on
 # 2026-09-29 (fleet-ops#8958); nothing here brings back a repair worker or a
 # second page path.
@@ -118,3 +119,16 @@ groups:
         annotations:
           summary: "AI spend is over 40 USD in the last 24 hours"
           description: "sum(increase(litellm_spend_metric_total[24h])) is {{ $value | printf \"%.2f\" }} USD, above the 40 USD daily line."
+
+      # The spend line above cannot fire if the router stops exporting the
+      # counter, so a day with no series at all pages too. The fleet calls
+      # the router every hour, so 24 hours of silence is a broken export,
+      # not a quiet day.
+      - alert: AISpendMetricMissing
+        expr: absent_over_time(litellm_spend_metric_total[24h])
+        for: 1h
+        labels:
+          severity: nish
+        annotations:
+          summary: "AI spend metric has been missing for over a day"
+          description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
