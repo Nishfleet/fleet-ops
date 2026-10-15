@@ -7,8 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
-  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, four `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
+  `fleet-hermes-xai-login-check.path`, `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
@@ -125,6 +125,14 @@ script, or prompt lands unseen.
   link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
   `systemctl --user disable --now fleet-gh-login-check.timer
   fleet-gh-login-check.path` and delete the files.
+- `systemd/fleet-hermes-xai-login-check.service`, `.path` and `.timer` — fail, and
+  so page through `fleet-unit-failed@`, when `hermes auth status xai-oauth` does
+  not say `xai-oauth: logged in` (the SuperGrok login behind Hermes's `x_search`,
+  which hides itself silently when it dies). The path unit checks on every change
+  to `~/.hermes/auth.json`, the timer hourly. Wire once like the gh check above.
+  Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
+  `systemctl --user disable --now fleet-hermes-xai-login-check.timer
+  fleet-hermes-xai-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that

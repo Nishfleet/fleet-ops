@@ -13,6 +13,8 @@ ExecStart=/home/nish/.nvm/versions/node/v24.21.0/bin/executor serve
 Restart=on-failure
 RestartSec=5
 MemoryMax=2G
+# Without a swap cap the 2G RAM cap spills into the shared 8G swap (4.19G held 2026-10-15, swap full).
+MemorySwapMax=512M
 UMask=0077
 
 [Install]
