@@ -73,6 +73,23 @@
       {{ (lookup('ansible.builtin.file', box_only_file, errors='ignore')
          | default('', true)).splitlines() | map('trim')
          | reject('match', '^(#|$)') | list }}
+    nish_home: "{{ '~nish' | expanduser }}"
+    nish_env:
+      HOME: "{{ nish_home }}"
+      XDG_RUNTIME_DIR: /run/user/1000
+      PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    chrome_devtools_mcp_version: "1.10.1"
+    chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
+    chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
+    chrome_devtools_mcp_args:
+      - --headless
+      - --isolated
+      - --executablePath
+      - /usr/bin/google-chrome
+      - --no-usage-statistics
+      - --no-performance-crux
+    chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+    chrome_devtools_mcp_line: "{{ ([chrome_devtools_mcp_bin] + chrome_devtools_mcp_args) | join(' ') }}"
 
   tasks:
     - name: Check the prometheus config before installing it
@@ -327,6 +344,22 @@
         mode: preserve
         validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
+    - name: Create the OpenCode managed config directory
+      ansible.builtin.file:
+        path: /etc/opencode
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the OpenCode managed config
+      ansible.builtin.copy:
+        content: "{{ {'$schema': 'https://opencode.ai/config.json', 'mcp': {'chrome-devtools': {'type': 'local', 'command': chrome_devtools_mcp_command, 'enabled': true}}} | to_nice_json(indent=2) }}\n"
+        dest: /etc/opencode/opencode.json
+        owner: root
+        group: root
+        mode: "0644"
+
     # Restic backup include and exclude lists (config/restic/). The backup unit
     # reads them from /etc/restic/ on every run; a change here is live after
     # the next fleet-host-config run, no daemon-reload needed. README.md is not
@@ -519,6 +552,132 @@
         that: alertmanager_credentials.results | map(attribute='stat.exists') | min
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
         quiet: true
+
+
+    - name: Create the Chrome DevTools MCP install directory
+      ansible.builtin.file:
+        path: "{{ chrome_devtools_mcp_dir }}"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0755"
+
+    - name: Install the pinned Chrome DevTools MCP server
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      community.general.npm:
+        name: chrome-devtools-mcp
+        version: "{{ chrome_devtools_mcp_version }}"
+        path: "{{ chrome_devtools_mcp_dir }}"
+        executable: "{{ nish_home }}/.local/bin/npm"
+        ignore_scripts: true
+
+    - name: Link the Chrome DevTools MCP server into nish's ~/.local/bin
+      ansible.builtin.file:
+        src: "{{ chrome_devtools_mcp_dir }}/node_modules/.bin/chrome-devtools-mcp"
+        dest: "{{ chrome_devtools_mcp_bin }}"
+        state: link
+        owner: nish
+        group: nish
+
+    - name: Create the shared MCP config directory
+      ansible.builtin.file:
+        path: "{{ nish_home }}/.config/mcp"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0755"
+
+    - name: Install the shared MCP config (Pi reads it through pi-mcp-adapter)
+      ansible.builtin.copy:
+        content: "{{ {'mcpServers': {'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args, 'lifecycle': 'lazy', 'idleTimeout': 5}}} | to_nice_json(indent=2) }}\n"
+        dest: "{{ nish_home }}/.config/mcp/mcp.json"
+        owner: nish
+        group: nish
+        mode: "0644"
+
+    - name: Read each agent CLI's chrome-devtools entry
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ item }}", mcp, get, chrome-devtools]
+      loop:
+        - "{{ nish_home }}/.local/bin/devin"
+        - "{{ nish_home }}/.local/bin/cmd"
+      register: mcp_entry
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Drop a stale chrome-devtools entry
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
+      loop: "{{ mcp_entry.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc == 0 and chrome_devtools_mcp_line not in item.stdout
+
+    - name: Add the chrome-devtools entry to each agent CLI
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: "{{ [item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+      loop: "{{ mcp_entry.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc != 0 or chrome_devtools_mcp_line not in item.stdout
+
+    - name: Read Cursor's MCP config
+      ansible.builtin.slurp:
+        src: "{{ nish_home }}/.cursor/mcp.json"
+      register: cursor_mcp
+      failed_when: false
+      diff: false
+
+    - name: Swap Cursor's dead camofox entry for chrome-devtools
+      ansible.builtin.copy:
+        content: "{{ cursor_next | to_nice_json(indent=2) }}\n"
+        dest: "{{ nish_home }}/.cursor/mcp.json"
+        owner: nish
+        group: nish
+        mode: "0600"
+      vars:
+        cursor_now: "{{ (cursor_mcp.content | default('e30=') | b64decode | from_json) }}"
+        cursor_servers: "{{ (cursor_now.mcpServers | default({})) | dict2items | rejectattr('key', 'in', ['camofox-browser', 'chrome-devtools']) | items2dict }}"
+        cursor_next: "{{ cursor_now | combine({'mcpServers': cursor_servers | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args}})}) }}"
+      when: cursor_next != cursor_now
+      diff: false
+
+    - name: Drop Codex's dead camofox entry
+      ansible.builtin.replace:
+        path: "{{ nish_home }}/.codex/config.toml"
+        regexp: '(?m)^\[mcp_servers\.camofox-browser\]\n(?:[^\[\n][^\n]*\n|\n)*'
+        replace: ""
+      failed_when: false
+      diff: false
+
+    - name: Look for Hermes' chrome-devtools entry
+      ansible.builtin.command:
+        argv: [/bin/grep, -q, "^  chrome-devtools:", "{{ nish_home }}/.hermes/config.yaml"]
+      register: hermes_entry
+      changed_when: false
+      failed_when: hermes_entry.rc > 1
+      check_mode: false
+
+    - name: Add the chrome-devtools entry under Hermes' mcp_servers
+      ansible.builtin.lineinfile:
+        path: "{{ nish_home }}/.hermes/config.yaml"
+        insertafter: '^mcp_servers:$'
+        line: "  chrome-devtools: {command: {{ chrome_devtools_mcp_bin }}, args: [{{ chrome_devtools_mcp_args | join(', ') }}], enabled: true}"
+        regexp: '^  chrome-devtools: \{'
+      when: hermes_entry.rc == 1
+      diff: false
 
   handlers:
     - name: Reload systemd

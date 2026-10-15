@@ -611,6 +611,46 @@ holds both rules before merge.
   `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
   step and the install task in the same PR once no drop-in is left.
 
+## Browser tool: Chrome DevTools MCP
+
+One free browser tool for every agent CLI on the box: the Chrome DevTools MCP
+server driving the system `/usr/bin/google-chrome` headless (DISPLAY is unset),
+in a throwaway profile (`--isolated`, deleted on exit), with usage statistics
+and CrUX lookups off. Chrome starts on the first browser tool call and exits
+when the client disconnects; an idle server is one Node process (about 170 MB).
+A page load peaked at about 1.1 GB across the Node process and Chrome. This is
+the default browser (vault `global-standing-rules.md`); browser-use cloud stays
+for narrow fan-out only and its entries are not touched.
+
+`ansible/host.yml` owns the pin (`chrome_devtools_mcp_version`, one exact
+version, bumped by a PR; no `npx` and no `@latest` at runtime) and the argument
+list. It installs the package under `~/.local/share/chrome-devtools-mcp` (not
+`npm -g`: the weekly `npm update --global` would move a global install past the
+pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
+
+| Agent | How it gets the tool |
+|---|---|
+| Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` pulls the claude-mods clone. Worker lanes run `--strict-mcp-config` and stay as they were. |
+| Pi | the play writes `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle). |
+| OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
+| Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its command changed. |
+| Cursor | the play swaps the dead `camofox-browser` entry in `~/.cursor/mcp.json` for `chrome-devtools`, keeping the other servers. Cursor still asks for approval (`cursor-agent mcp enable chrome-devtools`). |
+| Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent. Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
+| Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
+
+- Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
+- Switch off for one agent: remove its task (for Claude Code set
+  `chrome-devtools@nish-mods` to `false` in `enabledPlugins`); `copy` never
+  deletes, so also add `/etc/opencode/opencode.json` to `retired` for OpenCode.
+- Delete it all: remove the OpenCode tasks and the tasks from "Create the Chrome
+  DevTools MCP install directory" on in `ansible/host.yml`, the
+  `60-chrome-devtools.json` drop-in and
+  `tests/test_chrome_devtools_mcp.py` with its `ci.yml` step, then
+  `devin mcp remove` and `cmd mcp remove` the entry by hand.
+- The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
+  every agent": the args match in every fragment, and the Cursor, Codex and
+  Hermes tasks run twice against temp copies (the second run changes nothing).
+
 ## CI
 
 `.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
