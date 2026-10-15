@@ -87,11 +87,14 @@ scrape_configs:
       - target_label: __address__
         replacement: 127.0.0.1:9115
 
-  # The other public product homepages, one GET each per scrape (30s), same
+  # The other public product homepages, one GET each per minute, same
   # module and exporter. Redirects are followed, so a www or apex redirect
   # counts as up when it lands on a 2xx. storagebun.com is left out until it
   # is public: it answers with the Access login while it is private.
   - job_name: site-products
+    # Once a minute is enough for the 10-minute SiteDown window and halves the
+    # requests each site's free-plan quota and analytics see.
+    scrape_interval: 60s
     metrics_path: /probe
     params:
       module: [http_2xx]

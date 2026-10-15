@@ -134,11 +134,15 @@ groups:
       # down the outside dead-man fires instead.
       - alert: SiteDown
         # The up branch covers a dead blackbox exporter: its scrape fails, so
-        # probe_success goes missing instead of reading 0.
+        # probe_success goes missing instead of reading 0. The count gate needs
+        # 8 samples in the window (8 minutes at the slowest site job), so a
+        # newly added target cannot page on its first failed probe.
         expr: |
-          max_over_time(probe_success{job=~"site-.*"}[10m]) == 0
+          (max_over_time(probe_success{job=~"site-.*"}[10m]) == 0
+            and count_over_time(probe_success{job=~"site-.*"}[10m]) >= 8)
           or
-          max_over_time(up{job=~"site-.*"}[10m]) == 0
+          (max_over_time(up{job=~"site-.*"}[10m]) == 0
+            and count_over_time(up{job=~"site-.*"}[10m]) >= 8)
         labels:
           severity: nish
         annotations:
