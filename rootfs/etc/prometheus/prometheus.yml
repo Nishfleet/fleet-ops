@@ -103,8 +103,6 @@ scrape_configs:
           - https://api.0509.io/
           - https://seofixkit.com/
           - https://siterep.net/
-          - https://tinystudio.io/
-          - https://tinystudio.in/
           - https://aiconverter.app/
           - https://inish.in/
     relabel_configs:
