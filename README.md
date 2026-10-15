@@ -338,10 +338,23 @@ replaced by two stock `systemd-run` properties.
 ```
 systemd-run --user --collect --unit <name> \
   -p RuntimeMaxSec=<seconds> \
+  -p Requires=fleet-worker-github-token@<repo>.service \
+  -p After=fleet-worker-github-token@<repo>.service \
+  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env" \
+  -p "TemporaryFileSystem=$HOME/.config/gh" \
+  -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
   -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
   -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
 ```
+
+`<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
+`fleet-worker-github-token@<repo>.service`, which mints a one-hour nishfleet-worker
+App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env`;
+the `EnvironmentFile=` is required (no `-`), so a failed mint means the worker never
+starts, and `ExecStartPre=` fails an empty `GH_TOKEN` before any work. `TemporaryFileSystem=`
+blanks the human gh login for the run, as agent.yml's jail does, so a worker cannot fall
+back to it (fleet-ops#9738). The launch line exits non-zero when it refuses.
 
 `RuntimeMaxSec=` is the deadline: systemd kills an over-running unit into
 `Result=timeout`. The `ExecStopPost=` line is the deliverable check: a stop at

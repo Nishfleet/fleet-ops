@@ -58,6 +58,11 @@ ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.pat
 #     delete this step and the enable line, then `systemctl --user disable --now
 #     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
+# 2a''. The detached worker's token mint (fleet-ops#9738): link the template so every
+#     deploy carries edits to it. Nothing to enable: a worker launch line pulls an
+#     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
+#     delete this step and `systemctl --user unlink` it by hand.
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-worker-github-token@.service
 # 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
 #     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
 #     lines then drop its live links and installed prompt dir. Delete these three lines

@@ -1,17 +1,21 @@
-"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service makes.
+"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service and
+systemd/fleet-worker-github-token@.service make.
 
-fleet-ops#9445. CI runs the unit's real ExecStart under systemd against this stub
-(.github/workflows/ci.yml, step "GitHub App token unit mints and refreshes").
+fleet-ops#9445, fleet-ops#9738. CI runs each unit's real ExecStart under systemd
+against this stub (.github/workflows/ci.yml, step "GitHub App token units mint
+and refresh"; the worker unit through tests/test_worker_github_token.py).
 The stub is strict where GitHub is strict, so a malformed JWT or request body
 fails the run instead of passing silently:
 
-  GET  /repos/Nishfleet/fleet-ops/installation
+  GET  /repos/Nishfleet/<repo>/installation
        needs a Bearer RS256 JWT: header alg RS256, iss == APP_ID, exp - iat
        within GitHub's 10 minute cap, and a signature that verifies with the
        App's public key.
   POST /app/installations/<id>/access_tokens
        needs the same JWT and a body that asks for exactly repositories
-       [fleet-ops] and permissions {issues: write}.
+       [fleet-ops] and permissions {issues: write} (the Grafana token), or
+       exactly the one repo whose installation was looked up and permissions
+       {contents, issues, pull_requests: write} (the worker token).
 
 Every answered mint returns a distinct token (ghs_stub_<n>) so a test can tell
 a refresh from a stale file. The mode file switches the stub to answering 401
@@ -28,6 +32,8 @@ import tempfile
 
 PORT, PUB, APP_ID, MODE_FILE, LOG_FILE = sys.argv[1:6]
 MINTS = 0
+REPOS = {}
+WORKER_PERMS = {"contents": "write", "issues": "write", "pull_requests": "write"}
 
 
 def b64d(s):
@@ -76,11 +82,17 @@ class H(http.server.BaseHTTPRequestHandler):
             verdict, code, out = "mode-fail", 401, {"message": "Bad credentials"}
         elif bad:
             verdict, code, out = f"bad-jwt:{bad}", 401, {"message": "Bad credentials"}
-        elif method == "GET" and self.path == "/repos/Nishfleet/fleet-ops/installation":
-            code, out = 200, {"id": 77}
-        elif method == "POST" and self.path == "/app/installations/77/access_tokens":
-            want = {"repositories": ["fleet-ops"], "permissions": {"issues": "write"}}
-            if json.loads(body or b"{}") != want:
+        elif method == "GET" and self.path.startswith("/repos/Nishfleet/") and self.path.endswith("/installation"):
+            repo = self.path[len("/repos/Nishfleet/"):-len("/installation")]
+            iid = 77 if repo == "fleet-ops" else 1000 + len(REPOS)
+            REPOS[iid] = repo
+            code, out = 200, {"id": iid}
+        elif method == "POST" and self.path.startswith("/app/installations/") and self.path.endswith("/access_tokens"):
+            iid = int(self.path.split("/")[3])
+            repo = REPOS.get(iid)
+            wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
+                     {"repositories": [repo], "permissions": WORKER_PERMS}]
+            if repo is None or json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}
             else:
                 MINTS += 1
