@@ -83,7 +83,7 @@ EnvironmentFile=%E/fleet-ops/seats/stepfun.env
 EnvironmentFile=%E/fleet-ops/seats/alibaba-coding.env
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; re="^~?[A-Za-z0-9._:/-]{1,64}$$"; bad=0; ready=0; filed=0; mkdir -p "$$d/gh"; \
 test -s "$$CATALOG" || { echo "provider-watch: snapshot missing"; exit 1; }; \
-$$YQ -o=json . "$$CONFIG" | jq -r ".model_list[].litellm_params | select(.api_key != null and .api_base != null) | [.api_key, .api_base] | @tsv" | sort -u -k1,1 > "$$d/targets"; \
+$$YQ -o=json . "$$CONFIG" | jq -r ".model_list[].litellm_params | select(.api_key != null) | [.api_key, .api_base] | @tsv" | sort -u -k1,1 > "$$d/targets"; \
 test -s "$$d/targets" || { echo "provider-watch: no providers found in the router config"; exit 1; }; \
 while read -r var base; do \
 case $$var in os.environ/*) var=$${var#os.environ/};; *) echo "provider-watch: a router row has a key that is not an os.environ reference, refused"; bad=1; continue;; esac; \
@@ -102,7 +102,8 @@ rm -f "$$d/hdr"; \
 case $$code in \
 401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; bad=1; continue;; \
 200) ;; \
-*) echo "provider-watch: $$name listing unavailable (HTTP $$code), skipped; outages page through litellm_deployment_state"; continue;; \
+000|408|429|5??) echo "provider-watch: $$name listing unavailable (HTTP $$code), skipped; outages page through litellm_deployment_state"; continue;; \
+*) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \
 esac; \
 if ! jq -e ".data | arrays | length > 0" "$$d/body" > /dev/null 2>&1; then echo "provider-watch: $$name listing unavailable (HTTP 200 without a model list), skipped; outages page through litellm_deployment_state"; continue; fi; \
 jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u > "$$d/ids.all"; \
@@ -130,7 +131,7 @@ echo "- (e) Anything that costs money or needs a login from Nish goes back as on
 if [ "$$ready" -eq 0 ]; then \
 test -s "$$ISSUES_TOKEN" || { echo "provider-watch: $$name changed but the issues token is missing"; bad=1; continue; }; \
 tok=$$(cat "$$ISSUES_TOKEN"); export GH_CONFIG_DIR="$$d/gh" GH_TOKEN="$$tok"; \
-"$$GH" label create provider-watch -R Nishfleet/fleet-ops --color 1D76DB --description "A provider model list changed" --force < /dev/null > /dev/null || { echo "provider-watch: $$name changed but the provider-watch label could not be created"; bad=1; continue; }; \
+"$$GH" label create provider-watch -R Nishfleet/fleet-ops --color 1D76DB --description "A provider model list changed" < /dev/null > /dev/null 2>&1 || "$$GH" label list -R Nishfleet/fleet-ops --search provider-watch --json name -q ".[].name" < /dev/null 2>/dev/null | grep -Fxq provider-watch || { echo "provider-watch: $$name changed but the provider-watch label could not be created"; bad=1; continue; }; \
 "$$GH" issue list -R Nishfleet/fleet-ops --label provider-watch --state open --limit 100 --json title -q ".[].title" < /dev/null > "$$d/known" || { echo "provider-watch: $$name changed but the open issues could not be listed"; bad=1; continue; }; \
 "$$GH" issue list -R Nishfleet/fleet-ops --label provider-watch --state all --search "created:>=$$(date -d "7 days ago" +%%F)" --limit 100 --json title -q ".[].title" < /dev/null >> "$$d/known" || { echo "provider-watch: $$name changed but the recent issues could not be listed"; bad=1; continue; }; \
 ready=1; \

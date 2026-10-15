@@ -53,6 +53,8 @@ GH = """#!/bin/sh
 echo "$*" >> "$SC/gh.log"
 echo "token=$GH_TOKEN config=$GH_CONFIG_DIR" >> "$SC/gh.env"
 case "$1 $2" in
+  "label create") [ -n "$FAIL_LABEL" ] && exit 1; exit 0;;
+  "label list") cat "$SC/labels" 2>/dev/null; exit 0;;
   "issue list")
     case "$*" in
       *"--state all"*) cat "$SC/recent-titles" 2>/dev/null;;
@@ -100,6 +102,9 @@ def box(tmp_path):
     (tmp_path / "run").mkdir()
 
     class Box:
+        def write(self, name, text):
+            (sc / name).write_text(text)
+
         def catalog(self, data):
             (tmp_path / "catalog.json").write_text(json.dumps(data))
 
@@ -131,10 +136,11 @@ def box(tmp_path):
                 "ISSUES_TOKEN": str(tmp_path / "token"),
                 "GH": str(bindir / "gh"),
                 "YQ": YQ,
-                                "LC_ALL": "C",
+                "LC_ALL": "C",
                 "ALPHA_API_KEY": "fake-alpha-key",
                 "BETA_API_KEY": "fake-beta-key",
                 "FAIL_CREATE": "",
+                "FAIL_LABEL": "",
             }
             env.update(extra or {})
             for k in drop:
@@ -165,7 +171,7 @@ def test_listing_urls_follow_the_api_base(box):
     assert "https://beta.test/anthropic/v1/models" in urls
 
 
-def test_added_id_files_one_issue_with_both_labels(box):
+def test_added_id_files_one_issue_with_the_provider_watch_label(box):
     box.serve("alpha.test", ["a1", "a2", "a3"])
     r = box.run()
     assert r.returncode == 0, r.stdout + r.stderr
@@ -178,7 +184,7 @@ def test_added_id_files_one_issue_with_both_labels(box):
     assert "-R Nishfleet/fleet-ops" in creates[0]
     assert any(ln.startswith("label create provider-watch") for ln in gh)
     body = box.issue_body
-    assert "+ a3" in body and "+ a3" in body and "first 20 shown of 1 added and 0 removed" in body
+    assert "+ a3" in body and "first 20 shown of 1 added and 0 removed" in body
     for tag in ("(a)", "(b)", "(c)", "(d)", "(e)"):
         assert tag in body
     assert "tests/evals" in body and "needs-nish-decision" in body
@@ -319,6 +325,49 @@ def test_curl_retries_twice_twenty_seconds_apart(box):
     box.run()
     for line in box.log("curl.log").splitlines():
         assert "--retry 2 --retry-delay 20" in line
+
+
+@pytest.mark.parametrize("code", ["404", "400", "410"])
+def test_other_4xx_on_the_listing_fails_the_unit(box, code):
+    box.serve("alpha.test", "{}", codes=code)
+    r = box.run()
+    assert r.returncode == 1
+    assert f"provider-watch: alpha listing request failed (HTTP {code})" in r.stdout
+
+
+def test_429_is_skipped_like_an_outage(box):
+    box.serve("alpha.test", "{}", codes="429")
+    r = box.run()
+    assert r.returncode == 0
+    assert "listing unavailable (HTTP 429), skipped" in r.stdout
+
+
+def test_a_row_with_a_key_but_no_api_base_is_refused(box):
+    box.config(CONFIG + """- model_name: worker-cheap
+  litellm_params:
+    model: openai/a1
+    api_key: os.environ/GAMMA_API_KEY
+""")
+    r = box.run()
+    assert r.returncode == 1
+    assert "api_base that is not https, refused" in r.stdout
+    assert "provider-watch: alpha ok, 2 models" in r.stdout
+
+
+def test_an_existing_label_is_not_rewritten(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    box.write("labels", "provider-watch\nother\n")
+    r = box.run(extra={"FAIL_LABEL": "1"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "--force" not in box.log("gh.log")
+    assert "issue create" in box.log("gh.log")
+
+
+def test_a_label_that_cannot_be_made_or_found_fails_the_unit(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    r = box.run(extra={"FAIL_LABEL": "1"})
+    assert r.returncode == 1
+    assert "label could not be created" in r.stdout
 
 
 def test_a_5xx_outage_is_skipped_without_failing_the_unit(box):

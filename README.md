@@ -859,9 +859,11 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
 - The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
   the ones it needs one by one (not the whole directory; CI fails when a router key has no file here), so the master key and the Claude
   logins are not in its environment.
-- A listing that is still 5xx, times out or has no model list after curl's retries logs
+- A listing that is still 5xx, 408, 429, times out or has no model list after curl's retries logs
   `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
-  litellm_deployment_state` and does not fail the unit.
+  litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing path or api_base, 400) fails
+  it, so a provider cannot silently drop out of the check. A router row with a key but no https
+  api_base is refused.
 - HTTP 401 or 403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with
   one plain line naming the provider and what Nish must do. No issue is filed for that.
 - An added or removed id files ONE issue per changed provider, titled `Provider watch: <name>
@@ -878,7 +880,7 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   carries the acceptance bullets for whoever takes the hand-off: a seat whose snapshot entry says
   `"billing": "flat"` may get a real call to free or in-plan ids only; every other seat's body
   forbids all calls and sends the ids back as a `needs-nish-decision` line (the unit decides, not
-  the model; `opencode`, `opencode-2` and `minimax` are marked flat), an eval-score before any router weight
+  the model; only `minimax` is marked flat, on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for deepseek-v4.1-flash only, so they are not marked), an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), the catalog update
   in the same PR, and a plain `needs-nish-decision` line for anything that costs money or needs
@@ -887,6 +889,8 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
 - The issues token is the one `retro-weekly.service` uses: the worker App's issues-only
   installation token that `fleet-grafana-github-token.service` mints, with an empty `GH_CONFIG_DIR`
   so the human gh login is never read.
+- The snapshot lists the model ids each provider returns to its own key; fleet-ops is public, so
+  an id the provider shows only to contributors is published with the rest.
 - Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing
   endpoint (a provider with no listing endpoint); `"watch": "<ERE>"` compares only ids that
   match it. Cline lists a whole catalogue that changes about weekly, so it watches only
