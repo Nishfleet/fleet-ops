@@ -94,6 +94,8 @@
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
+    commandcode_object_re: '^\s*[{]'
+    commandcode_identity_keys: [userId, userName, keyName, authenticatedAt]
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
@@ -764,8 +766,9 @@
         dest: "{{ commandcode_auth_file }}"
         mode: "0600"
       vars:
-        commandcode_now: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) }}"
-        commandcode_next: "{{ commandcode_now | combine({'apiKey': commandcode_seat_key}) }}"
+        commandcode_now: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) if (commandcode_auth.content | default('e30=') | b64decode) is match(commandcode_object_re) else {} }}"
+        commandcode_kept: "{{ commandcode_now | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
+        commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
       when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
       no_log: true
       diff: false

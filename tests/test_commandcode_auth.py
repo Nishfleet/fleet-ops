@@ -107,12 +107,12 @@ def test_second_run_changes_nothing(tmp_path):
     assert _auth(tmp_path).read_bytes() == before
 
 
-def test_existing_keys_survive_and_a_changed_key_is_replaced(tmp_path):
+def test_other_keys_survive_and_a_changed_key_drops_the_old_logins_identity(tmp_path):
     _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
     _auth(tmp_path).parent.mkdir(mode=0o700)
-    _auth(tmp_path).write_text(json.dumps({"apiKey": "user_old", "userName": "nish", "keyName": "k"}))
+    _auth(tmp_path).write_text(json.dumps({"apiKey": "user_old", "userId": "u", "userName": "nish", "keyName": "k", "authenticatedAt": "t", "extra": 1}))
     _run(tmp_path)
-    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE, "userName": "nish", "keyName": "k"}
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE, "extra": 1}
     assert _mode(_auth(tmp_path)) == 0o600
     assert "changed=0" in _run(tmp_path)
 
@@ -120,7 +120,7 @@ def test_existing_keys_survive_and_a_changed_key_is_replaced(tmp_path):
 def test_matching_login_with_extra_keys_is_left_untouched(tmp_path):
     _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
     _auth(tmp_path).parent.mkdir(mode=0o700)
-    text =json.dumps({"apiKey": FAKE, "userId": "u"}, indent=2)
+    text = json.dumps({"apiKey": FAKE, "userId": "u"}, indent=2)
     _auth(tmp_path).write_text(text)
     assert "changed=0" in _run(tmp_path)
     assert _auth(tmp_path).read_text() == text
@@ -149,3 +149,12 @@ def test_key_never_reaches_ansible_output_under_no_log(tmp_path):
     assert result.returncode == 0
     assert FAKE not in result.stdout + result.stderr
     assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+
+
+def test_a_login_file_that_is_not_an_object_is_replaced(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    _auth(tmp_path).write_text("[]")
+    _run(tmp_path)
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+    assert "changed=0" in _run(tmp_path)
