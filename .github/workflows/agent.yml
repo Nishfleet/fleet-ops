@@ -1302,7 +1302,7 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The candidate fetch (Jev key, GitHub search token) runs outside the jail before the model starts.
+        # The candidate fetch (Jev key, GitHub search token, optional X key from seats/x-api.env for Nish's X posts) runs outside the jail before the model starts.
         # The jail hides both, Nish's gh login, the Cloudflare tokens, the seat files, the App key and
         # litellm-master-key.env (the model reads outsider text, fleet-ops#9274). pi instead reads a virtual
         # key bound at that path (fleet-ops#9634): models worker-capable and senior only (the loop's two
@@ -1320,7 +1320,7 @@ jobs:
           [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file (Jev ranks through the router's /jev, not TypeSafe direct); an unranked edition is not worth 40 minutes of model time"; exit 1; }
           admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
           trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\",\"senior\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
-          echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"
+          echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"; x_key=$(sed -n 's/^X_BEARER_TOKEN=//p' "$HOME/.config/fleet-ops/seats/x-api.env" 2>/dev/null || true); [ -z "$x_key" ] || echo "::add-mask::$x_key" # gitleaks:allow
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-*; do [ "$d" = "$1" ] && continue; if [ -L "$d" ]; then continue; elif [ -d "$d" ]; then out="$out --tmpfs $d"; elif [ -f "$d" ]; then out="$out --ro-bind /dev/null $d"; fi; done; echo "$out"; }
           hide_all=$(claude_hides "")
@@ -1342,7 +1342,7 @@ jobs:
             sys git -c "http.extraheader=AUTHORIZATION: basic $basic" clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"
           }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
-          (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
+          (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" X_BEARER_TOKEN="$x_key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
             || { echo "candidate fetch failed:"; tail -n 5 "$RUNNER_TEMP/fetch.out" | cut -c1-200; exit 1; }
           tail -n 4 "$RUNNER_TEMP/fetch.out" | cut -c1-200
           [ -s "$pool/data/candidates/$today.json" ] || { echo "no candidate file"; exit 1; }
