@@ -16,7 +16,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens PRs, and only the weekly retro opens issues, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314); its report is private, in the vault. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled model call on this host is the weekly retro; the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
+No scheduled fleet job opens PRs. Two scheduled jobs open issues: the weekly retro, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314; its report is private, in the vault), and the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled job that calls a model itself is the weekly retro (the provider watch's issues start a hand-off run, above); the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
 
 ## Model plane
 
@@ -94,8 +94,20 @@ The rules still in force:
   (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
   runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
   an odd N keeps it (seat a), and a name with no number keeps seat a. The step
-  logs `claude lane: seat=a|b runner=<name>`. The jail exposes only the chosen
-  seat. Jobs split across both seats with no clock, and a job stays on one seat
+  logs `claude lane: seat=a|b auth=token|login runner=<name>`. A seat with a
+  one-year `claude setup-token` file (`claude-seat-<x>.env` in the seat config
+  directory, one line `CLAUDE_CODE_OAUTH_TOKEN=...`, mode 600) logs in with that
+  token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
+  (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
+  run as shell, and the token is masked and given to the claude command alone, so
+  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  error on that token, the lane retries once with the other seat's token (logged as
+  `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
+  so a backup copy restores it. With no such file the seat's login is used
+  (`auth=login`). Delete the token files and the lane goes back to logins.
+  The jail exposes only the chosen seat's login; token files and the backup dir
+  (`~/.local/share/claude-seat-backup`) are hidden from every jail, symlinks
+  included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
   limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
