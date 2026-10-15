@@ -91,10 +91,16 @@
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     nish_config: "{{ nish_home }}/.config"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
-    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
-    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
-    commandcode_identity_keys: [userId, userName, keyName, authenticatedAt]
+    commandcode_shell_files:
+      - "{{ nish_home }}/.zshenv"
+      - "{{ nish_home }}/.bashrc"
+    commandcode_shell_block: |
+      if [ -r "$HOME/.config/fleet-ops/seats/commandcode.env" ]; then
+        _fleet_ops_cc_key="$(sed -n 's/^COMMAND_CODE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/commandcode.env" 2>/dev/null | tail -n 1 | tr -d "\"'")"
+        if [ -n "$_fleet_ops_cc_key" ]; then export COMMAND_CODE_API_KEY="$_fleet_ops_cc_key"; fi
+        unset _fleet_ops_cc_key
+      fi
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
@@ -738,62 +744,28 @@
       no_log: true
       diff: false
 
-    - name: Create the Command Code login directory
+    - name: Give the Command Code seat the COMMAND_CODE_API_KEY name that cmd reads
       become: true
       become_user: nish
-      ansible.builtin.file:
-        path: "{{ commandcode_auth_dir }}"
-        state: directory
-        mode: "0700"
+      ansible.builtin.lineinfile:
+        path: "{{ commandcode_seat_file }}"
+        regexp: '^(?:export +)?COMMAND_CODE_API_KEY='
+        line: "COMMAND_CODE_API_KEY={{ commandcode_seat_key }}"
       when: commandcode_seat_key != ''
-      no_log: true
-
-    - name: Read the Command Code login
-      become: true
-      become_user: nish
-      ansible.builtin.slurp:
-        src: "{{ commandcode_auth_file }}"
-      register: commandcode_auth
-      failed_when: false
       no_log: true
       diff: false
 
-    - name: Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)
-      when: commandcode_seat_key != ''
-      block:
-        - name: Decode the Command Code login as a JSON object
-          ansible.builtin.set_fact:
-            commandcode_parsed: "{{ commandcode_auth.content | default('e30=') | b64decode | from_json }}"
-          no_log: true
-
-        - name: Require the Command Code login to be a JSON object
-          ansible.builtin.assert:
-            that: commandcode_parsed is mapping
-            quiet: true
-          no_log: true
-      rescue:
-        - name: Treat the unreadable Command Code login as empty
-          ansible.builtin.set_fact:
-            commandcode_parsed: {}
-
-        - name: Say the Command Code login was treated as empty
-          ansible.builtin.debug:
-            msg: "{{ commandcode_auth_file }} is not a readable JSON object; treating it as empty and rewriting it from the seat"
-
-    - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
+    - name: Export COMMAND_CODE_API_KEY from the seat in nish's zsh and bash startup files
       become: true
       become_user: nish
-      ansible.builtin.copy:
-        content: "{{ commandcode_next | to_nice_json(indent=2) }}\n"
-        dest: "{{ commandcode_auth_file }}"
-        mode: "0600"
-      vars:
-        commandcode_now: "{{ commandcode_parsed | default({}) }}"
-        commandcode_kept: "{{ commandcode_now | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
-        commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
-      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
-      no_log: true
-      diff: false
+      ansible.builtin.blockinfile:
+        path: "{{ item }}"
+        create: true
+        mode: "0644"
+        insertbefore: BOF
+        marker: "# {mark} fleet-ops: COMMAND_CODE_API_KEY for cmd, read from the seat"
+        block: "{{ commandcode_shell_block }}"
+      loop: "{{ commandcode_shell_files }}"
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
