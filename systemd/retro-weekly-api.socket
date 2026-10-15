@@ -1,0 +1,14 @@
+# The only door out of the weekly retro's jail (fleet-ops#9641). The jail has no
+# network; this socket is bound into it, and a stock socat inside connects the
+# model's loopback port to it. Each connection starts retro-weekly-api.service,
+# which is systemd's own systemd-socket-proxyd forwarding to one fixed host and
+# port, so the destination cannot be changed from inside the jail.
+# Started only by retro-weekly.service (Requires=) and stopped when it is not
+# needed. Switch off: disable the retro timer; this unit has no timer of its own.
+[Unit]
+Description=Retro jail door to the Anthropic API (socket)
+StopWhenUnneeded=yes
+
+[Socket]
+ListenStream=%t/retro-weekly-api.sock
+SocketMode=0600

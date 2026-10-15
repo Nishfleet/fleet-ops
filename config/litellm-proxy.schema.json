@@ -1,10 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 14 quota-walled rows.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "seniorBackupRow": {
+      "$comment": "fleet-ops#9596: the one row senior falls back to. Pinned to the same model as the Pareto senior row, on Synthetic's own key, so senior never falls back down and the fallback sits behind a different provider's wall.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "senior-backup" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_base", "api_key"],
+          "properties": {
+            "model": { "const": "openai/hf:zai-org/GLM-5.3-Flash" },
+            "api_base": { "const": "https://api.synthetic.new/openai/v1" },
+            "api_key": { "const": "os.environ/SYNTHETIC_API_KEY" }
+          }
+        }
+      }
+    },
+    "syntheticRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -126,6 +148,23 @@
       "minItems": 1,
       "allOf": [
         {
+          "$comment": "fleet-ops#9596: router_settings.fallbacks sends senior to senior-backup, so exactly one senior-backup row exists and it is GLM-5.3-Flash on Synthetic. A fallback that names a missing group, or a weaker model, fails here.",
+          "allOf": [
+            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior-backup" } } }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/seniorBackupRow" }, "minContains": 1 }
+          ]
+        },
+        {
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
+          "contains": { "$ref": "#/$defs/syntheticRow" },
+          "minContains": 0,
+          "maxContains": 8,
+          "items": {
+            "if": { "$ref": "#/$defs/syntheticRow" },
+            "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
+          }
+        },
+        {
           "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
           "contains": { "$ref": "#/$defs/judgePaidRow" },
           "minContains": 1,
@@ -173,6 +212,21 @@
                 "litellm_params": {
                   "required": ["order"],
                   "properties": { "order": { "const": 2 } }
+                }
+              }
+            }
+          },
+          {
+            "$comment": "Every worker row carries an integer weight >= 1 (Nish 2026-10-13 asked for more traffic on the unlimited ds41flash rows). LiteLLM v1.98.0 simple_shuffle.py:43-46 turns weighted picking on only when the FIRST healthy row of the group has a weight, and reads a missing weight as 0: one worker row without it either switches the weighting off or gives that row a 0 share (a bench the header forbids). A weight of 0 or below is the same bench, so the floor is 1.",
+            "if": {
+              "required": ["model_name"],
+              "properties": { "model_name": { "pattern": "^worker" } }
+            },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "required": ["weight"],
+                  "properties": { "weight": { "type": "integer", "minimum": 1 } }
                 }
               }
             }
@@ -233,11 +287,11 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "required": ["redis_url", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
-          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts, which is 21600 s on the 14 rows parked for a named quota wall - see config/litellm-proxy.yaml.",
+          "$comment": "fleet-ops#9469: a 404 is a withdrawn free model or a model id that no longer exists, and it must park the row on the FIRST one. LiteLLM v1.98.0 resolves the threshold per exception type (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to the router-level allowed_fails (1) - two 404s - so a dead lane is picked again and leaks the 404 to the next caller. NotFoundErrorAllowedFails is required and pinned to 0 for that reason. The other four keys are the ones this file already sets; additionalProperties is false so a typo (NotFoundErrorAllowedFail, NotFoundErrorFails) is a rejected config rather than a silent fallback to 1. When LiteLLM adds an exception type, add its key here too - a rejection naming an unknown key is expected friction, not a bug. A row's own cooldown_time is what the 404 cooldown lasts, which is 21600 s on the 7 rows parked for a named quota wall - see config/litellm-proxy.yaml.",
           "type": "object",
           "required": ["NotFoundErrorAllowedFails"],
           "additionalProperties": false,
@@ -248,6 +302,20 @@
             "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
           }
+        },
+        "fallbacks": {
+          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior. Every entry that names senior is pinned to senior-backup: contains only asked that some senior entry existed, so a second senior entry naming judge passed the gate and turned senior -> judge -> senior into the cycle the issue names. judge is deliberately not pinned. judge: [senior] is the live layout and it reaches senior-backup only because LiteLLM 1.98.0 re-enters the senior group's fallbacks (fallback_depth + 1, cap 5); judge: [senior, senior-backup] spells both rungs out and needs no such re-entry. Which spelling is right is a separate call, so this gate takes neither. The deliberate worker-capable <-> worker-cheap two-way pair is left alone for the same reason.",
+          "type": "array",
+          "items": {
+            "if": { "type": "object", "required": ["senior"] },
+            "then": { "properties": { "senior": { "const": ["senior-backup"] } } }
+          },
+          "contains": {
+            "type": "object",
+            "required": ["senior"],
+            "properties": { "senior": { "const": ["senior-backup"] } }
+          },
+          "not": { "contains": { "type": "object", "required": ["senior-backup"] } }
         },
         "redis_url": { "type": "string", "pattern": "^redis://" },
         "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },

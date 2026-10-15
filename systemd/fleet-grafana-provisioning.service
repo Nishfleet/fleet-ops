@@ -1,0 +1,21 @@
+[Unit]
+Description=Reload Grafana alerting and datasource provisioning (fleet-ops#9449 follow-up)
+Documentation=https://grafana.com/docs/grafana/latest/developers/http_api/admin/#reload-provisioning-configurations
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+# A stopped Grafana reads the files at its next start, so there is nothing to
+# reload: exit 1 here skips the unit without failing it (man systemd.service,
+# ExecCondition=).
+ExecCondition=/usr/bin/systemctl --user is-active --quiet fleet-grafana.service
+# git merge writes the changed files one after another; let the last one land.
+ExecStartPre=/bin/sleep 5
+# The stock admin API, same calls as the "Reload provisioning configurations"
+# section of the Grafana HTTP API docs. Basic auth as admin, with the password
+# handed to curl as a config fd (quoted and escaped, so any password works)
+# so it never reaches argv (docs/RUNBOOK.md, LiteLLM admin-API note). Both
+# endpoints are always tried; the unit fails (and fleet-unit-failed alerts) if
+# the password file is missing or empty, or either call answers non-2xx.
+ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
+TimeoutStartSec=120

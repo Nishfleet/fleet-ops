@@ -8,7 +8,7 @@ to GitHub**: not as a repo, org or environment secret, not in a workflow, not in
 a variable. GitHub only ever holds the narrow tokens this config writes.
 
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
-(`time_rotating`). Account: `f670a698e17bf160c8e4679823e68916`.
+(`time_rotating`). Account: the `account_id` default in `variables.tf`.
 
 Status: applied for the 10 repos below on 2026-10-09 with the minter token
 (`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
@@ -33,8 +33,8 @@ the PR body. A weekly timer renews them (see "Renewal").
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
 deploy token failed on them with Cloudflare error 9109). The lock exists in the
-config (`vps_only = true` adds `condition.request_ip` with the VPS addresses
-`159.195.212.168/32` and `2a0a:4cc0:c4:d5e:a8cb:f5ff:feb3:ed15/128`) and is for a
+config (`vps_only = true` adds `condition.request_ip` with the addresses in `vps_cidrs`;
+they are not kept in git; see "VPS-only tokens" below) and is for a
 token whose jobs all run on the VPS self-hosted runners. No Cloudflare job does
 today.
 
@@ -116,6 +116,18 @@ export job) and add any permission group a job reports as missing to that
 repo's list in `main.tf`. Permissions here were derived by reading each workflow
 and `wrangler` config, not by running them.
 
+## VPS-only tokens
+
+`vps_cidrs` defaults to `[]` (the addresses are not kept in git). No token sets
+`vps_only` today, so the empty default changes nothing. Before any token in
+`main.tf` sets `vps_only = true`, supply the addresses to every `tofu` run,
+including the weekly `cloudflare-tokens-apply.service`, for example
+`TF_VAR_vps_cidrs='["<ipv4>/32","<ipv6>/128"]'` in that unit's environment, or a
+gitignored `*.tfvars` file. Read the addresses on the box with
+`curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`. The `precondition` on the
+token resource stays: with `vps_only = true` and an empty `vps_cidrs`, the plan
+fails (fail-closed) instead of minting an unlocked token.
+
 ## Rotation
 
 Each token has a `time_rotating` resource (30 days, `rotation_days`) and
@@ -145,8 +157,7 @@ for three weeks, then replaces them, and two missed weeks still leave slack.
 
 - Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
   file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
-  `gh auth token` (the `~/.config/gh/hosts.yml` login, the same source
-  `blacksmith-flip.service` uses). That login needs admin on each repo.
+  `gh auth token` (the `~/.config/gh/hosts.yml` login). That login needs admin on each repo.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to

@@ -5,6 +5,27 @@
 # 16G box filled swap; the tmux-hosted server reconnected every 1-2 min and
 # every flap dropped the spawned sessions' workers.
 # MemoryMin holds because /sys/fs/cgroup is mounted with memory_recursiveprot.
+#
+# Cap (OOM storm 2026-10-09): one secret scan (trufflehog over a full git
+# history), started from a Remote Control session, grew to 15.4G RSS. Nothing
+# in this slice had a ceiling, and every process under Remote Control inherits
+# its OOMScoreAdjust of -900, so the kernel could not pick the scan: it killed
+# the unprotected services instead (hermes, the router, the executor) and then
+# stalled for about two minutes with the 8G of swap full. memory.peak of this
+# slice read 21.5G against a normal 6-7G (12 open sessions).
+#   MemoryHigh=14G  about twice the normal working set. Past it the kernel
+#                   throttles and reclaims inside this slice only, so a runaway
+#                   crawls instead of taking the host with it.
+#   MemoryMax=18G   hard stop. The kernel kills inside this slice and never
+#                   reaches the global OOM killer. 18G leaves 14G of the 32G
+#                   host for agent.slice (capped at 28G, throttled from 26G),
+#                   system.slice and the user manager.
+#   MemorySwapMax=2G  same bargain as agent.slice: a runaway cannot fill the
+#                   shared 8G swap that everything else depends on.
+# Switch off: delete these three lines and `systemctl daemon-reload`.
 [Slice]
 CPUWeight=1000
 MemoryMin=2G
+MemoryHigh=14G
+MemoryMax=18G
+MemorySwapMax=2G
