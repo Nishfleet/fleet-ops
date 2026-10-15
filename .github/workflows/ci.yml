@@ -233,13 +233,7 @@ jobs:
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
-      - name: orchestrator hand-offs of different issues each run and share the mirror safely (fleet-ops#9700)
-        # Runs the real worktree step from agent-dispatch.yml: the concurrency group is
-        # per issue, the step waits for the mirror lock, and three hand-offs started
-        # together all get a worktree.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_mirror_survives.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to

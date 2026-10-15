@@ -1424,11 +1424,8 @@ jobs:
             (github.event.sender.login == 'nishfleet-worker[bot]' || github.event.sender.login == 'github-actions[bot]')))) ||
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '')
       )
-    # One group per issue, not per repo: GitHub keeps one pending run per group
-    # and cancels the one before it, so three hand-offs close together lost two
-    # (run 38277017351 on #9621, fleet-ops#9700). The mirror is shared by every
-    # hand-off of a repo, so its writers take a file lock instead (steps below).
-    # How many run at once is bounded by the runner pool and the daily cap.
+    # Per issue: GitHub keeps one pending run per group, so a per-repo group dropped
+    # queued hand-offs (fleet-ops#9700). Mirror writers take a file lock instead.
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
@@ -1439,16 +1436,11 @@ jobs:
     # is never handed to claude (step work unsets GH_TOKEN and GITHUB_TOKEN), so
     # this token cannot reach the session that pushes workflow files.
     permissions:
-      # issues: read is the job's own grant (steps read the issue), contents:
-      # read is added because steps a and d read git refs and PR lists through
-      # the API, which GitHub scopes to contents even for a read.
-      # pull-requests: read, because on a private repo the cleanup step's PR
-      # list fails without it ("Resource not accessible by integration"), and a
-      # failed list reads as "no PR". First seen on drive while it was private;
-      # drive is public in Nishfleet since 2026-10-06, and the grant stays for
-      # any private caller.
-      # actions: read, because the daily cap lists this workflow's runs and
-      # their jobs; without it that call is a 403 under GITHUB_TOKEN.
+      # issues: read for the issue steps; contents: read for git refs and PR lists
+      # through the API; pull-requests: read because on a private repo the cleanup
+      # step's PR list fails without it and a failed list reads as "no PR" (drive
+      # while it was private); actions: read because the daily cap lists this
+      # workflow's runs and jobs (403 under GITHUB_TOKEN without it).
       issues: read
       contents: read
       pull-requests: read
@@ -1558,9 +1550,6 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          # Hand-offs of different issues run side by side and share this mirror,
-          # so the step that fetches, repairs and adds worktrees takes the lock
-          # first and holds it until the step ends (fleet-ops#9700).
           mkdir -p "${mirror%/*}"
           exec 9>"${mirror%.git}.lock"
           flock 9
@@ -1602,11 +1591,8 @@ jobs:
           # copy sits beside the worktrees, where the 3-day age-out reaps it, so
           # there is a window to salvage from it. A fetch that fails on an intact
           # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. No other hand-off is fetching or
-          # adding a worktree during the move: the lock taken above is held by
-          # this step alone. A session already running in a worktree of the
-          # old mirror keeps its checkout but loses its registration, which is
-          # why the damage (the tmpfiles age-out, now excluded) must stay rare.
+          # rebuilt: it stays a loud failure. The lock above is held by this
+          # step alone, but a session live in a worktree of the old mirror loses its registration.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
