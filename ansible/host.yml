@@ -778,7 +778,11 @@
           ansible.builtin.debug:
             msg: "WARNING: {{ commandcode_seat_file }} exists but could not be read; cmd keeps whatever login it has"
 
-    - name: Log Command Code in from the seat (a problem with the login is a warning and the file is left alone)
+        - name: Record that the Command Code seat could not be read
+          ansible.builtin.set_fact:
+            commandcode_problems: "{{ commandcode_problems | default([]) + ['the seat exists but could not be read'] }}"
+
+    - name: Log Command Code in from the seat (a problem is a warning here and fails the run after everything else ran)
       when: commandcode_seat_key != ''
       block:
         - name: Create the Command Code login directory
@@ -829,7 +833,16 @@
 
             - name: Warn that the Command Code login was left alone
               ansible.builtin.debug:
-                msg: "WARNING: {{ commandcode_auth_file }} is not a readable JSON object; leaving it alone, so cmd keeps whatever login it has. Fix or delete the file and the next run writes the seat's key."
+                msg: "WARNING: {{ commandcode_auth_file }} is not a readable JSON object; leaving its content alone, so cmd keeps whatever login it has. Fix or delete the file and the next run writes the seat's key."
+
+            - name: Record that the Command Code login could not be read
+              ansible.builtin.set_fact:
+                commandcode_problems: "{{ commandcode_problems | default([]) + ['the login file is not a readable JSON object'] }}"
+
+        - name: Say that the Command Code login holds a key other than the seat's
+          ansible.builtin.debug:
+            msg: "NOTE: {{ commandcode_auth_file }} holds a key that differs from the seat's, and is left alone (a login made by cmd, or a rotated seat key); delete the file or its apiKey and the next run writes the seat's key"
+          when: commandcode_parsed is mapping and commandcode_parsed.apiKey | default('', true) not in ['', commandcode_seat_key]
 
         - name: Store the seat's key as the Command Code login when it has none (a login cmd made is never replaced)
           become: true
@@ -856,12 +869,22 @@
       rescue:
         - name: Warn that the Command Code login could not be set up
           ansible.builtin.debug:
-            msg: "WARNING: could not set up the Command Code login in {{ commandcode_auth_dir }} (step: {{ ansible_failed_task.name | default('unknown') }}); the rest of the run continues"
+            msg: "WARNING: could not set up the Command Code login in {{ commandcode_auth_dir }} (step: {{ ansible_failed_task.name | default('unknown') }}); the rest of the run continues, then the run fails"
+
+        - name: Record that the Command Code login could not be set up
+          ansible.builtin.set_fact:
+            commandcode_problems: "{{ commandcode_problems | default([]) + ['the login could not be set up at step: ' ~ (ansible_failed_task.name | default('unknown'))] }}"
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials.results | map(attribute='stat.exists') | min
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
+        quiet: true
+
+    - name: Fail when the Command Code login could not be set up
+      ansible.builtin.assert:
+        that: commandcode_problems | default([]) | length == 0
+        fail_msg: "Command Code login: {{ commandcode_problems | default([]) | join('; ') }}. cmd keeps whatever login it has; the rest of this run completed."
         quiet: true
 
 
