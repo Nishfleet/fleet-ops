@@ -12,7 +12,7 @@ RULES = ROOT / "config/grafana/provisioning/alerting/deploy-failed.yaml"
 POLICY = ROOT / "config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml"
 YQ = shutil.which("yq")
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
-DATASOURCE = {"Nishfleet": "fleet-github", "nish3451": "fleet-github-personal"}
+DATASOURCE = {"Nishfleet": "fleet-github"}
 
 
 def _yq(expr, path):
@@ -64,7 +64,7 @@ def _query(rule):
     return next(d for d in rule["data"] if d["refId"] == "A")
 
 
-def test_each_rule_reads_one_main_workflow_through_its_owners_app_installation():
+def test_each_rule_reads_one_main_workflow_through_the_org_app_installation():
     rules = _all_rules()
     assert len({r["uid"] for r in rules}) == len(rules)
     for r in rules:

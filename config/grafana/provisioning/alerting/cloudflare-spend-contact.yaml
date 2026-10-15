@@ -28,7 +28,7 @@
 #   cloudflare-spend-delivery       the cost alarm could not file its issue
 #   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
 #   prompt-cache-hit                money: a route that stopped caching pays full price
-#   deploy-failed-24h (8 rules)     outage: a product's production deploy on main red for a day
+#   deploy-failed-24h (5 rules)     outage: a product's production deploy on main red for a day
 #                                   (deploy-failed files the fleet issue first)
 # Rules that file an issue instead: router-dead-row (fleet-owned router rows),
 # cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
