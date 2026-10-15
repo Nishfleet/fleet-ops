@@ -1,0 +1,296 @@
+# Production deploy failing on main.
+#
+# Why: production deploy workflows failed for days or weeks and nobody was told.
+# fleet-console-worker's deploy has failed on every run since 2026-09-07,
+# inish-mail-filter's has never succeeded, and TinyStudio's failed from
+# 2026-10-12. SiteDown only sees a homepage that stops answering, and an old
+# build keeps answering; the Hermes digest lists at most two broken workflows
+# and pages nobody.
+#
+# Signal: the stock GitHub data source (fleet-github and fleet-github-personal
+# in datasources/fleet.yaml, the nishfleet-worker App, read-only) lists the runs
+# of the repo's production deploy workflow on main in the last 7 days
+# (Workflow_Runs). A Grafana SQL expression keeps the newest finished run,
+# ignoring skipped and cancelled runs (concurrency cancels, and workflow_run
+# deploys that skip on a red CI), and reads 1 when it did not succeed, 0 when it
+# did. The SQL expression is the condition itself (format: alerting): Grafana
+# 13 refuses a SQL expression as the input of another expression, and a
+# non-zero value fires. No finished run in 7 days is NoData, which is OK.
+#
+# One rule per repo: the plugin reads its queries one after another, so one
+# rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
+# the App cannot read would blind every other repo. A rule that cannot evaluate
+# for 30 minutes turns into a DatasourceError alert on the same receiver, so a
+# broken query is loud too. The annotations name the repo as literal text (the
+# rule's own labels are not in the template data, and an error has no
+# $values), and `if $values` picks the failed-run text or the cannot-read text.
+#
+# 7 days, not longer: the plugin pages through every run in the window, and
+# 0509 deploys about 40 times a day. Measured 2026-10-15 against the live API
+# from the pinned image: 7 days of 0509 runs is 3 API pages in about 12 s, 30
+# days is 1000 runs in about 43 s. A workflow that failed and has not run since
+# keeps paging daily for 7 days.
+#
+# for: 30m at a 10m interval: a failed run that a rerun or the next push fixes
+# within half an hour does not page.
+#
+# Contact point: hermes-urgent (Telegram). A failed production deploy means the
+# live site is not running main: an outage of the release path. Re-sent once a
+# day while it lasts. tests/alert_routes_check.py lists these rules as urgent.
+#
+# Scope: the production deploy workflow of each live product repo. Left out:
+# TinyStudio.io-public (being wiped) and fleet-ops deploy-box (the box, not a
+# product). To cover a new product, copy one rule and change its uid, title,
+# labels, query and annotations; tests/test_deploy_failed_rule.py checks that
+# they agree.
+# Rule labels are plain strings: provisioning expands a $ in a label.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: deploy-failed
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: deploy-failed-0509
+        title: Production deploy failed Nishfleet/0509
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "0509"
+              options: {owner: Nishfleet, repository: "0509", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - &deploy-failed-latest
+            refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END AS failed
+                FROM A
+                WHERE status = 'completed' AND conclusion NOT IN ('skipped', 'cancelled')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/0509 did not succeed.{{ else }}The production deploy check for Nishfleet/0509 cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/0509/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/0509, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: &deploy-failed-notify
+          receiver: hermes-urgent
+          group_by: [alertname, grafana_folder, repo]
+          group_wait: 0s
+          group_interval: 5m
+          repeat_interval: 24h
+
+      - uid: deploy-failed-aiconverter-app
+        title: Production deploy failed Nishfleet/aiconverter-app
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "aiconverter-app"
+              options: {owner: Nishfleet, repository: "aiconverter-app", workflow: deploy.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy.yml on main in Nishfleet/aiconverter-app did not succeed.{{ else }}The production deploy check for Nishfleet/aiconverter-app cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/aiconverter-app/actions/workflows/deploy.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/aiconverter-app, workflow: deploy.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-drive
+        title: Production deploy failed Nishfleet/drive
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "drive"
+              options: {owner: Nishfleet, repository: "drive", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/drive did not succeed.{{ else }}The production deploy check for Nishfleet/drive cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/drive/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/drive, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-inish-site
+        title: Production deploy failed Nishfleet/inish-site
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "inish-site"
+              options: {owner: Nishfleet, repository: "inish-site", workflow: ci.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of ci.yml on main in Nishfleet/inish-site did not succeed.{{ else }}The production deploy check for Nishfleet/inish-site cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/inish-site/actions/workflows/ci.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/inish-site, workflow: ci.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-mailbox
+        title: Production deploy failed Nishfleet/mailbox
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "mailbox"
+              options: {owner: Nishfleet, repository: "mailbox", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/mailbox did not succeed.{{ else }}The production deploy check for Nishfleet/mailbox cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/mailbox/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/mailbox, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-siterep-public
+        title: Production deploy failed Nishfleet/siterep-public
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: "siterep-public"
+              options: {owner: Nishfleet, repository: "siterep-public", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/siterep-public did not succeed.{{ else }}The production deploy check for Nishfleet/siterep-public cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: Nishfleet/siterep-public, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-fleet-console-worker
+        title: Production deploy failed nish3451/fleet-console-worker
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github-personal
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github-personal}
+              queryType: Workflow_Runs
+              owner: nish3451
+              repository: "fleet-console-worker"
+              options: {owner: nish3451, repository: "fleet-console-worker", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in nish3451/fleet-console-worker did not succeed.{{ else }}The production deploy check for nish3451/fleet-console-worker cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/fleet-console-worker/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: nish3451/fleet-console-worker, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-inish-mail-filter
+        title: Production deploy failed nish3451/inish-mail-filter
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github-personal
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github-personal}
+              queryType: Workflow_Runs
+              owner: nish3451
+              repository: "inish-mail-filter"
+              options: {owner: nish3451, repository: "inish-mail-filter", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in nish3451/inish-mail-filter did not succeed.{{ else }}The production deploy check for nish3451/inish-mail-filter cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/inish-mail-filter/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: nish3451/inish-mail-filter, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify
+
+      - uid: deploy-failed-seo-fix-kit
+        title: Production deploy failed nish3451/seo-fix-kit
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-github-personal
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github-personal}
+              queryType: Workflow_Runs
+              owner: nish3451
+              repository: "seo-fix-kit"
+              options: {owner: nish3451, repository: "seo-fix-kit", workflow: deploy-production.yml, branch: main}
+              refId: A
+          - *deploy-failed-latest
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in nish3451/seo-fix-kit did not succeed.{{ else }}The production deploy check for nish3451/seo-fix-kit cannot read GitHub, so a failed deploy there would go unseen.{{ end }}'
+          description: '{{ if $values }}Production is not running main.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/seo-fix-kit/actions/workflows/deploy-production.yml?query=branch%3Amain'
+        labels: {signal: deploy-failed, repo: nish3451/seo-fix-kit, workflow: deploy-production.yml}
+        isPaused: false
+        notification_settings: *deploy-failed-notify

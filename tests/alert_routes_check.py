@@ -31,6 +31,10 @@ URGENT = {
     "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
     "OpenCode Go idle": "money", "Pareto idle": "money",
     "Alibaba token-plan SG idle": "money",
+    **{f"Production deploy failed {r}": "outage: the live site is not running main" for r in (
+        "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive", "Nishfleet/inish-site",
+        "Nishfleet/mailbox", "Nishfleet/siterep-public", "nish3451/fleet-console-worker",
+        "nish3451/inish-mail-filter", "nish3451/seo-fix-kit")},
 }
 PAGE = "hermes-urgent"
 ERR = ("DatasourceError", "DatasourceNoData")
