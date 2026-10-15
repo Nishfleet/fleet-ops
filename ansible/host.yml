@@ -811,6 +811,22 @@
             mode: "0600"
           when: not ansible_check_mode
           no_log: true
+          diff: false
+
+        - name: Read the Command Code login to compare it with the seat
+          become: true
+          become_user: nish
+          ansible.builtin.slurp:
+            src: "{{ commandcode_auth_file }}"
+          register: commandcode_login_text
+          when: not ansible_check_mode
+          no_log: true
+          diff: false
+
+        - name: Say that the Command Code login does not hold the seat's key
+          ansible.builtin.debug:
+            msg: "NOTE: {{ commandcode_auth_file }} does not contain the seat's key (a login made by cmd, or a rotated or revoked seat key); it is left alone. To take the seat's key, delete the file and the next run writes it."
+          when: not ansible_check_mode and commandcode_seat_key not in (commandcode_login_text.content | b64decode)
       rescue:
         - name: Warn that the Command Code login could not be set up
           ansible.builtin.debug:

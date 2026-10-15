@@ -47,6 +47,8 @@ NAMES = [STAT, READ, LOGIN, FINAL]
 DIR = "Create the Command Code login directory"
 WRITE = "Write the seat's key as the Command Code login unless a login file exists"
 MODE = "Keep the Command Code login at mode 0600, whatever key it holds"
+COMPARE = "Read the Command Code login to compare it with the seat"
+DRIFT = "does not contain the seat's key"
 ENV = {"PATH": "/usr/bin:/bin:/usr/local/bin", "ANSIBLE_NOCOLOR": "1"}
 
 
@@ -129,13 +131,13 @@ def _mode(path):
 def test_every_login_task_runs_as_nish_with_a_stock_module_and_hides_the_key():
     play, tasks, login = _loaded()
     slurp = tasks[READ]["block"][0]
-    for task in (tasks[STAT], slurp, login[DIR], login[WRITE], login[MODE]):
+    for task in (tasks[STAT], slurp, login[DIR], login[WRITE], login[MODE], login[COMPARE]):
         assert task.get("become") is True and task.get("become_user") == "nish", task["name"]
         assert "owner" not in json.dumps(task) and "group" not in json.dumps(task), task["name"]
         assert all(k.startswith("ansible.builtin.") for k in task if "." in k), task["name"]
-    for task in (slurp, login[WRITE], login[MODE]):
+    for task in (slurp, login[WRITE], login[MODE], login[COMPARE]):
         assert task["no_log"] is True, task["name"]
-    for task in (slurp, login[WRITE]):
+    for task in (slurp, login[WRITE], login[MODE], login[COMPARE]):
         assert task["diff"] is False, task["name"]
     assert login[WRITE]["ansible.builtin.copy"]["force"] is False
     assert login[WRITE]["ansible.builtin.copy"]["mode"] == "0600"
@@ -288,3 +290,20 @@ def test_a_check_mode_run_with_no_login_yet_stays_clean(tmp_path):
     assert "WARNING" not in out and "failed=0" in out
     assert not _auth(tmp_path).exists()
     assert "when" in _loaded()[2][MODE] and _loaded()[2][MODE]["when"] == "not ansible_check_mode"
+
+
+def test_a_login_that_does_not_hold_the_seat_key_is_noted_and_a_matching_one_is_silent(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _login(tmp_path, {"apiKey": OTHER, "userName": "nish"})
+    out = _run(tmp_path)
+    assert DRIFT in out and "NOTE:" in out
+    assert OTHER not in out and FAKE not in out
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": OTHER, "userName": "nish"}
+    assert DRIFT not in _run(tmp_path, extra=("--check",))
+    _auth(tmp_path).write_text(json.dumps({"apiKey": FAKE, "userId": "u"}))
+    assert DRIFT not in _run(tmp_path)
+
+
+def test_a_fresh_login_is_not_reported_as_drift(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    assert DRIFT not in _run(tmp_path)
