@@ -35,7 +35,8 @@ Description=Daily check of each router provider's model list against config/prov
 # IGNORE (an extended regex) drops ids a provider shows only to contributors or early-access
 # keys, so they are neither committed to this public repo nor named in an issue.
 # The EnvironmentFile= lines have a - so one retired seat file leaves that one provider
-# unchecked (a plain line says so) instead of stopping every provider.
+# checked: the unit still fails and pages for that provider (a plain line names it), but every
+# other provider is still checked.
 # A provider with "listing": "none" in the snapshot is skipped. A snapshot
 # entry may carry "watch", an extended regex: only ids matching it are compared (cline lists
 # a whole catalogue that changes weekly, so only its free, deepseek, z-ai and cline-own ids count). The issue body lists at
@@ -117,6 +118,7 @@ w=$$(jq -r ".[env.NAME].watch // empty" "$$CATALOG"); \
 if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
 jq -r ".[env.NAME].models // [] | .[]" "$$CATALOG" | LC_ALL=C sort -u > "$$d/snap"; \
 if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id has characters outside the allowed set (not printed), nothing filed"; bad=1; continue; fi; \
+if [ ! -s "$$d/ids" ]; then echo "provider-watch: $$name listing unavailable (no ids left after the filters), skipped; outages page through litellm_deployment_state"; continue; fi; \
 comm -13 "$$d/snap" "$$d/ids" > "$$d/add"; comm -23 "$$d/snap" "$$d/ids" > "$$d/del"; \
 na=$$(wc -l < "$$d/add"); nr=$$(wc -l < "$$d/del"); cnt=$$(wc -l < "$$d/ids"); \
 if [ "$$na" -eq 0 ] && [ "$$nr" -eq 0 ]; then echo "provider-watch: $$name ok, $$cnt models"; continue; fi; \

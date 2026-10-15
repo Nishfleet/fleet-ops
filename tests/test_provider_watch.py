@@ -549,3 +549,20 @@ def test_the_inline_script_passes_shellcheck():
     script = _exec_start()[2]
     r = subprocess.run([tool, "-s", "bash", "-"], input="#!/bin/bash\n" + script + "\n", capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout
+
+
+def test_every_router_row_with_a_key_has_an_https_api_base():
+    config = (ROOT / "config/litellm-proxy.yaml").read_text()
+    rows = re.findall(r"api_base:\s*(\S+)\s*\n\s*api_key:\s*os\.environ/", config)
+    assert rows
+    for base in rows:
+        assert base.startswith("https://"), base
+
+
+def test_a_listing_that_is_empty_after_the_filters_is_skipped(box):
+    box.catalog({"alpha": {"watch": "^zzz", "models": ["zzz1"]}, "beta": {"models": ["b1"]}})
+    box.serve("alpha.test", ["a1", "a2"])
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "provider-watch: alpha listing unavailable (no ids left after the filters), skipped" in r.stdout
+    assert box.log("gh.log") == ""

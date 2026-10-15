@@ -891,8 +891,8 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   so the human gh login is never read.
 - fleet-ops is public, so ids that look contributor-only or early-access (`IGNORE` in the unit:
   `contributor|stealth|alpha`) are dropped before the compare and never reach the snapshot or an issue.
-- A seat key file missing on the host leaves that one provider unchecked with a plain line
-  (`EnvironmentFile=-`), and CI fails if a router key has no line in the unit.
+- A seat key file missing on the host fails the unit with a plain line naming that provider
+  while every other provider is still checked (`EnvironmentFile=-`), and CI fails if a router key has no line in the unit.
 - Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing
   endpoint (a provider with no listing endpoint); `"watch": "<ERE>"` compares only ids that
   match it. Cline lists a whole catalogue that changes about weekly, so it watches only
