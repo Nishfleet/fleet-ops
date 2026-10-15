@@ -109,6 +109,13 @@
 {{ nish_home }}/workspaces/products/**/*.tar
 {{ nish_home }}/workspaces/products/**/*.zip
 {{ nish_home }}/workspaces/products/**/*.bak
+{{ nish_home }}/workspaces/products/**/*.xz
+{{ nish_home }}/workspaces/products/**/*.bz2
+{{ nish_home }}/workspaces/products/**/*.zst
+{{ nish_home }}/workspaces/products/**/*.7z
+{{ nish_home }}/workspaces/products/**/*.old
+{{ nish_home }}/workspaces/products/**/*.orig
+{{ nish_home }}/workspaces/products/**/*.backup
 
 # Python caches.
 /home/nish/__pycache__
