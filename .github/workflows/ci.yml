@@ -144,7 +144,7 @@ jobs:
         run: |
           shopt -s nullglob
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
-      - name: GitHub App token unit mints and refreshes (fleet-ops#9445)
+      - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
         # verifies the RS256 App JWT and the token request body the way GitHub
@@ -185,7 +185,7 @@ jobs:
           if grep -q 'bad-jwt\|bad-body\|unknown' "$d/log"; then echo "::error::stub rejected the unit's requests"; cat "$d/log"; exit 1; fi
           if sudo journalctl -u fleet-token-ci.service --no-pager | grep -q 'ghs_stub\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
           cat "$d/log"
-          echo "GitHub App token unit: minted, refreshed, kept the old token on failure, left no secret in the journal"
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_worker_github_token.py
       - name: Grafana token wiring is consistent across unit, quadlet and contact points
         # The unit's RuntimeDirectory, the quadlet's mount and the $__file{} path
         # in the contact points must name the same directory, and Grafana must
@@ -255,7 +255,7 @@ jobs:
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py
       - name: needs-triage admission (Jev verdict, then queue)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
@@ -707,7 +707,7 @@ jobs:
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
           test "$bad" -eq 0
-      - name: Sweep moves PRs waiting over an hour (STUCK)
+      - name: Sweep moves PRs waiting over 15 minutes (STUCK)
         # Runs the stuck-prs job's own STUCK program, read out of the workflow,
         # against every case in config/stuck-pr-cases.json. The grep lines pin
         # the wiring: the verdict feeds the four lists, each list starts its
@@ -734,15 +734,15 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
-        # Runs the list job's own script against a mock gh whose claim PR
-        # #8002 points at deleted issue #9502, the shape that stopped every
-        # sweep: gh api answers 410 and gh issue view cannot resolve the
-        # number, so the empty comments went into --argjson, jq died, and the
-        # job exited 1 with no refs written, skipping every dispatch job
-        # downstream. The sweep must now exit 0, name the issue it skipped,
-        # and still pick the red PR and both queued issues.
+        # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
+        # issue #9502, the shape that stopped every sweep: gh api answers 410 and gh issue view
+        # cannot resolve the number, so the empty comments went into --argjson, jq died, and the
+        # job exited 1 with no refs written, skipping every dispatch job downstream. The sweep
+        # must now exit 0, name the issue it skipped, and still pick the red PR (its issue carries
+        # 180 KB of comments, over the 131072-byte argument limit) and both queued issues.
         if: always()
         run: |
           set -euo pipefail
@@ -774,7 +774,7 @@ jobs:
             "issue view 9502"*)
               echo "GraphQL: Could not resolve to an issue or pull request with the number of 9502. (repository.issue)" >&2
               exit 1 ;;
-            "issue view"*) echo '{"comments":[]}' | emit ;;
+            "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
             "pr list "*--head*) echo '0' | emit ;;
             "pr list"*) serve "$d/prs.json" ;;
             "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
@@ -794,7 +794,7 @@ jobs:
           chmod +x "$t/bin/gh"
           jq -n '{number:7001,created_at:"2026-10-01T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7001.json"
           jq -n '{number:7002,created_at:"2026-10-02T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7002.json"
-          jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
+          jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",body:("y" * 140000),issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
           jq -n '[{number:7001,headRefName:"claim/issue-7001",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
                   {number:8001,headRefName:"claim/issue-7003",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
                   {number:8002,headRefName:"claim/issue-9502",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[{name:"needs-coordinator"}]}]' > "$t/data/prs.json"
@@ -1138,6 +1138,7 @@ jobs:
           yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
+          ! grep -q 'vnd.github.diff' "$t/review.sh" || { echo "the review step reads the diff through the diff API"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
@@ -1155,7 +1156,7 @@ jobs:
                 1) echo .github/workflows/new.yml ;;
                 *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;;
               esac ;;
-            *"Accept: application/vnd.github.diff"*) printf 'diff --git a/x b/x\n+x\n' ;;
+            *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
               echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
@@ -1197,7 +1198,7 @@ jobs:
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1
           printf '%b\n' "$FIRST"
           MOCK
-          printf '#!/usr/bin/env bash\nexit 1\n' > "$t/bin/git"
+          printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git" "$t/bin/claude"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y
@@ -1230,7 +1231,7 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
             case $extra in
@@ -1272,7 +1273,7 @@ jobs:
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
@@ -1330,6 +1331,8 @@ jobs:
           other-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 senior
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
           claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
+          diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
+          diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
           CASES
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
