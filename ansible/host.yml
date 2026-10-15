@@ -89,6 +89,13 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+    nish_config: "{{ nish_home }}/.config"
+    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
+    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
+    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
+    commandcode_identity_keys: [userId, userName, keyName, authenticatedAt]
+    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - name: Check the prometheus config before installing it
@@ -747,6 +754,109 @@
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
+
+    - name: Look for the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.stat:
+        path: "{{ commandcode_seat_file }}"
+      register: commandcode_seat_stat
+
+    - name: Read the Command Code seat (an unreadable seat is a warning, not a silent skip)
+      when: commandcode_seat_stat.stat.exists
+      block:
+        - name: Slurp the Command Code seat
+          become: true
+          become_user: nish
+          ansible.builtin.slurp:
+            src: "{{ commandcode_seat_file }}"
+          register: commandcode_seat
+          no_log: true
+          diff: false
+      rescue:
+        - name: Warn that the Command Code seat exists but cannot be read
+          ansible.builtin.debug:
+            msg: "WARNING: {{ commandcode_seat_file }} exists but could not be read; cmd keeps whatever login it has"
+
+    - name: Log Command Code in from the seat (a problem with the login is a warning and the file is left alone)
+      when: commandcode_seat_key != ''
+      block:
+        - name: Create the Command Code login directory
+          become: true
+          become_user: nish
+          ansible.builtin.file:
+            path: "{{ commandcode_auth_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Look for the Command Code login
+          become: true
+          become_user: nish
+          ansible.builtin.stat:
+            path: "{{ commandcode_auth_file }}"
+          register: commandcode_auth_stat
+
+        - name: Start from an empty Command Code login
+          ansible.builtin.set_fact:
+            commandcode_parsed: {}
+
+        - name: Parse the Command Code login (one that cannot be read or parsed is left alone)
+          when: commandcode_auth_stat.stat.exists
+          block:
+            - name: Read the Command Code login
+              become: true
+              become_user: nish
+              ansible.builtin.slurp:
+                src: "{{ commandcode_auth_file }}"
+              register: commandcode_auth
+              no_log: true
+              diff: false
+
+            - name: Decode the Command Code login as a JSON object
+              ansible.builtin.set_fact:
+                commandcode_parsed: "{{ commandcode_auth.content | b64decode | from_json }}"
+              no_log: true
+
+            - name: Require the Command Code login to be a JSON object
+              ansible.builtin.assert:
+                that: commandcode_parsed is mapping
+                quiet: true
+              no_log: true
+          rescue:
+            - name: Leave the unreadable Command Code login alone
+              ansible.builtin.set_fact:
+                commandcode_parsed: null
+
+            - name: Warn that the Command Code login was left alone
+              ansible.builtin.debug:
+                msg: "WARNING: {{ commandcode_auth_file }} is not a readable JSON object; leaving it alone, so cmd keeps whatever login it has. Fix or delete the file and the next run writes the seat's key."
+
+        - name: Store the seat's key as the Command Code login when it has none (a login cmd made is never replaced)
+          become: true
+          become_user: nish
+          ansible.builtin.copy:
+            content: "{{ commandcode_next | to_nice_json(indent=2) }}\n"
+            dest: "{{ commandcode_auth_file }}"
+            mode: "0600"
+          vars:
+            commandcode_kept: "{{ commandcode_parsed | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
+            commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
+          when: commandcode_parsed is mapping and commandcode_parsed.apiKey | default('', true) == ''
+          no_log: true
+          diff: false
+
+        - name: Keep an existing Command Code login at mode 0600, whatever key it holds
+          become: true
+          become_user: nish
+          ansible.builtin.file:
+            path: "{{ commandcode_auth_file }}"
+            mode: "0600"
+          when: commandcode_auth_stat.stat.exists
+          no_log: true
+      rescue:
+        - name: Warn that the Command Code login could not be set up
+          ansible.builtin.debug:
+            msg: "WARNING: could not set up the Command Code login in {{ commandcode_auth_dir }} (step: {{ ansible_failed_task.name | default('unknown') }}); the rest of the run continues"
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
