@@ -746,7 +746,7 @@ jobs:
                   esac
                   comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
                   verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
-                    '{pr: $pr[0], issue: $issue[0], comments: $comments[0]}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                    '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
                     status=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
@@ -942,7 +942,7 @@ jobs:
               echo "::warning::#$n: checks or comments unreadable, skipped"
               errs=$((errs + 1)); continue
             fi
-            v=$(jq -nc --slurpfile pr <(printf '%s' "$p") --slurpfile comments <(printf '%s' "$comments") --slurpfile red <(printf '%s' "$red") '{pr: $pr[0], comments: $comments[0], red: $red[0]}' |
+            v=$(jq -nc --slurpfile pr <(printf '%s' "$p") --slurpfile comments <(printf '%s' "$comments") --slurpfile red <(printf '%s' "$red") '{pr: ($pr[0] | objects // error("pr")), comments: ($comments[0] | arrays // error("comments")), red: ($red[0] | arrays // error("red"))}' |
               jq -c --arg who "$APPROVERS" "$STUCK") || { echo "::warning::#$n: verdict failed, skipped"; errs=$((errs + 1)); continue; }
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
