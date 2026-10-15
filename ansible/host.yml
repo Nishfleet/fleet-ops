@@ -724,6 +724,25 @@
       when: codex_config.stat.exists and codex_config.stat.isreg
       diff: false
 
+    # Codex loads every *.rules file in ~/.codex/rules/ at start. config.toml
+    # is left to Codex; this file only adds forbidden commands, which reject
+    # without a prompt under any approval policy.
+    - name: Create Codex's rules directory
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ nish_home }}/.codex/rules"
+        state: directory
+        mode: "0755"
+
+    - name: Install the Codex execpolicy floor
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../config/codex/rules/fleet-floor.rules"
+        dest: "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+        mode: "0644"
+
     - name: Read Hermes' config
       become: true
       become_user: nish

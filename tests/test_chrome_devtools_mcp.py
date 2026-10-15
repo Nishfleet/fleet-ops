@@ -127,7 +127,12 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 assert "owner" not in module and "group" not in module, name
     for task in PLAY["tasks"]:
         if "nish_home" in json.dumps(task) and task["name"] not in USER_FILE_TASKS:
-            assert task["name"] in ("Create the OpenCode managed config directory", "Install the OpenCode managed config"), task["name"]
+            assert task["name"] in (
+                "Create the OpenCode managed config directory",
+                "Install the OpenCode managed config",
+                "Create Codex's rules directory",
+                "Install the Codex execpolicy floor",
+            ), task["name"]
 
 
 def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_assert():
