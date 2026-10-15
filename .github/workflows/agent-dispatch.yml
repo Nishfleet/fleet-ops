@@ -745,10 +745,7 @@ jobs:
                     *) exit 1 ;;
                   esac
                   comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
-                  printf '%s\n' "$v" > "$RUNNER_TEMP/red-pr.json"
-                  printf '%s\n' "$issue" > "$RUNNER_TEMP/red-issue.json"
-                  printf '%s\n' "$comments" > "$RUNNER_TEMP/red-comments.json"
-                  verdict=$(jq -nc --slurpfile pr "$RUNNER_TEMP/red-pr.json" --slurpfile issue "$RUNNER_TEMP/red-issue.json" --slurpfile comments "$RUNNER_TEMP/red-comments.json" \
+                  verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
                     '{pr: $pr[0], issue: $issue[0], comments: $comments[0]}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
@@ -939,21 +936,14 @@ jobs:
               esac
             fi
             # One unreadable PR is skipped, never fatal to the sweep (the
-            # fleet-ops#9553 lesson); every PR unreadable fails it below.
+            # fleet-ops#9553 lesson); any skipped PR fails the job at the end.
             if ! jq -e 'type == "array"' <<<"$red" >/dev/null 2>&1 ||
               ! comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" | jq -sc 'add // []'); then
               echo "::warning::#$n: checks or comments unreadable, skipped"
               errs=$((errs + 1)); continue
             fi
-            printf '%s\n' "$p" > "$RUNNER_TEMP/stuck-pr.json"
-            printf '%s\n' "$comments" > "$RUNNER_TEMP/stuck-comments.json"
-            printf '%s\n' "$red" > "$RUNNER_TEMP/stuck-red.json"
-            if ! v=$(jq -nc --slurpfile pr "$RUNNER_TEMP/stuck-pr.json" --slurpfile comments "$RUNNER_TEMP/stuck-comments.json" --slurpfile red "$RUNNER_TEMP/stuck-red.json" \
-              '{pr: $pr[0], comments: $comments[0], red: $red[0]}' | jq -c --arg who "$APPROVERS" "$STUCK") ||
-              ! jq -e '.class | IN("arm", "review", "stuck")' <<<"$v" >/dev/null 2>&1; then
-              echo "::warning::#$n: verdict failed, skipped"
-              errs=$((errs + 1)); continue
-            fi
+            v=$(jq -nc --slurpfile pr <(printf '%s' "$p") --slurpfile comments <(printf '%s' "$comments") --slurpfile red <(printf '%s' "$red") '{pr: $pr[0], comments: $comments[0], red: $red[0]}' |
+              jq -c --arg who "$APPROVERS" "$STUCK") || { echo "::warning::#$n: verdict failed, skipped"; errs=$((errs + 1)); continue; }
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
@@ -1024,9 +1014,7 @@ jobs:
   # not dropped, so the next hourly start still finds every PR.
   stuck-review:
     needs: stuck-prs
-    if: >-
-      !cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1042,9 +1030,7 @@ jobs:
       review_sha: ${{ matrix.x.sha }}
   stuck-arm:
     needs: stuck-prs
-    if: >-
-      !cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'"
     strategy:
       fail-fast: false
       # An arm takes seconds, but on a [self-hosted, agent] slot a worker could use.
@@ -1060,9 +1046,7 @@ jobs:
       arm_sha: ${{ matrix.x.sha }}
   stuck-rework:
     needs: stuck-prs
-    if: >-
-      !cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'"
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
@@ -1076,9 +1060,7 @@ jobs:
       ref: ${{ matrix.ref }}
   stuck-file:
     needs: stuck-prs
-    if: >-
-      !cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 4

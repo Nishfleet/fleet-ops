@@ -256,12 +256,6 @@ jobs:
         # touching a file.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py
-      - name: stuck-prs sweep survives a comments JSON over the argument limit and one failed verdict
-        # Runs the stuck-prs job's own run block and STUCK program, read out of
-        # agent-dispatch.yml, against a fake gh: 139 KB of comments on one PR,
-        # then a PR whose verdict errors between two that arm.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py
       - name: needs-triage admission (Jev verdict, then queue)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
@@ -740,15 +734,15 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
-        # Runs the list job's own script against a mock gh whose claim PR
-        # #8002 points at deleted issue #9502, the shape that stopped every
-        # sweep: gh api answers 410 and gh issue view cannot resolve the
-        # number, so the empty comments went into --argjson, jq died, and the
-        # job exited 1 with no refs written, skipping every dispatch job
-        # downstream. The sweep must now exit 0, name the issue it skipped,
-        # and still pick the red PR and both queued issues.
+        # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
+        # issue #9502, the shape that stopped every sweep: gh api answers 410 and gh issue view
+        # cannot resolve the number, so the empty comments went into --argjson, jq died, and the
+        # job exited 1 with no refs written, skipping every dispatch job downstream. The sweep
+        # must now exit 0, name the issue it skipped, and still pick the red PR (its issue carries
+        # 180 KB of comments, over the 131072-byte argument limit) and both queued issues.
         if: always()
         run: |
           set -euo pipefail
@@ -780,7 +774,7 @@ jobs:
             "issue view 9502"*)
               echo "GraphQL: Could not resolve to an issue or pull request with the number of 9502. (repository.issue)" >&2
               exit 1 ;;
-            "issue view"*) n=${args#view }; n=${n%% *}; if [ -f "$d/comments-$n.json" ]; then serve "$d/comments-$n.json"; else echo '{"comments":[]}' | emit; fi ;;
+            "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
             "pr list "*--head*) echo '0' | emit ;;
             "pr list"*) serve "$d/prs.json" ;;
             "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
@@ -801,7 +795,6 @@ jobs:
           jq -n '{number:7001,created_at:"2026-10-01T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7001.json"
           jq -n '{number:7002,created_at:"2026-10-02T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7002.json"
           jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",body:("y" * 140000),issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
-          jq -n '{comments:[range(0; 3) | {body:("x" * 60000), createdAt:"2026-10-01T00:00:00Z"}]}' > "$t/data/comments-7003.json"
           jq -n '[{number:7001,headRefName:"claim/issue-7001",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
                   {number:8001,headRefName:"claim/issue-7003",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
                   {number:8002,headRefName:"claim/issue-9502",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[{name:"needs-coordinator"}]}]' > "$t/data/prs.json"
