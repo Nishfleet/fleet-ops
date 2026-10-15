@@ -77,6 +77,8 @@ def selftest():
     assert route(tree, {"x": "2"}) == {"b"}
     assert route(tree, {"x": "3"}) == {"root"}
     assert route(tree, {"x": "11"}) == {"root"}  # =~ is anchored
+    assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
+    assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
 
 
 def main(root):
@@ -93,6 +95,8 @@ def main(root):
     assert policy, "no notification policy found"
     paging = {}
     for r in rules:
+        for k, v in (r.get("labels") or {}).items():
+            assert not re.search(r"\$[A-Za-z_{]", str(v).replace("$$", "")), f"{r['title']}: label {k} has an unescaped $ that Grafana provisioning expands before the template runs (write $$labels or drop the label)"
         own = (r.get("notification_settings") or {}).get("receiver")
         reached = set()
         for alertname in (r["title"], *ERR):

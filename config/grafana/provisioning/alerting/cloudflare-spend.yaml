@@ -9,18 +9,15 @@
 # policy in cloudflare-spend-contact.yaml; hermes-urgent is the fallback.
 #
 # Thresholds (Nish, 2026-10-07):
-#   AI neurons, D1 rows read and written, email sends: the last hour is more
+#   AI neurons, D1 rows read, email sends: the last hour is more
 #   than 3x the pro-rated hourly allowance, or more than 3x the 7-day hourly
 #   median of the hours that had any usage. Allowances per hour:
 #     Workers AI 10,000 neurons/day free -> 416.67
 #     D1 reads 25B/month, writes 50M/month (Workers Paid) -> 34,246,575 and 68,493
 #     email 3,000/month (Workers Paid) -> 4.11
-#   D1 rows written only: the median clause also needs the last hour over an
-#   absolute 10,000 rows/h (fleet-ops#9446: a 2,478-row hour tripped a tiny
-#   median with no leak; normal peaks are ~4,110 rows/h, drill peaks ~6M/h).
-#   Accepted blind spot: a real leak that stays under 10,000 rows/h on a
-#   near-zero median stays silent; bounded at ~7.3M rows/month, about 15%
-#   of the 50M monthly allowance.
+#   D1 rows written is not on this 3x scheme any more: it has its own group at
+#   the end of this file, a flat line of 50,000 rows in the last 60 minutes,
+#   evaluated every 10 minutes (Nish, 2026-10-15; see the comment there).
 #   Workers AI only (fleet-ops#9576): the 3x free-allowance line is
 #   meaningless for this product, because 0509's judge is designed paid
 #   usage (@cf/cloudflare/clef, 2026-10-03): the steady state is ~1.4k
@@ -270,89 +267,6 @@ groups:
           top: 'D1 database {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: d1-rows-read}
         isPaused: false
-      - uid: cf-d1-rows-written
-        title: Cloudflare D1 rows written
-        condition: F
-        data:
-          - refId: A
-            relativeTimeRange: {from: 3600, to: 0}
-            datasourceUid: fleet-cloudflare
-            model:
-              <<: *cf-last-hour-total
-              refId: A
-              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
-              columns: [{selector: sum.rowsWritten, text: value, type: number}]
-              url_options:
-                method: POST
-                body_type: graphql
-                body_content_type: application/json
-                body_graphql_query: |-
-                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { rowsWritten } }
-                  } } }
-          - refId: B
-            relativeTimeRange: {from: 604800, to: 0}
-            datasourceUid: fleet-cloudflare
-            model:
-              <<: *cf-last-hour-total
-              refId: B
-              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
-              columns:
-                - {selector: dimensions.datetimeHour, text: time, type: timestamp}
-                - {selector: sum.rowsWritten, text: value, type: number}
-              url_options:
-                method: POST
-                body_type: graphql
-                body_content_type: application/json
-                body_graphql_query: |-
-                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { datetimeHour } sum { rowsWritten } }
-                  } } }
-          - refId: T
-            relativeTimeRange: {from: 3600, to: 0}
-            datasourceUid: fleet-cloudflare
-            model:
-              <<: *cf-last-hour-total
-              refId: T
-              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
-              columns:
-                - {selector: dimensions.databaseId, text: resource, type: string}
-                - {selector: sum.rowsWritten, text: value, type: number}
-              url_options:
-                method: POST
-                body_type: graphql
-                body_content_type: application/json
-                body_graphql_query: |-
-                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
-                    d1AnalyticsAdaptiveGroups(limit: 1, orderBy: [sum_rowsWritten_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { databaseId } sum { rowsWritten } }
-                  } } }
-          - {refId: C, datasourceUid: __expr__, model: {<<: *cf-median}}
-          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
-          - refId: E
-            datasourceUid: __expr__
-            model:
-              datasource: {type: __expr__, uid: __expr__}
-              type: math
-              refId: E
-              # The 10,000 floor (fleet-ops#9446): a 2,478-row hour on a
-              # 2-row/h median tripped the clause with no real leak. Normal
-              # peaks are ~4,110 rows/h; the 2026-09-13 drill peak was ~6M/h.
-              expression: ($D > 3 * 68493) || ($C > 0 && $D > 3 * $C && $D > 10000)
-          - refId: R
-            datasourceUid: __expr__
-            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
-          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
-        noDataState: OK
-        execErrState: Error
-        for: 0s
-        annotations:
-          summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last hour'
-          description: 'The 3x line is the larger signal of 205,479 rows/h (3 x the pro-rated 50M/month allowance) and 3 x the 7-day hourly median ({{ $values.C.Value | printf "%.0f" }}) above an absolute 10,000 rows/h floor. The 2026-09-13 restore drills wrote about 145M rows in a day.'
-          value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last hour'
-          threshold: 'over 205,479 rows/h (3 x allowance), or over 3 x the 7-day hourly median when that is also over 10,000 rows/h'
-          top: 'D1 database {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: d1-rows-written}
-        isPaused: false
       - uid: cf-email-sends
         title: Cloudflare email sends
         condition: F
@@ -553,4 +467,83 @@ groups:
           threshold: 'over 2 GB growth in 24 hours'
           top: 'bucket {{ $labels.resource }}'
         labels: {signal: cloudflare-spend, product: r2-storage}
+        isPaused: false
+
+  # D1 write spike (Nish, 2026-10-15). A flat line, not the 3x scheme above: on
+  # 2026-10-15 the 16:00Z hour wrote 205,124 rows, just under the old 3 x
+  # allowance line (205,479), and only the 7-day-median clause caught it, 46
+  # minutes into the hour because the group above evaluates hourly. Normal
+  # account-wide peaks over the last 30 days are up to ~27,000 rows/h (0509
+  # production e2e and its daily cron); the bad hours were 331k to 426k
+  # (2026-09-14..19 restore drills), 139k (2026-09-28) and 205k (2026-10-15).
+  # 50,000 sits between them. The window is the trailing 60 minutes, checked
+  # every 10 minutes, so a spike pages within ~10 minutes. The Telegram text is
+  # summary + description only (hermes-urgent), so the top database id is in the
+  # description. To switch it off: set isPaused: true on this rule, or change
+  # 50000 in expression E and in the two annotations that print it.
+  - orgId: 1
+    name: cloudflare-d1-write-spike
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: cf-d1-rows-written
+        title: Cloudflare D1 rows written
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns: [{selector: sum.rowsWritten, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 10000, filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { sum { rowsWritten } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].d1AnalyticsAdaptiveGroups
+              columns:
+                - {selector: dimensions.databaseId, text: resource, type: string}
+                - {selector: sum.rowsWritten, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    d1AnalyticsAdaptiveGroups(limit: 1, orderBy: [sum_rowsWritten_DESC], filter: {datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { databaseId } sum { rowsWritten } }
+                  } } }
+          - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
+          - refId: E
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: math
+              refId: E
+              expression: $D > 50000
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'D1 wrote {{ $values.D.Value | printf "%.0f" }} rows in the last 60 minutes (line: 50,000)'
+          description: 'Top database writing: {{ $labels.resource }}. Normal peaks are up to ~27,000 rows/h; the 2026-09-14..19 restore drills wrote 331k to 426k rows/h.'
+          value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last 60 minutes'
+          threshold: 'over 50,000 rows in the last 60 minutes'
+          top: 'D1 database {{ $labels.resource }}'
+        labels: {signal: cloudflare-spend, product: d1-rows-written}
         isPaused: false

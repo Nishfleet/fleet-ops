@@ -163,11 +163,10 @@ groups:
           description: 'Less than half of this model''s input tokens came back from the provider prompt cache for an hour, on {{ $values.B.Value | printf "%.0f" }} input tokens/s. Every cache miss is billed at the full input price, so a route that stopped caching is a cost incident, not a latency one. Check whether the deployment still reports usage.prompt_tokens_details.cached_tokens (an OpenAI-compatible vendor that stops sending it looks exactly like this), and whether a prefix change broke the provider-side cache. Per-vendor verdicts: docs/prompt-cache-routes.md.'
         labels:
           signal: prompt-cache-hit
-          requested_model: '{{ $labels.requested_model }}'
         isPaused: false
         notification_settings:
           receiver: hermes-urgent
           group_by: [alertname, grafana_folder, requested_model]
           group_wait: 0s
           group_interval: 5m
-          repeat_interval: 4h
+          repeat_interval: 24h
