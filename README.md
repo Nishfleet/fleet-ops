@@ -118,6 +118,21 @@ script, or prompt lands unseen.
   TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
+- `systemd/later-sweep.service` and `systemd/later-sweep.timer` — promote an
+  issue to `agent-ready` once the `due: <date> <time> IST` line in its body has
+  passed, every 15 minutes, in the repos `config/intake-repos.json` enrols. A
+  one-shot transient `later-*` timer is lost when the user manager restarts, so
+  an issue due later the same day sat unread for a day (fleet-ops#9376); a
+  persistent timer cannot be lost that way. One `gh issue list` per repo, then
+  one `gh issue edit --add-label agent-ready` per promoted issue, at most five a
+  run. Each list is the repo's 300 newest open issues, so a repo that carries
+  more open issues than that is swept only inside that window. `jq` makes the
+  whole decision, so no model reads an issue body and there is no session to
+  jail: only an issue authored by `nish3451` or the worker App is promoted, and
+  an issue that already carries `agent-ready` or any park label is skipped.
+  `fleet-sync.service` step 2f links and enables it on every deploy. Off switch:
+  remove that step and its enable line, then `systemctl --user disable --now
+  later-sweep.timer`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
   page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
   revoked or not `nish3451`. The path unit checks on every change to
@@ -686,7 +701,8 @@ symlinks to it from `~/.config/systemd/user/`, `~/.local/bin/`, or
 agent-dispatch. It is the single source of truth for which
 repos are enrolled — adding or removing a repo is a PR against that file, not a
 `systemctl enable`. This replaces the old imperative enrolment that was
-silently reverted without a record (fleet-ops#32).
+silently reverted without a record (fleet-ops#32). `later-sweep.service` reads
+this list too, so the overdue sweep follows enrolment without a second list.
 
 Each enrolled repo needs three preconditions:
 
