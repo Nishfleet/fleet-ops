@@ -5,7 +5,7 @@ import pathlib
 CFG = json.loads((pathlib.Path(__file__).parent.parent / "config" / "intake-repos.json").read_text())
 ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"] for r in CFG["deferred"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app")
+NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card")
 
 
 def test_new_product_repos_are_admitted():
