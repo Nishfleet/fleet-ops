@@ -125,12 +125,14 @@ script, or prompt lands unseen.
   an issue due later the same day sat unread for a day (fleet-ops#9376); a
   persistent timer cannot be lost that way. One `gh issue list` per repo, then
   one `gh issue edit --add-label agent-ready` per promoted issue, at most five a
-  run. `jq` makes the whole decision, so no model reads an issue body and there
-  is no session to jail: only an issue authored by `nish3451` or the worker App
-  is promoted, and an issue that already carries `agent-ready` or any park label
-  is skipped. `fleet-sync.service` step 2f links and enables it on every deploy.
-  Off switch: remove that step and its enable line, then `systemctl --user
-  disable --now later-sweep.timer`.
+  run. Each list is the repo's 300 newest open issues, so a repo that carries
+  more open issues than that is swept only inside that window. `jq` makes the
+  whole decision, so no model reads an issue body and there is no session to
+  jail: only an issue authored by `nish3451` or the worker App is promoted, and
+  an issue that already carries `agent-ready` or any park label is skipped.
+  `fleet-sync.service` step 2f links and enables it on every deploy. Off switch:
+  remove that step and its enable line, then `systemctl --user disable --now
+  later-sweep.timer`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
   page through `fleet-unit-failed@`, when the box's github.com gh login is gone,
   revoked or not `nish3451`. The path unit checks on every change to
