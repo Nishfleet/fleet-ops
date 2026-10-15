@@ -89,18 +89,13 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    commandcode_shell_files:
-      - "{{ nish_home }}/.zshenv"
-      - "{{ nish_home }}/.bashrc"
-    commandcode_seat_file: "{{ nish_home }}/.config/fleet-ops/seats/commandcode.env"
-    litellm_live_config: "{{ nish_home }}/.config/fleet-ops/litellm-proxy.yaml"
-    commandcode_seat_line_re: '^(?:#.*|(?:export +)?[A-Za-z_][A-Za-z0-9_]*=["'']?[A-Za-z0-9_.:/+=@%,-]*["'']?|)$'
-    commandcode_shell_block: |
-      if [ -r "$HOME/.config/fleet-ops/seats/commandcode.env" ]; then
-        set -a
-        . "$HOME/.config/fleet-ops/seats/commandcode.env"
-        set +a
-      fi
+    nish_config: "{{ nish_home }}/.config"
+    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
+    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
+    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
+    commandcode_identity_keys: [userId, userName, keyName, authenticatedAt]
+    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - name: Check the prometheus config before installing it
@@ -758,66 +753,72 @@
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
-    - name: Look for the Command Code seat
-      become: true
-      become_user: nish
-      ansible.builtin.stat:
-        path: "{{ commandcode_seat_file }}"
-      register: commandcode_seat
-
     - name: Read the Command Code seat
       become: true
       become_user: nish
       ansible.builtin.slurp:
         src: "{{ commandcode_seat_file }}"
-      register: commandcode_seat_text
-      when: commandcode_seat.stat.exists
-      no_log: true
-      diff: false
-
-    - name: Require the Command Code seat to hold only NAME=VALUE lines (shells source it)
-      ansible.builtin.assert:
-        that: commandcode_seat_text.content | b64decode | trim | split('\n') | reject('match', commandcode_seat_line_re) | list | length == 0
-        quiet: true
-        fail_msg: the Command Code seat has a line that is not a comment, a blank or NAME=VALUE with a plain value
-      when: commandcode_seat.stat.exists
-      no_log: true
-
-    - name: Rename COMMANDCODE_API_KEY to COMMAND_CODE_API_KEY in the Command Code seat
-      become: true
-      become_user: nish
-      ansible.builtin.replace:
-        path: "{{ commandcode_seat_file }}"
-        regexp: '^(export +)?COMMANDCODE_API_KEY='
-        replace: '\1COMMAND_CODE_API_KEY='
-      register: commandcode_seat_renamed
-      when: commandcode_seat.stat.exists
-      no_log: true
-      diff: false
-
-    - name: Look for the new name in the live LiteLLM config
-      become: true
-      become_user: nish
-      ansible.builtin.command:
-        argv: [/usr/bin/grep, -qF, "os.environ/COMMAND_CODE_API_KEY", "{{ litellm_live_config }}"]
-      register: litellm_live_new_name
-      changed_when: false
+      register: commandcode_seat
       failed_when: false
+      no_log: true
+      diff: false
 
-    - name: Restart the LiteLLM proxy so it reads the renamed seat line
-      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host try-restart fleet-litellm-proxy.service
-      when: commandcode_seat_renamed is changed and litellm_live_new_name.rc == 0
-
-    - name: Export the Command Code seat in nish's zsh and bash startup files
+    - name: Create the Command Code login directory
       become: true
       become_user: nish
-      ansible.builtin.blockinfile:
-        path: "{{ item }}"
-        create: true
-        insertbefore: BOF
-        marker: "# {mark} fleet-ops: Command Code seat for cmd"
-        block: "{{ commandcode_shell_block }}"
-      loop: "{{ commandcode_shell_files }}"
+      ansible.builtin.file:
+        path: "{{ commandcode_auth_dir }}"
+        state: directory
+        mode: "0700"
+      when: commandcode_seat_key != ''
+      no_log: true
+
+    - name: Read the Command Code login
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_auth_file }}"
+      register: commandcode_auth
+      failed_when: false
+      no_log: true
+      diff: false
+
+    - name: Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)
+      when: commandcode_seat_key != ''
+      block:
+        - name: Decode the Command Code login as a JSON object
+          ansible.builtin.set_fact:
+            commandcode_parsed: "{{ commandcode_auth.content | default('e30=') | b64decode | from_json }}"
+          no_log: true
+
+        - name: Require the Command Code login to be a JSON object
+          ansible.builtin.assert:
+            that: commandcode_parsed is mapping
+            quiet: true
+          no_log: true
+      rescue:
+        - name: Treat the unreadable Command Code login as empty
+          ansible.builtin.set_fact:
+            commandcode_parsed: {}
+
+        - name: Say the Command Code login was treated as empty
+          ansible.builtin.debug:
+            msg: "{{ commandcode_auth_file }} is not a readable JSON object; treating it as empty and rewriting it from the seat"
+
+    - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "{{ commandcode_next | to_nice_json(indent=2) }}\n"
+        dest: "{{ commandcode_auth_file }}"
+        mode: "0600"
+      vars:
+        commandcode_now: "{{ commandcode_parsed | default({}) }}"
+        commandcode_kept: "{{ commandcode_now | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
+        commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
+      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
+      no_log: true
+      diff: false
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:

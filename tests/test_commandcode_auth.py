@@ -1,45 +1,44 @@
-"""The Command Code key has one name, COMMAND_CODE_API_KEY, the one the CLI reads.
+"""The Command Code CLI is logged in from the box's seat file, the way `cmd login` would.
 
-cmd checks COMMAND_CODE_API_KEY before its own login store, and `cmd login` is
-an interactive browser flow that Ansible cannot run and that mints a second
-key, so the supported env var is the route (the reviewer of fleet-ops#9767
-chose it over a hand-written ~/.commandcode/auth.json). The seat used to name
-the key COMMANDCODE_API_KEY, so one play task renames that line and the
-LiteLLM quadlet and config read the new name. Nish's zsh and bash startup
-files source the seat with allexport, which exports every NAME=VALUE line of
-it; the seat holds only that key and a play task asserts it holds nothing but
-NAME=VALUE lines. The real Ansible tasks run against a temp home with a fake key.
+cmd reads ~/.commandcode/auth.json (flat JSON, apiKey among other keys, mode
+0600) when COMMAND_CODE_API_KEY is unset. The seat file holds the key as
+COMMANDCODE_API_KEY. The real Ansible tasks run against a temp home with a
+fake key.
 """
 import json
 import pathlib
-import re
 import shutil
 import stat
 import subprocess
 
 import pytest
 
-if not shutil.which("yq") or not shutil.which("ansible-playbook") or not shutil.which("zsh"):
-    pytest.skip("yq, ansible or zsh missing", allow_module_level=True)
+if not shutil.which("yq") or not shutil.which("ansible-playbook"):
+    pytest.skip("yq or ansible missing", allow_module_level=True)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
 FAKE = "user_fake0123456789abcdef"
-STAT = "Look for the Command Code seat"
-READ = "Read the Command Code seat"
-CHECK = "Require the Command Code seat to hold only NAME=VALUE lines (shells source it)"
-RENAME = "Rename COMMANDCODE_API_KEY to COMMAND_CODE_API_KEY in the Command Code seat"
-LIVE = "Look for the new name in the live LiteLLM config"
-RESTART = "Restart the LiteLLM proxy so it reads the renamed seat line"
-SHELL = "Export the Command Code seat in nish's zsh and bash startup files"
-SEAT_TASKS = [STAT, READ, CHECK, RENAME]
-MARK_BEGIN = "# BEGIN fleet-ops: Command Code seat for cmd"
-MARK_END = "# END fleet-ops: Command Code seat for cmd"
-BASHRC = "# ~/.bashrc: executed by bash(1) for non-login shells.\ncase $- in\n    *i*) ;;\n      *) return;;\nesac\nexport INTERACTIVE_ONLY=1\n"
-CLEAN_ENV = {"PATH": "/usr/bin:/bin:/usr/local/bin"}
-SHELLS = (["zsh", "-f", "-c"], ["zsh", "-c"], ["sh", "-c"], ["bash", "-c"])
-OLD = "COMMANDCODE_API_KEY"
-NEW = "COMMAND_CODE_API_KEY"
+EMPTY_NOTE = "is not a readable JSON object; treating it as empty"
+NAMES = [
+    "Read the Command Code seat",
+    "Create the Command Code login directory",
+    "Read the Command Code login",
+    "Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)",
+    "Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)",
+]
+
+
+def _unhide(task):
+    task["no_log"] = False
+    for part in ("block", "rescue", "always"):
+        for inner in task.get(part, []):
+            _unhide(inner)
+
+
+def _strip(task):
+    task.pop("become", None)
+    task.pop("become_user", None)
 
 
 def _play():
@@ -51,216 +50,154 @@ PLAY = _play()
 TASKS = {t["name"]: t for t in PLAY["tasks"]}
 
 
-def _run(home, names, extra=(), ok=True):
+def _run(home):
     tasks = []
-    for name in names:
+    for name in NAMES:
         task = json.loads(json.dumps(TASKS[name]))
-        task.pop("become", None)
-        task.pop("become_user", None)
+        _strip(task)
+        _unhide(task)
         tasks.append(task)
     play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**PLAY["vars"], "nish_home": str(home)}, "tasks": tasks}
     book = home / "play.json"
     book.write_text(json.dumps([play]))
     result = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", *extra, str(book)],
-        capture_output=True, text=True, cwd=home, env={**CLEAN_ENV, "HOME": str(home), "ANSIBLE_NOCOLOR": "1"},
+        ["ansible-playbook", "-i", "localhost,", str(book)],
+        capture_output=True, text=True, cwd=home, env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(home), "ANSIBLE_NOCOLOR": "1"},
     )
-    out = (result.stdout + result.stderr).replace(FAKE, "<key>")
-    assert (result.returncode == 0) == ok, out
-    return out
+    assert result.returncode == 0, result.stdout.replace(FAKE, "<key>") + result.stderr.replace(FAKE, "<key>")
+    return result.stdout
 
 
-def _seat(home, text, mode=0o600):
+def _seat(home, text):
     seat = home / ".config" / "fleet-ops" / "seats" / "commandcode.env"
     seat.parent.mkdir(parents=True, exist_ok=True)
     seat.write_text(text)
-    seat.chmod(mode)
-    return seat
+
+
+def _auth(home):
+    return home / ".commandcode/auth.json"
 
 
 def _mode(path):
     return stat.S_IMODE(path.stat().st_mode)
 
 
-def _start(home, argv, script):
-    return subprocess.run([*argv, script], capture_output=True, text=True, env={**CLEAN_ENV, "HOME": str(home)})
-
-
-PROBE = '. "$HOME/.zshenv"; printf "[%s]" "${COMMAND_CODE_API_KEY-unset}"'
-
-
-def test_one_name_everywhere():
-    pattern = re.compile(r"\bCOMMANDCODE_API_KEY\b")
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts or path.suffix in (".png", ".pyc") or path == pathlib.Path(__file__):
-            continue
-        try:
-            text = path.read_text()
-        except UnicodeDecodeError:
-            continue
-        if pattern.search(text):
-            assert path == HOST, path
-    quadlet = (ROOT / "containers/quadlet/fleet-litellm-proxy.container").read_text()
-    assert f"PodmanArgs=--env={NEW}\n" in quadlet
-    config = (ROOT / "config/litellm-proxy.yaml").read_text()
-    assert config.count(f"os.environ/{NEW}") == 4
-    for line in HOST.read_text().splitlines():
-        if OLD in line:
-            assert "name:" in line or "regexp:" in line, line
-
-
-def test_tasks_run_as_nish_with_stock_modules_and_hide_the_key():
-    for name in [STAT, READ, RENAME, LIVE, SHELL]:
+def test_every_login_task_runs_as_nish_and_hides_the_key():
+    for name in NAMES:
         task = TASKS[name]
-        assert task["become"] is True and task["become_user"] == "nish", name
-        assert "owner" not in json.dumps(task) and "group" not in json.dumps(task) and "mode" not in json.dumps(task), name
-    for name in [READ, CHECK, RENAME]:
+        if name == NAMES[3]:
+            continue
+        assert task.get("become") is True and task.get("become_user") == "nish", name
+        assert "owner" not in json.dumps(task) and "group" not in json.dumps(task), name
+        modules = [k for k in task if "." in k]
+        assert all(k.startswith("ansible.builtin.") for k in modules), name
+    for name in (NAMES[0], NAMES[1], NAMES[2], NAMES[4]):
         assert TASKS[name]["no_log"] is True, name
-    for name in [READ, RENAME]:
-        assert TASKS[name]["diff"] is False, name
-    assert [k for k in TASKS[RENAME] if "." in k] == ["ansible.builtin.replace"]
-    assert [k for k in TASKS[SHELL] if "." in k] == ["ansible.builtin.blockinfile"]
-    assert "ignore_errors" not in json.dumps([TASKS[n] for n in SEAT_TASKS + [LIVE, RESTART, SHELL]])
     names = [t["name"] for t in PLAY["tasks"]]
-    order = [STAT, READ, CHECK, RENAME, LIVE, RESTART, SHELL]
-    assert [n for n in names if n in order] == order
-    assert names.index(SHELL) < names.index("Fail when an alertmanager credential file is missing")
-    assert names.index("Apply pending handlers before the credential check") < names.index(STAT)
+    assert [n for n in names if n in NAMES] == NAMES
+    assert names.index(NAMES[-1]) < names.index("Fail when an alertmanager credential file is missing")
 
 
-def test_proxy_restart_only_after_a_real_rename_and_only_once_the_live_config_has_the_new_name():
-    restart = TASKS[RESTART]
-    assert restart["when"] == "commandcode_seat_renamed is changed and litellm_live_new_name.rc == 0"
-    assert "try-restart" in restart["ansible.builtin.command"] and "fleet-litellm-proxy.service" in restart["ansible.builtin.command"]
-    live = TASKS[LIVE]["ansible.builtin.command"]["argv"]
-    assert live[:2] == ["/usr/bin/grep", "-qF"] and live[2] == f"os.environ/{NEW}"
-    assert TASKS[LIVE]["failed_when"] is False and TASKS[LIVE]["changed_when"] is False
+def test_parse_is_a_block_with_a_rescue_not_ignore_errors():
+    assert "ignore_errors" not in json.dumps([TASKS[n] for n in NAMES])
+    parse = TASKS[NAMES[3]]
+    assert parse["when"] == "commandcode_seat_key != ''"
+    assert "ansible.builtin.set_fact" in parse["block"][0] and parse["block"][0]["no_log"] is True
+    assert parse["block"][1]["ansible.builtin.assert"]["that"] == "commandcode_parsed is mapping"
+    assert parse["block"][1]["no_log"] is True
+    assert parse["rescue"][0]["ansible.builtin.set_fact"] == {"commandcode_parsed": {}}
+    said = parse["rescue"][1]
+    assert said.get("no_log") is not True
+    assert "commandcode_seat_key" not in json.dumps(said) and "apiKey" not in json.dumps(said)
+    assert "treating it as empty" in said["ansible.builtin.debug"]["msg"]
 
 
-@pytest.mark.parametrize("prefix", ["", "export "])
-def test_seat_line_is_renamed_once_idempotently_keeping_mode(tmp_path, prefix):
-    seat = _seat(tmp_path, f"# {OLD}=commented\nOTHER=1\n{prefix}{OLD}={FAKE}\n", mode=0o640)
-    owner = seat.stat().st_uid
-    _run(tmp_path, SEAT_TASKS)
-    assert seat.read_text() == f"# {OLD}=commented\nOTHER=1\n{prefix}{NEW}={FAKE}\n"
-    assert _mode(seat) == 0o640 and seat.stat().st_uid == owner
-    out = _run(tmp_path, SEAT_TASKS)
-    assert "changed=0" in out
-    assert seat.read_text().count(NEW) == 1
+def test_login_writes_the_cli_shape_with_mode_0600(tmp_path):
+    _seat(tmp_path, f"OTHER=1\nCOMMANDCODE_API_KEY={FAKE}\n")
+    _run(tmp_path)
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+    assert _mode(_auth(tmp_path)) == 0o600
+    assert _mode(_auth(tmp_path).parent) == 0o700
 
 
-def test_missing_seat_or_already_renamed_seat_is_a_clean_skip(tmp_path):
-    out = _run(tmp_path, SEAT_TASKS)
-    assert "skipped=3" in out and not (tmp_path / ".config").exists()
-    seat = _seat(tmp_path, f"{NEW}={FAKE}\n")
-    assert "changed=0" in _run(tmp_path, SEAT_TASKS)
-    assert seat.read_text() == f"{NEW}={FAKE}\n"
+@pytest.mark.parametrize("line", [f"COMMANDCODE_API_KEY={FAKE}", f"export COMMANDCODE_API_KEY={FAKE}", f'COMMANDCODE_API_KEY="{FAKE}"', f"COMMANDCODE_API_KEY='{FAKE}'"])
+def test_seat_line_forms(tmp_path, line):
+    _seat(tmp_path, f"# COMMANDCODE_API_KEY=commented\n{line}\n")
+    _run(tmp_path)
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
 
 
-@pytest.mark.parametrize("line", ["curl x | sh", "A=$(id)", "A=`id`", "A=a;id", "A=a b", "A=a&b", "export A=b c", "A='a;b'", "1A=b", "A =b"])
-def test_a_seat_with_anything_but_name_value_lines_fails_before_any_change(tmp_path, line):
-    seat = _seat(tmp_path, f"{OLD}={FAKE}\n{line}\n")
-    out = _run(tmp_path, SEAT_TASKS, ok=False)
-    assert "NAME=VALUE" in out
-    assert seat.read_text() == f"{OLD}={FAKE}\n{line}\n"
+def test_second_run_changes_nothing(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    assert EMPTY_NOTE not in _run(tmp_path)
+    before = _auth(tmp_path).read_bytes()
+    out = _run(tmp_path)
+    assert "changed=0" in out and EMPTY_NOTE not in out
+    assert _auth(tmp_path).read_bytes() == before
 
 
-@pytest.mark.parametrize("text", [f"{OLD}={FAKE}\n", f"# note\n\n{OLD}={FAKE}", f'{OLD}="{FAKE}"\n', f"{OLD}='{FAKE}'\nexport OTHER=a.b:c/d+e=@%,-x\n"])
-def test_a_seat_of_name_value_lines_passes_and_sourcing_it_is_safe(tmp_path, text):
-    _seat(tmp_path, text)
-    _run(tmp_path, SEAT_TASKS)
-    seat_text = (tmp_path / ".config/fleet-ops/seats/commandcode.env").read_text()
-    for line in seat_text.splitlines():
-        assert re.fullmatch(PLAY["vars"]["commandcode_seat_line_re"], line), "a seat line is not NAME=VALUE"
-    names = set(re.findall(r"^(?:export +)?([A-Za-z_][A-Za-z0-9_]*)=", seat_text, re.M))
-    for argv in SHELLS:
-        got = _start(tmp_path, argv, f'set -a; . "$HOME/.config/fleet-ops/seats/commandcode.env"; set +a; env | cut -d= -f1 | sort')
-        assert got.stderr == "", argv
-        assert names <= set(got.stdout.split()), argv
+def test_other_keys_survive_and_a_changed_key_drops_the_old_logins_identity(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    _auth(tmp_path).write_text(json.dumps({"apiKey": "user_old", "userId": "u", "userName": "nish", "keyName": "k", "authenticatedAt": "t", "extra": 1}))
+    _run(tmp_path)
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE, "extra": 1}
+    assert _mode(_auth(tmp_path)) == 0o600
+    assert "changed=0" in _run(tmp_path)
 
 
-def test_block_is_in_both_files_once_idempotent_and_keeps_existing_modes(tmp_path):
-    (tmp_path / ".bashrc").write_text(BASHRC)
-    (tmp_path / ".bashrc").chmod(0o600)
-    _run(tmp_path, [SHELL])
-    zsh_text = (tmp_path / ".zshenv").read_text()
-    bash_text = (tmp_path / ".bashrc").read_text()
-    assert zsh_text.count(MARK_BEGIN) == 1 and zsh_text.count(MARK_END) == 1
-    assert bash_text.count(MARK_BEGIN) == 1 and bash_text.endswith(BASHRC)
-    assert bash_text.index(MARK_END) < bash_text.index("case $-")
-    assert "changed=0" in _run(tmp_path, [SHELL])
-    assert (tmp_path / ".zshenv").read_text() == zsh_text and (tmp_path / ".bashrc").read_text() == bash_text
-    assert _mode(tmp_path / ".bashrc") == 0o600
+def test_matching_login_with_extra_keys_is_left_untouched(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    text = json.dumps({"apiKey": FAKE, "userId": "u"}, indent=2)
+    _auth(tmp_path).write_text(text)
+    assert "changed=0" in _run(tmp_path)
+    assert _auth(tmp_path).read_text() == text
 
 
-def test_block_is_the_stock_env_file_load_and_prints_nothing():
-    block = PLAY["vars"]["commandcode_shell_block"].strip().splitlines()
-    assert [x.strip() for x in block] == [
-        'if [ -r "$HOME/.config/fleet-ops/seats/commandcode.env" ]; then',
-        "set -a",
-        '. "$HOME/.config/fleet-ops/seats/commandcode.env"',
-        "set +a",
-        "fi",
-    ]
+def test_missing_seat_or_key_skips_cleanly(tmp_path):
+    _run(tmp_path)
+    assert not (tmp_path / ".commandcode").exists()
+    _seat(tmp_path, "OTHER=1\nCOMMANDCODE_API_KEY=\n")
+    _run(tmp_path)
+    assert not (tmp_path / ".commandcode").exists()
 
 
-@pytest.mark.parametrize("form", ["{k}", '"{k}"', "'{k}'", "export {k}"])
-def test_sourcing_the_block_yields_the_value_adds_only_the_seat_names_and_prints_nothing(tmp_path, form):
-    value = form.format(k=FAKE)
-    line = f"export {OLD}={FAKE}" if form.startswith("export") else f"{OLD}={value}"
-    _seat(tmp_path, f"# {OLD}=commented\n{line}\n")
-    _run(tmp_path, SEAT_TASKS + [SHELL])
-    env_names = "env | cut -d= -f1 | sort"
-    bare = tmp_path / "bare"
-    bare.mkdir()
-    for argv in SHELLS:
-        before = _start(bare, argv, env_names).stdout.split()
-        got = _start(tmp_path, argv, f'. "$HOME/.zshenv"; printf %s "${NEW}"; echo; {env_names}')
-        assert got.stderr == "", argv
-        lines = got.stdout.splitlines()
-        assert lines[0] == FAKE, argv
-        assert set(lines[1:]) - set(before) == {NEW}, argv
-        quiet = _start(tmp_path, argv, '. "$HOME/.zshenv"')
-        assert quiet.stdout == "" and quiet.stderr == "" and quiet.returncode == 0, argv
+def test_key_never_reaches_ansible_output_under_no_log(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    tasks = [json.loads(json.dumps(TASKS[n])) for n in NAMES]
+    for task in tasks:
+        _strip(task)
+    book = tmp_path / "play.json"
+    book.write_text(json.dumps([{"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**PLAY["vars"], "nish_home": str(tmp_path)}, "tasks": tasks}]))
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-vvv", "--diff", str(book)],
+        capture_output=True, text=True, cwd=tmp_path, env={"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path), "ANSIBLE_NOCOLOR": "1"},
+    )
+    assert result.returncode == 0
+    assert FAKE not in result.stdout + result.stderr
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
 
 
-def test_startup_files_load_the_key_in_the_shells_agents_use(tmp_path):
-    (tmp_path / ".bashrc").write_text(BASHRC)
-    _seat(tmp_path, f"{NEW}={FAKE}\n")
-    _run(tmp_path, [SHELL])
-    probe = f'printf %s "${NEW}"'
-    zsh = _start(tmp_path, ["zsh", "-c"], probe)
-    assert zsh.stdout == FAKE and zsh.stderr == ""
-    bash = _start(tmp_path, ["bash", "-c"], f'. "$HOME/.bashrc"; {probe}; printf " %s" "$INTERACTIVE_ONLY"')
-    assert bash.stdout == FAKE + " " and bash.stderr == ""
-    exported = _start(tmp_path, ["bash", "-c"], f'. "$HOME/.bashrc"; env | grep -c "^{NEW}="')
-    assert exported.stdout.strip() == "1"
+def test_a_login_file_that_is_not_an_object_is_replaced(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    _auth(tmp_path).write_text("[]")
+    out = _run(tmp_path)
+    assert EMPTY_NOTE in out
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+    again = _run(tmp_path)
+    assert "changed=0" in again and EMPTY_NOTE not in again
 
 
-def test_a_rotated_seat_is_live_in_the_next_shell(tmp_path):
-    seat = _seat(tmp_path, f"{NEW}={FAKE}\n")
-    _run(tmp_path, [SHELL])
-    assert _start(tmp_path, ["sh", "-c"], PROBE).stdout == f"[{FAKE}]"
-    seat.write_text(f"{NEW}=user_rotated\n")
-    assert _start(tmp_path, ["sh", "-c"], PROBE).stdout == "[user_rotated]"
-
-
-def test_absent_or_unreadable_seat_exports_nothing_and_does_not_error(tmp_path):
-    _run(tmp_path, [SHELL])
-    for argv in SHELLS:
-        got = _start(tmp_path, argv, PROBE)
-        assert got.stdout == "[unset]" and got.stderr == "" and got.returncode == 0, argv
-    for text, shown in (("OTHER=1\n", "[unset]"), (f"{NEW}=\n", "[]")):
-        _seat(tmp_path, text)
-        got = _start(tmp_path, ["sh", "-c"], PROBE)
-        assert got.stdout == shown and got.stderr == "" and got.returncode == 0, text
-    _seat(tmp_path, f"{NEW}={FAKE}\n", mode=0o000)
-    got = _start(tmp_path, ["sh", "-c"], "set -e; " + PROBE)
-    assert got.stdout == "[unset]" and got.stderr == "" and got.returncode == 0
-
-
-def test_the_play_never_shows_the_key(tmp_path):
-    _seat(tmp_path, f"{OLD}={FAKE}\n")
-    out = _run(tmp_path, SEAT_TASKS + [LIVE, SHELL], extra=("-vvv", "--diff"))
-    assert FAKE not in out and "<key>" not in out
-    assert FAKE not in (tmp_path / ".zshenv").read_text()
+@pytest.mark.parametrize("broken", ['{"apiKey": "user_ol', "{", "not json", ""])
+def test_a_truncated_login_file_is_replaced_and_the_run_still_succeeds(tmp_path, broken):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    _auth(tmp_path).parent.mkdir(mode=0o700)
+    _auth(tmp_path).write_text(broken)
+    out = _run(tmp_path)
+    assert EMPTY_NOTE in out
+    assert FAKE not in out
+    assert json.loads(_auth(tmp_path).read_text()) == {"apiKey": FAKE}
+    again = _run(tmp_path)
+    assert "changed=0" in again and EMPTY_NOTE not in again
