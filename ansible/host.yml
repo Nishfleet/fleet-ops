@@ -94,7 +94,6 @@
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
-    commandcode_object_re: '^\s*[{]'
     commandcode_identity_keys: [userId, userName, keyName, authenticatedAt]
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -747,6 +746,7 @@
         state: directory
         mode: "0700"
       when: commandcode_seat_key != ''
+      no_log: true
 
     - name: Read the Command Code login
       become: true
@@ -759,11 +759,26 @@
       diff: false
 
     - name: Parse the Command Code login (an unreadable file counts as empty, as it does for cmd)
-      ansible.builtin.set_fact:
-        commandcode_parsed: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) if (commandcode_auth.content | default('e30=') | b64decode) is match(commandcode_object_re) else {} }}"
       when: commandcode_seat_key != ''
-      ignore_errors: true
-      no_log: true
+      block:
+        - name: Decode the Command Code login as a JSON object
+          ansible.builtin.set_fact:
+            commandcode_parsed: "{{ commandcode_auth.content | default('e30=') | b64decode | from_json }}"
+          no_log: true
+
+        - name: Require the Command Code login to be a JSON object
+          ansible.builtin.assert:
+            that: commandcode_parsed is mapping
+            quiet: true
+          no_log: true
+      rescue:
+        - name: Treat the unreadable Command Code login as empty
+          ansible.builtin.set_fact:
+            commandcode_parsed: {}
+
+        - name: Say the Command Code login was treated as empty
+          ansible.builtin.debug:
+            msg: "{{ commandcode_auth_file }} is not a readable JSON object; treating it as empty and rewriting it from the seat"
 
     - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
       become: true
