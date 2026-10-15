@@ -104,30 +104,6 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
-      # The shadcn agent skill, pinned to one upstream commit. The skill text goes into
-      # every agent's prompt, so the weekly run installs exactly this commit and a newer
-      # one needs a reviewed PR that changes `sha`. It downloads that commit's tarball (no
-      # npm code runs), checks the skill is there, stages it beside the library copy and
-      # swaps by rename, keeping the previous copy as shadcn.old for rollback.
-      - argv:
-          - bash
-          - -c
-          - |
-            set -euo pipefail
-            sha=c2477f311c19982ef6e246085438e6cfec3e35ea
-            dst=/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/shadcn
-            t=$(mktemp -d)
-            trap 'rm -rf "$t"' EXIT
-            curl -fsSL --max-time 120 "https://codeload.github.com/shadcn-ui/ui/tar.gz/$sha" |
-              tar -xz -C "$t" --strip-components=3 "ui-$sha/skills/shadcn"
-            test -s "$t/SKILL.md"
-            grep -q '^name: shadcn$' "$t/SKILL.md"
-            rm -rf "$dst.new" "$dst.old"
-            cp -a "$t" "$dst.new"
-            chmod 755 "$dst.new"
-            mv "$dst" "$dst.old"
-            mv "$dst.new" "$dst"
-        stdin: ""
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension

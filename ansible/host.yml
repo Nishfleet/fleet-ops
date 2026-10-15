@@ -78,6 +78,9 @@
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    shadcn_skill_sha: c2477f311c19982ef6e246085438e6cfec3e35ea
+    shadcn_skill_sha256: 8603d478b91fee701054556e335758c0cfbe72e30b3513dfb8ea07ade53d59c2
+    shadcn_skill_dir: "{{ nish_home }}/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/shadcn"
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -488,6 +491,108 @@
       loop:
         - /tmp/tofu.tar.gz
         - /tmp/tofu
+
+    # The shadcn agent skill is installed from one pinned upstream commit, so the
+    # text agents read is fixed by this repo: a newer skill is a PR that changes
+    # shadcn_skill_sha and the checksum together (sha256 of the codeload tarball
+    # of that commit). No npx, no npm. The block runs only when the marker file in
+    # the skill directory names a different commit, so an unchanged pin touches
+    # nothing in the vault. The tarball is unpacked outside the skill directory and
+    # checked (SKILL.md carries name: shadcn, no symlinks) before the live copy
+    # is replaced.
+    - name: Read the installed shadcn skill pin
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ shadcn_skill_dir }}/.pinned-sha"
+      register: shadcn_skill_pin
+      failed_when: false
+
+    - name: Install the pinned shadcn skill
+      when: (shadcn_skill_pin.content | default('') | b64decode | trim) != shadcn_skill_sha
+      become: true
+      become_user: nish
+      block:
+        - name: Look for Syncthing conflict files in the shadcn skill directory
+          ansible.builtin.find:
+            paths: "{{ shadcn_skill_dir }}"
+            patterns: "*.sync-conflict-*"
+            recurse: true
+          register: shadcn_skill_conflicts
+
+        - name: Stop on a Syncthing conflict file before writing to the vault
+          ansible.builtin.assert:
+            that: shadcn_skill_conflicts.matched == 0
+            fail_msg: Resolve the sync-conflict files in the shadcn skill directory first.
+
+        - name: Download the pinned shadcn skill tarball
+          ansible.builtin.get_url:
+            url: "https://codeload.github.com/shadcn-ui/ui/tar.gz/{{ shadcn_skill_sha }}"
+            dest: /tmp/shadcn-skill.tar.gz
+            mode: "0644"
+            checksum: "sha256:{{ shadcn_skill_sha256 }}"
+
+        - name: Start from an empty shadcn skill stage
+          ansible.builtin.file:
+            path: /tmp/shadcn-skill
+            state: "{{ item }}"
+            mode: "0755"
+          loop: [absent, directory]
+
+        - name: Unpack the shadcn skill into the stage
+          ansible.builtin.unarchive:
+            src: /tmp/shadcn-skill.tar.gz
+            dest: /tmp/shadcn-skill/
+            remote_src: true
+            extra_opts: [--strip-components=3, --no-same-owner]
+            include:
+              - "ui-{{ shadcn_skill_sha }}/skills/shadcn"
+
+        - name: Check the staged skill is named shadcn
+          ansible.builtin.lineinfile:
+            path: /tmp/shadcn-skill/SKILL.md
+            line: "name: shadcn"
+            state: present
+          check_mode: true
+          register: shadcn_skill_name
+          failed_when: shadcn_skill_name.changed
+
+        - name: Look for symlinks in the staged skill
+          ansible.builtin.find:
+            paths: /tmp/shadcn-skill
+            file_type: link
+            recurse: true
+          register: shadcn_skill_links
+          failed_when: shadcn_skill_links.matched != 0
+
+        - name: Replace the live shadcn skill with the staged copy
+          ansible.builtin.file:
+            path: "{{ shadcn_skill_dir }}"
+            state: "{{ item }}"
+            mode: "0755"
+          loop: [absent, directory]
+
+        - name: Copy the staged skill into place
+          ansible.builtin.copy:
+            src: /tmp/shadcn-skill/
+            dest: "{{ shadcn_skill_dir }}/"
+            remote_src: true
+            directory_mode: "0755"
+            mode: preserve
+
+        - name: Record the installed shadcn skill pin
+          ansible.builtin.copy:
+            content: "{{ shadcn_skill_sha }}\n"
+            dest: "{{ shadcn_skill_dir }}/.pinned-sha"
+            mode: "0644"
+
+        - name: Drop the shadcn skill download and stage
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/shadcn-skill.tar.gz
+            - /tmp/shadcn-skill
 
     # enabled only: never restarts the Remote Control link this playbook may run
     # under, so a change to the unit file it installs is staged, not applied.
