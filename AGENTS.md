@@ -112,8 +112,15 @@ file, never print it, never copy it into a repo, PR or issue:
 
 - `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
-  KV list, `workersInvocationsAdaptive`). Use it for D1 drills, preview uploads
-  and analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186).
+  KV list, `workersInvocationsAdaptive`). Use it for preview uploads and
+  analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186). **Never use it
+  for restore drills or any other D1 create, import, execute-write or delete.**
+  A restore drill imports a backup into a local SQLite file (`sqlite3`) and
+  compares row counts there; it never creates a Cloudflare database. Restore
+  drills run in a scratch dir with no Cloudflare token loaded. Scratch D1
+  databases made by drills wrote 17M rows in 5 days (14-19 Sep) and 205k rows
+  in one hour (15 Oct, fleet-ops#9781); the `cf-d1-rows-written` alarm fires
+  above 68,493 rows/h, and when it fires you stop drilling.
 - `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
   Routing (addresses, rules, suppressions), Email Sending, R2 storage and Turnstile only, and it
   works only from this VPS's IPs. It cannot create tokens, touch DNS or Workers, or read analytics.
