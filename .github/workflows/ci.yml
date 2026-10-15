@@ -144,7 +144,7 @@ jobs:
         run: |
           shopt -s nullglob
           systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
-      - name: GitHub App token unit mints and refreshes (fleet-ops#9445)
+      - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
         # verifies the RS256 App JWT and the token request body the way GitHub
@@ -185,60 +185,7 @@ jobs:
           if grep -q 'bad-jwt\|bad-body\|unknown' "$d/log"; then echo "::error::stub rejected the unit's requests"; cat "$d/log"; exit 1; fi
           if sudo journalctl -u fleet-token-ci.service --no-pager | grep -q 'ghs_stub\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
           cat "$d/log"
-          echo "GitHub App token unit: minted, refreshed, kept the old token on failure, left no secret in the journal"
-      - name: Worker token unit mints one repo token per launch (fleet-ops#9738)
-        # Runs systemd/fleet-worker-github-token@.service's real ExecStart under
-        # systemd against tests/github_app_stub.py, then launches a transient unit
-        # with the AGENTS.md recipe's token properties. Proves: a launch gets a
-        # non-empty GH_TOKEN limited to the instance's repo, each launch mints a
-        # fresh one, a failed mint stops the launch before any work and leaves no
-        # stale env file, an empty token stops it too, and neither the token nor
-        # the JWT reaches the journal.
-        if: always()
-        run: |
-          set -euo pipefail
-          u=systemd/fleet-worker-github-token@.service
-          d=$RUNNER_TEMP/worker-token
-          rm -rf "$d"; mkdir -p "$d"
-          openssl genrsa -out "$d/app.pem" 2048 2>/dev/null
-          openssl rsa -in "$d/app.pem" -pubout -out "$d/app.pub" 2>/dev/null
-          echo ok > "$d/mode"; : > "$d/log"
-          python3 tests/github_app_stub.py 18796 "$d/app.pub" 4728578 "$d/mode" "$d/log" &
-          stub=$!
-          trap 'kill $stub 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-worker-token-ci@.service; sudo systemctl daemon-reload' EXIT
-          for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18796) 2>/dev/null && break; sleep 0.5; done
-          sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' \
-              -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18796|' \
-              -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-worker-token-ci@.service >/dev/null
-          sudo systemctl daemon-reload
-          e=/run/fleet-worker-github-token/drive.env
-          launch() {
-            sudo systemd-run "${@:2}" --collect --quiet \
-              -p Requires=fleet-worker-token-ci@drive.service -p After=fleet-worker-token-ci@drive.service \
-              -p "EnvironmentFile=$e" \
-              -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
-              -- /bin/sh -c "$1"
-          }
-          # shellcheck disable=SC2016 # the worker's own shell expands GH_TOKEN
-          out=$(launch 'test -n "$GH_TOKEN" && echo "$GH_TOKEN" | cut -c1-9' --wait --pipe)
-          [ "$out" = ghs_stub_ ] || { echo "::error::launch did not get a minted GH_TOKEN"; exit 1; }
-          [ "$(sudo stat -c %a $e)" = 600 ] && [ "$(sudo stat -c %a /run/fleet-worker-github-token)" = 700 ] || { echo "::error::env file/dir not 0600/0700"; exit 1; }
-          first=$(sudo cat $e)
-          launch true --wait --pipe
-          [ "$(sudo cat $e)" != "$first" ] || { echo "::error::second launch did not mint a fresh token"; exit 1; }
-          echo fail > "$d/mode"
-          if launch 'echo WORK-RAN > "'"$d"'/ran"'; then echo "::error::launch succeeded while GitHub answered 401"; exit 1; fi
-          [ ! -e "$d/ran" ] || { echo "::error::worker ran without a minted token"; exit 1; }
-          sudo test ! -e $e || { echo "::error::a failed mint left a stale env file"; exit 1; }
-          echo ok > "$d/mode"
-          printf 'GH_TOKEN=\n' | sudo tee /run/fleet-worker-github-token/empty.env >/dev/null
-          if sudo systemd-run --collect --quiet -p EnvironmentFile=/run/fleet-worker-github-token/empty.env -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' -- /bin/sh -c "echo WORK-RAN > $d/ran"; then echo "::error::empty GH_TOKEN did not stop the launch"; exit 1; fi
-          [ ! -e "$d/ran" ] || { echo "::error::worker ran with an empty token"; exit 1; }
-          if grep -q 'bad-jwt\|bad-body\|unknown' "$d/log"; then echo "::error::stub rejected the unit's requests"; cat "$d/log"; exit 1; fi
-          if sudo journalctl --no-pager | grep -q 'ghs_stub_[0-9]\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
-          cat "$d/log"
-          echo "Worker token unit: per-launch repo token, refusal on a failed mint and on an empty token"
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_worker_github_token.py
       - name: Grafana token wiring is consistent across unit, quadlet and contact points
         # The unit's RuntimeDirectory, the quadlet's mount and the $__file{} path
         # in the contact points must name the same directory, and Grafana must

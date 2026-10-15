@@ -2,8 +2,8 @@
 systemd/fleet-worker-github-token@.service make.
 
 fleet-ops#9445, fleet-ops#9738. CI runs each unit's real ExecStart under systemd
-against this stub (.github/workflows/ci.yml, steps "GitHub App token unit mints
-and refreshes" and "Worker token unit mints one repo token per launch").
+against this stub (.github/workflows/ci.yml, step "GitHub App token units mint
+and refresh"; the worker unit through tests/test_worker_github_token.py).
 The stub is strict where GitHub is strict, so a malformed JWT or request body
 fails the run instead of passing silently:
 
