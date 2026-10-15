@@ -94,13 +94,11 @@ on:
         required: false
         type: string
         default: '"ubuntu-latest"'
-  # pull_request_target, not pull_request: pull_request never runs while a PR
-  # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
-  # this file checks out PR code. ejected and miss-review-pr only run for a
-  # claim/issue-* (or a same-repo Revert) whose head repo is this repository,
-  # so a fork's PR never reaches a runner or a token. hold-risky runs for every
-  # PR on the last five types but only calls the API: it reads file names as
-  # data and never checks out or runs the head.
+  # pull_request_target, not pull_request: pull_request never runs while a PR has a
+  # merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in this file checks
+  # out PR code. ejected and miss-review-pr only run for a claim/issue-* (or a same-repo
+  # Revert) whose head repo is this repository; hold-risky only calls the API and reads
+  # file names as data.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run:
@@ -149,13 +147,10 @@ jobs:
   # An agent-ready label no longer starts a worker job of its own: the list
   # job below lists that one issue, so the same closed, blocked, parked and
   # strong-only-lane checks hold it before any runner starts (fleet-ops#9303).
-  # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
-  # before the rework run starts, so the worker reads what broke instead of
-  # re-deriving it (fleet-ops#9063: drive #200 and #180 reworks ended green
-  # with TS errors still red and nothing on the issue said which). The
-  # rework run's own "agent run started:" comment is what counts toward the
-  # Gate's 3-run cap; this note starts with "rework:", which the cap and
-  # park counters ignore.
+  # Red CI on a claim PR: post the failed run's ##[error] lines on the issue before
+  # the rework run starts, so the worker reads what broke (fleet-ops#9063). The
+  # rework run's own "agent run started:" comment counts toward the Gate's 3-run
+  # cap; this note starts with "rework:", which the cap and park counters ignore.
   rework-note:
     if: >-
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
@@ -548,18 +543,13 @@ jobs:
       checks: read
       statuses: read
     env:
-      # The one "nothing to do" decision, made before any runner starts
-      # (fleet-ops#9303). On 2026-10-05 the 0509 sweeps emitted every
-      # agent-ready issue: in run 37331034150 all 19 work jobs were
-      # strong-only issues, and all 19 ended in ~11 s on the Gate's
-      # "skip (lanes-full)", because the Cursor lane runs one worker at a
-      # time. ADMIT drops what the Gate would skip anyway: a closed, blocked
-      # or parked issue, a ref with no issue, and every strong-only ref past
-      # the one free Cursor slot. A held issue keeps agent-ready, so the next
-      # sweep lists it again.
-      # stdin: {issues: [issue objects], prs: [claim refs], cursor_live: n}.
-      # Out: {refs: [claim refs in dispatch order], held: [{ref, why}]}.
-      # ci.yml runs it against config/dispatch-admit-cases.json.
+      # The one "nothing to do" decision, made before any runner starts (fleet-ops#9303):
+      # a 0509 sweep emitted every agent-ready issue and 19 strong-only work jobs each
+      # ended in ~11 s on the Gate's "skip (lanes-full)". ADMIT drops what the Gate
+      # would skip anyway: a closed, blocked or parked issue, a ref with no issue, and
+      # every strong-only ref past the one free Cursor slot; a held issue keeps
+      # agent-ready for the next sweep. stdin: {issues, prs: [claim refs], cursor_live: n};
+      # out: {refs, held: [{ref, why}]}. ci.yml runs it against config/dispatch-admit-cases.json.
       ADMIT: |
         def has_label($l): any(.labels[]; .name == $l);
         def parked: any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"));
@@ -1112,13 +1102,10 @@ jobs:
       stuck_sha: ${{ matrix.x.sha }}
       stuck_reason: ${{ matrix.x.reason }}
       stuck_url: ${{ matrix.x.url }}
-  # A claim PR outlives its issue. Nothing closed the PR when the issue closed
-  # not-by-merge (0509 09-23: #4297 #4268 #4212 #4211 sat open until hand-closed),
-  # so those PRs blocked the queue noise for days. Close the open claim PR and
-  # delete its branch. Close-by-merge skips itself: a merged PR is not OPEN, so
-  # --state open finds nothing and the normal path is untouched. Not gated on
-  # AGENT_MODE: this removes work from the queue in every mode and dispatches
-  # nothing.
+  # A claim PR outlives its issue: nothing closed the PR when the issue closed
+  # not-by-merge (0509 09-23, four PRs open for days). Close the open claim PR and
+  # delete its branch; close-by-merge finds nothing open. Not gated on AGENT_MODE:
+  # it removes work from the queue in every mode and dispatches nothing.
   close-claim:
     # issue=<N> too: a close made with GITHUB_TOKEN fires no
     # issues.closed, and the caller then dispatches the issue by number. Without this its
@@ -1150,14 +1137,11 @@ jobs:
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
   # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue
-  # (concurrency group); a second event inside 1 h is skipped in agent.yml's
-  # Gate. Design A (winner): stock GitHub events, one uses: agent.yml job.
-  # Design B (rejected): classify misses inside the 6 h sweep. That waits on a
-  # clock, and Nish 2026-10-04 said a review starts when something goes wrong,
-  # never on a clock. Graft: stalled still uses the existing sweep, because
-  # that requeue is the miss event and GitHub emits no other signal for it.
-  # failed / agent attempt cap is owned by agent.yml's Gate (the same run that
-  # posts the cap comment), so an issue_comment cannot start a second review.
+  # (concurrency group); a second event inside 1 h is skipped in agent.yml's Gate.
+  # Stock GitHub events, one uses: agent.yml job; a review starts when something goes
+  # wrong, never on a clock (Nish 2026-10-04), so stalled reuses the existing sweep's
+  # requeue, the only signal GitHub emits for it. failed / attempt cap is owned by the
+  # Gate (the run that posts the cap comment), so an issue_comment cannot start a second review.
   miss-review:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
@@ -1215,26 +1199,16 @@ jobs:
   # Admission (fleet-ops: needs-triage -> Jev verdict -> queue). An open issue
   # labelled needs-triage in an enrolled PRODUCT repo (config/intake-repos.json
   # `repos`, product: true) is put to Jev: "admit for an automated worker now?".
-  #   p >= 0.9  agent-ready added, needs-triage removed
-  #   else      needs-orchestrator added, needs-triage removed (the human gate;
-  #             a missing answer leaves needs-triage for the next sweep)
-  # Only the human owner login admits (fleet-ops#8313: only owner-filed issues
-  # are admitted), as both the labeller and the author; no bot login counts, so
-  # a fleet-filed or automation-labelled issue keeps needs-triage for a person.
-  # Hard exclusions skip Jev and go to needs-orchestrator: secrets, money or
-  # payments, customer-data deletion, blocked-on: nish-decision, nish-reserved.
-  # Cost: ADMIT_DAILY_MAX admissions per IST day (like ORCHESTRATE_DAILY_MAX,
-  # fleet-ops#9351) and ADMIT_BUDGET_SEC a run, so a slow router cannot overrun
-  # the job timeout and a re-run cannot over-admit.
-  # Runs only while AGENT_MODE is live, so a shadow-mode repo gets no agent-ready.
-  # Nishfleet/fleet-ops is never acted on (de-enrolled from self-admission,
-  # fo#8304). One comment per issue carries p, the model and the run link. The
-  # labels are written with the worker App token so the agent-ready and
-  # needs-orchestrator events start the next job (a GITHUB_TOKEN label fires
-  # nothing). Self-hosted because the Jev router is only reachable from the
-  # agent runners; same runner group entry as orchestrate. Switch off: repo
-  # variable ADMIT_TRIAGE=off. Delete: remove this job, tests/test_triage_admit.py
-  # and its ci.yml step, and the README section.
+  # p >= 0.9 adds agent-ready; else needs-orchestrator (a missing answer leaves
+  # needs-triage for the next sweep). Only the human owner login admits, as both
+  # labeller and author (fleet-ops#8313); no bot login counts. Hard exclusions skip
+  # Jev: secrets, money or payments, customer-data deletion, blocked-on: nish-decision,
+  # nish-reserved. Cost: ADMIT_DAILY_MAX admissions per IST day and ADMIT_BUDGET_SEC
+  # a run. Runs only while AGENT_MODE is live; Nishfleet/fleet-ops is never acted on
+  # (fo#8304). Labels are written with the worker App token so the next job starts
+  # (a GITHUB_TOKEN label fires nothing). Self-hosted because the Jev router is only
+  # reachable from the agent runners. Switch off: ADMIT_TRIAGE=off. Delete: remove this
+  # job, tests/test_triage_admit.py, its ci.yml step and the README section.
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -1435,17 +1409,13 @@ jobs:
             gh issue comment "$n" -R "$REPO" --body "$msg Run: $run_url" >/dev/null
             echo "admit: #$n -> $band"
           done
-  # A parked issue is one the fleet cannot finish: the attempt cap, two failed
-  # runs, or a worker parking it. The label was the whole hand-off and nothing
-  # read it, so parked work sat (fleet-ops #9211 #9063 #9055 #9015 #8973 #8574
-  # #8561 #8444 open, 0509 7). This job picks the issue up and runs the
-  # orchestrator, which is a Claude Code session on the runner user's OWN gh
-  # login, not the worker App: that login can push .github/workflows/**, which
-  # the App cannot by design (Nish 2026-10-04). Most parked work is exactly that
-  # class, and agent.yml's Gate now routes it here instead of burning a run.
-  # Not a reusable call to agent.yml on purpose: agent.yml is the worker (App
-  # token, bwrap jail, one claim branch), and this is the hand-off (runner
-  # login, plain worktree, branch orch/issue-<N>).
+  # A parked issue is one the fleet cannot finish: the attempt cap, two failed runs,
+  # or a worker parking it. The label was the whole hand-off and nothing read it, so
+  # parked work sat. This job runs the orchestrator, a Claude Code session on the
+  # runner user's OWN gh login, which can push .github/workflows/** (the worker App
+  # cannot by design, Nish 2026-10-04); agent.yml's Gate routes that class here.
+  # Not a reusable call to agent.yml: that is the worker (App token, bwrap jail, claim
+  # branch); this is the hand-off (runner login, plain worktree, branch orch/issue-<N>).
   orchestrate:
     # A bot sender alone is not trust: any GitHub App in the org can label an
     # issue and would start a session with bypassPermissions. The login must be
@@ -1750,21 +1720,15 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          # Worktree removal first and unconditional: a session cut at the job
-          # wall can leave the worktree, and a leftover checkout costs the next
-          # hand-off a clone. remove --force is how a dirty tree goes, and this
-          # is never a pgrep-kill of anything (a wrong pattern there can take a
-          # worker's process with it, fleet-ops#7743).
+          # Worktree removal first and unconditional: a session cut at the job wall can
+          # leave it, and a leftover checkout costs the next hand-off a clone. Never a
+          # pgrep-kill (a wrong pattern can take a worker's process with it, fleet-ops#7743).
           # Skip the removal while a running user unit has this worktree as its
           # WorkingDirectory: the session hands its build to a detached unit
-          # (orch-<repo>-<N>-build) that outlives it, and removing the tree
-          # under that unit killed orch-drive-642-build on 2026-10-07
-          # (status=200/CHDIR, uncommitted edits lost, fleet-ops#9377). If the
-          # unit list cannot be read, keep the tree too: systemd-tmpfiles ages
-          # it out after 3 days and the next hand-off rebuilds it anyway.
-          # No user runtime directory (a runner with no user systemd instance)
-          # means no user manager and so no running unit that could use the
-          # tree: skip the check and remove as before.
+          # (orch-<repo>-<N>-build) that outlives it, and removing the tree under that
+          # unit killed orch-drive-642-build on 2026-10-07 (fleet-ops#9377). If the unit
+          # list cannot be read, keep the tree (tmpfiles ages it out after 3 days). No user
+          # runtime directory means no user manager and no unit: remove as before.
           busy=0
           XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
           export XDG_RUNTIME_DIR
