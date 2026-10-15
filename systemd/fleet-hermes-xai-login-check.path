@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the Hermes xAI login whenever its auth file changes or goes away
+# See fleet-hermes-xai-login-check.service. PathChanged= watches the file and
+# its directory, so a rewrite, a delete and a restore each trigger one check.
+
+[Path]
+PathChanged=%h/.hermes/auth.json
+Unit=fleet-hermes-xai-login-check.service
+TriggerLimitIntervalSec=60s
+TriggerLimitBurst=3
+
+[Install]
+WantedBy=default.target

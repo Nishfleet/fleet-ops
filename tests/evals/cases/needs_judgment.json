@@ -1,0 +1,362 @@
+[
+  {
+    "id": "0509#914",
+    "split": "test",
+    "label": "judgment",
+    "why": "Resolving a conflicting PR requires deciding between rebasing vs. reimplementing, assessing which strings are user-facing versus internal field names, and potentially resolving merge conflicts across multiple files."
+  },
+  {
+    "id": "0509#948",
+    "split": "test",
+    "label": "judgment",
+    "why": "Designing a scoring/ranking system to weight event types and deciding how to collapse and re-rank digest items requires engineering judgment about tradeoffs and multi-file reasoning across the digest builder and alert routing."
+  },
+  {
+    "id": "0509#1258",
+    "split": "test",
+    "label": "judgment",
+    "why": "Curating ~500 brand-to-peer mappings with category assignments and confidence scores requires domain judgment, and the multi-file integration across a new module, migration, seed data, route wiring, and test demands understanding of the existing codebase architecture."
+  },
+  {
+    "id": "0509#1420",
+    "split": "test",
+    "label": "judgment",
+    "why": "Writing FAQ content grounded in comparison page context and deciding which questions best serve SEO intent requires editorial judgment, even though the structural pattern is already established on sibling pages."
+  },
+  {
+    "id": "0509#1432",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue fully specifies which canonical to choose, which redirect to add, exactly which internal links to update, and provides verification commands, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#1728",
+    "split": "test",
+    "label": "judgment",
+    "why": "The task requires design decisions about how to split deny-list tokens between base and child rules, choosing an initial SentenceLength parameter, and implementing a quality ratchet mechanism that involves iterative tuning tradeoffs."
+  },
+  {
+    "id": "0509#1894",
+    "split": "test",
+    "label": "judgment",
+    "why": "The issue requires root-causing why a scheduled workflow failed to run and designing a monitoring/alerting solution, both of which involve investigation and design choices."
+  },
+  {
+    "id": "0509#2025",
+    "split": "test",
+    "label": "judgment",
+    "why": "Surfacing an existing module on a new page requires design choices about placement, interaction flow (button vs modal), and inline error UX within the \u22642-click constraint, involving multi-file reasoning."
+  },
+  {
+    "id": "0509#2112",
+    "split": "test",
+    "label": "judgment",
+    "why": "The task requires multi-file reasoning across a route loader and new test file, understanding the data model relationships between watchlists, domains, and watch events, and making implementation decisions about query logic and rendering structure."
+  },
+  {
+    "id": "0509#2116",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides fully specified numbered steps, exact files, explicit constraints, and even states 'no judgment calls,' making it a clearly defined implementation task with no design decisions required."
+  },
+  {
+    "id": "0509#2140",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides exact file paths, line numbers, data shapes, and explicit constraints with no ambiguity, and the author explicitly states there are no judgment calls required."
+  },
+  {
+    "id": "0509#2181",
+    "split": "test",
+    "label": "judgment",
+    "why": "Although the spec is highly prescriptive, completing it requires multi-file reasoning across seven-plus files, understanding and replicating existing patterns (Meta alert path, LinkedIn coverage state, scheduler cadence, budget seam), and correctly integrating a new provider interface into an existing architecture."
+  },
+  {
+    "id": "0509#2293",
+    "split": "test",
+    "label": "judgment",
+    "why": "The issue is blocked on a human decision and requires determining what 'stop adding' means concretely in the registry file, which is a policy choice rather than a fully specified mechanical edit."
+  },
+  {
+    "id": "0509#2306",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies an exact header value replacement on a single route with no ambiguity or design decisions required."
+  },
+  {
+    "id": "0509#2325",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The judge edits reduce the task to two fully specified CSS grid changes (set column count at a given breakpoint and make one cell span two columns) in a single file, leaving no design choice or ambiguity."
+  },
+  {
+    "id": "0509#2358",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies exactly which file to delete, which entry to remove from a list, and which test files to update, leaving no design choices or ambiguity."
+  },
+  {
+    "id": "0509#2400",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The task is a clearly specified deletion of a named Map and its TTL check from a single identified file, with explicit acceptance criteria and no design decisions required."
+  },
+  {
+    "id": "0509#2424",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The task is a clearly specified deletion of three options from a named select component, keeping one existing option, with no design decisions required."
+  },
+  {
+    "id": "0509#2516",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides a fully specified, single-file fix with exact replacement syntax, explicit step-by-step instructions, and no design choices or tradeoffs to weigh."
+  },
+  {
+    "id": "0509#2837",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies exactly which condition to add, where to add it, which files to touch, and what the test must verify, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#3018",
+    "split": "test",
+    "label": "judgment",
+    "why": "Building a new versioned-snapshot persistence pipeline, a public timeline surface with before/after rendering, and a backfill strategy requires multi-file design decisions, coordination with overlapping issues, and tradeoff evaluation around schema constraints."
+  },
+  {
+    "id": "0509#3146",
+    "split": "test",
+    "label": "judgment",
+    "why": "A naive try/catch was already attempted and reverted because it broke route semantics and 10 tests, so the implementer must design a guard shape that catches all tail throws without shadowing locals or altering existing behavior."
+  },
+  {
+    "id": "0509#3412",
+    "split": "test",
+    "label": "judgment",
+    "why": "Although the approach is prescribed, choosing a fixed time that keeps all 56 literals consistent with the route test's assertions requires understanding the test logic and reasoning about which clock value won't break existing expectations."
+  },
+  {
+    "id": "0509#3613",
+    "split": "test",
+    "label": "judgment",
+    "why": "The fix requires root-causing whether the country filter is broken or the corpus lacks per-country data, then deciding how to wire empty-state copy into the search route across multiple files and writing a regression test that follows an existing pattern."
+  },
+  {
+    "id": "0509#3617",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies exactly which links, title pattern, and meta tags to add to a single error-page template using existing components and test patterns, leaving no design ambiguity or tradeoff to resolve."
+  },
+  {
+    "id": "0509#3621",
+    "split": "test",
+    "label": "judgment",
+    "why": "The issue requires multi-file reasoning across three server files, designing a shadow-then-flip rollout with empirically determined thresholds, and weighing tradeoffs between filtering aggressiveness and coverage."
+  },
+  {
+    "id": "0509#3678",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue fully specifies deleting a dead directory and removing specific lines from one other file, with no design choices or ambiguity involved."
+  },
+  {
+    "id": "0509#3681",
+    "split": "test",
+    "label": "judgment",
+    "why": "Each of the 12 workflows requires a contextual decision about whether to re-enable or delete based on its purpose and incident history, and the reconciliation check involves design choices about implementation."
+  },
+  {
+    "id": "0509#3750",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The fix is a single-line addition of an intent string to an existing dispatch condition in a specific file, fully specified with no ambiguity."
+  },
+  {
+    "id": "0509#3753",
+    "split": "test",
+    "label": "judgment",
+    "why": "The issue requires root-causing whether smoke failures are real regressions or flaky tests, then choosing a fundamentally different fix strategy based on that diagnosis, plus designing a solution for the un-reverted commit problem."
+  },
+  {
+    "id": "0509#3782",
+    "split": "test",
+    "label": "judgment",
+    "why": "The implementer must decide which platform primitive (Cache API, KV, or Durable Object) is appropriate for each of several caches and locks based on their cross-isolate semantics, and restructure a scheduler across multiple files."
+  },
+  {
+    "id": "0509#3982",
+    "split": "test",
+    "label": "judgment",
+    "why": "The task requires multi-file reasoning across migrations, a workflow, and a cron job, with design decisions around crash-safe ordering, fan-out across workspaces, and reconciliation of interrupted runs."
+  },
+  {
+    "id": "0509#3986",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides an exhaustive spec including exact files, exact content constraints, exact wording rules, exact styling tokens, and a single source document to draw from, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#4022",
+    "split": "test",
+    "label": "judgment",
+    "why": "Implementing the component requires design decisions around fallback cascading, layout-shift prevention, visual differentiation of self vs off brands, and multi-file coordination across component, tests, and registry files."
+  },
+  {
+    "id": "0509#4244",
+    "split": "test",
+    "label": "judgment",
+    "why": "Root-causing why tests fail only in production requires diagnosing an environment difference, deciding whether to fix the spec or the route, and choosing the correct assertion for Access-gated behavior."
+  },
+  {
+    "id": "0509#4272",
+    "split": "test",
+    "label": "judgment",
+    "why": "Configuring boundary element types and their allowed dependencies requires understanding the codebase architecture, and replacing hand-written import globs with plugin rules demands multi-file reasoning to ensure equivalence without regressions."
+  },
+  {
+    "id": "0509#4290",
+    "split": "test",
+    "label": "judgment",
+    "why": "The fix requires deciding whether to restore removed routes or mark the issue as blocked during a rebuild, understanding why the routes disappeared, and likely reasoning across routing configuration and deployment files."
+  },
+  {
+    "id": "0509#4313",
+    "split": "test",
+    "label": "judgment",
+    "why": "Designing a correct ESLint AST selector to match raw D1 prepare calls with DML strings requires understanding nested callee shapes and making scoping decisions, as the issue itself demonstrates the previous selector was subtly wrong."
+  },
+  {
+    "id": "0509#4332",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue fully specifies the file move, the exact column structure to create, all reference lines to update, and clear acceptance criteria, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#4418",
+    "split": "test",
+    "label": "mechanical",
+    "why": "Every file, export signature, className string, prop, and test assertion is specified verbatim, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#4422",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides a fully specified implementation with exact interfaces, function signature, cascade order, error handling, and enumerated test cases, leaving no design choices or ambiguity."
+  },
+  {
+    "id": "0509#4435",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides exact function signatures, SQL statements, branching logic, string literals, and test cases, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#4482",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides exact code snippets, step-by-step instructions, specific assertions, and even contingency actions, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#4521",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The fix is fully specified: delete a named job from a workflow file and add a specific label in an identified branch of another job, with no design choices or ambiguity."
+  },
+  {
+    "id": "0509#4954",
+    "split": "test",
+    "label": "judgment",
+    "why": "The developer must design a secure mechanism to pass state through an OAuth/magic-link flow without cookies or open redirects, requiring multi-file reasoning and tradeoff evaluation among several possible approaches."
+  },
+  {
+    "id": "0509#5114",
+    "split": "test",
+    "label": "judgment",
+    "why": "It requires understanding and replicating filtering and confidence logic from the alerts page's mention view, involving multi-file reasoning about existing behavior rather than a fully specified change."
+  },
+  {
+    "id": "0509#5164",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides exact SQL, exact code snippets, exact test cases, exact file scopes, and exact acceptance criteria, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#5234",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides fully specified, step-by-step instructions with exact schema additions, handler logic, transformation rules, and a concrete test case, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#5432",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies the exact file, exact insertion point, and exact code to add, leaving no design decisions or ambiguity for the implementer."
+  },
+  {
+    "id": "0509#5621",
+    "split": "test",
+    "label": "judgment",
+    "why": "Fixing a Lighthouse budget failure requires diagnosing which metrics regressed, root-causing the performance issue, and choosing an appropriate optimization strategy among multiple possible approaches."
+  },
+  {
+    "id": "0509#5625",
+    "split": "test",
+    "label": "judgment",
+    "why": "Fixing a Lighthouse budget failure requires root-causing which metric regressed and deciding on the appropriate optimization or tradeoff to resolve it."
+  },
+  {
+    "id": "0509#5667",
+    "split": "test",
+    "label": "judgment",
+    "why": "Fixing a Lighthouse budget failure requires diagnosing which metrics regressed, root-causing the performance issue, and deciding among multiple possible remediation strategies involving tradeoffs."
+  },
+  {
+    "id": "0509#5755",
+    "split": "test",
+    "label": "judgment",
+    "why": "The issue requires designing a generalized test that detects missing indexes across migrations and hot statements, plus a design decision about whether to create a missing table or re-scope dependent issues."
+  },
+  {
+    "id": "0509#5803",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies exactly which two doc files to update, what content to add in each location, and provides a grep-based acceptance criterion, making it a fully specified documentation update."
+  },
+  {
+    "id": "0509#5886",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue provides exact step-by-step code changes across two files with specific function replacements, deletions, and test cases, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#5918",
+    "split": "test",
+    "label": "judgment",
+    "why": "The task spans 48 files, requires deciding whether a vitest plugin accepts a new config format (with a conditional stop rule), designing CI gates with appropriate exclusion lists, and making multi-file reasoning decisions about what to reword, retarget, or leave as historical records."
+  },
+  {
+    "id": "0509#5943",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue fully specifies every file change, exact code to write, exact lines to delete, and exact test cases, leaving no design decisions or ambiguity."
+  },
+  {
+    "id": "0509#6138",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The issue specifies the exact ESLint rule to override, the directory scope, and the files to clean up, making it a clearly defined config change with a small, well-bounded code removal."
+  },
+  {
+    "id": "0509#7024",
+    "split": "test",
+    "label": "judgment",
+    "why": "The fix requires designing a new workflow step in a worker prompt, deciding which issues qualify for auto-close versus routing, and re-scoping epics\u2014multiple design choices and multi-file reasoning are needed."
+  },
+  {
+    "id": "0509#7067",
+    "split": "test",
+    "label": "mechanical",
+    "why": "The corrected fix is fully specified: replace a cron string constant with an explicit value across a small set of named files, update pinned tests, and add a guard test, leaving no design decisions or ambiguity."
+  }
+]

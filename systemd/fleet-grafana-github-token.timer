@@ -1,0 +1,17 @@
+[Unit]
+Description=Re-mint Grafana's GitHub App token every 20 min (fleet-ops#9445)
+# The token lives one hour; three mints per hour means two failed runs in a row
+# still leave a valid token. See fleet-grafana-github-token.service.
+# Switch off: systemctl --user disable --now fleet-grafana-github-token.timer, and
+# systemctl --user mask fleet-grafana-github-token.service (fleet-grafana.service
+# Wants= it and would mint once per start).
+
+[Timer]
+# fleet-grafana.service pulls the service in at its own start; this covers the
+# boot case where the timer is up first, and the steady state after.
+OnBootSec=2min
+OnUnitActiveSec=20min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

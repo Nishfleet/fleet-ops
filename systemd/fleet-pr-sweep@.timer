@@ -1,0 +1,22 @@
+[Unit]
+Description=Hourly agent-dispatch sweep for Nishfleet/%i
+# GitHub fired agent-dispatch's '17 * * * *' schedule only 4 to 5 times a day
+# in fleet-ops, 0509 and drive (actions/runs?event=schedule, measured
+# 2026-10-11), so the "hourly" sweep, and the stuck-prs check in it that moves
+# PRs waiting over an hour, really ran every 5 to 7 hours. This timer starts
+# the same sweep by workflow_dispatch from the box every hour; GitHub's own
+# schedule stays as the second source. The sweep's concurrency group keeps one
+# running and one waiting, so two sources never stack runs.
+# One instance per repo with an agent-dispatch stub; fleet-sync.service (step
+# 2a) links this pair and enables the instances on every deploy. Switch off:
+# remove step 2a and its enable line from fleet-sync.service, then
+# systemctl --user disable --now 'fleet-pr-sweep@*.timer'. Delete: that, then
+# remove this file and fleet-pr-sweep@.service.
+
+[Timer]
+OnCalendar=*-*-* *:47:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=TigerVNC desktop on :1 (IceWM)
+
+[Service]
+ExecStart=/usr/bin/tigervncserver :1 -fg -localhost no -SecurityTypes VncAuth -passwd %h/.config/tigervnc/passwd -geometry 1440x900
+ExecStop=/usr/bin/tigervncserver -kill :1
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
