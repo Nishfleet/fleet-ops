@@ -137,20 +137,6 @@
             "query": "is:open label:needs-nish-decision",
             "timeField": 0
           }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
-          "repository": "",
-          "options": {
-            "query": "is:open label:needs-nish-decision",
-            "timeField": 0
-          }
         }
       ],
       "transformations": [
@@ -351,20 +337,6 @@
             "query": "is:open label:agent-ready",
             "timeField": 0
           }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-ready",
-            "timeField": 0
-          }
         }
       ],
       "options": {
@@ -534,20 +506,6 @@
             "query": "is:open label:strong-only \"agent run failed\" in:comments",
             "timeField": 0
           }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
-          "repository": "",
-          "options": {
-            "query": "is:open label:strong-only \"agent run failed\" in:comments",
-            "timeField": 0
-          }
         }
       ],
       "options": {
@@ -625,20 +583,6 @@
             "query": "is:open label:agent-blocked,needs-orchestrator",
             "timeField": 0
           }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-blocked,needs-orchestrator",
-            "timeField": 0
-          }
         }
       ],
       "options": {
@@ -704,20 +648,6 @@
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
           "repository": "",
-          "options": {
-            "query": "is:open",
-            "timeField": 4
-          }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Pull_Requests",
-          "owner": "nish3451",
-          "repository": "drive",
           "options": {
             "query": "is:open",
             "timeField": 4
@@ -789,20 +719,6 @@
             "query": "is:merged",
             "timeField": 2
           }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Pull_Requests",
-          "owner": "nish3451",
-          "repository": "drive",
-          "options": {
-            "query": "is:merged",
-            "timeField": 2
-          }
         }
       ],
       "options": {
@@ -865,20 +781,6 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-in-progress",
-            "timeField": 0
-          }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:agent-in-progress",
@@ -1086,13 +988,13 @@
           "refId": "D",
           "datasource": {
             "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
+            "uid": "fleet-github"
           },
           "queryType": "Workflow_Runs",
-          "owner": "nish3451",
+          "owner": "Nishfleet",
           "repository": "drive",
           "options": {
-            "owner": "nish3451",
+            "owner": "Nishfleet",
             "repository": "drive",
             "workflow": "agent-dispatch.yml",
             "branch": ""
@@ -1270,20 +1172,6 @@
           },
           "queryType": "Issues",
           "owner": "Nishfleet",
-          "repository": "",
-          "options": {
-            "query": "is:open label:agent-blocked,needs-orchestrator,strong-only",
-            "timeField": 0
-          }
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-github-datasource",
-            "uid": "fleet-github-personal"
-          },
-          "queryType": "Issues",
-          "owner": "nish3451",
           "repository": "",
           "options": {
             "query": "is:open label:agent-blocked,needs-orchestrator,strong-only",
