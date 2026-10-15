@@ -1,0 +1,224 @@
+# Codex execpolicy floor: commands no agent may run, whatever its approval
+# policy or sandbox mode. "forbidden" rejects at once with no prompt, so a
+# headless run stays non-interactive and the model sees the justification.
+# Installed to ~/.codex/rules/fleet-floor.rules by ansible/host.yml.
+#
+# A prefix rule matches the leading words of one command. Codex splits a
+# plain "a && b | c" script into its commands; a script that has a redirect,
+# a variable, a substitution or a wildcard is matched as one opaque command
+# and these rules do not see inside it. Words that follow a free-form
+# argument (a branch name, a path) cannot be matched, so a flag placed after
+# one goes unseen. This is a floor against slips, not a sandbox.
+
+SUDO = [[], ["sudo"]]
+
+FORCE_FLAGS = ["--force", "-f", "--force-with-lease"]
+REMOTES = ["origin", "upstream"]
+BRANCHES = ["main", "master"]
+
+for pre in SUDO:
+    prefix_rule(
+        pattern = pre + ["git", "push", FORCE_FLAGS],
+        decision = "forbidden",
+        justification = "Force push rewrites shared history and cannot be undone.",
+        match = [
+            pre + ["git", "push", "--force"],
+            pre + ["git", "push", "-f", "origin", "main"],
+            pre + ["git", "push", "--force-with-lease"],
+        ],
+        not_match = [
+            pre + ["git", "push", "origin", "main"],
+            pre + ["git", "push", "-u", "origin", "feature"],
+        ],
+    )
+    prefix_rule(
+        pattern = pre + ["git", "push", REMOTES, FORCE_FLAGS],
+        decision = "forbidden",
+        justification = "Force push rewrites shared history and cannot be undone.",
+        match = [
+            pre + ["git", "push", "origin", "--force"],
+            pre + ["git", "push", "upstream", "-f", "main"],
+        ],
+        not_match = [pre + ["git", "push", "origin", "feature"]],
+    )
+    prefix_rule(
+        pattern = pre + ["git", "push", REMOTES, BRANCHES, FORCE_FLAGS],
+        decision = "forbidden",
+        justification = "Force push rewrites shared history and cannot be undone.",
+        match = [
+            pre + ["git", "push", "origin", "main", "--force"],
+            pre + ["git", "push", "origin", "master", "--force-with-lease"],
+        ],
+        not_match = [pre + ["git", "push", "origin", "main"]],
+    )
+    prefix_rule(
+        pattern = pre + ["git", "reset", "--hard"],
+        decision = "forbidden",
+        justification = "Reset --hard discards uncommitted work for good.",
+        match = [pre + ["git", "reset", "--hard", "HEAD~1"]],
+        not_match = [
+            pre + ["git", "reset", "--soft", "HEAD~1"],
+            pre + ["git", "reset", "HEAD", "file"],
+        ],
+    )
+    prefix_rule(
+        pattern = pre + ["git", "clean", [
+            "-f", "-fd", "-fx", "-fdx", "-ffd", "-ffdx",
+            "-df", "-dfx", "-xf", "-xdf", "--force",
+        ]],
+        decision = "forbidden",
+        justification = "Clean -f deletes untracked files that git cannot restore.",
+        match = [
+            pre + ["git", "clean", "-f"],
+            pre + ["git", "clean", "-fd"],
+            pre + ["git", "clean", "-fdx"],
+            pre + ["git", "clean", "-ffdx"],
+        ],
+        not_match = [
+            pre + ["git", "clean", "-n"],
+            pre + ["git", "clean", "-nd"],
+            pre + ["git", "clean", "--dry-run"],
+        ],
+    )
+    prefix_rule(
+        pattern = pre + ["git", "branch", "-D"],
+        decision = "forbidden",
+        justification = "Branch -D drops a branch even when it is unmerged.",
+        match = [pre + ["git", "branch", "-D", "topic"]],
+        not_match = [
+            pre + ["git", "branch", "-d", "topic"],
+            pre + ["git", "branch", "--list"],
+        ],
+    )
+
+prefix_rule(
+    pattern = ["gh", "repo", "delete"],
+    decision = "forbidden",
+    justification = "Deleting a repository is irreversible.",
+    match = [["gh", "repo", "delete", "owner/name", "--yes"]],
+    not_match = [["gh", "repo", "view", "owner/name"]],
+)
+prefix_rule(
+    pattern = ["gh", "release", "delete"],
+    decision = "forbidden",
+    justification = "Deleting a release removes its assets for good.",
+    match = [["gh", "release", "delete", "v1.0.0"]],
+    not_match = [["gh", "release", "list"]],
+)
+
+prefix_rule(
+    pattern = ["wrangler", "delete"],
+    decision = "forbidden",
+    justification = "Deleting a Cloudflare resource is irreversible.",
+    match = [["wrangler", "delete", "--name", "worker"]],
+    not_match = [["wrangler", "deploy"], ["wrangler", "whoami"]],
+)
+prefix_rule(
+    pattern = [["npx", "bunx", "pnpx"], "wrangler", "delete"],
+    decision = "forbidden",
+    justification = "Deleting a Cloudflare resource is irreversible.",
+    match = [["npx", "wrangler", "delete"], ["bunx", "wrangler", "delete"]],
+    not_match = [["npx", "wrangler", "deploy"]],
+)
+prefix_rule(
+    pattern = [["npx", "bunx"], ["-y", "--yes"], "wrangler", "delete"],
+    decision = "forbidden",
+    justification = "Deleting a Cloudflare resource is irreversible.",
+    match = [["npx", "--yes", "wrangler", "delete"]],
+    not_match = [["npx", "--yes", "wrangler", "deploy"]],
+)
+
+prefix_rule(
+    pattern = [["restic", "/usr/bin/restic"], ["forget", "prune"]],
+    decision = "forbidden",
+    justification = "Forget and prune delete backup snapshots for good.",
+    match = [["restic", "forget", "--keep-last", "1"], ["restic", "prune"]],
+    not_match = [["restic", "snapshots"], ["restic", "check"]],
+)
+
+RM_FLAGS = [
+    "-rf", "-fr", "-Rf", "-fR", "-rfv", "-frv",
+    "-r", "-R", "--recursive",
+]
+RM_ROOTS = [
+    "/", "/home", "/home/", "/home/nish", "/home/nish/",
+    "/home/nish/workspaces", "/home/nish/workspaces/",
+    "/home/nish/workspaces/products", "/home/nish/workspaces/products/",
+    "/home/nish/workspaces/tooling", "/home/nish/workspaces/tooling/",
+    "/home/nish/workspaces/agent-worktrees",
+    "/home/nish/workspaces/agent-worktrees/",
+    "~", "~/", "~/workspaces", "~/workspaces/",
+]
+
+for pre in SUDO:
+    prefix_rule(
+        pattern = pre + ["rm", RM_FLAGS, RM_ROOTS],
+        decision = "forbidden",
+        justification = "Recursive delete of a root, home or workspaces directory.",
+        match = [
+            pre + ["rm", "-rf", "/"],
+            pre + ["rm", "-fr", "/home/nish"],
+            pre + ["rm", "-rf", "/home/nish/workspaces"],
+            pre + ["rm", "-rf", "~/workspaces"],
+        ],
+        not_match = [
+            pre + ["rm", "-rf", "./build"],
+            pre + ["rm", "-rf", "/tmp/build"],
+            pre + ["rm", "-rf", "/home/nish/workspaces/agent-worktrees/job-1"],
+            pre + ["rm", "file"],
+        ],
+    )
+    prefix_rule(
+        pattern = pre + ["rm", "--no-preserve-root"],
+        decision = "forbidden",
+        justification = "No-preserve-root exists only to delete the filesystem root.",
+        match = [pre + ["rm", "--no-preserve-root", "-rf", "/"]],
+        not_match = [pre + ["rm", "-rf", "./build"]],
+    )
+
+HALT_COMMANDS = ["reboot", "shutdown", "poweroff", "halt"]
+
+for pre in SUDO:
+    prefix_rule(
+        pattern = pre + [HALT_COMMANDS],
+        decision = "forbidden",
+        justification = "Stopping or rebooting the host kills every running job.",
+        match = [
+            pre + ["reboot"],
+            pre + ["shutdown", "-h", "now"],
+            pre + ["poweroff"],
+            pre + ["halt"],
+        ],
+        not_match = [["echo", "reboot"]],
+    )
+    prefix_rule(
+        pattern = pre + ["systemctl", ["reboot", "poweroff", "halt", "kexec"]],
+        decision = "forbidden",
+        justification = "Stopping or rebooting the host kills every running job.",
+        match = [pre + ["systemctl", "reboot"], pre + ["systemctl", "poweroff"]],
+        not_match = [pre + ["systemctl", "status", "reboot.target"]],
+    )
+    prefix_rule(
+        pattern = pre + ["systemctl", ["stop", "disable"]],
+        decision = "forbidden",
+        justification = "Stopping or disabling a unit takes a fleet service down.",
+        match = [
+            pre + ["systemctl", "stop", "unit.service"],
+            pre + ["systemctl", "disable", "--now", "unit.service"],
+        ],
+        not_match = [
+            pre + ["systemctl", "status", "unit.service"],
+            pre + ["systemctl", "restart", "unit.service"],
+            pre + ["systemctl", "start", "unit.service"],
+        ],
+    )
+    prefix_rule(
+        pattern = pre + ["systemctl", "--user", ["stop", "disable"]],
+        decision = "forbidden",
+        justification = "Stopping or disabling a unit takes a fleet service down.",
+        match = [
+            pre + ["systemctl", "--user", "stop", "unit.service"],
+            pre + ["systemctl", "--user", "disable", "unit.service"],
+        ],
+        not_match = [pre + ["systemctl", "--user", "status", "unit.service"]],
+    )

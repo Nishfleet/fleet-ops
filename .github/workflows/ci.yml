@@ -229,6 +229,17 @@ jobs:
       - name: Chrome DevTools MCP is pinned once and wired into every agent
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py
+      - name: Codex execpolicy floor forbids irreversible commands and passes harmless ones
+        # Installs the Codex release pinned in tests/codex-cli from its lockfile,
+        # then runs `codex execpolicy check` on config/codex/rules/fleet-floor.rules
+        # in a temp home. Codex also refuses the file if a match or not_match
+        # example in it is wrong.
+        if: always()
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix tests/codex-cli
+          export CODEX_BIN="$PWD/tests/codex-cli/node_modules/.bin/codex"
+          test "$("$CODEX_BIN" --version | tail -n1)" = "codex-cli $(jq -r '.dependencies["@openai/codex"]' tests/codex-cli/package.json)"
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_codex_execpolicy_floor.py
       - name: orchestrator hand-off cleanup keeps a worktree a running unit uses (fleet-ops#9377)
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
