@@ -102,6 +102,20 @@
 {{ nish_home }}/workspaces/products/**/*.parquet
 {{ nish_home }}/workspaces/products/**/*.har
 {{ nish_home }}/workspaces/products/**/*.log
+# Archives and backup copies can wrap any of the above (a .sql.gz, a zipped
+# export, x.sqlite.bak), so they stay out too.
+{{ nish_home }}/workspaces/products/**/*.gz
+{{ nish_home }}/workspaces/products/**/*.tgz
+{{ nish_home }}/workspaces/products/**/*.tar
+{{ nish_home }}/workspaces/products/**/*.zip
+{{ nish_home }}/workspaces/products/**/*.bak
+{{ nish_home }}/workspaces/products/**/*.xz
+{{ nish_home }}/workspaces/products/**/*.bz2
+{{ nish_home }}/workspaces/products/**/*.zst
+{{ nish_home }}/workspaces/products/**/*.7z
+{{ nish_home }}/workspaces/products/**/*.old
+{{ nish_home }}/workspaces/products/**/*.orig
+{{ nish_home }}/workspaces/products/**/*.backup
 
 # Python caches.
 /home/nish/__pycache__

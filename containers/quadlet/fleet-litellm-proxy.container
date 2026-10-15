@@ -53,6 +53,7 @@ PodmanArgs=--env=OPENCODE_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY_2
 PodmanArgs=--env=PARETO_API_KEY
 PodmanArgs=--env=STEPFUN_API_KEY
+PodmanArgs=--env=STRAITLY_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
 PodmanArgs=--env=VERCEL_AI_GATEWAY_JEV_KEY
 PodmanArgs=--env=ZAI_API_KEY
