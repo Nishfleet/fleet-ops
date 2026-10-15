@@ -136,6 +136,8 @@ ExecStart=/usr/bin/systemd-tmpfiles --user --create
 # 5b. Plain L never replaces a path that is already there, so a hand-made
 #     ~/.claude-max/agents would quietly hide the lanes again. Fail loud instead.
 ExecStart=/bin/sh -c 'test "$$(readlink %h/.claude-max/agents)" = %h/.claude/agents || { echo "[fleet-sync] ~/.claude-max/agents is not the link to ~/.claude/agents; remove it and re-run"; exit 1; }'
+ExecStart=/usr/bin/git -C %h/workspaces/tooling/claude-mods fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+ExecStart=/usr/bin/git -C %h/workspaces/tooling/claude-mods merge --ff-only refs/remotes/origin/main
 # 6. ~/.pi/agent/models.json is a user-scope COPY of config/pi-models.json
 #     (fleet-ops#8568: the 09-19 contextWindow 96000 fix lived only in the
 #     live file and was silently lost). Copy, not symlink: ~/.pi/agent is an
