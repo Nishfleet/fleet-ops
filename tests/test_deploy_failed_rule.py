@@ -116,7 +116,7 @@ def test_only_a_day_red_pages_its_read_errors_are_muted_and_everything_else_file
     assert sorted(muted["object_matchers"]) == [["alertname", "=~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed-24h"]]
     assert muted["mute_time_intervals"] == ["deploy-failed-24h-errors"]
     assert not page.get("continue") and not muted.get("continue")
-    assert _yq(".muteTimes", RULES) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
+    assert _yq(".muteTimes", POLICY) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
 
 
 def test_each_window_covers_a_day_red_with_room_and_0509_reads_three_days():

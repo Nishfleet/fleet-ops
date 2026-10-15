@@ -162,3 +162,13 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
+
+# The deploy-failed-24h rules' read errors (route above): the deploy-failed rule
+# on the same query files that repo's one issue.
+muteTimes:
+  - orgId: 1
+    name: deploy-failed-24h-errors
+    time_intervals:
+      - times:
+          - start_time: "00:00"
+            end_time: "24:00"

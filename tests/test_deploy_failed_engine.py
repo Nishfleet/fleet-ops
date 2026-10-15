@@ -1,6 +1,7 @@
 import base64
 import http.server
 import json
+import os
 import pathlib
 import re
 import secrets
@@ -111,8 +112,6 @@ def grafana():
             "jsonData": {"selectedAuthType": "personal-access-token", "githubUrl": f"http://127.0.0.1:{stub.server_port}"},
             "secureJsonData": {"accessToken": "stub-token"},
         }]}))
-        env = pathlib.Path(tmp, "env")
-        env.write_text(f"GF_SECURITY_ADMIN_PASSWORD={password}\n")
         pathlib.Path(tmp).chmod(0o755)
         for path in (provisioning, alerting):
             path.chmod(0o755)
@@ -130,11 +129,11 @@ def grafana():
                 subprocess.run([DOCKER, "rm", "-f", name], capture_output=True)
                 subprocess.run([DOCKER, "run", "-d", "--name", name, "--network", "host",
                                 "-e", "TZ=Asia/Kolkata", "-e", "GF_SERVER_HTTP_ADDR=127.0.0.1", "-e", f"GF_SERVER_HTTP_PORT={port}",
-                                "--env-file", str(env), "-e", f"GF_PLUGINS_PREINSTALL_SYNC={plugin}",
+                                "-e", "GF_SECURITY_ADMIN_PASSWORD", "-e", f"GF_PLUGINS_PREINSTALL_SYNC={plugin}",
                                 "-e", "GF_ANALYTICS_REPORTING_ENABLED=false", "-e", "GF_ANALYTICS_CHECK_FOR_UPDATES=false",
                                 "-v", f"{provisioning}:/etc/grafana/provisioning/datasources:ro",
                                 "-v", f"{alerting}:/etc/grafana/provisioning/alerting:ro", image],
-                               check=True, capture_output=True)
+                               check=True, capture_output=True, env={**os.environ, "GF_SECURITY_ADMIN_PASSWORD": password})
                 if _ready(base, auth, name):
                     break
             else:

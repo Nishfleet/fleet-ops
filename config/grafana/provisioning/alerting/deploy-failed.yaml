@@ -354,11 +354,3 @@ groups:
           description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/siterep-public, workflow: deploy-production.yml}
         isPaused: false
-
-muteTimes:
-  - orgId: 1
-    name: deploy-failed-24h-errors
-    time_intervals:
-      - times:
-          - start_time: "00:00"
-            end_time: "24:00"
