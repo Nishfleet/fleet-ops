@@ -1408,8 +1408,10 @@ jobs:
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '') ||
         (github.event_name == 'schedule' && vars.ORCHESTRATE_SWEEP != 'off')
       )
+    # Per issue: GitHub keeps one pending run per group, so a per-repo group dropped
+    # queued hand-offs (fleet-ops#9700). Mirror writers take a file lock instead.
     concurrency:
-      group: orchestrate-${{ github.repository }}
+      group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
@@ -1417,10 +1419,11 @@ jobs:
     # the GITHUB_TOKEN is never handed to claude (step work unsets GH_TOKEN and
     # GITHUB_TOKEN), so this token cannot reach the session that pushes workflow files.
     permissions:
-      # contents: read, because the steps read git refs and PR lists through the API.
-      # pull-requests: read, because on a private caller the cleanup step's PR list
-      # fails without it and a failed list reads as "no PR".
-      # actions: read, because the daily cap lists this workflow's runs and jobs.
+      # issues: read for the issue steps; contents: read for git refs and PR lists
+      # through the API; pull-requests: read because on a private repo the cleanup
+      # step's PR list fails without it and a failed list reads as "no PR" (drive
+      # while it was private); actions: read because the daily cap lists this
+      # workflow's runs and jobs (403 under GITHUB_TOKEN without it).
       issues: read
       contents: read
       pull-requests: read
@@ -1543,8 +1546,14 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          # Test for a repository, not a directory: a mirror whose HEAD is gone
-          # (fleet-ops#9526) is repaired in place by `git init`, which keeps its objects.
+          mkdir -p "${mirror%/*}"
+          exec 9>"${mirror%.git}.lock"
+          flock 9
+          # Test for a repository, not a directory: a mirror whose HEAD file is
+          # gone (fleet-ops#9526) is a directory that git no longer recognises.
+          # `git init` on it recreates HEAD and keeps the objects, refs and
+          # config, so a damaged mirror is repaired in place, and the remote is
+          # added only when it is missing.
           init_mirror() {
             if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
               mkdir -p "$mirror"
@@ -1578,11 +1587,8 @@ jobs:
           # copy sits beside the worktrees, where the 3-day age-out reaps it, so
           # there is a window to salvage from it. A fetch that fails on an intact
           # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. Nothing else is using the mirror
-          # during the move: this job's own `concurrency: orchestrate-<repo>`
-          # group (cancel-in-progress false, set on the job, not the per-run
-          # group at the top of the file) lets one hand-off per repo run at a
-          # time, and each repo has its own mirror.
+          # rebuilt: it stays a loud failure. The lock above is held by this
+          # step alone, but a session live in a worktree of the old mirror loses its registration.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
@@ -1733,8 +1739,9 @@ jobs:
           if [ "$busy" = 1 ]; then
             echo "orchestrate: a running unit uses $wt; keeping the worktree"
           elif [ -d "$mirror" ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
+            lock="${mirror%.git}.lock"
+            flock "$lock" env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+            flock "$lock" env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
           fi
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started

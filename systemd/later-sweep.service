@@ -1,0 +1,38 @@
+# Promotes an overdue issue to agent-ready in every enrolled repo (see
+# later-sweep.timer for why this timer exists and for the switch-off steps).
+# Stock only: one gh call per repo and one gh label edit per promoted issue.
+# jq makes the whole decision, so no model reads an issue body and there is no
+# session to jail: the author must be nish3451 or the worker App
+# (app/nishfleet-worker), the body must hold a line starting `due: <date>
+# <time> IST` that has passed, and none of the park/live labels below may be
+# present. The repo list is the installed copy of config/intake-repos.json
+# (fleet-sync.service step 2f installs it), not fleet-sync's own enable list,
+# so the trust decision has one source. gh reads ~/.config/gh/hosts.yml (the
+# user manager has no GH_TOKEN) and acts as nish3451; no credential is in this
+# file or argv. gh and jq are found on the user manager's PATH (/usr/local/bin
+# and /usr/bin on the box) through env, so the unit names no home path and
+# verifies on a CI runner.
+# Safe to start by hand: the only write is the agent-ready label. It promotes
+# at most 5 issues a run and prints a verdict line every run, promoted=0
+# included. A promotion that fails once per repo prints one WARN and moves on,
+# because a repo that lacks the agent-ready label would otherwise page
+# through OnFailure on every tick. Only a failed issue list sets failed=1.
+# Start limit: the timer's 4 starts an hour plus up to 4 retries of a genuine
+# failure, then starts stop until the hour rolls, so an outage pages instead of
+# paging every tick.
+[Unit]
+Description=Promote overdue issues to agent-ready in the enrolled repos
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=8
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'cfg=%h/.config/fleet-ops/intake-repos.json; jq -e ".repos|length>0" "$$cfg" >/dev/null 2>&1 || { echo "later-sweep: verdict FAIL repo list $$cfg unreadable"; exit 1; }; cap=5; promoted=0; failed=0; for repo in $$(jq -r ".repos[].name" "$$cfg"); do [ "$$promoted" -ge "$$cap" ] && break; list=$$(gh issue list -R "Nishfleet/$$repo" --state open --limit 300 --json number,author,labels,body --jq '"'"'.[]|select(.author.login=="nish3451" or .author.login=="app/nishfleet-worker")|select([.labels[].name]|any(.=="agent-ready" or .=="agent-in-progress" or .=="agent-blocked" or .=="agent-failed" or .=="needs-orchestrator" or .=="needs-nish-decision" or .=="strong-only" or .=="orchestrator-tried" or .=="needs-triage" or .=="triage-mass-close")|not)|select([((.body//"")|try(capture("(?m)^due:[ \t]*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]+(?<t>[0-9]{2}:[0-9]{2})[ \t]+[Ii][Ss][Tt]")|(.d+"T"+.t+":00Z"|fromdateiso8601)) catch null)]|any(.!=null and .-19800<=now))|.number'"'"') || { echo "later-sweep: WARN list failed Nishfleet/$$repo"; failed=1; continue; }; for n in $$list; do [ "$$promoted" -ge "$$cap" ] && break 2; if gh issue edit "$$n" -R "Nishfleet/$$repo" --add-label agent-ready >/dev/null 2>&1; then promoted=$$((promoted + 1)); echo "later-sweep: promoted Nishfleet/$$repo#$$n"; else echo "later-sweep: WARN cannot add agent-ready in Nishfleet/$$repo (label absent on the repo?)"; continue 2; fi; done; done; echo "later-sweep: verdict promoted=$$promoted failed=$$failed"; [ "$$failed" -eq 0 ]'
+TimeoutStartSec=300
+# A network blip retries twice in the hour, then the unit stays failed and
+# OnFailure pages.
+Restart=on-failure
+RestartSec=60

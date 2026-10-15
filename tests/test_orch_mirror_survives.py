@@ -157,3 +157,42 @@ def test_tmpfiles_age_out_keeps_the_mirror(tmp_path):
     assert r.returncode == 0, r.stderr
     assert head.exists(), "the age-out deleted the mirror's HEAD"
     assert not stale.exists(), "precondition: the age-out still removes stale worktrees"
+
+
+def test_concurrency_group_is_per_issue():
+    group = subprocess.run(
+        ["yq", ".jobs.orchestrate.concurrency.group", str(ROOT / ".github/workflows/agent-dispatch.yml")],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "github.event.issue.number" in group and "inputs.issue" in group
+
+
+def test_step_waits_while_another_hand_off_holds_the_mirror_lock(tmp_path):
+    mirror, wt, env = _setup(tmp_path)
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(["flock", str(mirror.parent / "fleet-ops.lock"), "sleep", "30"])
+    time.sleep(0.5)
+    step = subprocess.Popen(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(1.5)
+    assert step.poll() is None
+    holder.terminate()
+    holder.wait()
+    out, err = step.communicate(timeout=60)
+    assert step.returncode == 0, err
+    assert (wt / ".git").exists()
+
+
+def test_three_back_to_back_hand_offs_all_get_a_worktree(tmp_path):
+    mirror, wt, env = _setup(tmp_path)
+    procs = []
+    for issue in ("9701", "9702", "9703"):
+        procs.append(subprocess.Popen(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
+            env={**env, "ISSUE": issue, "GITHUB_OUTPUT": str(tmp_path / f"out-{issue}")},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ))
+    for proc in procs:
+        out, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err
+    for issue in ("9701", "9702", "9703"):
+        assert (wt.parent / f"orch-fleet-ops-{issue}" / ".git").exists()
