@@ -60,6 +60,7 @@ case "$1 $2" in
     esac
     exit 0;;
   "issue create")
+    [ -n "$FAIL_CREATE" ] && exit 1
     while [ $# -gt 0 ]; do
       [ "$1" = --body-file ] && cp "$2" "$SC/issue-body.md"
       shift
@@ -133,6 +134,7 @@ def box(tmp_path):
                                 "LC_ALL": "C",
                 "ALPHA_API_KEY": "fake-alpha-key",
                 "BETA_API_KEY": "fake-beta-key",
+                "FAIL_CREATE": "",
             }
             env.update(extra or {})
             for k in drop:
@@ -171,7 +173,8 @@ def test_added_id_files_one_issue_with_both_labels(box):
     creates = [ln for ln in gh if ln.startswith("issue create")]
     assert len(creates) == 1
     assert "--title Provider watch: alpha model list changed" in creates[0]
-    assert "--label provider-watch --label needs-orchestrator" in creates[0]
+    assert "--label provider-watch --body-file" in creates[0]
+    assert "needs-orchestrator" not in creates[0]
     assert "-R Nishfleet/fleet-ops" in creates[0]
     assert any(ln.startswith("label create provider-watch") for ln in gh)
     body = box.issue_body
@@ -318,18 +321,30 @@ def test_curl_retries_twice_twenty_seconds_apart(box):
         assert "--retry 2 --retry-delay 20" in line
 
 
-def test_a_failed_listing_names_three_tries(box):
+def test_a_5xx_outage_is_skipped_without_failing_the_unit(box):
     box.serve("alpha.test", "{}", codes="503")
     r = box.run()
-    assert r.returncode == 1
-    assert "provider-watch: alpha listing failed (HTTP 503 after 3 tries)" in r.stdout
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (
+        "provider-watch: alpha listing unavailable (HTTP 503), skipped; outages page through litellm_deployment_state"
+        in r.stdout
+    )
+    assert "provider-watch: beta ok, 1 models" in r.stdout
+    assert "issue create" not in box.log("gh.log")
 
 
-def test_empty_listing_fails_instead_of_reporting_every_model_gone(box):
+def test_a_timeout_is_skipped_without_failing_the_unit(box):
+    box.serve("alpha.test", "{}", codes="000")
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "provider-watch: alpha listing unavailable (HTTP 000), skipped" in r.stdout
+
+
+def test_an_empty_listing_is_skipped_instead_of_reporting_every_model_gone(box):
     box.serve("alpha.test", [])
     r = box.run()
-    assert r.returncode == 1
-    assert "provider-watch: alpha listing is not a non-empty data array" in r.stdout
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "provider-watch: alpha listing unavailable (HTTP 200 without a model list), skipped" in r.stdout
     assert "issue create" not in box.log("gh.log")
 
 
@@ -453,3 +468,10 @@ def test_every_router_key_has_an_environment_file_in_the_unit():
         assert key_re.match(var), var
         name = re.sub(r"-api-key", "", var.lower().replace("_", "-"))
         assert f"EnvironmentFile=%E/fleet-ops/seats/{name}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
+
+
+def test_a_filing_failure_fails_the_unit(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    r = box.run(extra={"FAIL_CREATE": "1"})
+    assert r.returncode == 1
+    assert "provider-watch: alpha changed (+1 -0) but filing the issue failed" in r.stdout

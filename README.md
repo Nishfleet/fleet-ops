@@ -859,11 +859,14 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
 - The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
   the ones it needs one by one (not the whole directory; CI fails when a router key has no file here), so the master key and the Claude
   logins are not in its environment.
+- A listing that is still 5xx, times out or has no model list after curl's retries logs
+  `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
+  litellm_deployment_state` and does not fail the unit.
 - HTTP 401 or 403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with
   one plain line naming the provider and what Nish must do. No issue is filed for that.
 - An added or removed id files ONE issue per changed provider, titled `Provider watch: <name>
-  model list changed`, labels `provider-watch` (created if missing) and `needs-orchestrator`
-  (the worker App adds it, which starts one hand-off run). Title, body and labels are built by
+  model list changed`, label `provider-watch` (created if missing) and no other label
+  (fleet-ops#8304: control-plane work is never self-admitted; the issue waits for a scoped hand-off). Title, body and labels are built by
   the unit; the only network text in the body is the model ids, each checked against
   `^~?[A-Za-z0-9._:/-]{1,64}$` and refused (the unit fails, nothing is filed for that provider)
   if it holds `//` or `www.`, so no link can be planted. At most 20 ids are listed in total, in a
@@ -871,10 +874,8 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   A key variable must match `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$` and the api_base must be https://,
   or the row is refused. Targets are unique by key variable. An issue with the same title that is open, or was created in the last 7 days even if closed,
   means the change is skipped (a closed issue does not refile every morning). At most 3 issues are
-  filed per run; the rest wait for the next run. The label `needs-orchestrator` is on purpose: the
-  task owner wants the follow-up to start without a person, which departs from the plain-issue rule
-  of fleet-ops#8304. The hand-off is a paid model session, capped by `ORCHESTRATE_DAILY_MAX`. The body
-  carries the acceptance bullets for the orchestrator: a seat whose snapshot entry says
+  filed per run; the rest wait for the next run. The body
+  carries the acceptance bullets for whoever takes the hand-off: a seat whose snapshot entry says
   `"billing": "flat"` may get a real call to free or in-plan ids only; every other seat's body
   forbids all calls and sends the ids back as a `needs-nish-decision` line (the unit decides, not
   the model; `opencode`, `opencode-2` and `minimax` are marked flat), an eval-score before any router weight
@@ -898,7 +899,7 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
 - Switch it on (once): `systemctl --user enable --now fleet-provider-watch.timer`. `fleet-sync.service`
   links the pair on every deploy (step 2g) but never enables it.
 - Switch it off: `systemctl --user disable --now fleet-provider-watch.timer`.
-- After a provider change the orchestrator's PR updates `config/provider-catalog.json`; to refresh
+- After a provider change the hand-off PR updates `config/provider-catalog.json`; to refresh
   it by hand, replace the ids for that provider with the live listing, sorted.
 - Delete it: switch it off, delete `systemd/fleet-provider-watch.service`,
   `systemd/fleet-provider-watch.timer`, `config/provider-catalog.json`, `tests/test_provider_watch.py`
