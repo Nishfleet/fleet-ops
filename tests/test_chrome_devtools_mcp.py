@@ -17,7 +17,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
-REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics"]
+REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
 
 
 def _play():
@@ -62,6 +62,7 @@ def test_every_install_step_is_in_the_play():
     for name in (
         "Install the pinned Chrome DevTools MCP server",
         "Install the OpenCode managed config",
+        "Read the shared MCP config",
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
         "Add the chrome-devtools entry to each agent CLI",
         "Swap Cursor's dead camofox entry for chrome-devtools",
@@ -101,16 +102,20 @@ def test_generated_configs_carry_the_pinned_command(tmp_path):
         "Create the OpenCode managed config directory",
         "Install the OpenCode managed config",
         "Create the shared MCP config directory",
+        "Read the shared MCP config",
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
     ]
     subs = {"/etc/opencode": str(tmp_path / "etc/opencode")}
     (tmp_path / "etc").mkdir()
+    (tmp_path / ".config/mcp").mkdir(parents=True)
+    (tmp_path / ".config/mcp/mcp.json").write_text(json.dumps({"mcpServers": {"kept": {"url": "https://example.invalid/mcp"}}, "settings": {"x": 1}}))
     _run_tasks(tmp_path, names, subs)
     bin_path = f"{tmp_path}/.local/bin/chrome-devtools-mcp"
     entry = json.loads((tmp_path / "etc/opencode/opencode.json").read_text())["mcp"]["chrome-devtools"]
     assert entry == {"type": "local", "command": [bin_path, *ARGS], "enabled": True}
-    shared = json.loads((tmp_path / ".config/mcp/mcp.json").read_text())["mcpServers"]["chrome-devtools"]
-    assert shared == {"command": bin_path, "args": ARGS, "lifecycle": "lazy", "idleTimeout": 5}
+    whole = json.loads((tmp_path / ".config/mcp/mcp.json").read_text())
+    assert whole["mcpServers"]["chrome-devtools"] == {"command": bin_path, "args": ARGS, "lifecycle": "lazy", "idleTimeout": 5}
+    assert whole["mcpServers"]["kept"] == {"url": "https://example.invalid/mcp"} and whole["settings"] == {"x": 1}
     assert "changed=0" in _run_tasks(tmp_path, names, subs)
 
 
@@ -153,7 +158,7 @@ def test_hermes_line_lands_under_mcp_servers_once(tmp_path):
     cfg = tmp_path / ".hermes/config.yaml"
     cfg.parent.mkdir()
     cfg.write_text("browser:\n  inactivity_timeout: 120\nmcp_servers:\n  agent-tincan:\n    command: /x/tincan\n    enabled: true\ncron:\n  model: m\n")
-    names = ["Look for Hermes' chrome-devtools entry", "Add the chrome-devtools entry under Hermes' mcp_servers"]
+    names = ["Look for Hermes' chrome-devtools entry", "Look for Hermes' mcp_servers key", "Add the chrome-devtools entry under Hermes' mcp_servers"]
     _run_tasks(tmp_path, names)
     text = cfg.read_text()
     assert text.count("chrome-devtools:") == 1
@@ -179,3 +184,17 @@ def test_other_worker_lanes_pass_no_flag_that_hides_the_shared_configs():
     for lane in (r"devin -p --prompt-file.*", r"opencode run --dir.*", r"pi --print --no-context-files.*"):
         for line in re.findall(lane, text):
             assert not re.search(r"--(config|no-mcp|no-extensions)\b|\s-ne\b", line), line
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_hermes_without_an_mcp_servers_key_is_left_alone(tmp_path):
+    cfg = tmp_path / ".hermes/config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text("browser:\n  inactivity_timeout: 120\n")
+    _run_tasks(tmp_path, ["Look for Hermes' chrome-devtools entry", "Look for Hermes' mcp_servers key", "Add the chrome-devtools entry under Hermes' mcp_servers"])
+    assert cfg.read_text() == "browser:\n  inactivity_timeout: 120\n"
+
+
+def test_orphaned_chrome_profiles_age_out():
+    conf = (ROOT / "rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf").read_text().split()
+    assert conf[:2] == ["e", "/tmp/puppeteer_dev_chrome_profile-*"] and conf[-1].endswith("d")

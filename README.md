@@ -631,7 +631,7 @@ pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
 | Agent | How it gets the tool |
 |---|---|
 | Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` pulls the claude-mods clone. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
-| Pi | the play writes `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle). |
+| Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
 | OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
 | Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its command changed. |
 | Cursor | the play swaps the dead `camofox-browser` entry in `~/.cursor/mcp.json` for `chrome-devtools`, keeping the other servers. Cursor still asks for approval (`cursor-agent mcp enable chrome-devtools`). |

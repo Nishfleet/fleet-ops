@@ -589,13 +589,26 @@
         group: nish
         mode: "0755"
 
+    - name: Read the shared MCP config
+      ansible.builtin.slurp:
+        src: "{{ nish_home }}/.config/mcp/mcp.json"
+      register: shared_mcp
+      failed_when: false
+      diff: false
+
     - name: Install the shared MCP config (Pi reads it through pi-mcp-adapter)
       ansible.builtin.copy:
-        content: "{{ {'mcpServers': {'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args, 'lifecycle': 'lazy', 'idleTimeout': 5}}} | to_nice_json(indent=2) }}\n"
+        content: "{{ shared_next | to_nice_json(indent=2) }}\n"
         dest: "{{ nish_home }}/.config/mcp/mcp.json"
         owner: nish
         group: nish
         mode: "0644"
+      vars:
+        shared_now: "{{ (shared_mcp.content | default('e30=') | b64decode | from_json) }}"
+        shared_servers: "{{ (shared_now.mcpServers | default({})) | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args, 'lifecycle': 'lazy', 'idleTimeout': 5}}) }}"
+        shared_next: "{{ shared_now | combine({'mcpServers': shared_servers}) }}"
+      when: shared_next != shared_now
+      diff: false
 
     - name: Read each agent CLI's chrome-devtools entry
       become: true
@@ -620,7 +633,7 @@
       loop: "{{ mcp_entry.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.rc == 0 and chrome_devtools_mcp_line not in item.stdout
+      when: item.rc == 0 and chrome_devtools_mcp_line not in (item.stdout ~ item.stderr)
 
     - name: Add the chrome-devtools entry to each agent CLI
       become: true
@@ -631,7 +644,7 @@
       loop: "{{ mcp_entry.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.rc != 0 or chrome_devtools_mcp_line not in item.stdout
+      when: item.rc != 0 or chrome_devtools_mcp_line not in (item.stdout ~ item.stderr)
 
     - name: Read Cursor's MCP config
       ansible.builtin.slurp:
@@ -670,13 +683,21 @@
       failed_when: hermes_entry.rc > 1
       check_mode: false
 
+    - name: Look for Hermes' mcp_servers key
+      ansible.builtin.command:
+        argv: [/bin/grep, -q, "^mcp_servers:$", "{{ nish_home }}/.hermes/config.yaml"]
+      register: hermes_root
+      changed_when: false
+      failed_when: hermes_root.rc > 1
+      check_mode: false
+
     - name: Add the chrome-devtools entry under Hermes' mcp_servers
       ansible.builtin.lineinfile:
         path: "{{ nish_home }}/.hermes/config.yaml"
         insertafter: '^mcp_servers:$'
         line: "  chrome-devtools: {command: {{ chrome_devtools_mcp_bin }}, args: [{{ chrome_devtools_mcp_args | join(', ') }}], enabled: true}"
         regexp: '^  chrome-devtools: \{'
-      when: hermes_entry.rc == 1
+      when: hermes_entry.rc == 1 and hermes_root.rc == 0
       diff: false
 
   handlers:
