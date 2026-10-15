@@ -233,7 +233,7 @@ jobs:
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
@@ -255,7 +255,7 @@ jobs:
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py
       - name: needs-triage admission (Jev verdict, then queue) and digest reply shape (fleet-ops#9706)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
@@ -326,7 +326,7 @@ jobs:
           echo planted > "$bk1/creds"
           echo planted > "$bk2/creds"
           # The jail lines' hide lists come from agent.yml's own claude_hides function.
-          hide_fn=$(sed -n 's/^ *\(claude_hides() {.*}\)$/\1/p' .github/workflows/agent.yml | head -n 1)
+          hide_fn=$(sed -n 's/^ *\(claude_hides() {.*}\)\( # gitleaks:allow\)\{0,1\}$/\1/p' .github/workflows/agent.yml | head -n 1)
           test -n "$hide_fn"
           hide_all=$(bash -c "$hide_fn"'; claude_hides ""')
           hide_but_a=$(bash -c "$hide_fn"'; claude_hides "$1"' x "$seat_a")
