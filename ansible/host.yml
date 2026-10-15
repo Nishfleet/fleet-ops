@@ -89,6 +89,11 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+    commandcode_seat_file: "{{ nish_home }}/.config/fleet-ops/seats/commandcode.env"
+    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
+    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)'
+    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - name: Check the prometheus config before installing it
@@ -719,6 +724,49 @@
       vars:
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
+      diff: false
+
+    - name: Read the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_seat_file }}"
+      register: commandcode_seat
+      failed_when: false
+      no_log: true
+      diff: false
+
+    - name: Create the Command Code login directory
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ commandcode_auth_dir }}"
+        state: directory
+        mode: "0700"
+      when: commandcode_seat_key != ''
+
+    - name: Read the Command Code login
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_auth_file }}"
+      register: commandcode_auth
+      failed_when: false
+      no_log: true
+      diff: false
+
+    - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "{{ commandcode_next | to_nice_json(indent=2) }}\n"
+        dest: "{{ commandcode_auth_file }}"
+        mode: "0600"
+      vars:
+        commandcode_now: "{{ (commandcode_auth.content | default('e30=') | b64decode | from_json) }}"
+        commandcode_next: "{{ commandcode_now | combine({'apiKey': commandcode_seat_key}) }}"
+      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
+      no_log: true
       diff: false
 
     - name: Fail when an alertmanager credential file is missing
