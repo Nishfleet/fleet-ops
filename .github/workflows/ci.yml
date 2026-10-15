@@ -1524,13 +1524,10 @@ jobs:
           done < <(jq -c '.cases[]' config/sweep-liveness-events.json)
           test "$bad" -eq 0
       - name: Router wall treats a Cursor stall as infra (fake gh)
-        # Runs the Router wall step's own run block, read out of agent.yml,
-        # against a fake gh and a worker.err. The Cursor line is the real one
-        # from 0509 run 37258485360 (fleet-ops#9275). A stall with the claim
-        # branch 0 ahead of main is infra: infra-failed comment, agent-ready,
-        # wall=true. With a commit already pushed, or on another engine, it is
-        # not a wall and the strike step handles it. The router 429 and Devin
-        # paths are controls.
+        # Runs the Router wall step's own run block, read out of agent.yml, against a fake gh and a
+        # worker.err (the Cursor line is the real one, fleet-ops#9275). A stall with the claim branch 0 ahead
+        # of main is infra: infra-failed comment, agent-ready, wall=true. With a commit pushed, on another
+        # engine, or after 3 infra requeues, it is not a wall and the strike step handles it.
         if: always()
         run: |
           set -euo pipefail
@@ -1542,6 +1539,7 @@ jobs:
           #!/usr/bin/env bash
           case "$*" in
             *"compare/main..."*) echo "$AHEAD"; echo called >> "$STATE/compared" ;;
+            *"issue view"*) echo "${PRIOR_INFRA:-0}" ;;
             *"issue comment"*) echo "$*" >> "$STATE/commented" ;;
             *"issue edit"*) echo "$*" >> "$STATE/edited" ;;
             *) echo "mock gh: unexpected call: $*" >&2; exit 1 ;;
@@ -1553,7 +1551,8 @@ jobs:
           bad=0
           # name|engine|worker.err|ahead|want wall (yes/no)
           while IFS='|' read -r name engine err ahead want; do
-            export STATE=$t/$name AHEAD=$ahead ENGINE=$engine GITHUB_OUTPUT=$t/$name/out
+            export STATE=$t/$name AHEAD=$ahead ENGINE=$engine GITHUB_OUTPUT=$t/$name/out PRIOR_INFRA=0
+            [ "$name" != cursor-stall-capped ] || PRIOR_INFRA=3
             rm -rf "$STATE"; mkdir -p "$STATE"; : > "$GITHUB_OUTPUT"
             export RUNNER_TEMP=$STATE
             printf '%b\n' "${err//@CURSOR@/$cursor_stall}" > "$RUNNER_TEMP/worker.err"
@@ -1567,6 +1566,7 @@ jobs:
           done <<'CASES'
           cursor-stall-unpushed|cursor|@CURSOR@|0|yes
           cursor-stall-pushed|cursor|@CURSOR@|1|no
+          cursor-stall-capped|cursor|@CURSOR@|0|no
           pi-with-cursor-text|pi|@CURSOR@|0|no
           cursor-other-failure|cursor|error: tool call failed|0|no
           cursor-stall-then-429-pushed|cursor|@CURSOR@\nHTTP 429|1|no

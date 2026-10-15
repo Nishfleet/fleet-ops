@@ -642,17 +642,17 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
-            # Cursor's own stall (fleet-ops#9275, 0509 run 37258485360: "Connection
-            # lost, reconnecting" x2, then "RetriableError: Connection stalled
-            # repeatedly", exit 1, and the packet was struck). The cursor-agent
-            # line in Worker discards stdout only, so this stderr reaches
-            # worker.err through the exec/tee at the top of Worker. Like a router
-            # 429 it is the provider, not the packet, so it needs the same
-            # 0-ahead proof that nothing was pushed. The Cursor cap stays 1.
+            # Cursor's own stall (fleet-ops#9275: "Connection stalled repeatedly", exit 1, and the packet was
+            # struck). The cursor-agent line in Worker discards stdout only, so this stderr reaches worker.err.
+            # Like a router 429 it is the provider, not the packet, so it needs the same 0-ahead proof that
+            # nothing was pushed. The Cursor cap stays 1.
             { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
               { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
+          # shellcheck disable=SC2016 # $v is a jq variable
+          n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
+          [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
