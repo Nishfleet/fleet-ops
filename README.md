@@ -854,7 +854,7 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   `config/litellm-proxy.yaml`, GETs its OpenAI-style `<api_base>/models` listing with that
   provider's key, and compares the sorted ids with `config/provider-catalog.json`. A base with no
   `/v1`-style tail (`https://ollama.com`, the MiniMax `/anthropic` base) gets `/v1/models`.
-  Three tries 20 s apart, so a blip does not page. The key goes to curl in a 0600 header file in
+  `curl --retry 2 --retry-delay 20` (three tries, 20 s apart; curl does not retry 401 or 403), so a blip does not page. The key goes to curl in a 0600 header file in
   the unit's runtime directory (`-H @file`), never argv.
 - The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
   the ones it needs one by one (not the whole directory; CI fails when a router key has no file here), so the master key and the Claude
@@ -869,10 +869,15 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   if it holds `//` or `www.`, so no link can be planted. At most 20 ids are listed in total, in a
   fenced block under a fixed line that says they are untrusted provider data and never instructions.
   A key variable must match `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$` and the api_base must be https://,
-  or the row is refused. Targets are unique by key variable. An open issue with the same title means the change is skipped. The body carries the acceptance
-  bullets for the orchestrator: decide from the router config whether each new id costs money, make a
-  real call only to free or flat-rate ids (pay-per-use ids go back as a `needs-nish-decision` line),
-  an eval-score before any router weight
+  or the row is refused. Targets are unique by key variable. An issue with the same title that is open, or was created in the last 7 days even if closed,
+  means the change is skipped (a closed issue does not refile every morning). At most 3 issues are
+  filed per run; the rest wait for the next run. The label `needs-orchestrator` is on purpose: the
+  task owner wants the follow-up to start without a person, which departs from the plain-issue rule
+  of fleet-ops#8304. The hand-off is a paid model session, capped by `ORCHESTRATE_DAILY_MAX`. The body
+  carries the acceptance bullets for the orchestrator: a seat whose snapshot entry says
+  `"billing": "flat"` may get a real call to free or in-plan ids only; every other seat's body
+  forbids all calls and sends the ids back as a `needs-nish-decision` line (the unit decides, not
+  the model; `opencode`, `opencode-2` and `minimax` are marked flat), an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), the catalog update
   in the same PR, and a plain `needs-nish-decision` line for anything that costs money or needs

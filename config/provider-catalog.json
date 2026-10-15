@@ -176,7 +176,8 @@
       "MiniMax-M2.7",
       "MiniMax-M2.7-highspeed",
       "MiniMax-M3"
-    ]
+    ],
+    "billing": "flat"
   },
   "ollama": {
     "models": [
@@ -239,7 +240,8 @@
       "qwen3.8-max",
       "space-bunny",
       "step-5-preview-free"
-    ]
+    ],
+    "billing": "flat"
   },
   "opencode-2": {
     "models": [
@@ -280,7 +282,8 @@
       "qwen3.8-max",
       "space-bunny",
       "step-5-preview-free"
-    ]
+    ],
+    "billing": "flat"
   },
   "pareto": {
     "models": [

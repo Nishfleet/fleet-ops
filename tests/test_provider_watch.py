@@ -53,7 +53,12 @@ GH = """#!/bin/sh
 echo "$*" >> "$SC/gh.log"
 echo "token=$GH_TOKEN config=$GH_CONFIG_DIR" >> "$SC/gh.env"
 case "$1 $2" in
-  "issue list") cat "$SC/open-titles" 2>/dev/null; exit 0;;
+  "issue list")
+    case "$*" in
+      *"--state all"*) cat "$SC/recent-titles" 2>/dev/null;;
+      *) cat "$SC/open-titles" 2>/dev/null;;
+    esac
+    exit 0;;
   "issue create")
     while [ $# -gt 0 ]; do
       [ "$1" = --body-file ] && cp "$2" "$SC/issue-body.md"
@@ -107,11 +112,14 @@ def box(tmp_path):
         def open_issues(self, *titles):
             (sc / "open-titles").write_text("".join(t + "\n" for t in titles))
 
+        def recent_issues(self, *titles):
+            (sc / "recent-titles").write_text("".join(t + "\n" for t in titles))
+
         def log(self, name):
             p = sc / name
             return p.read_text() if p.exists() else ""
 
-        def run(self, drop=()):
+        def run(self, drop=(), extra=None):
             env = {
                 "PATH": f"{bindir}:/usr/bin:/bin",
                 "HOME": str(tmp_path),
@@ -122,11 +130,11 @@ def box(tmp_path):
                 "ISSUES_TOKEN": str(tmp_path / "token"),
                 "GH": str(bindir / "gh"),
                 "YQ": YQ,
-                "PAUSE": "0",
-                "LC_ALL": "C",
+                                "LC_ALL": "C",
                 "ALPHA_API_KEY": "fake-alpha-key",
                 "BETA_API_KEY": "fake-beta-key",
             }
+            env.update(extra or {})
             for k in drop:
                 del env[k]
             return subprocess.run(_exec_start(), env=env, capture_output=True, text=True, timeout=60)
@@ -168,7 +176,7 @@ def test_added_id_files_one_issue_with_both_labels(box):
     assert any(ln.startswith("label create provider-watch") for ln in gh)
     body = box.issue_body
     assert "+ a3" in body and "+ a3" in body and "first 20 shown of 1 added and 0 removed" in body
-    for tag in ("(a)", "(b)", "(c)", "(d)", "(e)", "(f)"):
+    for tag in ("(a)", "(b)", "(c)", "(d)", "(e)"):
         assert tag in body
     assert "tests/evals" in body and "needs-nish-decision" in body
     assert "provider-watch: alpha changed (+1 -0), issue filed" in r.stdout
@@ -205,12 +213,49 @@ def test_removed_ids_share_the_twenty_with_added_ones(box):
     assert fenced == ["+ a3", "+ a4", "- a1", "- a2"]
 
 
-def test_cost_is_decided_before_any_call(box):
+def test_a_flat_rate_seat_may_call_only_free_or_in_plan_ids(box):
+    box.catalog({"alpha": {"billing": "flat", "models": ["a1", "a2"]}, "beta": {"models": ["b1"]}})
     box.serve("alpha.test", ["a1", "a2", "a3"])
     box.run()
     body = box.issue_body
-    assert body.index("(a) First decide") < body.index("(b) Make one real call only to ids that are free")
-    assert "pay-per-use seat (Cline, Pareto" in body and "get no call" in body
+    assert "(a) The alpha seat is flat-rate" in body
+    assert "only to an added id that is free or inside that plan" in body
+    assert "Make NO call" not in body
+
+
+def test_at_most_three_issues_are_filed_per_run(box):
+    names = ["p1", "p2", "p3", "p4", "p5"]
+    config = "model_list:\n" + "".join(
+        f"- model_name: g\n  litellm_params:\n    model: openai/x\n    api_base: https://{n}.test/v1\n    api_key: os.environ/{n.upper()}_API_KEY\n"
+        for n in names
+    )
+    box.config(config)
+    box.catalog({n: {"models": ["old"]} for n in names})
+    for n in names:
+        box.serve(f"{n}.test", ["new"])
+    r = box.run(extra={f"{n.upper()}_API_KEY": "k" for n in names})
+    assert r.returncode == 0, r.stdout + r.stderr
+    gh = box.log("gh.log").splitlines()
+    assert len([ln for ln in gh if ln.startswith("issue create")]) == 3
+    assert r.stdout.count("left for the next run") == 2
+
+
+def test_a_recently_created_closed_issue_counts_as_known(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    box.recent_issues("Provider watch: alpha model list changed")
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "issue create" not in box.log("gh.log")
+    assert "issue already open, skipped" in r.stdout
+    assert "--state all --search created:>=" in box.log("gh.log")
+
+
+def test_a_seat_without_flat_billing_gets_a_no_call_body(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    box.run()
+    body = box.issue_body
+    assert "(a) The alpha seat is pay-per-use or its billing is not recorded" in body
+    assert "Make NO call to any id here" in body
 
 
 def test_already_open_issue_is_skipped(box):
@@ -267,20 +312,17 @@ def test_hostile_id_is_refused_and_never_printed(box, hostile):
     assert "provider-watch: beta ok, 1 models" in r.stdout
 
 
-def test_one_blip_then_success_does_not_fail(box):
-    box.serve("alpha.test", ["a1", "a2"], codes="503\n200")
-    r = box.run()
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "provider-watch: alpha ok, 2 models" in r.stdout
-    assert len([u for u in box.log("urls.log").split() if "alpha.test" in u]) == 2
+def test_curl_retries_twice_twenty_seconds_apart(box):
+    box.run()
+    for line in box.log("curl.log").splitlines():
+        assert "--retry 2 --retry-delay 20" in line
 
 
-def test_three_failed_tries_fail_the_unit(box):
+def test_a_failed_listing_names_three_tries(box):
     box.serve("alpha.test", "{}", codes="503")
     r = box.run()
     assert r.returncode == 1
     assert "provider-watch: alpha listing failed (HTTP 503 after 3 tries)" in r.stdout
-    assert len([u for u in box.log("urls.log").split() if "alpha.test" in u]) == 3
 
 
 def test_empty_listing_fails_instead_of_reporting_every_model_gone(box):
