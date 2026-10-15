@@ -90,13 +90,16 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the runner's number
-  (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
-  runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
-  an odd N keeps it (seat a), and a name with no number keeps seat a. The step
-  logs `claude lane: seat=a|b runner=<name>`. The jail exposes only the chosen
-  seat. Jobs split across both seats with no clock, and a job stays on one seat
-  from the Gate to the last call, which keeps the prompt cache. To switch it
+  with `needs-opus`). The seat is set by the issue number's parity (the same
+  input the Cursor lane keys on, fleet-ops#9696): in the claude lane step,
+  before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
+  default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
+  keeps seat a. The step logs `claude lane: seat=a|b issue=<n> runner=<name>`.
+  The jail exposes only the chosen seat. The seat follows the issue, not the
+  runner, so a retry of the same issue keeps its seat and `claude -p --continue`
+  resumes the earlier session; jobs split across both seats with no clock, and a
+  job stays on one seat from the Gate to the last call, which keeps the prompt
+  cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
   limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
   any other job. Nothing polls usage.
