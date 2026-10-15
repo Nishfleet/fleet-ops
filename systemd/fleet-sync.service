@@ -58,6 +58,11 @@ ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.pat
 #     delete this step and the enable line, then `systemctl --user disable --now
 #     'fleet-pr-sweep@*.timer'`; a hand disable alone is re-enabled next deploy.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-pr-sweep@.timer
+# 2a''. The detached worker's token mint (fleet-ops#9738): link the template so every
+#     deploy carries edits to it. Nothing to enable: a worker launch line pulls an
+#     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
+#     delete this step and `systemctl --user unlink` it by hand.
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-worker-github-token@.service
 # 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
 #     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
 #     lines then drop its live links and installed prompt dir. Delete these three lines
@@ -103,7 +108,7 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
-ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)

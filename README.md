@@ -7,8 +7,8 @@ script, or prompt lands unseen.
 ## What lives here
 
 - `systemd/` — the user units the fleet runs under `systemctl --user`:
-  services, timers, slices, three `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
-  `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
+  services, timers, slices, four `.path` units (`fleet-litellm-proxy-config.path`, `fleet-gh-login-check.path`,
+  `fleet-hermes-xai-login-check.path`, `fleet-grafana-provisioning.path`) and one `.scope.d` drop-in (`tmux-spawn-.scope.d`).
   `fleet-grafana-github-token.timer` re-mints the one-hour GitHub App token Grafana's
   alert webhook sends (fleet-ops#9445); switch off with
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
@@ -111,11 +111,11 @@ script, or prompt lands unseen.
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
   times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
-  any PR left waiting over an hour: it arms a head a reviewer approved, asks
+  any PR left waiting over 15 minutes: it arms a head a reviewer approved, asks
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
   stub (fleet-ops, 0509, drive, aiconverter-app,
-  TinyStudio.io-public, siterep-public), linked and enabled by
+  TinyStudio.io-public, siterep-public, rera-report-card), linked and enabled by
   `fleet-sync.service` on every deploy. Off switch: remove its step 2a and enable
   line, then `systemctl --user disable --now 'fleet-pr-sweep@*.timer'`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
@@ -125,6 +125,14 @@ script, or prompt lands unseen.
   link` of all three, then `enable --now` the `.path` and `.timer`. Switch off:
   `systemctl --user disable --now fleet-gh-login-check.timer
   fleet-gh-login-check.path` and delete the files.
+- `systemd/fleet-hermes-xai-login-check.service`, `.path` and `.timer` — fail, and
+  so page through `fleet-unit-failed@`, when `hermes auth status xai-oauth` does
+  not say `xai-oauth: logged in` (the SuperGrok login behind Hermes's `x_search`,
+  which hides itself silently when it dies). The path unit checks on every change
+  to `~/.hermes/auth.json`, the timer hourly. Wire once like the gh check above.
+  Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
+  `systemctl --user disable --now fleet-hermes-xai-login-check.timer
+  fleet-hermes-xai-login-check.path` and delete the files.
 - `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
   the Leviathan session-log search index, refreshed every 15 minutes per
   instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
@@ -338,10 +346,23 @@ replaced by two stock `systemd-run` properties.
 ```
 systemd-run --user --collect --unit <name> \
   -p RuntimeMaxSec=<seconds> \
+  -p Requires=fleet-worker-github-token@<repo>.service \
+  -p After=fleet-worker-github-token@<repo>.service \
+  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env" \
+  -p "TemporaryFileSystem=$HOME/.config/gh" \
+  -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
   -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' \
   -- sh -c 'cat /path/to/packet.md | pi --print --provider <provider> --model <model>'
 ```
+
+`<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
+`fleet-worker-github-token@<repo>.service`, which mints a one-hour nishfleet-worker
+App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env`;
+the `EnvironmentFile=` is required (no `-`), so a failed mint means the worker never
+starts, and `ExecStartPre=` fails an empty `GH_TOKEN` before any work. `TemporaryFileSystem=`
+blanks the human gh login for the run, as agent.yml's jail does, so a worker cannot fall
+back to it (fleet-ops#9738). The launch line exits non-zero when it refuses.
 
 `RuntimeMaxSec=` is the deadline: systemd kills an over-running unit into
 `Result=timeout`. The `ExecStopPost=` line is the deliverable check: a stop at
@@ -667,7 +688,7 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32).
 
-Each enrolled repo needs two preconditions:
+Each enrolled repo needs three preconditions:
 
 1. A git checkout at `/home/nish/workspaces/products/<name>` — the worker
    creates its worktree from it. Packet clones (when a worker clones instead
@@ -680,6 +701,15 @@ https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    `needs-orchestrator`, `strong-only` — must be present on the repo —
    agent-dispatch fires only on the `agent-ready` label, so on a repo missing
    any required label an issue looks queued and is inert (fleet-ops#25).
+3. An `.github/workflows/agent-dispatch.yml` stub whose
+   `on.pull_request_target.types` lists all nine events — `dequeued`,
+   `auto_merge_disabled`, `closed`, `auto_merge_enabled`, `synchronize`,
+   `labeled`, `opened`, `reopened`, `ready_for_review`. `hold-risky` is the
+   only door into `review-risky`, a `pull_request_target` trigger fires only
+   for the types its own repo's stub lists, and `pull_request_target` reads
+   that stub from the base branch — so a short list leaves the repo with no
+   review and no coordinator gate on risky PRs (fleet-ops#9722, #9726).
+   fleet-ops's own stub is the reference.
 
 `excluded` in the file lists repos that are never enrolled (fleet2: no
 second dispatcher, ever; archived repos). `deferred` lists repos paused with
