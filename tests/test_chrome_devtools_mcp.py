@@ -114,6 +114,9 @@ USER_FILE_TASKS = [
     "Drop Codex's dead camofox entry and its subtables",
     "Read Hermes' config",
     "Add the chrome-devtools entry under Hermes' mcp_servers",
+    "Read Hermes' scheduled jobs",
+    "Apply config/hermes/digest-*.md to the live digest jobs",
+    "Read Hermes' scheduled jobs again",
 ]
 
 

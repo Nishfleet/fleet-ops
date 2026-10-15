@@ -801,12 +801,6 @@
       when: job.id is defined and job.prompt != wanted
       changed_when: true
 
-    - name: Fail when an alertmanager credential file is missing
-      ansible.builtin.assert:
-        that: alertmanager_credentials.results | map(attribute='stat.exists') | min
-        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
-        quiet: true
-
     - name: Read Hermes' scheduled jobs again
       become: true
       become_user: nish
@@ -828,6 +822,12 @@
       vars:
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+
+    - name: Fail when an alertmanager credential file is missing
+      ansible.builtin.assert:
+        that: alertmanager_credentials.results | map(attribute='stat.exists') | min
+        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
+        quiet: true
 
 
   handlers:
