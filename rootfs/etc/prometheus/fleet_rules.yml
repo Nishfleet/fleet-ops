@@ -67,7 +67,9 @@ groups:
       # only says a run finished, nothing on the box said when runs stopped.
       - alert: BackupStale
         expr: |
-          (time() - node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}) > 30 * 3600
+          # max_over_time keeps the last real trigger time across a reboot,
+          # when a timer without Persistent=true reports 0 until it next runs.
+          (time() - max_over_time(node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}[31h])) > 30 * 3600
           or
           absent(node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"})
         for: 15m

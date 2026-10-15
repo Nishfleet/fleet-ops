@@ -124,6 +124,16 @@ tests:
       - eval_time: 40h
         alertname: BackupStale
         exp_alerts: []
+  # A reboot resets a non-persistent timer's last trigger to 0; the last real
+  # trigger 5 hours earlier still counts, so nothing pages.
+  - interval: 1h
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}'
+        values: '0+3600x30 0x10'
+    alert_rule_test:
+      - eval_time: 35h
+        alertname: BackupStale
+        exp_alerts: []
   - interval: 1m
     input_series:
       - series: 'node_systemd_timer_last_trigger_seconds{name="other.timer"}'
