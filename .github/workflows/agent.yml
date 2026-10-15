@@ -433,7 +433,7 @@ jobs:
             # Claude Code on one of the two seats, chosen by the issue number's parity (the same input the Cursor lane
             # keys on, fleet-ops#9696): an even $id unsets CLAUDE_CONFIG_DIR (seat b, the default login), an odd $id
             # keeps it (seat a), a non-numeric id keeps seat a. The seat follows the issue, not the runner, so a retry
-            # lands on the same seat on any runner and `claude -p --continue` finds the earlier session (a session
+            # lands on the same seat on any runner and a continued run finds the earlier session (a session
             # lives in one seat's config dir). The seat never changes inside a job, except to the other seat when its
             # own login is missing (below). A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
