@@ -745,8 +745,8 @@ jobs:
                     *) exit 1 ;;
                   esac
                   comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
-                  verdict=$(jq -nc --argjson pr "$v" --argjson issue "$issue" --argjson comments "$comments" \
-                    '{pr: $pr, issue: $issue, comments: $comments}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                  verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
+                    '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
                     status=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
@@ -936,14 +936,14 @@ jobs:
               esac
             fi
             # One unreadable PR is skipped, never fatal to the sweep (the
-            # fleet-ops#9553 lesson); every PR unreadable fails it below.
+            # fleet-ops#9553 lesson); any skipped PR fails the job at the end.
             if ! jq -e 'type == "array"' <<<"$red" >/dev/null 2>&1 ||
               ! comments=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" | jq -sc 'add // []'); then
               echo "::warning::#$n: checks or comments unreadable, skipped"
               errs=$((errs + 1)); continue
             fi
-            v=$(jq -nc --argjson pr "$p" --argjson comments "$comments" --argjson red "$red" \
-              '{pr: $pr, comments: $comments, red: $red}' | jq -c --arg who "$APPROVERS" "$STUCK")
+            v=$(jq -nc --slurpfile pr <(printf '%s' "$p") --slurpfile comments <(printf '%s' "$comments") --slurpfile red <(printf '%s' "$red") '{pr: ($pr[0] | objects // error("pr")), comments: ($comments[0] | arrays // error("comments")), red: ($red[0] | arrays // error("red"))}' |
+              jq -c --arg who "$APPROVERS" "$STUCK") || { echo "::warning::#$n: verdict failed, skipped"; errs=$((errs + 1)); continue; }
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
@@ -1006,7 +1006,7 @@ jobs:
           {
             echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
           } >> "$GITHUB_OUTPUT"
-          [ "$seen" = 0 ] || [ "$errs" -lt "$seen" ] || { echo "::error::every waiting PR was unreadable"; exit 1; }
+          [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group, so they bound how long
   # a sweep holds it: at most 4 reviews, 2 at a time, each under agent.yml's
   # 20-minute review timeout, is 40 minutes on top of stuck-prs. A sweep started
@@ -1014,7 +1014,7 @@ jobs:
   # not dropped, so the next hourly start still finds every PR.
   stuck-review:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1030,7 +1030,7 @@ jobs:
       review_sha: ${{ matrix.x.sha }}
   stuck-arm:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.arm != '' && needs.stuck-prs.outputs.arm != '[]'"
     strategy:
       fail-fast: false
       # An arm takes seconds, but on a [self-hosted, agent] slot a worker could use.
@@ -1046,7 +1046,7 @@ jobs:
       arm_sha: ${{ matrix.x.sha }}
   stuck-rework:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'"
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
@@ -1060,7 +1060,7 @@ jobs:
       ref: ${{ matrix.ref }}
   stuck-file:
     needs: stuck-prs
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'
+    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'"
     strategy:
       fail-fast: false
       max-parallel: 4
