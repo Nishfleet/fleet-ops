@@ -70,9 +70,9 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
 ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
-# 2a-tiny. Retired TinyStudio PR sweep: stops the instance on a host that still has it enabled
-#     (the enable line below no longer names it). Delete this line once every host has deployed this.
-ExecStart=-/usr/bin/systemctl --user disable --now fleet-pr-sweep@TinyStudio.io-public.timer
+# 2a-retired. Retired TinyStudio and SiteRep PR sweeps: stops the instances on a host that still has
+#     them enabled (the enable line below no longer names them). Delete this line once every host has deployed this.
+ExecStart=-/usr/bin/systemctl --user disable --now fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer
 # 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
 #     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
 #     so the user manager reads it on this run.
@@ -130,7 +130,7 @@ ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
-ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)

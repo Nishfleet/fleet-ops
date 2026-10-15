@@ -57,14 +57,6 @@ locals {
       zone        = []
       vps_only    = false
     }
-    "siterep-public" = {
-      repo        = "siterep-public"
-      environment = null
-      secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Workers Scripts Write", "Account Settings Read"]
-      zone        = ["Zone Read", "Workers Routes Write"]
-      vps_only    = false
-    }
     "inish-site" = {
       repo        = "inish-site"
       environment = null
