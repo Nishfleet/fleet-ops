@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the GitHub CLI login hourly
+# A revoked or expired token changes no local file, so the path unit cannot see
+# it. See fleet-gh-login-check.service.
+# Switch off: systemctl --user disable --now fleet-gh-login-check.timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

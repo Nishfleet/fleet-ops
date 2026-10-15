@@ -1,0 +1,13 @@
+# A worker row with no weight: simple_shuffle.py:44-46 enables weighting only when the first
+# healthy row has one and reads a missing weight as 0, so the row is benched or the whole
+# group's weights are ignored.
+model_list:
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/x
+  model_info:
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60

@@ -1,0 +1,30 @@
+[Unit]
+Description=Fail loud when the box's GitHub CLI login is gone or not nish3451
+# 2026-10-11 04:53Z ~/.config/gh/hosts.yml lost the nish3451 login and every
+# gh-using unit and agent broke until a session noticed by hand and restored it
+# about five minutes later. Nothing failed as a unit, so nothing paged. This
+# oneshot fails, and OnFailure= pages through the existing failed-unit route,
+# when the active github.com login cannot read its own user or is another
+# account. Triggers: fleet-gh-login-check.path (the file changed or went away)
+# and fleet-gh-login-check.timer (hourly: a revoked or expired token changes no
+# local file). Plain `gh auth status` is not the check: it also fails on the
+# stale nishfleet-worker[bot] entry in the same file, so it would page forever.
+#
+# Switch off: systemctl --user disable --now fleet-gh-login-check.timer
+# fleet-gh-login-check.path, then delete the three unit files.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+# GH, WANT and PAUSE exist so CI can run this very ExecStart against a stub gh
+# (tests/test_gh_login_check.py); the host never overrides them.
+Environment=GH=%h/.local/bin/gh
+Environment=WANT=nish3451
+Environment=PAUSE=20
+# Three tries 20 s apart, so one network blip to api.github.com does not page.
+ExecStart=/bin/sh -c 'for i in 1 2 3; do \
+  got=$$("$$GH" api user --hostname github.com --jq .login 2>/dev/null) && [ "$$got" = "$$WANT" ] && { echo "gh login ok: $$got"; exit 0; }; \
+  [ "$$i" = 3 ] || sleep "$$PAUSE"; \
+done; \
+echo "gh login BROKEN: active github.com login is \"$${got:-none}\", want $$WANT (~/.config/gh/hosts.yml; backups beside it)"; exit 1'
+TimeoutStartSec=180
