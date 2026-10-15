@@ -809,6 +809,7 @@
           ansible.builtin.file:
             path: "{{ commandcode_auth_file }}"
             mode: "0600"
+          when: not ansible_check_mode
           no_log: true
       rescue:
         - name: Warn that the Command Code login could not be set up

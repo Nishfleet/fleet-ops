@@ -193,7 +193,7 @@ def test_second_run_changes_nothing(tmp_path):
 
 
 @pytest.mark.parametrize("content", [{"apiKey": FAKE, "userId": "u", "extra": 1}, {"apiKey": OTHER, "userName": "nish"}, {"extra": 1}, {"apiKey": ""}])
-@pytest.mark.parametrize("mode", [0o644, 0o666, 0o640, 0o400, 0o000])
+@pytest.mark.parametrize("mode", [0o644, 0o666, 0o640, 0o400, 0o200])
 def test_an_existing_login_is_never_replaced_and_gets_mode_0600_whatever_it_holds(tmp_path, content, mode):
     _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
     text = json.dumps(content, indent=2)
@@ -246,6 +246,7 @@ def test_missing_seat_or_key_skips_cleanly(tmp_path):
     assert not (tmp_path / ".commandcode").exists()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode 000 file")
 def test_an_unreadable_seat_is_a_warning_then_the_run_fails_and_writes_nothing(tmp_path):
     _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n", mode=0o000)
     out = _run(tmp_path, ok=False)
@@ -259,9 +260,10 @@ def test_the_key_never_reaches_ansible_output_on_any_path_under_no_log(tmp_path_
     happy = tmp_path_factory.mktemp("happy")
     _seat(happy, f"COMMANDCODE_API_KEY={FAKE}\n")
     cases.append((happy, True))
-    unreadable = tmp_path_factory.mktemp("unreadable")
-    _seat(unreadable, f"COMMANDCODE_API_KEY={FAKE}\n", mode=0o000)
-    cases.append((unreadable, False))
+    if os.geteuid() != 0:
+        unreadable = tmp_path_factory.mktemp("unreadable")
+        _seat(unreadable, f"COMMANDCODE_API_KEY={FAKE}\n", mode=0o000)
+        cases.append((unreadable, False))
     blocked = tmp_path_factory.mktemp("blocked")
     _seat(blocked, f"COMMANDCODE_API_KEY={FAKE}\n")
     (blocked / ".commandcode").write_text("x")
@@ -278,3 +280,11 @@ def test_the_key_never_reaches_ansible_output_on_any_path_under_no_log(tmp_path_
         assert (result.returncode == 0) == ok, (result.stdout + result.stderr).replace(FAKE, "<key>")
         assert FAKE not in result.stdout + result.stderr, home.name
     assert json.loads(_auth(happy).read_text()) == {"apiKey": FAKE}
+
+
+def test_a_check_mode_run_with_no_login_yet_stays_clean(tmp_path):
+    _seat(tmp_path, f"COMMANDCODE_API_KEY={FAKE}\n")
+    out = _run(tmp_path, extra=("--check",))
+    assert "WARNING" not in out and "failed=0" in out
+    assert not _auth(tmp_path).exists()
+    assert "when" in _loaded()[2][MODE] and _loaded()[2][MODE]["when"] == "not ansible_check_mode"
