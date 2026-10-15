@@ -1,0 +1,52 @@
+{
+  "question": "fleet digest reply shape: at most 6 short plain lines, no internal names, commands, paths, config advice, questions or asks; no routine all-green lines (Nishfleet/fleet-ops#9706)",
+  "prompt_era": "current-prompt wording (REPLY rule unchanged since 2026-10-10 22:21); fixtures are synthetic copies of shipped replies, kept shape-only because this repo is public",
+  "labeller": {
+    "group": "judge",
+    "served_model": "openai/qwen3.8-max",
+    "calls": 1,
+    "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). Task id orch-fleet-ops-9706-labels."
+  },
+  "cases": [
+    {
+      "id": "m11",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-morning reply that shipped to Telegram; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Not a digest report at all; it is a meta-statement about the agent's own tooling, conveying no product information to the owner.",
+      "reply": "I need to use the caller's tools rather than my own built-ins."
+    },
+    {
+      "id": "e11",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped to Telegram; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Massively over 6 lines with bold section headings, dozens of internal/repo/workflow names in text, shell commands and config keys, an explicit ask for the owner to approve a config change, and a routine service-active line.",
+      "reply": "12-hour digest. All facts from `gh`; the count loop is blocked by this job's security profile, so that count is reported as missing rather than guessed.\n\n**Shipped** - merged PRs since the last digest. Known merges:\n\n- alpha: 3 - PR #101 (fix the retry), #102 (rename a config key), #103 (drop an unused flag)\n- beta: 1 - PR #55 (add an export)\n\n**Broken** (latest run on main failed in the last 7 days, proof link included):\n\n- alpha - Deploy production - https://example.com/alpha/actions/runs/1\n- beta - workflow check - https://example.com/beta/actions/runs/2\n\nServices: gateway active, relay active.\n\n**Waiting on Nish** (new or changed since the last digest):\n\n- Vendor key returns 403 - should we approve a config change? https://example.com/beta/issues/4"
+    },
+    {
+      "id": "m12",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-morning reply that shipped to Telegram; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Well over 6 lines with labelled sections and bullet lists, repo and workflow names throughout the text, and an embedded proposal ('renew subscription or bench its rows').",
+      "reply": "3 shipped (alpha: 1, beta: 2)\n- alpha: fixed a soft break on the signup page\n- beta: test isolation; raised an alert floor\n\nBroken (proven live failures, each with run link):\n- beta workflow: https://example.com/beta/actions/runs/3\n- alpha Deploy production: https://example.com/alpha/actions/runs/4\n\nWaiting on Nish (reserved-class items, new or changed):\n- Vendor key returns 403 - renew subscription or bench its rows: https://example.com/beta/issues/5\n- Review setting not enforced on main: https://example.com/beta/issues/6\nand 2 more waiting"
+    },
+    {
+      "id": "e12",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped to Telegram; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Uses bold text, names internal workflow names (Lighthouse, opus-vet, e2e-scheduled) and tools (OpenCode Go, D1) in the text, and includes a routine 200-status line for a running service.",
+      "reply": "**60 merged PRs across 10 repos**\n\nLighthouse CI failures (2); Deploy production failures (2); opus-vet failures (2)\n\nsite.example: 200, no new edition since 2026-09-29\n\nFixed: vendor key subscription resolved\n\nWaiting on Nish: - no new/changed reserved-class items\n\n14 items unchanged"
+    },
+    {
+      "id": "m13",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-morning reply that shipped to Telegram; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Far exceeds 6 lines with headed sections and bullet lists, names repos, workflow names, internal tools and env-var tokens in the text, and references file paths (CLAUDE.md).",
+      "reply": "Shipped 58 PRs across 7 repos. Notable: an onboarding polish wave (22 PRs), a shared header and footer (17 PRs), launch video and speed fixes.\n\nBroken (proven, with links):\n- alpha site: Deploy production failed -> https://example.com/alpha/actions/runs/5\n- beta: Lighthouse failed -> https://example.com/beta/actions/runs/6\n\nWaiting on Nish (reserved-class items, new or changed since last digest):\n- alpha: support emails still route to a dead Worker -> https://example.com/alpha/issues/7\n- alpha: remove retired vendor secrets; keep billing keys -> https://example.com/alpha/issues/8\n- alpha: the CLAUDE.md file references tokens the jail cannot read -> https://example.com/alpha/issues/9\n- beta: please approve the key rotation -> https://example.com/beta/issues/10"
+    }
+  ]
+}
