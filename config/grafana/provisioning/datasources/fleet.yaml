@@ -12,7 +12,10 @@ datasources:
     editable: false
 
   # nishfleet-worker App, installation on Nishfleet (all repos). The plugin
-  # only issues read queries; the key never reaches the browser.
+  # only issues read queries; the key never reaches the browser. The App has
+  # one installation only: GET /app/installations returns 156789042 on the
+  # Nishfleet organization, repository_selection all. Every repo the fleet
+  # dashboard and the deploy-failed rules read lives in that organization.
   - name: GitHub
     uid: fleet-github
     type: grafana-github-datasource
@@ -21,20 +24,6 @@ datasources:
       selectedAuthType: github-app
       appId: "4728578"
       installationId: "156789042"
-      githubPlan: github-basic
-    secureJsonData:
-      privateKey: $__file{/run/secrets/github-app.pem}
-
-  # Same App, installation on the nish3451 personal account (selected repos,
-  # incl. drive). One data source per installation.
-  - name: GitHub (nish3451)
-    uid: fleet-github-personal
-    type: grafana-github-datasource
-    editable: false
-    jsonData:
-      selectedAuthType: github-app
-      appId: "4728578"
-      installationId: "166603018"
       githubPlan: github-basic
     secureJsonData:
       privateKey: $__file{/run/secrets/github-app.pem}
