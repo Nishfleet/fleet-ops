@@ -8,11 +8,19 @@ canonical prompts under config/hermes/ honest:
 - the site check reads the real feed and the real page,
 - no command line matches the guard's deny globs for a pipe from curl,
 - no command uses a bare bracket test, which the guard cannot resolve,
+- the stored-item command, run against a fake gh and a fake notepad, classifies
+  each stored item the way the reply rules say,
 - ansible/host.yml applies the prompts to the live jobs.
 """
+import datetime
 import fnmatch
+import json
 import pathlib
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MORNING = ROOT / "config/hermes/digest-morning.md"
@@ -62,3 +70,158 @@ def test_host_yml_applies_the_prompts_to_the_live_jobs():
 
 def test_ci_runs_this_file():
     assert "tests/test_digest_checks.py" in CI.read_text()
+
+
+FAKE_GH = """#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+d = json.load(open(os.environ["FAKE_GH"]))
+if a[:2] == ["repo", "list"]:
+    print("\\n".join(d["repos"]))
+elif a[:2] == ["issue", "view"]:
+    key = a[a.index("--repo") + 1] + "#" + a[2]
+    if key not in d["issues"]:
+        sys.exit(1)
+    print(json.dumps(d["issues"][key]))
+elif a[:2] == ["run", "list"]:
+    key = a[a.index("--repo") + 1]
+    if key not in d["runs"]:
+        sys.exit(1)
+    print(json.dumps(d["runs"][key]))
+else:
+    sys.exit(2)
+"""
+
+FAKE_HERMES = """#!/usr/bin/env python3
+import os, sys
+a = sys.argv[1:]
+if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
+    sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
+elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
+    open(os.environ["FAKE_SAVED"], "w").write(a[5])
+else:
+    sys.exit(2)
+"""
+
+
+def _command(prompt, start):
+    return next(x for x in prompt.read_text().splitlines() if x.startswith(start))
+
+
+def _fake_box(tmp_path, gh, store):
+    if shutil.which("jq") is None:
+        pytest.skip("jq is not installed")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name, body in (("gh", FAKE_GH), ("hermes", FAKE_HERMES)):
+        (bindir / name).write_text(body)
+        (bindir / name).chmod(0o755)
+    (tmp_path / "gh.json").write_text(json.dumps(gh))
+    (tmp_path / "store.json").write_text(store)
+    env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "FAKE_GH": str(tmp_path / "gh.json"),
+        "FAKE_STORE": str(tmp_path / "store.json"),
+        "FAKE_SAVED": str(tmp_path / "saved.json"),
+    }
+    return env
+
+
+def _run_2a(prompt, tmp_path, gh, store):
+    env = _fake_box(tmp_path, gh, store)
+    r = subprocess.run(["bash", "-c", _command(prompt, "R=$(hermes cron notepad")], env=env, capture_output=True, text=True, timeout=60)
+    saved = pathlib.Path(env["FAKE_SAVED"])
+    return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
+
+
+def _issue(state, *labels):
+    return {"state": state, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
+
+
+def _run_row(conclusion, name, days_ago=1):
+    when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"workflowName": name, "conclusion": conclusion, "url": f"https://example.com/{name}/{days_ago}", "createdAt": when}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_classifies_each_item(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "issues": {
+            "Nishfleet/alpha#1": _issue("CLOSED", "needs-nish-decision"),
+            "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
+            "Nishfleet/alpha#3": _issue("OPEN", "needs-nish-decision"),
+        },
+        "runs": {
+            "Nishfleet/alpha": [
+                _run_row("", "Midrun", 0),
+                _run_row("failure", "Midrun", 1),
+                _run_row(None, "Nullrun", 0),
+                _run_row("failure", "Nullrun", 1),
+                _run_row("cancelled", "Cancelled", 0),
+                _run_row("failure", "Cancelled", 2),
+                _run_row("success", "Healed", 0),
+                _run_row("failure", "Healed", 2),
+            ],
+            "Nishfleet/beta": [_run_row("failure", "Build", 1), _run_row("success", "Build", 3)],
+        },
+    }
+    store = json.dumps({
+        "wait:alpha#1": "open|needs-nish-decision",
+        "wait:alpha#2": "open|needs-nish-decision",
+        "wait:alpha#3": "open|needs-nish-decision",
+        "wait:alpha#4": "open|needs-nish-decision",
+        "broken:alpha:Midrun": "failure",
+        "broken:alpha:Nullrun": "failure",
+        "broken:alpha:Cancelled": "failure",
+        "broken:alpha:Healed": "failure",
+    })
+    lines, saved = _run_2a(prompt, tmp_path, gh, store)
+    rows = {l.split(" ")[1]: l.split(" ")[2] for l in lines if l.startswith("ROW ")}
+    assert rows == {
+        "wait:alpha#1": "FIXED",
+        "wait:alpha#2": "CHANGED",
+        "wait:alpha#3": "UNCHANGED",
+        "wait:alpha#4": "UNKNOWN",
+        "broken:alpha:Midrun": "UNCHANGED",
+        "broken:alpha:Nullrun": "UNCHANGED",
+        "broken:alpha:Cancelled": "UNCHANGED",
+        "broken:alpha:Healed": "FIXED",
+        "broken:beta:Build": "NEW",
+    }
+    assert "UNCHANGED_TOTAL 4" in lines
+    assert lines[-1] == "STORED-SAVED"
+    assert saved == {
+        "wait:alpha#2": "open|needs-nish-decision,priority-now",
+        "wait:alpha#3": "open|needs-nish-decision",
+        "wait:alpha#4": "open|needs-nish-decision",
+        "broken:alpha:Midrun": "failure",
+        "broken:alpha:Nullrun": "failure",
+        "broken:alpha:Cancelled": "failure",
+        "broken:beta:Build": "failure",
+    }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_writes_nothing_when_the_store_is_unreadable(prompt, tmp_path):
+    lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, "not json")
+    assert "STORED-UNREADABLE" in lines
+    assert saved is None
+
+
+def test_shipped_count_command_prints_a_total_or_fails_loudly(tmp_path):
+    gh = {"repos": ["alpha", "beta"], "issues": {}, "runs": {}}
+    env = _fake_box(tmp_path, gh, "{}")
+    (tmp_path / "bin/gh").write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in repo) printf 'alpha\\nbeta\\n';; pr) case \"$4\" in Nishfleet/alpha) echo 3;; *) test \"$FAKE_FAIL\" = 1 && exit 1; echo 0;; esac;; esac\n"
+    )
+    for prompt in (MORNING, EVENING):
+        text = prompt.read_text()
+        start = text.index("S=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ); for r in")
+        cmd = text[start:text.index("\n", start)]
+        ok = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=60)
+        assert ok.stdout.splitlines() == ["alpha 3", "TOTAL 3 REPOS 2"], ok.stdout
+        bad = subprocess.run(["bash", "-c", cmd], env={**env, "FAKE_FAIL": "1"}, capture_output=True, text=True, timeout=60)
+        assert bad.stdout.splitlines()[-1] == "COUNT FAILED", bad.stdout

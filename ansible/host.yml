@@ -798,7 +798,7 @@
       vars:
         job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
-      when: job.id is defined and job.prompt != wanted
+      when: job.id is defined and (job.prompt | default('')) != wanted
       changed_when: true
 
     - name: Read Hermes' scheduled jobs again
@@ -819,6 +819,7 @@
       loop_control:
         loop_var: digest
         label: "{{ digest }}"
+      when: hermes_jobs_after.content is defined
       vars:
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
