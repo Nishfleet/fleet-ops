@@ -144,7 +144,11 @@ The rules still in force:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
-  approve or block (p >= 0.9), and posts that approval as
+  approve or block. A Jev approve at p >= 0.9 approves on its own. Every other
+  Jev result, including a confident block, goes to Claude (the same Opus 5.5
+  call), who adjudicates from the diff, the first review and Jev's result and
+  has the final say (`prompts/claude-adjudicate.md`; Nish 2026-10-14). The job
+  posts an approval as
   `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
   GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
   requires one approving review and dismisses it on a push, so GitHub itself
@@ -152,12 +156,12 @@ The rules still in force:
   the same review to a PR that is not risky.
   "Claude never grades Claude" has one exception, approved by Nish on
   2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
-  work), but the verdict is always Jev's, a non-Claude family, so a non-Claude
-  family always decides. With the runner's seat at its limit the review does not
-  finish and is re-run; it is never approved without it. A PR that edits the guard itself
-  (`guard` in risky-paths.json) or a workflow needs a second review as well, by
-  a model family other than the judge's and Claude's, and both must approve; if
-  either blocks, its blockers go to the agent as fix-it items. The same run then
+  work), and Claude has the final say on every case Jev does not approve at
+  0.9. With the runner's seat at its limit the review does not
+  finish and is re-run; it is never approved without it. Workflow and guard
+  edits (`guard` in risky-paths.json, or a workflow) still need the second
+  reviewer of a different family to approve; if either side
+  blocks, its blockers go to the agent as fix-it items. The same run then
   arms the PR (agent.yml `arm`, App token, `--match-head-commit`), so no person
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
