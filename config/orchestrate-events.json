@@ -1,5 +1,5 @@
 {
-  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's runs and jobs (session is the conclusion of the 'Run the orchestrator session' step: success, failure, skipped, null for in progress, absent); CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it. Every claude session case also asserts the start-up trim flags --strict-mcp-config, --disable-slash-commands and --setting-sources project,local (the pi cases are exempt), so deleting one fails CI. Runner (fleet-ops#9407): cap_cases assert want_runner (pi or claude) from the issue step; session_cases with runner pi run the real step against a fake pi and assert provider litellm, the seat, and FLEET_TASK_ID.",
+  "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's runs and jobs (session is the conclusion of the 'Run the orchestrator session' step: success, failure, skipped, null for in progress, absent); CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it. Every claude session case also asserts the start-up trim flags --strict-mcp-config, --disable-slash-commands and --setting-sources project,local (the pi cases are exempt), so deleting one fails CI. Runner (fleet-ops#9407): cap_cases assert want_runner (pi or claude) from the issue step; session_cases with runner pi run the real step against a fake pi and assert provider litellm, the seat, and FLEET_TASK_ID. sweep_cases run the orchestrate job's own PICK program, read out of the same step, against stranded-issue lists (oldest first, an orchestrator-tried issue or one with an orch/issue-<N> branch is skipped so it cannot starve the rest), so the schedule's pick cannot drift from what the job runs.",
   "needles": {
     "agent-dispatch.yml": [
       "ORCHESTRATE",
@@ -30,7 +30,11 @@
       "inputs.task == 'orchestrate' && inputs.issue != ''",
       "ORCHESTRATE_RUNNER",
       "ORCHESTRATE_SEAT",
-      "--provider litellm"
+      "--provider litellm",
+      "github.event_name == 'schedule' && vars.ORCHESTRATE_SWEEP != 'off'",
+      "GITHUB_EVENT_NAME\" = schedule",
+      "matching-refs/heads/orch/issue-",
+      "\"$PICK\""
     ],
     "agent.yml": [
       ".github/workflows/",
@@ -458,7 +462,7 @@
         {
           "id": 101,
           "session": "success",
-          "event": "schedule"
+          "event": "push"
         }
       ],
       "want_go": true,
@@ -475,6 +479,20 @@
           "id": 101,
           "session": "success",
           "event": "workflow_dispatch"
+        }
+      ],
+      "want_go": false
+    },
+    {
+      "id": "schedule-run-counts",
+      "daily_max": "1",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success",
+          "event": "schedule"
         }
       ],
       "want_go": false
@@ -756,6 +774,125 @@
       "hooks": "",
       "want_runner": "pi",
       "want_seat": "worker-cheap"
+    }
+  ],
+  "sweep_cases": [
+    {
+      "id": "single-stranded",
+      "issues": [
+        {
+          "number": 9354,
+          "createdAt": "2026-10-06T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            }
+          ]
+        }
+      ],
+      "refs": [],
+      "want": 9354
+    },
+    {
+      "id": "already-tried-skipped",
+      "issues": [
+        {
+          "number": 9354,
+          "createdAt": "2026-10-06T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            },
+            {
+              "name": "orchestrator-tried"
+            }
+          ]
+        }
+      ],
+      "refs": [],
+      "want": null
+    },
+    {
+      "id": "hand-off-branch-skipped-next-oldest",
+      "issues": [
+        {
+          "number": 9354,
+          "createdAt": "2026-10-06T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            }
+          ]
+        },
+        {
+          "number": 9340,
+          "createdAt": "2026-10-05T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            }
+          ]
+        }
+      ],
+      "refs": [
+        "refs/heads/orch/issue-9340"
+      ],
+      "want": 9354
+    },
+    {
+      "id": "oldest-first",
+      "issues": [
+        {
+          "number": 9332,
+          "createdAt": "2026-10-06T05:55:38Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            }
+          ]
+        },
+        {
+          "number": 9264,
+          "createdAt": "2026-10-05T03:55:22Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            },
+            {
+              "name": "strong-only"
+            }
+          ]
+        }
+      ],
+      "refs": [],
+      "want": 9264
+    },
+    {
+      "id": "none",
+      "issues": [],
+      "refs": [],
+      "want": null
+    },
+    {
+      "id": "tried-and-branch-skipped",
+      "issues": [
+        {
+          "number": 9354,
+          "createdAt": "2026-10-06T06:04:26Z",
+          "labels": [
+            {
+              "name": "needs-orchestrator"
+            },
+            {
+              "name": "orchestrator-tried"
+            }
+          ]
+        }
+      ],
+      "refs": [
+        "refs/heads/orch/issue-9354"
+      ],
+      "want": null
     }
   ]
 }

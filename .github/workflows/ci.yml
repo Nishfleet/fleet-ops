@@ -531,6 +531,15 @@ jobs:
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done
+      - name: Orchestrate schedule picks the oldest stranded issue (PICK)
+        if: always()
+        run: |
+          set -euo pipefail
+          pick=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.PICK' .github/workflows/agent-dispatch.yml)
+          while IFS= read -r c; do
+            got=$(jq -c '.issues' <<<"$c" | jq -r --argjson refs "$(jq -c .refs <<<"$c")" "$pick" | head -n 1)
+            [ "$got" = "$(jq -r '.want // ""' <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got '$got'"; exit 1; }
+          done < <(jq -c '.sweep_cases[]' config/orchestrate-events.json)
       - name: Orchestrate cap and session args (fleet-ops#9351)
         # Runs the orchestrate job's own scripts, read out of the workflow with
         # yq, never a copy: the "Check the issue is still parked" step against

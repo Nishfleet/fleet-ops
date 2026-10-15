@@ -1,49 +1,32 @@
 # Events that put work on the agent queue. Repo variable AGENT_MODE:
 #   shadow (default) = only issues also labelled shadow-actions, no rework
 #   live             = every agent-ready issue, plus rework on red CI
-# Repo variable MISS_REVIEW:
-#   off (default, unset) = miss-review jobs never start
-#   live                 = a miss event starts one different-family review
-# To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
-# To delete it: revert the miss-review jobs in this file and the miss-review
-# path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
-# Repo variable ORCHESTRATE:
-#   off                  = the orchestrate job never starts
-#   live (default, unset) = a needs-orchestrator label starts one hand-off run.
-#   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
-#   newly stubbed repo cannot sit off by omission.
-# Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
-#   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
-#   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+# Repo variable MISS_REVIEW: live = a miss event starts one different-family
+# review; off or unset = the miss-review jobs never start. Delete: revert the
+# miss-review jobs here and the miss-review path in agent.yml.
+# Repo variable ORCHESTRATE: off = the orchestrate job never starts; unset =
+# live (Nish 2026-10-04, "on for everything the fleet touches"). A needs-orchestrator
+# label starts one hand-off run, and the hourly schedule starts one for the oldest
+# stranded issue that has no hand-off yet (fleet-ops#9354); ORCHESTRATE_SWEEP=off
+# stops only that pick. A run already in flight finishes.
+# Cost controls on the orchestrate job (fleet-ops#9351):
+#   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set it to 0.
+#   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off.
 #   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
 #   Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
-#     ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
-#   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
-#     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
-# To switch orchestration off: set ORCHESTRATE to off.
-# To delete it: revert the orchestrate job in this file, the workflow-path
-# detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
-# already in flight finishes: the label gate only stops new ones.
-# Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
-#   true                   = every job that starts a worker or picks work to
-#                            start skips, and the paused job logs one summary
-#                            line per skipped event
-#   anything else or unset = not paused
-# ansible/update.yml sets it to true for the weekly update and back to false in
-# its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
-# workflow drops every trigger, so hold-risky could not hold a PR armed in that
-# window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;
-# ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-# Repo variable ADMIT_TRIAGE:
-#   off                   = the admit job never starts
-#   anything else or unset = an issue labelled needs-triage in an enrolled product
-#   repo, filed AND labelled by the human owner login alone and admitted by Jev
-#   (p >= 0.9), is queued. A bot login never admits; anything below 0.9 goes to
-#   the orchestrator. Caps: ADMIT_DAILY_MAX admissions per IST day (default 10)
-#   and ADMIT_BUDGET_SEC a run (default 780). Runs only while AGENT_MODE=live,
-#   so a shadow-mode repo gets no agent-ready it did not ask for.
-#   To delete it: remove the admit job, tests/test_triage_admit.py, its ci.yml
-#   step and the README section.
+#     ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only.
+# Delete orchestration: revert the orchestrate job here, the workflow-path detector
+# in agent.yml's Gate, prompts/orchestrator-handoff.md, the cap and pick blocks of
+# the "Check the issue" step with their ci.yml steps, and cap_cases, session_cases
+# and sweep_cases in config/orchestrate-events.json.
+# Repo variable FLEET_DISPATCH_PAUSED (the caller repo's): true = every job that
+# starts a worker or picks work skips, and the paused job logs one summary line per
+# skipped event; anything else or unset = not paused. ansible/update.yml sets it for
+# the weekly update and clears it in its always: block, then sweeps. It replaces
+# `gh workflow disable`, which drops every trigger so hold-risky could not hold a PR
+# armed in that window (2026-10-05). hold-risky and close-claim never read it; ci.yml
+# fails if a guard job gains the condition or a dispatch job loses it.
+# Repo variable ADMIT_TRIAGE: off = the admit job never starts (see the admit job).
 # The orchestrate and admit jobs are the self-hosted jobs here: org runner group
 # `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
 # or the job queues forever next to idle runners. Delete that entry with them.
@@ -1422,7 +1405,8 @@ jobs:
           (github.event.sender.login == 'nish3451' ||
            (endsWith(github.event.sender.login, '[bot]') &&
             (github.event.sender.login == 'nishfleet-worker[bot]' || github.event.sender.login == 'github-actions[bot]')))) ||
-        (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '')
+        (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '') ||
+        (github.event_name == 'schedule' && vars.ORCHESTRATE_SWEEP != 'off')
       )
     # Per issue: GitHub keeps one pending run per group, so a per-repo group dropped
     # queued hand-offs (fleet-ops#9700). Mirror writers take a file lock instead.
@@ -1431,10 +1415,9 @@ jobs:
       cancel-in-progress: false
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
-    # issues: read is the whole grant: the steps read the issue, and the
-    # orchestrator session does its own writes as the runner login. The GITHUB_TOKEN
-    # is never handed to claude (step work unsets GH_TOKEN and GITHUB_TOKEN), so
-    # this token cannot reach the session that pushes workflow files.
+    # Read-only grants: the session does its own writes as the runner login, and
+    # the GITHUB_TOKEN is never handed to claude (step work unsets GH_TOKEN and
+    # GITHUB_TOKEN), so this token cannot reach the session that pushes workflow files.
     permissions:
       # issues: read for the issue steps; contents: read for git refs and PR lists
       # through the API; pull-requests: read because on a private repo the cleanup
@@ -1460,6 +1443,12 @@ jobs:
           MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
           RUN_ID: ${{ github.run_id }}
+          # Schedule sweep (fleet-ops#9354): a cap-held issue would wait forever for
+          # an event. In: gh issue list JSON and $refs (orch/issue-* refs). Out: numbers, oldest first.
+          PICK: >-
+            map(select(any(.labels[]; .name == "orchestrator-tried") | not)
+              | select(.number as $n | any($refs[]; . == "refs/heads/orch/issue-\($n)") | not))
+            | sort_by(.createdAt) | .[].number
           # Counts the jobs of earlier runs whose session step ended (success
           # or failure). Input: a slurped array of job objects from the
           # actions jobs API. The name match covers a caller stub, whose job
@@ -1470,13 +1459,19 @@ jobs:
             | length
         run: |
           set -euo pipefail
-          [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
+          if [ -z "$ISSUE" ] && [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            refs=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/orch/issue-" --jq '.[].ref' | jq -Rsc 'split("\n") | map(select(length > 0))')
+            for n in $(gh issue list -R "$REPO" -l needs-orchestrator -L 1000 --json number,createdAt,labels | jq -r --argjson refs "$refs" "$PICK"); do
+              who=$(gh api --paginate "repos/$REPO/issues/$n/events" --jq '.[] | select(.event == "labeled" and .label.name == "needs-orchestrator") | .actor.login' | tail -n 1)
+              case $who in nish3451|'nishfleet-worker[bot]'|'github-actions[bot]') ISSUE=$n; break ;; esac
+            done
+            [ -z "$ISSUE" ] || { echo "ISSUE=$ISSUE" >> "$GITHUB_ENV"; echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"; }
+          fi
+          [ -n "$ISSUE" ] || { echo "orchestrate: no issue to hand off; skip"; echo idle=true >> "$GITHUB_OUTPUT"; exit 0; }
           state=$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state)
           labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
           [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
-          # Relabelled back to agent-ready (someone picked it up), or a previous
-          # hand-off already ran and produced no PR: both end the loop here
-          # rather than in the always() step, so nothing is built.
+          # Relabelled to agent-ready, or a hand-off already ran with no PR: stop here.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
@@ -1484,12 +1479,10 @@ jobs:
             echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
             exit 0
           fi
-          # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
-          # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
-          # since 00:00 IST, whose session step concluded, over this workflow's
-          # `issues` and `workflow_dispatch` runs (the only events that can
-          # start this job). Over the cap the run skips and the issue keeps
-          # needs-orchestrator for a later dispatch. 0 = no cap.
+          # Daily cap (fleet-ops#9351): 26 Opus hand-offs in one day used ~31% of the
+          # weekly Claude limit. Counts runs since 00:00 IST whose session step concluded
+          # (`issues`, `workflow_dispatch`, `schedule`); over it the issue keeps
+          # needs-orchestrator. 0 = no cap.
           DAILY_MAX=${DAILY_MAX:-10}
           case $DAILY_MAX in
             ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
@@ -1498,7 +1491,7 @@ jobs:
             since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
             wid=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id)
             ids=
-            for ev in issues workflow_dispatch; do
+            for ev in issues workflow_dispatch schedule; do
               ids+=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/$wid/runs" -f event="$ev" -f created=">=${since%%T*}" -f per_page=100 --jq ".workflow_runs[] | select(.created_at >= \"$since\") | .id")$'\n'
             done
             ids=$(printf '%s' "$ids" | grep -E '^[0-9]+$' | sort -u || true)
@@ -1634,7 +1627,7 @@ jobs:
         env:
           # The prompt is a file, not a ${{ }} inline: zizmor's
           # template-injection rule fails the workflow otherwise.
-          ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
+          ISSUE_N: ${{ github.event.issue.number || inputs.issue || steps.issue.outputs.issue }}
           REPO_NAME: ${{ github.repository }}
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
           MODEL: ${{ steps.issue.outputs.model }}
@@ -1697,12 +1690,10 @@ jobs:
             --max-turns "$TURNS" \
             < "$RUNNER_TEMP/orchestrator-prompt.md"
       - name: Clean up and mark a PR-less hand-off
-        if: always()
+        if: always() && steps.issue.outputs.idle != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          # steps.* goes through env, never into the run block directly
-          # (zizmor template-injection; the same reason WORKTREE above is an
-          # env var).
+          # steps.* goes through env (zizmor template-injection), as WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
         run: |
           set -euo pipefail
