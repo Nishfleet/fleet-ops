@@ -170,25 +170,29 @@ script, or prompt lands unseen.
   logs do.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the Hermes gateway page. Prometheus loads three rules:
-  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody) and
+  — the dead-man and the Hermes gateway page. Prometheus loads six rules:
+  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody),
+  `NodeExporterDown` (the `node` target down for 5 minutes, severity nish),
   `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
-  minutes). Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  minutes while the `node` target is up), and `PrometheusConfigReloadFailed`
+  and `AlertmanagerConfigReloadFailed` (stock reload metrics, severity nish).
+  Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
   `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
-  config/prometheus-tests/`. Off switch, under 2 minutes: `sudo systemctl
+  config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl
   disable --now prometheus-alertmanager.service`, then pause the check on
-  healthchecks.io so it stops alerting; the next `fleet-host-config.service` run
-  starts it again while `ansible/host.yml` has the enable task, so the durable
-  off is a PR that removes that task and the `rule_files` and `alerting` blocks. Delete it: revert that PR (this
-  removes the rule file, the Alertmanager config and options, the playbook
-  tasks and the CI step), then `sudo rm /etc/prometheus/deadman_url
-  /etc/prometheus/telegram_bot_token /etc/prometheus/telegram_chat_id` and
-  delete the check on healthchecks.io. Stopping Alertmanager does not touch
+  healthchecks.io so it stops alerting. The next `fleet-host-config.service`
+  run starts Alertmanager again, so for a lasting off, merge a PR that removes
+  the enable task in `ansible/host.yml` and the `rule_files` and `alerting`
+  blocks. Delete it: that same PR also removes the rule file, the Alertmanager
+  config and options, the playbook tasks and the CI step; then `sudo rm
+  /etc/prometheus/deadman_url /etc/prometheus/telegram_bot_token
+  /etc/prometheus/telegram_chat_id` and delete the check on healthchecks.io.
+  Stopping Alertmanager does not touch
   `hermes-gateway.service`.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
