@@ -1,8 +1,9 @@
 # Fleet alert rules: the dead-man heartbeat, failed units, the Hermes
-# gateway, stale or failed off-site backups, and public sites that stop
-# answering, and a same-day AI spend line. Kept deliberately small. The repair-dispatch machinery and the
-# 12 rules that fed it were cut on 2026-09-29 (fleet-ops#8958); nothing here
-# brings back a repair worker or a second page path.
+# gateway, stale or failed off-site backups, public sites that stop
+# answering and a same-day AI spend line. Kept deliberately small. The
+# repair-dispatch machinery and the 12 rules that fed it were cut on
+# 2026-09-29 (fleet-ops#8958); nothing here brings back a repair worker or a
+# second page path.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer), the blackbox exporter's

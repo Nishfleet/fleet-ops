@@ -363,7 +363,8 @@
     # reads them from /etc/restic/ on every run; a change here is live after
     # the next fleet-host-config run, no daemon-reload needed. README.md is not
     # copied: it is repo documentation, not box config. Rendered as templates
-    # so newer lines can name the home directory through nish_home.
+    # so newer lines can name the home directory through nish_home. Keep
+    # Jinja markers ({{, {% and {#) out of their comments and patterns.
     - name: Install restic include and exclude lists
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../config/restic/{{ item }}"

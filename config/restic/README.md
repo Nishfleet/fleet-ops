@@ -98,7 +98,7 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 | `/home/nish/.local/share/drive` | 53 MiB | labelled eval train and held-out cases. A different model family wrote them; re-running the harness is not the same data. |
 | `/home/nish/.local/state/fleet-ops/cloudflare-tokens` | 344 KiB | OpenTofu state for the per-repo Cloudflare tokens (`infra/cloudflare-tokens/`). The only record of the live tokens; without it the `gha-*` tokens are deleted by hand and minted again. |
 | `/home/nish/.local/share/containers/storage/volumes` | 83 MiB | podman container volumes. |
-| `~/workspaces/products` | 74 MiB source + `.git` | product working trees. Uncommitted edits, unpushed branches and repos with no remote yet exist only here; `exclude.txt` drops `node_modules`, `dist`, `build` and other rebuildable outputs at the top of each repo (about 1.3 GiB). |
+| `~/workspaces/products` | 74 MiB source + `.git` | product working trees. Uncommitted edits, unpushed branches and repos with no remote yet exist only here; `exclude.txt` drops `node_modules`, `dist`, `build` and other rebuildable outputs at the top of each repo (about 1.3 GiB). Local `.env` files go too: the snapshot is encrypted and already holds `~/.config`, and a key that exists only on the box is exactly what a restore would otherwise lose. |
 | `/etc` | 10 MiB | units, ssh, polkit, sysctl, cron, rclone and prometheus config. |
 | `/root` | ~4 KiB | root's scripts and keys. |
 | `/srv/aiostreams` | 153 MiB | application data. |
@@ -161,9 +161,13 @@ If a path is missing from the kept table and it cannot be rebuilt, add it to
    export RESTIC_PASSWORD=$(mktemp -u)          # scratch repo, throw away after
    export RESTIC_REPOSITORY=/tmp/restic-check
    restic init
+   # ansible renders the lists as templates; do the same for the dry run.
+   for f in include exclude; do
+     sed "s|{{ nish_home }}|$HOME|g" config/restic/$f.txt > /tmp/restic-$f.txt
+   done
    restic backup --dry-run --json \
-     --files-from=config/restic/include.txt \
-     --exclude-file=config/restic/exclude.txt \
+     --files-from=/tmp/restic-include.txt \
+     --exclude-file=/tmp/restic-exclude.txt \
      --exclude-caches | jq '{data_added, total_bytes_processed, total_files_processed}'
    ```
 
