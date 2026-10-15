@@ -210,11 +210,6 @@ jobs:
         run: |
           sudo apt-get install -y -q python3-yaml >/dev/null
           python3 tests/alert_routes_check.py
-      - name: Production deploy rules read each repo's main deploy and its newest finished run
-        # Reads config/grafana/provisioning/alerting/deploy-failed.yaml with yq
-        # and runs the rules' own SQL expression in sqlite over fake run tables.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -238,7 +233,7 @@ jobs:
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_deploy_failed_rule.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
