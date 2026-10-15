@@ -1424,8 +1424,13 @@ jobs:
             (github.event.sender.login == 'nishfleet-worker[bot]' || github.event.sender.login == 'github-actions[bot]')))) ||
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '')
       )
+    # One group per issue, not per repo: GitHub keeps one pending run per group
+    # and cancels the one before it, so three hand-offs close together lost two
+    # (run 38277017351 on #9621, fleet-ops#9700). The mirror is shared by every
+    # hand-off of a repo, so its writers take a file lock instead (steps below).
+    # How many run at once is bounded by the runner pool and the daily cap.
     concurrency:
-      group: orchestrate-${{ github.repository }}
+      group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
@@ -1553,6 +1558,12 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
+          # Hand-offs of different issues run side by side and share this mirror,
+          # so the step that fetches, repairs and adds worktrees takes the lock
+          # first and holds it until the step ends (fleet-ops#9700).
+          mkdir -p "${mirror%/*}"
+          exec 9>"${mirror%.git}.lock"
+          flock 9
           # Test for a repository, not a directory: a mirror whose HEAD file is
           # gone (fleet-ops#9526) is a directory that git no longer recognises.
           # `git init` on it recreates HEAD and keeps the objects, refs and
@@ -1591,11 +1602,11 @@ jobs:
           # copy sits beside the worktrees, where the 3-day age-out reaps it, so
           # there is a window to salvage from it. A fetch that fails on an intact
           # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. Nothing else is using the mirror
-          # during the move: this job's own `concurrency: orchestrate-<repo>`
-          # group (cancel-in-progress false, set on the job, not the per-run
-          # group at the top of the file) lets one hand-off per repo run at a
-          # time, and each repo has its own mirror.
+          # rebuilt: it stays a loud failure. No other hand-off is fetching or
+          # adding a worktree during the move: the lock taken above is held by
+          # this step alone. A session already running in a worktree of the
+          # old mirror keeps its checkout but loses its registration, which is
+          # why the damage (the tmpfiles age-out, now excluded) must stay rare.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
@@ -1748,8 +1759,9 @@ jobs:
           if [ "$busy" = 1 ]; then
             echo "orchestrate: a running unit uses $wt; keeping the worktree"
           elif [ -d "$mirror" ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
+            lock="${mirror%.git}.lock"
+            flock "$lock" env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+            flock "$lock" env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
           fi
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
