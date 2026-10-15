@@ -58,6 +58,23 @@
 /home/nish/.cache/bun
 /home/nish/.cache/pnpm
 
+# Product working trees: dependency trees and build outputs, all rebuilt by
+# `npm ci` and the build. Measured 2026-10-15: about 1.3 GiB of node_modules
+# alone, against 74 MiB of source. The tool-owned names match at any depth;
+# dist, build and the rest only at the top of each repo, so a source folder
+# that happens to be called build deeper down is still kept. ansible/host.yml
+# renders this file as a template and fills in the home directory.
+{{ nish_home }}/workspaces/products/**/node_modules
+{{ nish_home }}/workspaces/products/**/.wrangler
+{{ nish_home }}/workspaces/products/**/.next
+{{ nish_home }}/workspaces/products/**/.turbo
+{{ nish_home }}/workspaces/products/*/dist
+{{ nish_home }}/workspaces/products/*/build
+{{ nish_home }}/workspaces/products/*/coverage
+{{ nish_home }}/workspaces/products/*/.cache
+{{ nish_home }}/workspaces/products/*/playwright-report
+{{ nish_home }}/workspaces/products/*/test-results
+
 # Python caches.
 /home/nish/__pycache__
 /home/nish/**/__pycache__

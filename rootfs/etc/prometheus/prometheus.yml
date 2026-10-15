@@ -71,14 +71,39 @@ scrape_configs:
   # in the same change.
 
   # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
-  # Display only: no rule reads it. One target, the
-  # stock http_2xx module, via the blackbox exporter already running on :9115.
+  # The stock http_2xx module, via the blackbox exporter already running on
+  # :9115. SiteDown (fleet_rules.yml) pages on any site-* job down for 10m.
   - job_name: site-0509
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
       - targets: [https://0509.io/]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # The other public product homepages, one GET each per scrape (30s), same
+  # module and exporter. Redirects are followed, so a www or apex redirect
+  # counts as up when it lands on a 2xx. storagebun.com is left out until it
+  # is public: it answers with the Access login while it is private.
+  - job_name: site-products
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://api.0509.io/
+          - https://seofixkit.com/
+          - https://siterep.net/
+          - https://tinystudio.io/
+          - https://tinystudio.in/
+          - https://aiconverter.app/
+          - https://inish.in/
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
