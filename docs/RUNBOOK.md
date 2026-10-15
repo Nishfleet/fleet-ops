@@ -108,7 +108,9 @@ macros, run it, then restore the file; close the test issue at once, the dispatc
 Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
 or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
 cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
-nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
+nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price),
+the deploy-failed-24h rules (a product repo's production deploy on main has been red for a day;
+for the first day the deploy-failed rules in `deploy-failed.yaml` only file a fleet issue) and
 cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
 labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
 cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
