@@ -104,22 +104,29 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
-      # The shadcn agent skill. `skills update` swaps the skill's link for a
-      # real directory, which would leave the shared skills library stale and
-      # make a second copy. So this installs the pinned CLI's current copy
-      # into a throwaway HOME and syncs it over the library copy, which every
-      # agent reads through links. Bump the CLI pin in a PR.
+      # The shadcn agent skill, pinned to one upstream commit. The skill text goes into
+      # every agent's prompt, so the weekly run installs exactly this commit and a newer
+      # one needs a reviewed PR that changes `sha`. It downloads that commit's tarball (no
+      # npm code runs), checks the skill is there, stages it beside the library copy and
+      # swaps by rename, keeping the previous copy as shadcn.old for rollback.
       - argv:
           - bash
           - -c
           - |
             set -euo pipefail
+            sha=c2477f311c19982ef6e246085438e6cfec3e35ea
+            dst=/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/shadcn
             t=$(mktemp -d)
             trap 'rm -rf "$t"' EXIT
-            cd "$t"
-            HOME="$t" npx -y skills@1.7.2 add shadcn/ui -g -a universal -s shadcn -y
-            test -s "$t/.agents/skills/shadcn/SKILL.md"
-            rsync -a --delete "$t/.agents/skills/shadcn/" /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/shadcn/
+            curl -fsSL --max-time 120 "https://codeload.github.com/shadcn-ui/ui/tar.gz/$sha" |
+              tar -xz -C "$t" --strip-components=3 "ui-$sha/skills/shadcn"
+            test -s "$t/SKILL.md"
+            grep -q '^name: shadcn$' "$t/SKILL.md"
+            rm -rf "$dst.new" "$dst.old"
+            cp -a "$t" "$dst.new"
+            chmod 755 "$dst.new"
+            mv "$dst" "$dst.old"
+            mv "$dst.new" "$dst"
         stdin: ""
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
