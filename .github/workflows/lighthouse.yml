@@ -1,6 +1,5 @@
-# The fleet's Lighthouse speed budget, defined once. A web repo calls this and
-# passes only the URLs; the assertions are config/lighthouserc.json in this
-# repo, so no caller can loosen them. Same action and pin as 0509's lighthouse job.
+# The fleet's Lighthouse speed budget, defined once. A web repo passes the URLs; the
+# assertions are config/lighthouserc.json here, so no caller can loosen them.
 name: Lighthouse
 
 on:
@@ -10,20 +9,20 @@ on:
         description: Page URLs to audit, one per line.
         required: true
         type: string
+      upload_reports:
+        description: Keep the full reports as a run artifact. Off unless the caller asks.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   lighthouse:
-    name: lighthouse
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
     steps:
-      # A reusable workflow cannot see the ref it was called at, so the config
-      # is read from main: callers pinned to an older SHA still get today's config.
+      # A reusable workflow cannot see its called ref, so the config is read from main.
       - name: Fetch the Lighthouse config
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,5 +37,5 @@ jobs:
           urls: ${{ inputs.urls }}
           runs: 5
           configPath: ./fleet-ops/config/lighthouserc.json
-          uploadArtifacts: true
+          uploadArtifacts: ${{ inputs.upload_reports }}
           temporaryPublicStorage: false
