@@ -1,0 +1,4 @@
+{
+  "cline": {"watch": "(:free|-free|/free)$|^cline|^deepseek/|^z-ai/"},
+  "minimax": {"billing": "flat"}
+}
