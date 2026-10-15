@@ -1390,20 +1390,16 @@ jobs:
           owner: Nishfleet
           repositories: inish-site
           permission-contents: write
+          permission-pull-requests: write
       - name: Publish today's edition
         if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
-        # No model here, and the clone was made after the last model ran. The
-        # clone keeps no credential in .git/config; git gets the write token from
-        # the environment for inish-site URLs only, the same extraheader
-        # actions/checkout would have written. Success is the live page carrying
-        # today's date once the site's CI has deployed.
         working-directory: ${{ runner.temp }}/publish
         env:
           GH_TOKEN: ${{ steps.write-token.outputs.token }}
           TODAY: ${{ steps.compile.outputs.today }}
         run: |
           # Bare system PATH and no user git config, for the same reason as checked().
-          export PATH=/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+          export PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
           basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
           echo "::add-mask::$basic"
           export GIT_CONFIG_COUNT=2
@@ -1417,14 +1413,18 @@ jobs:
           done
           # build_daily wrote data/pools/$today.json from the candidate file in
           # this same clone, so what was tested is what is pushed.
-          if git diff --cached --quiet; then echo "nothing new to commit; waiting for the deploy"; else git commit -m "daily: publish $today"; fi
-          git push origin HEAD:main || { git pull --rebase origin main && git push origin HEAD:main; }
-          for _ in $(seq 1 60); do
+          if git diff --cached --quiet; then echo "nothing new to commit; waiting for the deploy"; else
+            git commit -m "daily: publish $today"
+            git push -f origin "HEAD:refs/heads/daily/publish-$today"
+            gh pr create -R Nishfleet/inish-site --head "daily/publish-$today" --base main --title "daily: publish $today" --body "Daily edition for $today from the fleet-ops inish-daily job." || gh pr view "daily/publish-$today" -R Nishfleet/inish-site > /dev/null
+            gh pr merge "daily/publish-$today" -R Nishfleet/inish-site --auto --squash --delete-branch
+          fi
+          for _ in $(seq 1 120); do
             live=$(curl -fsS --max-time 20 https://nish.sh/daily/latest.json | jq -r .date || true)
             [ "$live" = "$today" ] && { echo "published: $today https://nish.sh/daily"; exit 0; }
             sleep 15
           done
-          echo "publish-failed: live page still not $today after 15 minutes"
+          echo "publish-failed: live page still not $today after 30 minutes"
           exit 1
   report:
     needs: work
