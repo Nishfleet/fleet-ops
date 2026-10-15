@@ -117,8 +117,8 @@ file, never print it, never copy it into a repo, PR or issue:
   for restore drills or any other D1 create, import, execute-write or delete.**
   A restore drill imports a backup into a local SQLite file (`sqlite3`) and
   compares row counts there; it never creates a Cloudflare database. Restore
-  drills run in a scratch dir with no Cloudflare token loaded. Scratch D1
-  databases made by drills wrote 17M rows in 5 days (14-19 Sep) and 205k rows
+  drills need no D1 Write token; a live row count is one read-only `COUNT`
+  query. Scratch D1 databases made by drills wrote 17M rows in 5 days (14-19 Sep) and 205k rows
   in one hour (15 Oct, fleet-ops#9781); the `cf-d1-rows-written` alarm fires
   above 68,493 rows/h, and when it fires you stop drilling.
 - `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
