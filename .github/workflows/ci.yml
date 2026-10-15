@@ -1140,7 +1140,7 @@ jobs:
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f")
-          export RISKY_PATHS_URL PRIVATE_DETAIL_URL=$(yq '.jobs.review.env.PRIVATE_DETAIL_URL' "$f")
+          PRIVATE_DETAIL_URL=$(yq '.jobs.review.env.PRIVATE_DETAIL_URL' "$f"); export RISKY_PATHS_URL PRIVATE_DETAIL_URL
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
