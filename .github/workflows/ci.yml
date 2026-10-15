@@ -233,7 +233,7 @@ jobs:
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
@@ -1603,7 +1603,7 @@ jobs:
   grafana-boot:
     name: grafana-boot
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1618,12 +1618,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ]; then
-            if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|\.github/workflows/ci\.yml$)'; then
-              run=true
-            else
-              run=false
-            fi
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
+            run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
           echo "grafana-boot run=$run"
@@ -1846,6 +1842,10 @@ jobs:
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
+        if: steps.gate.outputs.run == 'true'
+        timeout-minutes: 20
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

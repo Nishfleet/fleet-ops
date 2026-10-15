@@ -104,15 +104,25 @@ def test_the_condition_is_the_sql_over_query_a():
         assert [d["refId"] for d in r["data"]] == ["A", r["condition"]]
 
 
-def test_only_a_day_red_pages_and_everything_else_files_a_fleet_issue():
+def test_only_a_day_red_pages_its_read_errors_are_muted_and_everything_else_files_a_fleet_issue():
     policy = _yq(".policies[0]", POLICY)
     assert policy["receiver"] == "fleet-alert-dispatch"
     matched = [r for r in policy["routes"] if any(m[0] == "signal" and m[2].startswith("deploy-failed") for m in r["object_matchers"])]
-    assert len(matched) == 1
-    route = matched[0]
-    assert route["receiver"] == "hermes-urgent"
-    assert sorted(route["object_matchers"]) == [["alertname", "!~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed-24h"]]
-    assert not route.get("continue")
+    assert len(matched) == 2
+    page, muted = matched
+    assert page["receiver"] == "hermes-urgent"
+    assert sorted(page["object_matchers"]) == [["alertname", "!~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed-24h"]]
+    assert muted["receiver"] == "fleet-alert-dispatch"
+    assert sorted(muted["object_matchers"]) == [["alertname", "=~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed-24h"]]
+    assert muted["mute_time_intervals"] == ["deploy-failed-24h-errors"]
+    assert not page.get("continue") and not muted.get("continue")
+    assert _yq(".muteTimes", RULES) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
+
+
+def test_each_window_covers_a_day_red_with_room_and_0509_reads_three_days():
+    windows = {r["labels"]["repo"]: _query(r)["relativeTimeRange"] for r in _all_rules()}
+    assert windows.pop("Nishfleet/0509") == {"from": 259200, "to": 0}
+    assert set(map(json.dumps, windows.values())) == {json.dumps({"from": 604800, "to": 0})}
 
 
 @pytest.mark.parametrize("runs,want", [
@@ -135,8 +145,7 @@ def test_only_a_day_red_pages_and_everything_else_files_a_fleet_issue():
 ])
 def test_the_sql_branch_logic_in_sqlite_reads_the_newest_finished_run(runs, want):
     assert _latest(runs) == want
-    if want:
-        assert _red_for_a_day([(i, "2026-10-01T00:00:00Z" if c else t, st, c) for i, t, st, c in runs]) == want
+    assert _red_for_a_day([(i, "2026-10-01T00:00:00Z" if c else t, st, c) for i, t, st, c in runs]) == ([1] if want == [1] else [0])
 
 
 @pytest.mark.parametrize("runs,want", [
@@ -149,11 +158,10 @@ def test_the_sql_branch_logic_in_sqlite_reads_the_newest_finished_run(runs, want
     ([(1, "2026-10-08T00:00:00Z", "completed", "failure"), (2, "2026-10-09T10:00:00Z", "completed", "cancelled"), (3, "2026-10-10T11:00:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-08T00:00:00Z", "completed", "failure"), (2, "2026-10-10T11:00:00Z", "in_progress", None)], [1]),
     ([(1, "2026-10-10T11:00:00Z", "in_progress", None)], [0]),
-    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "skipped")], [1]),
-    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-10T10:00:00Z", "completed", "skipped")], [0]),
-    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "success")], [0]),
-    ([(1, "2026-10-07T10:00:00Z", "completed", "skipped")], [1]),
-    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "failure")], [1]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "skipped")], [0]),
+    ([(1, "2026-10-07T10:00:00Z", "completed", "skipped")], [0]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "failure")], [0]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "failure"), (3, "2026-10-10T11:00:00Z", "completed", "skipped")], [1]),
     ([], [0]),
 ])
 def test_the_day_sql_branch_logic_in_sqlite_pages_only_on_a_red_streak_a_day_old(runs, want):
