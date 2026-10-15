@@ -107,7 +107,20 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #     unlink` the four retro-weekly units.
 ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
+# 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
+#     repo list the unit reads, then link the unit pair, so every deploy carries
+#     edits to it. The install is a user-scope COPY, same class as 2b/2c/6/7:
+#     the timer runs every 15 minutes and must not read its list out of the
+#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2e,
+#     because a timer that is silently off is the failure this ships to fix
+#     (fleet-ops#9376: a one-shot transient `later-*` timer died with the manager
+#     restart, and the issue sat unpromoted). Off switch: delete this step and
+#     the enable line below, then `systemctl --user disable --now
+#     later-sweep.timer`.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json %h/.config/fleet-ops/intake-repos.json
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
+ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
