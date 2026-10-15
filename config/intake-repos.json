@@ -12,6 +12,11 @@
   "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name>, (b) every `required_labels` name present on the repo, and (c) an .github/workflows/agent-dispatch.yml stub whose on.pull_request_target.types lists all nine events (dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review) — hold-risky is the only door into review-risky and a pull_request_target trigger fires only for the types its own repo's stub lists. `agent-dispatch` fires only on the `agent-ready` label.",
   "repos": [
     {
+      "name": "siterep-public",
+      "product": true,
+      "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; the end-date review is Nishfleet/siterep-public#173, due that day; listed first so cross-repo sweeps reach it first)"
+    },
+    {
       "name": "0509",
       "product": true
     },
