@@ -8,14 +8,18 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/deploy-failed.yaml"
+POLICY = ROOT / "config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml"
 YQ = shutil.which("yq")
 DATASOURCE = {"Nishfleet": "fleet-github", "nish3451": "fleet-github-personal"}
 
 
-def _rules():
+def _yq(expr, path):
     assert YQ, "yq must be on PATH to read the alert rules"
-    out = subprocess.run([YQ, "-o=json", ".groups[0].rules", str(RULES)], capture_output=True, text=True, check=True).stdout
-    return json.loads(out)
+    return json.loads(subprocess.run([YQ, "-o=json", expr, str(path)], capture_output=True, text=True, check=True).stdout)
+
+
+def _rules():
+    return _yq(".groups[0].rules", RULES)
 
 
 def _sql():
@@ -49,7 +53,7 @@ def test_each_rule_reads_one_main_workflow_through_its_owners_app_installation()
         assert r["labels"] == {"signal": "deploy-failed", "repo": full, "workflow": opts["workflow"]}
         for text in r["annotations"].values():
             assert full in text and opts["workflow"] in text, f"{r['title']}: annotation names another repo or workflow"
-        assert "not an outage" in r["annotations"]["summary"]
+        assert "cannot read GitHub runs" in r["annotations"]["summary"]
 
 
 def test_the_condition_is_the_sql_over_query_a_and_it_pages():
@@ -58,8 +62,20 @@ def test_the_condition_is_the_sql_over_query_a_and_it_pages():
         assert cond["datasourceUid"] == "__expr__"
         assert (cond["model"]["type"], cond["model"]["format"]) == ("sql", "alerting")
         assert [d["refId"] for d in r["data"]] == ["A", r["condition"]]
-        assert r["notification_settings"]["receiver"] == "hermes-urgent"
+        assert "notification_settings" not in r
         assert (r["execErrState"], r["noDataState"]) == ("Error", "OK")
+
+
+def test_a_deploy_result_pages_and_a_read_error_falls_through_to_the_fleet_issue():
+    policy = _yq(".policies[0]", POLICY)
+    routes = [r for r in policy["routes"] if ["signal", "=", "deploy-failed"] in r["object_matchers"]]
+    assert len(routes) == 1
+    route = routes[0]
+    assert route["receiver"] == "hermes-urgent"
+    assert sorted(route["object_matchers"]) == [["alertname", "!~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed"]]
+    assert not route.get("continue")
+    assert policy["receiver"] == "fleet-alert-dispatch"
+    assert all(r["labels"]["signal"] == "deploy-failed" for r in _rules())
 
 
 @pytest.mark.parametrize("runs,want", [
