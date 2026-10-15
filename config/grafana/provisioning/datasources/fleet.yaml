@@ -25,16 +25,7 @@ datasources:
     secureJsonData:
       privateKey: $__file{/run/secrets/github-app.pem}
 
-  # Same App, installation on the nish3451 personal account (selected repos,
-  # incl. drive). One data source per installation.
-  - name: GitHub (nish3451)
-    uid: fleet-github-personal
-    type: grafana-github-datasource
-    editable: false
-    jsonData:
-      selectedAuthType: github-app
-      appId: "4728578"
-      installationId: "166603018"
-      githubPlan: github-basic
-    secureJsonData:
-      privateKey: $__file{/run/secrets/github-app.pem}
+  # The App has one installation, 156789042 on the Nishfleet organization, all
+  # repos. The second installation this file used to carry, on the personal
+  # account, is gone from the App, so its data source was removed: every read
+  # through it failed and the panels on it read nothing (fleet-ops#9803).

@@ -7,14 +7,29 @@ can reach (its own notification_settings receiver, otherwise the notification
 policy tree, also for the DatasourceError / DatasourceNoData alerts the rule can
 turn into), and fails when the set of rules that can reach hermes-urgent differs
 from URGENT below. Adding a paging rule means adding it here, with its reason.
+It also fails when a rule or a dashboard panel reads a data source that this
+repo does not provision (or one that was retired), because that read is blind
+and the rule turns into a DatasourceError alert nobody can act on.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
+import json
 import re
 import sys
 from pathlib import Path
 
 import yaml
+
+RETIRED_DATASOURCES = {
+    # The nishfleet-worker App installation behind it is gone (fleet-ops#9803).
+    "fleet-github-personal": "fleet-github",
+}
+RETIRED_OWNERS = {
+    # Same cause: the App has no installation on the nish3451 account any more,
+    # so a panel that names it reads nothing whatever data source it picks.
+    "nish3451": "Nishfleet",
+}
+BUILTIN_DATASOURCES = {"-- Mixed --", "-- Grafana --", "-- Dashboard --", "__expr__"}
 
 URGENT = {
     # money: the cost alarm and the rule that says the cost alarm could not report
@@ -76,6 +91,79 @@ def selftest():
     assert route(tree, {"x": "11"}) == {"root"}  # =~ is anchored
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    refs = []
+    walk_refs({"datasource": {"uid": "x"}, "targets": [
+        {"datasource": ["a", "b"]},
+        {"datasource": {"uid": "fleet-github-personal"}, "queryType": "Issues", "owner": "nish3451"}]}, "f", refs)
+    assert ("f", "datasource", "x") in refs
+    assert ("f > targets[0]", "datasource", "a") not in refs
+    assert ("f > targets[1]", "datasource", "fleet-github-personal") in refs
+    assert ("f > targets[1]", "owner", "nish3451") in refs
+
+
+def provisioned_uids(provisioning):
+    uids = set()
+    for f in sorted((Path(provisioning) / "datasources").glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for d in doc.get("datasources") or []:
+            assert d.get("uid"), f"{f.name}: a data source without a uid cannot be referenced"
+            uids.add(d["uid"])
+    assert uids, f"no data source provisioned under {provisioning}/datasources"
+    return uids
+
+
+def walk_refs(node, where, out):
+    """Every datasource uid and query owner in a Grafana panel tree or rule model."""
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        uid = ds.get("uid") if isinstance(ds, dict) else ds
+        if isinstance(uid, str) and uid:
+            out.append((where, "datasource", uid))
+        if node.get("datasourceUid"):
+            out.append((where, "datasource", node["datasourceUid"]))
+        if node.get("queryType") and node.get("owner"):
+            out.append((where, "owner", node["owner"]))
+        for key, value in node.items():
+            if isinstance(value, (dict, list)):
+                walk_refs(value, where if key in ("model", "options") else f"{where} > {key}", out)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            walk_refs(value, f"{where}[{i}]", out)
+
+
+def datasource_refs(root, provisioning):
+    """[(where, kind, value)] for every alert rule and dashboard panel that names one."""
+    out = []
+    for f in sorted(Path(root).glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for g in doc.get("groups") or []:
+            for r in g["rules"]:
+                walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
+    dash = Path(provisioning).parent / "dashboards"
+    files = sorted(dash.glob("*.json"))
+    assert files, f"no dashboard json under {dash}"
+    for f in files:
+        walk_refs(json.loads(f.read_text()), f.name, out)
+    assert len(out) >= 10, f"only {len(out)} data source references found; the walk is broken"
+    return out
+
+
+def check_datasource_refs(root, provisioning):
+    uids = provisioned_uids(provisioning)
+    bad = 0
+    for where, kind, value in datasource_refs(root, provisioning):
+        if kind == "owner" and value.lower() in RETIRED_OWNERS:
+            print(f"::error::{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value.lower()]}")
+            bad = 1
+        elif kind == "datasource" and value in RETIRED_DATASOURCES:
+            print(f"::error::{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
+            bad = 1
+        elif kind == "datasource" and value not in uids and value not in BUILTIN_DATASOURCES:
+            print(f"::error::{where}: data source {value} is not provisioned in provisioning/datasources")
+            bad = 1
+    if not bad:
+        print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
+    return bad
 
 
 def main(root):
@@ -90,6 +178,7 @@ def main(root):
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
     assert policy, "no notification policy found"
+    bad = check_datasource_refs(root, Path(root).parent)
     paging = {}
     for r in rules:
         for k, v in (r.get("labels") or {}).items():
@@ -111,7 +200,7 @@ def main(root):
         print(f"::error::rules that can page but are not urgent: {extra}; urgent rules that no longer page: {gone}")
         return 1
     print(f"{len(paging)} of {len(rules)} rules can page; every other rule reaches the fleet only")
-    return 0
+    return bad
 
 
 if __name__ == "__main__":
