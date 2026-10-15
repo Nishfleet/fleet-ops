@@ -1,13 +1,15 @@
-# Fleet alert rules: the dead-man heartbeat, failed units, and the Hermes
-# gateway, plus node_exporter and config-reload health. Deliberately six small
-# rules, four of which page (HermesGatewayDown, NodeExporterDown and the two reload
-# alerts) and one is the heartbeat. The repair-dispatch machinery and the 12 rules that fed
-# it were cut on 2026-09-29 (fleet-ops#8958); nothing here brings back a repair
-# worker or a second page path. NodeExporterDown pages because a down node_exporter
+# Fleet alert rules: the dead-man heartbeat, failed units, the Hermes
+# gateway, node_exporter and config-reload health, stale or failed off-site
+# backups, public sites that stop answering, and a same-day AI spend line
+# (plus a page if that metric goes missing). Kept deliberately small. The
+# repair-dispatch machinery and the 12 rules that fed it were cut on
+# 2026-09-29 (fleet-ops#8958); nothing here brings back a repair worker or a
+# second page path. NodeExporterDown pages because a down node_exporter
 # gates HermesGatewayDown off.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
-# unit-include covers .service and .timer) and Prometheus' own vector().
+# unit-include covers .service and .timer), the blackbox exporter's
+# probe_success, LiteLLM's own spend metric and Prometheus' own vector().
 #
 # Routing lives in rootfs/etc/alertmanager/alertmanager.yml:
 #   Watchdog          -> the outside dead-man (healthchecks.io), every 5m
@@ -94,3 +96,79 @@ groups:
         annotations:
           summary: "Alertmanager rejected its last config reload"
           description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
+
+  - name: fleet_backup
+    rules:
+      # The nightly off-site backup has not started for 30 hours (one missed
+      # night plus slack), or its timer series vanished. A backup nobody hears
+      # about stopping is the failure this catches; the healthchecks.io ping
+      # only says a run finished, nothing on the box said when runs stopped.
+      - alert: BackupStale
+        expr: |
+          # max_over_time keeps the last real trigger time across a reboot,
+          # when a timer without Persistent=true reports 0 until it next runs.
+          (time() - max_over_time(node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}[31h])) > 30 * 3600
+          or
+          absent(node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"})
+        for: 15m
+        labels:
+          severity: nish
+        annotations:
+          summary: "off-site backup has not run for over 30 hours"
+          description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
+      # A backup, locked copy or size guard that failed and stayed failed for
+      # an hour (not a one-off retry): the snapshot did not reach R2.
+      - alert: BackupFailed
+        expr: node_systemd_unit_state{name=~"restic-r2-(backup|locked-copy|size-guard)\\.service",state="failed"} == 1
+        for: 1h
+        labels:
+          severity: nish
+        annotations:
+          summary: "backup unit {{ $labels.name }} has been failed for 1 hour"
+          description: "Systemd unit {{ $labels.name }} is in the failed state, so last night's off-site backup did not complete."
+
+  - name: fleet_sites
+    rules:
+      # A public product site probed by the blackbox exporter (jobs named
+      # site-*) has failed every probe for 10 minutes. If the box itself is
+      # down the outside dead-man fires instead.
+      - alert: SiteDown
+        # The up branch covers a dead blackbox exporter: its scrape fails, so
+        # probe_success goes missing instead of reading 0.
+        expr: |
+          max_over_time(probe_success{job=~"site-.*"}[10m]) == 0
+          or
+          max_over_time(up{job=~"site-.*"}[10m]) == 0
+        labels:
+          severity: nish
+        annotations:
+          summary: "{{ $labels.instance }} has not answered for 10 minutes"
+          description: "Every blackbox probe of {{ $labels.instance }} (job {{ $labels.job }}) failed, or could not run, for 10 minutes."
+
+  - name: fleet_spend
+    rules:
+      # Paid AI spend through the LiteLLM router over the last 24 hours is
+      # past 40 USD. The per-seat caps stop each seat on its own and tell
+      # nobody; this is the same-day signal for a runaway loop. 14 days to
+      # 2026-10-15: highest day 31.04 USD, median 5.21 USD.
+      - alert: AISpendHigh
+        expr: sum(increase(litellm_spend_metric_total[24h])) > 40
+        for: 15m
+        labels:
+          severity: nish
+        annotations:
+          summary: "AI spend is over 40 USD in the last 24 hours"
+          description: "sum(increase(litellm_spend_metric_total[24h])) is {{ $value | printf \"%.2f\" }} USD, above the 40 USD daily line."
+
+      # The spend line above cannot fire if the router stops exporting the
+      # counter, so a day with no series at all pages too. The fleet calls
+      # the router every hour, so 24 hours of silence is a broken export,
+      # not a quiet day.
+      - alert: AISpendMetricMissing
+        expr: absent_over_time(litellm_spend_metric_total[24h])
+        for: 1h
+        labels:
+          severity: nish
+        annotations:
+          summary: "AI spend metric has been missing for over a day"
+          description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
