@@ -222,15 +222,11 @@ jobs:
             skip workflow-files
           fi
 
-          # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
-          # per issue since the newest park: comment (the old opus-vet: prefix still
-          # counts, so older issues keep their resets), counted from these comments.
-          # A run the provider refused (429, capacity) comments infra-failed and
-          # is not counted: the worker never got to try. An infra-failed cancels
-          # only the start that carries the same run URL, so a late one from a run
-          # begun before a reset cannot cancel a run begun after it. A comment that starts
-          # `attempt-cap reset: <why>` from an owner, member or collaborator
-          # restarts the count like a park: comment does; a comment from any other association counts for nothing.
+          # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs per issue
+          # since the newest park: comment (opus-vet: still counts). A run the provider
+          # refused (429, capacity) comments infra-failed and is not counted; it cancels
+          # only the start with the same run URL. `attempt-cap reset: <why>` from an
+          # owner, member or collaborator restarts the count; any other author counts for nothing.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
@@ -240,18 +236,9 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other
-          # than SWE-2: Claude Code on a Claude seat first, then Cursor (paced to
-          # 1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot
-          # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
-          # fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while
-          # fewer than 2 run (OpenCode's free tier answers only the opencode CLI,
-          # fleet-ops#8790), else Devin SWE-2 Max while
-          # fewer than 4 run ($0); when all three are full the issue
-          # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
-          # A lane's live count is the distinct worker directories (Devin,
-          # Cursor) or pi session directories on its bwrap command lines, so
-          # it spans every runner and repo on this host.
+          # A lane's live count is the distinct worker directories (Devin, Cursor) or pi
+          # session directories on its bwrap command lines, so it spans every runner and
+          # repo on this host. Routing is in the Claude paragraph below.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is
@@ -268,19 +255,18 @@ jobs:
           }
           # Claude does the judgment work, the free workers do the mechanical work,
           # and Jev decides which is which. strong-only (senior) work always goes to
-          # Claude Code first. Any other issue is classified by Jev from its title
+          # Claude Code first, then Cursor (paced to 1 at once); with both full it stays
+          # agent-ready. Any other issue is classified by Jev from its title
           # and body: p >= 0.9 that completing it needs engineering judgment sends
-          # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
-          # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, then opencode, then Devin, and never Cursor
-          # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the runner's number (netcup-agent-N):
-          # odd runs seat a, even runs the default login (seat b), so
-          # the jobs split across both seats and a job never changes seat (no
-          # clock, and the prompt cache holds). A seat at its usage limit shows up
-          # as a rate limit in the Worker, which falls through (below). There is no
-          # cap on live claude workers: nothing stock gives N slots, and
-          # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
+          # it to claude, anything else, or a Jev call that fails, goes to the free lanes.
+          # The free order is pi while it has a free router slot, then opencode while
+          # fewer than 2 run, then Devin while fewer than 4 run; all full = lanes-full,
+          # and never Cursor (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
+          # failed runs. The seat follows the runner's number (netcup-agent-N), odd
+          # seat a, even seat b, so a job never changes seat (the prompt cache holds).
+          # A seat at its usage limit shows up as a rate limit in the Worker, which
+          # falls through (below). There is no cap on live claude workers: nothing
+          # stock gives N slots, and agent.slice MemoryHigh/MemoryMax govern the RAM.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           # judgment_p: asks Jev whether the issue needs engineering judgment and sets
           # jp to the probability of yes (empty when the call fails). The issue text
@@ -380,13 +366,10 @@ jobs:
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
           [ "$MISS" = true ] && id=$id-miss
-          # The worker runs in its own PID namespace: when it exits (or this
-          # step is cancelled), the kernel kills every process it started,
-          # including ones that setsid/daemonize past the runner's snapshot-based
-          # orphan cleanup (actions/runner#4601). Before this, a headless Chrome
-          # outlived its job by 13h and a worker's gh-checks poller held
-          # node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820).
-          # Same cgroup, so agent.slice memory limits still apply.
+          # The worker runs in its own PID namespace, so when it exits or the step is
+          # cancelled the kernel kills everything it started, even setsid/daemonized
+          # processes the runner's orphan cleanup misses (actions/runner#4601; a headless
+          # Chrome once outlived its job by 13h). Same cgroup, so agent.slice limits apply.
           # The empty tmpfs mounts hide Nish's own gh login (admin:org,
           # delete_repo, workflow; backups included) and every Cloudflare
           # token from the worker, which reads outsider comments: a fooled
@@ -443,17 +426,13 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the runner's number
-            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
-            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
-            # login). A name with no number keeps seat a. The seat never changes
-            # inside a job, except to the other seat when its own login is missing
-            # (below). A run that dies on a rate limit or
-            # a usage limit sends the same packet to the Cursor lane for senior
-            # work, or to pi (the first of the ordinary lanes) for any other job,
-            # which never uses Cursor; either continues from whatever the branch
-            # holds (worker.md step 2b). Other engines never see these seats'
-            # logins (the jail lines above); this one sees only the seat it runs on.
+            # Claude Code on the seat chosen by the runner's number (RUNNER_NAME is
+            # netcup-agent-N): odd keeps the runner's CLAUDE_CONFIG_DIR (seat a), even
+            # unsets it (seat b, the default login); no number keeps seat a. The seat
+            # changes only to the other one when its own login is missing (below). A run
+            # that dies on a rate or usage limit sends the same packet to Cursor for senior
+            # work, or to pi for any other job, and that engine continues from whatever
+            # the branch holds (worker.md step 2b).
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
@@ -497,13 +476,10 @@ jobs:
             # what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator
             # session's: no MCP servers, no skills, no user settings; managed
             # settings still apply.
-            # bypassPermissions is the same trust the other engines get (Devin runs
-            # --permission-mode dangerous, pi runs with its tools on): the bwrap jail
-            # is the boundary, not the permission prompt. The jail shows this lane only
-            # the seat it runs on. Project and local settings come from the worktree,
-            # which holds main's files plus what the model itself writes inside the
-            # same jail, so they add no reach; --settings turns every hook off, and
-            # --settings outranks project and local settings.
+            # bypassPermissions is the trust the other engines get: the bwrap jail is
+            # the boundary, not the permission prompt. Project and local settings come
+            # from the worktree, which the model itself writes inside the same jail, so
+            # they add no reach; --settings turns every hook off and outranks them.
             echo "$packet" | $claude_jail --chdir "$dir" -- \
               claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
               --strict-mcp-config --disable-slash-commands --setting-sources project,local \
