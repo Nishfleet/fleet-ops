@@ -863,9 +863,8 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 20
-    # Comments are written with the job's own GITHUB_TOKEN (github-actions[bot]). This job runs from
-    # main, so the PR cannot change its reviewer; a PR that edits the guard list or a workflow needs
-    # two independent reviews (below). Arming is the arm job's, as the worker App.
+    # Comments use the job's GITHUB_TOKEN (github-actions[bot]). This job runs from main, so a PR cannot change
+    # its reviewer; a PR that edits the guard list or a workflow needs two independent reviews. Arming is the arm job's.
     permissions:
       pull-requests: write
     outputs:
@@ -925,11 +924,10 @@ jobs:
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # Blocker lines start with the word blocker(s) (markup allowed; "blocker/risk/nit" echoed
-          # headers do not count) and are not only a none-variant (none, nothing, n/a, nil, a dash,
-          # optionally followed by a sentence). Both patterns are case-insensitive and the only copies:
-          # grep reads them here, jq in the already-reviewed check. "blocker: none of the callers check
-          # the token" still blocks. Dropping a none line never approves alone: Jev must be 90% sure.
+          # Blocker lines start with the word blocker(s) (markup allowed; echoed "blocker/risk/nit" headers do not
+          # count) and are not only a none-variant (none, nothing, n/a, nil, a dash, optionally plus a sentence).
+          # Both patterns are case-insensitive, the only copies, read here by grep and by jq in the already-reviewed
+          # check. "blocker: none of the callers check the token" still blocks; Jev must still be 90% sure.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
