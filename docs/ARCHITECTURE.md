@@ -16,7 +16,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens issues or PRs: issues come from people, red-main issues and dependabot, which runs weekly. The one scheduled model call is `systemd/blacksmith-flip.timer` (hourly): `prompts/blacksmith-flip.yml` runs through `pi --print` on the `worker-cheap` seat and sets or deletes the org `CI_RUNNER` variable at 95% of the free Blacksmith minutes (fleet-ops#8936).
+No scheduled fleet job opens PRs, and only the weekly retro opens issues, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314); its report is private, in the vault. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled model call on this host is the weekly retro; the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
 
 ## Model plane
 
@@ -135,12 +135,9 @@ The rules still in force:
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
-  status on it (0509#7092), or a GitHub `Approve` review by nish3451 whose
-  `commit_id` is that head (one tap in the app, fleet-ops#9505; a `[bot]` review
-  never counts, a later change request revokes). That review re-arms with no
-  second step: `approval-signal.yml` (PR-head code, no permissions) uploads the
-  PR number, and the `workflow_run` it triggers runs `hold-risky` from the base
-  branch, which re-reads the review and calls `arm-approved` (agent.yml `arm`).
+  status on it (0509#7092). A person's Approve review counts toward the
+  ruleset's required review, not toward this gate, and there is no relay that
+  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
