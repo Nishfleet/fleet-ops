@@ -135,7 +135,8 @@ def test_only_a_day_red_pages_and_everything_else_files_a_fleet_issue():
 ])
 def test_the_sql_branch_logic_in_sqlite_reads_the_newest_finished_run(runs, want):
     assert _latest(runs) == want
-    assert _red_for_a_day([(i, "2026-10-01T00:00:00Z" if c else t, st, c) for i, t, st, c in runs]) == ([1] if want == [1] else [0])
+    if want:
+        assert _red_for_a_day([(i, "2026-10-01T00:00:00Z" if c else t, st, c) for i, t, st, c in runs]) == want
 
 
 @pytest.mark.parametrize("runs,want", [
@@ -148,6 +149,11 @@ def test_the_sql_branch_logic_in_sqlite_reads_the_newest_finished_run(runs, want
     ([(1, "2026-10-08T00:00:00Z", "completed", "failure"), (2, "2026-10-09T10:00:00Z", "completed", "cancelled"), (3, "2026-10-10T11:00:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-08T00:00:00Z", "completed", "failure"), (2, "2026-10-10T11:00:00Z", "in_progress", None)], [1]),
     ([(1, "2026-10-10T11:00:00Z", "in_progress", None)], [0]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "skipped")], [1]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-10T10:00:00Z", "completed", "skipped")], [0]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "success")], [0]),
+    ([(1, "2026-10-07T10:00:00Z", "completed", "skipped")], [1]),
+    ([(1, "2026-10-08T10:00:00Z", "completed", "success"), (2, "2026-10-09T06:00:00Z", "completed", "skipped"), (3, "2026-10-10T11:00:00Z", "completed", "failure")], [1]),
     ([], [0]),
 ])
 def test_the_day_sql_branch_logic_in_sqlite_pages_only_on_a_red_streak_a_day_old(runs, want):
