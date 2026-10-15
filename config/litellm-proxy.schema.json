@@ -22,6 +22,11 @@
         }
       }
     },
+    "straitlyRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.straitly.ai/v1" } } } }
+    },
     "syntheticRow": {
       "type": "object",
       "required": ["litellm_params"],
@@ -155,6 +160,12 @@
           ]
         },
         {
+          "$comment": "fleet-ops#9788: Straitly is free credit only (balance 20 USD, no top-up). At most two rows, each capped at 9.5 USD, so the rows together stop routing at 19 USD and Straitly never answers 402 quota_exceeded, which LiteLLM v1.98.0 neither retries nor cools. A third row would raise the ceiling past the balance.",
+          "contains": { "$ref": "#/$defs/straitlyRow" },
+          "minContains": 0,
+          "maxContains": 2
+        },
+        {
           "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
           "contains": { "$ref": "#/$defs/syntheticRow" },
           "minContains": 0,
@@ -252,6 +263,23 @@
                       "required": ["RateLimitErrorAllowedFails"],
                       "properties": { "RateLimitErrorAllowedFails": { "const": 0 } }
                     }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "$comment": "fleet-ops#9788: a row on api.straitly.ai/v1 serves public-repo Pi jobs only (agent.yml picks worker-public from the repo's visibility), so it sits in worker-public. Its LiteLLM cap must trip before Straitly's own: max_budget is required and at most 9.5, and budget_duration is required because v1.98.0 registers a deployment budget only when both are set (budget_limiter._init_deployment_budgets), so a row without it has no cap at all. 30d outlasts the 2026-10-23 end date, so the budget is a lifetime cap. The prices let LiteLLM count the spend.",
+            "if": { "$ref": "#/$defs/straitlyRow" },
+            "then": {
+              "properties": {
+                "model_name": { "const": "worker-public" },
+                "litellm_params": {
+                  "required": ["max_budget", "budget_duration", "input_cost_per_token", "output_cost_per_token"],
+                  "properties": {
+                    "max_budget": { "type": "number", "exclusiveMinimum": 0, "maximum": 9.5 },
+                    "budget_duration": { "const": "30d" },
+                    "api_key": { "const": "os.environ/STRAITLY_API_KEY" }
                   }
                 }
               }

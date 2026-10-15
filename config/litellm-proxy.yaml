@@ -5,8 +5,9 @@
 # OpenCode keys (OPENCODE_API_KEY, OPENCODE_API_KEY_2) are for DeepSeek 4.1 flash only (Nish 2026-10-12, chat: "opencode is alive bruv, both oc keys - just for ds4.1 flash"; this is his explicit yes to remove the other OpenCode rows). Removed with it: opencodego-step5free-worker-capable, opencodego-step5free-worker-cheap, opencodego2-step5free-worker-capable, opencodego2-step5free-worker-cheap (step-5-preview-free on the Go endpoint). Only the opencodego-ds41flash-* and opencodego2-ds41flash-* rows stay on OpenCode. Why the four step5free rows go though they answered 200 on 2026-10-08: they run on keys Nish scoped to one model, so they are a misuse of those keys, not a failing row. Effect: each of worker-capable and worker-cheap loses 3 rows (2 step5free rows per group plus one zen row; 6 concurrent slots per group), leaving 48 and 23 rows with 36 and 14 healthy in litellm_deployment_state on 2026-10-12. Spend: the freed share moves onto the remaining rows; the CommandCode ds41flashb rows have no max_budget, measured $1.81/day per lane, so the extra is small and bounded by the wallet and its 429 alert. The quote is from Nish in chat 2026-10-12 about 18:45 IST, relayed by the operator rajeev and recorded at https://github.com/Nishfleet/fleet-ops/issues/9658#issuecomment-6125544189 as his yes to remove the rows; no repo test or schema names the removed ids.
 # OpenRouter (openrouter.ai) and xKiro (api.xkiro.com) removed 2026-10-13 on Nish's explicit yes (fleet-ops#9711, https://github.com/Nishfleet/fleet-ops/issues/9711): every row of both providers is gone, and both are gone from the approved-models list above. His words in the Claude project thread, about OpenRouter and xKiro ("free but fail the most"): "remove those two" (04:30:38 UTC 2026-10-13), then "yes" (04:30:53 UTC) to "reply 'yes' to drop OpenRouter and xKiro". Reason: his 2026-10-12 cap of 3-5 providers, plus 21-day LiteLLM_SpendLogs showing OpenRouter at 5.0% failures (576 of 10,941 requests) and xKiro at 1,214 requests. Removed ids (13): xkiro-spacebunnyalpha-worker-capable, xkiro-spacebunnyalpha-worker-cheap, xkiro-ling30flashsante-worker-capable, xkiro-ling30flashsante-worker-cheap, xkiro-qwen3coderplus-worker-cheap, xkiro-qwen38max-worker-cheap, openrouter-spacebunnyalpha-worker-capable, openrouter-spacebunnyalpha-worker-cheap, openrouter-nemotronultra-worker-capable, openrouter-nemotronultra-worker-cheap, openrouter-nemotronlightning-worker-cheap, openrouter-lagunas21free-worker-capable, openrouter-lagunas21free-worker-cheap. Spend: their freed share (all $0 lanes) moves to the remaining rows. The OpenCode Go keys and the Command Code key are unlimited on DeepSeek 4.1 flash (Nish 2026-10-13) and the other remaining rows are flat or prepaid plans, so no new per-token spend is expected; the CommandCode ds41flashb rows have no max_budget, so their cap is the prepaid wallet and its 429 alert. The schema gate for openrouter.ai/api/v1 rows (fleet-ops#9248) is kept, so a re-added OpenRouter row still has to park on its first 429.
 # Command Code is GLM-5.3-Flash only (Nish 2026-10-15 06:49 UTC, "command code is now glm 5.3 flash exclusively", recorded at https://github.com/Nishfleet/fleet-ops/issues/9744, fleet-ops#9744): every api.commandcode.ai row whose model is not z-ai/glm-5.3-flash is gone, so this is the removal record the 2026-10-02 rule above asks for. Removed ids (8): commandcode-ds41flash-worker-capable, commandcode-ds41flash-worker-cheap, commandcode-ds41flashb-worker-capable, commandcode-ds41flashb-worker-cheap, commandcode-lagunas21free-worker-capable, commandcode-lagunas21free-worker-cheap, commandcode-ling31flash-worker-capable, commandcode-ling31flash-worker-cheap. Added ids (4): commandcode-glm53flash-worker-capable, commandcode-glm53flash-worker-cheap, commandcode-glm53flashb-worker-capable, commandcode-glm53flashb-worker-cheap. Each group keeps the 2 DeepSeek-lane slots (4 parallel each, the same COMMANDCODE_API_KEY, 900 s cooldown) as 2 GLM rows; all four rows carry max_budget 10 per 1d, so every Command Code row has a 10 USD/day wall, and weight 1 (unlimited is not confirmed for GLM). Command Code's own GLM-5.3-Flash price is unknown, so all four rows carry the price the removed Command Code DeepSeek rows had (input 3e-07, cache read 6e-09, output 1.2e-06 per token), 3-4x the Pareto GLM price: if the real price is lower the 10 USD/day max_budget trips early, never late. Replace the numbers when the Command Code price is known. The two free rows per group (laguna-s-2.1-free, ling-3.1-flash:free; the latter answered "The free Ling 3.1 Flash tier has been retired" 5 times in 48 h) leave with them. Probe 2026-10-15 on api.commandcode.ai/provider/v1: /models lists z-ai/glm-5.3-flash, a tiny chat call returned HTTP 200 with model z-ai/glm-5.3-flash, and a 19287-token prefix read 19264 cached tokens on calls 2 and 3. Worker-capable goes 43 to 41 rows and worker-cheap 15 to 13.
+# Straitly is back for free credit only (Nish 2026-10-15, explicit yes recorded at https://github.com/Nishfleet/fleet-ops/issues/9788, fleet-ops#9788): "turn it back on, lets use a cheap model to burn through it" (16:52:47 UTC) and "lets burn through it" (16:54:24 UTC). Two worker-public rows on deepseek/deepseek-v4-1-flash (api.straitly.ai/v1, STRAITLY_API_KEY), no top-up: the $20.00 balance is the whole budget, and each row carries max_budget 9.5 over 30d, so LiteLLM stops routing at 19 USD, before Straitly can answer 402 quota_exceeded (v1.98.0 neither retries nor cools a 402). Public repos only: agent.yml sends a Pi job to worker-public only when `gh api repos/$REPO --jq .private` is false, because code passes through a third party; every other job stays on worker-capable, and worker-public falls back to worker-capable (then worker-cheap) when its budget trips or a row fails. The rows come out when the credit is spent or on 2026-10-23, whichever is first. Prices from /v1/models 2026-10-15: input 3.82e-08, cache read 3.8e-09, output 1.529e-07 per token.
 # MiniMax M3.1-Flash-Preview free promo ended 2026-10-07 (free for every MiniMax Code subscriber through then, Nish 2026-09-30, #9008/#9009); the four rows below are tagged prepaid again (#9414). Nish 2026-10-09: he is on the flat MiniMax Yearly Plus plan (5-hour and weekly limits, no per-token bill), so the rows carry no dollar cap and no spend alert; the plan quota is the cap (see the comment above the rows).
-# Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. CommandCode: GLM-5.3-Flash (z-ai/glm-5.3-flash, Nish 2026-10-15, #9744). MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash.
+# Cline, OpenCode Go, Ollama: deepseek-v4.1-flash. CommandCode: GLM-5.3-Flash (z-ai/glm-5.3-flash, Nish 2026-10-15, #9744). MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash. Straitly: deepseek/deepseek-v4-1-flash (worker-public only).
 # Cline: stealth/space-bunny-alpha.
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
 # Cline stealth/union-alpha stopped being free 2026-09-30 (402 "Insufficient balance", 397 errors and 0 answers in 5 h). A 402 is neither retried nor cooled by LiteLLM v1.98.0 (no retry_policy key covers APIError; cooldown skips 4xx), so no setting below can move a job off such a row: its four rows are removed until Nish funds Cline credits. Cline's other rows stay. Any row that starts answering only 402 goes to Nish the same way (needs-nish-decision issue): it comes out only on his yes.
@@ -322,6 +323,59 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
+# Straitly (fleet-ops#9788): public-repo Pi jobs only, see the record at the top. Two rows on one key; each carries a
+# 9.5 USD max_budget over 30d (LiteLLM v1.98.0 registers a deployment budget only when budget_duration is set too, so 30d
+# is the lifetime cap: both rows together stop routing at 19 USD of the 20 USD balance). A 402 quota_exceeded is neither
+# retried nor cooled by v1.98.0, so these caps must trip first. The key also has a 6 USD/day cap at Straitly that LiteLLM
+# cannot mirror: a row takes one budget, and a provider budget would also cap every other openai/ row.
+- model_name: worker-public
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-1-flash
+    api_base: https://api.straitly.ai/v1
+    api_key: os.environ/STRAITLY_API_KEY
+    tags:
+    - straitly
+    - free-credit
+    order: 1
+    weight: 1
+    input_cost_per_token: 3.82e-08
+    cache_read_input_token_cost: 3.8e-09
+    output_cost_per_token: 1.529e-07
+    max_budget: 9.5
+    budget_duration: 30d
+    max_parallel_requests: 16
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.straitly.ai deepseek/deepseek-v4-1-flash, 6 calls on a 9040-token prefix, cached_tokens 0/0/0/0/0/8832 (fleet-ops#9788)."
+    id: straitly-ds41flasha-worker-public
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-public
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-1-flash
+    api_base: https://api.straitly.ai/v1
+    api_key: os.environ/STRAITLY_API_KEY
+    tags:
+    - straitly
+    - free-credit
+    order: 1
+    weight: 1
+    input_cost_per_token: 3.82e-08
+    cache_read_input_token_cost: 3.8e-09
+    output_cost_per_token: 1.529e-07
+    max_budget: 9.5
+    budget_duration: 30d
+    max_parallel_requests: 16
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.straitly.ai deepseek/deepseek-v4-1-flash, 6 calls on a 9040-token prefix, cached_tokens 0/0/0/0/0/8832 (fleet-ops#9788)."
+    id: straitly-ds41flashb-worker-public
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: senior
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -1499,6 +1553,7 @@ router_settings:
     - senior: [senior-backup]
     - worker-capable: [worker-cheap]
     - worker-cheap: [worker-capable]
+    - worker-public: [worker-capable]
   cooldown_time: 60
   allowed_fails: 1
   # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
