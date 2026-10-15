@@ -513,7 +513,7 @@ def test_every_router_key_has_an_environment_file_in_the_unit():
     config = (ROOT / "config/litellm-proxy.yaml").read_text()
     unit = UNIT.read_text()
     key_re = re.compile(r"^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$")
-    keys = set(re.findall(r"api_key:\s*os\.environ/([A-Z0-9_]+)", config))
+    keys = {r["api_key"].split("/", 1)[1] for r in _router_rows() if str(r.get("api_key", "")).startswith("os.environ/")}
     assert keys
     for var in sorted(keys):
         assert key_re.match(var), var
@@ -541,7 +541,7 @@ def test_the_catalog_holds_no_contributor_or_early_access_ids():
     catalog = json.loads((ROOT / "config/provider-catalog.json").read_text())
     for name, entry in catalog.items():
         for model in entry.get("models", []):
-            assert not re.search(ignore, model), f"{name}: {model}"
+            assert not re.search(ignore, model, re.I), f"{name}: {model}"
 
 
 def test_the_inline_script_passes_shellcheck():
@@ -552,12 +552,17 @@ def test_the_inline_script_passes_shellcheck():
     assert r.returncode == 0, r.stdout
 
 
+def _router_rows():
+    assert YQ, "yq must be on PATH to read the router config"
+    out = subprocess.run([YQ, "-o=json", ".model_list", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
+    return [row["litellm_params"] for row in json.loads(out)]
+
+
 def test_every_router_row_with_a_key_has_an_https_api_base():
-    config = (ROOT / "config/litellm-proxy.yaml").read_text()
-    rows = re.findall(r"api_base:\s*(\S+)\s*\n\s*api_key:\s*os\.environ/", config)
+    rows = [r for r in _router_rows() if r.get("api_key")]
     assert rows
-    for base in rows:
-        assert base.startswith("https://"), base
+    for row in rows:
+        assert str(row.get("api_base", "")).startswith("https://"), row.get("model")
 
 
 def test_a_listing_that_is_empty_after_the_filters_is_skipped(box):
@@ -598,3 +603,10 @@ def test_every_catalog_id_passes_the_id_check():
     for name, entry in catalog.items():
         for model in entry.get("models", []):
             assert ok.match(model) and "//" not in model and "www." not in model, f"{name}: {model}"
+
+
+def test_the_early_access_filter_ignores_case(box):
+    box.serve("alpha.test", ["a1", "a2", "Qwen/Qwen3.6-Max-Preview", "x/vision-EXP", "y/Model-Exp-1"])
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "provider-watch: alpha ok, 2 models" in r.stdout

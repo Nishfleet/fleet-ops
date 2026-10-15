@@ -890,7 +890,7 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   installation token that `fleet-grafana-github-token.service` mints, with an empty `GH_CONFIG_DIR`
   so the human gh login is never read.
 - fleet-ops is public, so ids that look contributor-only or early-access (`IGNORE` in the unit: contributor,
-  stealth, alpha, preview and a few codenames, by name only; Nish should confirm the rest) are dropped before the compare and never reach the snapshot or an issue.
+  stealth, alpha, preview, -exp and a few codenames, matched by name and case-insensitively; Nish should confirm the rest) are dropped before the compare and never reach the snapshot or an issue.
 - A seat key file missing on the host fails the unit with a plain line naming that provider
   while every other provider is still checked (`EnvironmentFile=-`), and CI fails if a router key has no line in the unit.
 - Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing

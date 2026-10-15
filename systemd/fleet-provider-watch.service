@@ -75,7 +75,7 @@ Environment=CATALOG=%h/workspaces/tooling/fleet-ops-deploy-clone/config/provider
 Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
 Environment=GH=%h/.local/bin/gh
 Environment=YQ=%h/.local/bin/yq
-Environment=IGNORE=contributor|stealth|alpha|preview|space-bunny|cat-jam|astra|argon|muse-wonder
+Environment=IGNORE=contributor|stealth|alpha|preview|space-bunny|cat-jam|astra|argon|muse-wonder|-exp(-|$)
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
@@ -113,11 +113,11 @@ case $$code in \
 *) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \
 esac; \
 if ! jq -e ".data | arrays | length > 0" "$$d/body" > /dev/null 2>&1; then echo "provider-watch: $$name listing unavailable (HTTP 200 without a model list), skipped; outages page through litellm_deployment_state"; continue; fi; \
-jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u | { grep -Ev -e "$$IGNORE" || true; } > "$$d/ids.all"; \
+jq -r ".data[].id | strings" "$$d/body" | LC_ALL=C sort -u | { grep -Evi -e "$$IGNORE" || true; } > "$$d/ids.all"; \
 w=$$(jq -r ".[env.NAME].watch // empty" "$$CATALOG"); \
 if [ -n "$$w" ]; then grep -E -e "$$w" "$$d/ids.all" > "$$d/ids" || true; else cp "$$d/ids.all" "$$d/ids"; fi; \
 jq -r ".[env.NAME].models // [] | .[]" "$$CATALOG" | LC_ALL=C sort -u > "$$d/snap"; \
-if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id is outside the allowed set (first offender, sanitized: $$(cat "$$d/ids" "$$d/snap" | grep -E -e "//|www[.]" -e "[^A-Za-z0-9._:/~-]" -e "^.{65,}$$" | head -n 1 | cut -c1-40 | sed "s|[^A-Za-z0-9_-]|?|g")), nothing filed"; bad=1; continue; fi; \
+if grep -Evq -e "$$re" "$$d/ids" "$$d/snap" || grep -Eq -e "//|www[.]" "$$d/ids" "$$d/snap"; then echo "provider-watch: $$name REFUSED, a model id is outside the allowed set (first offender, sanitized: $$(cat "$$d/ids" "$$d/snap" | grep -E -e "//|www[.]" -e "[^A-Za-z0-9._:/~-]" -e "^.{65,}$$" | head -n 1 | cut -c1-40 | sed "s|[^A-Za-z0-9_-]|?|g")), nothing filed; only a catalog, IGNORE or watch change clears it"; bad=1; continue; fi; \
 if [ ! -s "$$d/ids" ]; then echo "provider-watch: $$name listing unavailable (no ids left after the filters), skipped; outages page through litellm_deployment_state"; continue; fi; \
 comm -13 "$$d/snap" "$$d/ids" > "$$d/add"; comm -23 "$$d/snap" "$$d/ids" > "$$d/del"; \
 na=$$(wc -l < "$$d/add"); nr=$$(wc -l < "$$d/del"); cnt=$$(wc -l < "$$d/ids"); \
