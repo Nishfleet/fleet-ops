@@ -256,11 +256,11 @@ jobs:
         # touching a file.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py
-      - name: needs-triage admission (Jev verdict, then queue)
+      - name: needs-triage admission (Jev verdict, then queue) and digest reply shape (fleet-ops#9706)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
