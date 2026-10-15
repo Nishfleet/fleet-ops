@@ -75,14 +75,25 @@ gate. They do not end the same way, and the difference matters.
 The `digest-morning` and `digest-evening` jobs' prompt text lives in this repo:
 `config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
 live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
-files, never edited by hand:
+files by `ansible/host.yml`, never edited by hand:
 
 1. Edit the file under `config/hermes/` and land it through a PR (the shape
-   gate `tests/test_digest_reply_shape.py` runs in CI and fails a prompt that
-   drops the reply contract: at most 6 short plain lines, no internal names,
-   no questions).
-2. Apply it on the box with the stock command:
-   `hermes cron edit <job id> --prompt "$(cat config/hermes/digest-<which>.md)"`.
+   gate `tests/test_digest_reply_shape.py` and the check gate
+   `tests/test_digest_checks.py` run in CI; the first fails a prompt that drops
+   the reply contract, the second fails a prompt that reads the wrong feed or
+   uses a command the Hermes shell guard blocks).
+2. The deploy applies it: `fleet-host-config.service` (started on every push to
+   main) runs `ansible/host.yml`, whose task "Apply config/hermes/digest-*.md to
+   the live digest jobs" runs the stock `hermes cron edit <job id> --prompt`
+   only when the live prompt differs from the file. A run that leaves any live
+   prompt different from its file fails the task "Fail when a live digest prompt
+   differs from config/hermes/", so the daily run and `--check` report drift.
+
+The Hermes shell guard blocks a command that matches an `approvals.deny` glob
+(`*curl*|*sh*` matches any `curl`, then a pipe, then `sh` anywhere after it,
+and "Nishfleet" or "nish.sh" contain `sh`) and a command whose shell body its
+scanner cannot resolve: a bracket test `[ ... ]`, or `x=$(...)` inside a
+`for` or `while` loop. The prompt commands avoid both; keep them that way.
 
 To check the live copy still matches the canonical file, diff them:
 `diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
