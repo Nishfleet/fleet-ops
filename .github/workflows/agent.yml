@@ -671,20 +671,7 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            # Which PRs are risky is decided once, by the stock gate: the
-            # CLASSIFY program in agent-dispatch.yml's hold-risky job, read
-            # from config/risky-paths.json on main at run time. That job runs
-            # on pull_request_target for auto_merge_enabled, so arming a risky
-            # PR here is reversed there: it disarms, dequeues, labels
-            # needs-coordinator, and review-risky reviews and re-arms that exact
-            # head (Nish 2026-10-05). This step therefore needs no path list of
-            # its own. The hand-rolled safe/policy allowlist that used to live
-            # here (#8952) was a second, weaker copy of that gate hardcoded in
-            # this file: it missed a billing diff inside an allowlisted app path
-            # that the stock gate's path rules also miss, and the two disagreed
-            # (a 0509 config/foo.json was held here but not by hold-risky). One
-            # path list, one workflow decides it (fleet-ops#9695).
-            #
+            # Risk is decided once, by hold-risky's CLASSIFY over config/risky-paths.json on main (fleet-ops#9695, #8952, #9397): it runs on auto_merge_enabled, so a risky PR armed here is disarmed, dequeued, labelled needs-coordinator and reviewed by review-risky, which re-arms that exact head. This step keeps no path list of its own.
             # A head whose required checks are red is not armed, the same
             # test Deliverable fails on (fleet-ops#9315). The step disarms
             # an arm left by an earlier run, so a mid-rework push cannot
