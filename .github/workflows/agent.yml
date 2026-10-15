@@ -246,8 +246,7 @@ jobs:
           # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
           # fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while
           # fewer than 2 run (OpenCode's free tier answers only the opencode CLI,
-          # so the lane runs the stock CLI and nothing else calls it; LongCat-2.5
-          # Preview, free until ~2026-10-10, fleet-ops#8790, is gone), else Devin SWE-2 Max while
+          # fleet-ops#8790), else Devin SWE-2 Max while
           # fewer than 4 run ($0); when all three are full the issue
           # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
           # A lane's live count is the distinct worker directories (Devin,
