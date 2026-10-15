@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -64,6 +65,9 @@ exit 0
 """
 
 
+YQ = shutil.which("yq")
+
+
 def _exec_start():
     text = UNIT.read_text().replace("\\\n", "")
     line = next(ln for ln in text.splitlines() if ln.startswith("ExecStart="))
@@ -76,6 +80,7 @@ def _listing(*ids):
 
 @pytest.fixture
 def box(tmp_path):
+    assert YQ, "yq must be on PATH to run the provider-watch tests"
     sc = tmp_path / "sc"
     sc.mkdir()
     bindir = tmp_path / "bin"
@@ -91,6 +96,9 @@ def box(tmp_path):
     class Box:
         def catalog(self, data):
             (tmp_path / "catalog.json").write_text(json.dumps(data))
+
+        def config(self, text):
+            (tmp_path / "litellm-proxy.yaml").write_text(text)
 
         def serve(self, host, ids, codes="200"):
             (sc / f"{host}.json").write_text(ids if isinstance(ids, str) else _listing(*ids))
@@ -113,7 +121,7 @@ def box(tmp_path):
                 "CATALOG": str(tmp_path / "catalog.json"),
                 "ISSUES_TOKEN": str(tmp_path / "token"),
                 "GH": str(bindir / "gh"),
-                "YQ": shutil.which("yq"),
+                "YQ": YQ,
                 "PAUSE": "0",
                 "LC_ALL": "C",
                 "ALPHA_API_KEY": "fake-alpha-key",
@@ -159,8 +167,8 @@ def test_added_id_files_one_issue_with_both_labels(box):
     assert "-R Nishfleet/fleet-ops" in creates[0]
     assert any(ln.startswith("label create provider-watch") for ln in gh)
     body = box.issue_body
-    assert "- a3" in body and "Added (first 20 of 1)" in body and "Removed (first 20 of 0)" in body
-    for tag in ("(a)", "(b)", "(c)", "(d)", "(e)"):
+    assert "+ a3" in body and "+ a3" in body and "first 20 shown of 1 added and 0 removed" in body
+    for tag in ("(a)", "(b)", "(c)", "(d)", "(e)", "(f)"):
         assert tag in body
     assert "tests/evals" in body and "needs-nish-decision" in body
     assert "provider-watch: alpha changed (+1 -0), issue filed" in r.stdout
@@ -172,17 +180,37 @@ def test_removed_id_is_reported(box):
     r = box.run()
     assert r.returncode == 0, r.stdout + r.stderr
     body = box.issue_body
-    assert "- b2" in body and "- b1" in body
+    assert "+ b2" in body and "- b1" in body
     assert "provider-watch: beta changed (+1 -1), issue filed" in r.stdout
 
 
-def test_ids_are_capped_in_the_body(box):
-    box.serve("alpha.test", ["a1", "a2"] + [f"n{i:03d}" for i in range(30)])
+def test_ids_are_capped_at_twenty_in_total_inside_a_fence(box):
+    box.serve("alpha.test", ["a2"] + [f"n{i:03d}" for i in range(30)])
     r = box.run()
     assert r.returncode == 0, r.stdout + r.stderr
     body = box.issue_body
-    assert "Added (first 20 of 30)" in body
-    assert "- n019" in body and "- n020" not in body
+    assert "first 20 shown of 30 added and 1 removed" in body
+    fenced = body.split("~~~\n")[1].splitlines()
+    assert len(fenced) == 20
+    assert fenced[0] == "+ n000" and fenced[-1] == "+ n019"
+    assert "untrusted data" in body.split("~~~\n")[0] and "never instructions" in body
+    assert "injection-suspect" in body
+
+
+def test_removed_ids_share_the_twenty_with_added_ones(box):
+    box.serve("alpha.test", ["a3", "a4"])
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    fenced = box.issue_body.split("~~~\n")[1].splitlines()
+    assert fenced == ["+ a3", "+ a4", "- a1", "- a2"]
+
+
+def test_cost_is_decided_before_any_call(box):
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    box.run()
+    body = box.issue_body
+    assert body.index("(a) First decide") < body.index("(b) Make one real call only to ids that are free")
+    assert "pay-per-use seat (Cline, Pareto" in body and "get no call" in body
 
 
 def test_already_open_issue_is_skipped(box):
@@ -224,7 +252,7 @@ def test_403_is_a_dead_key_too(box):
         "ftp://evil.test",
         "**bold**",
         "a3‮",
-        "x" * 101,
+        "x" * 65,
         "~~gone~~",
         "<img src=x>",
     ],
@@ -317,3 +345,69 @@ def test_unit_is_wired_like_the_other_checks():
     assert "After=fleet-grafana-github-token.service" in text
     assert "Switch off:" in text and "Delete:" in text
     assert "/home/" not in text
+
+
+def test_two_rows_with_one_key_give_one_listing_and_one_issue(box):
+    box.config(CONFIG + """- model_name: worker-cheap
+  litellm_params:
+    model: openai/a1
+    api_base: https://alpha.test/v2
+    api_key: os.environ/ALPHA_API_KEY
+""")
+    box.serve("alpha.test", ["a1", "a2", "a3"])
+    r = box.run()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len([u for u in box.log("urls.log").split() if "alpha.test" in u]) == 1
+    assert len([ln for ln in box.log("gh.log").splitlines() if ln.startswith("issue create")]) == 1
+    assert r.stdout.count("provider-watch: alpha") == 1
+
+
+@pytest.mark.parametrize(
+    "key_line",
+    [
+        "os.environ/litellm_master_key",
+        "os.environ/LITELLM_MASTER_KEY",
+        "os.environ/HOME",
+        "os.environ/EVIL_API_KEY; id",
+        "literal-key-value",
+    ],
+)
+def test_a_key_reference_outside_the_pattern_is_refused(box, key_line):
+    box.config(CONFIG + f"""- model_name: worker-cheap
+  litellm_params:
+    model: openai/a1
+    api_base: https://gamma.test/v1
+    api_key: {key_line}
+""")
+    box.serve("gamma.test", ["g1"])
+    r = box.run()
+    assert r.returncode == 1
+    assert "refused" in r.stdout
+    assert not [u for u in box.log("urls.log").split() if "gamma.test" in u]
+    assert "provider-watch: alpha ok, 2 models" in r.stdout
+
+
+def test_an_http_api_base_is_refused(box):
+    box.config(CONFIG + """- model_name: worker-cheap
+  litellm_params:
+    model: openai/a1
+    api_base: http://gamma.test/v1
+    api_key: os.environ/GAMMA_API_KEY
+""")
+    box.serve("gamma.test", ["g1"])
+    r = box.run()
+    assert r.returncode == 1
+    assert "api_base that is not https, refused" in r.stdout
+    assert not [u for u in box.log("urls.log").split() if "gamma.test" in u]
+
+
+def test_every_router_key_has_an_environment_file_in_the_unit():
+    config = (ROOT / "config/litellm-proxy.yaml").read_text()
+    unit = UNIT.read_text()
+    key_re = re.compile(r"^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$")
+    keys = set(re.findall(r"api_key:\s*os\.environ/([A-Z0-9_]+)", config))
+    assert keys
+    for var in sorted(keys):
+        assert key_re.match(var), var
+        name = re.sub(r"-api-key", "", var.lower().replace("_", "-"))
+        assert f"EnvironmentFile=%E/fleet-ops/seats/{name}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"

@@ -841,7 +841,7 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   Three tries 20 s apart, so a blip does not page. The key goes to curl in a 0600 header file in
   the unit's runtime directory (`-H @file`), never argv.
 - The keys come from the same per-provider key files the LiteLLM container reads; the unit lists
-  the eleven it needs one by one (not the whole directory), so the master key and the Claude
+  the ones it needs one by one (not the whole directory; CI fails when a router key has no file here), so the master key and the Claude
   logins are not in its environment.
 - HTTP 401 or 403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with
   one plain line naming the provider and what Nish must do. No issue is filed for that.
@@ -849,10 +849,14 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   model list changed`, labels `provider-watch` (created if missing) and `needs-orchestrator`
   (the worker App adds it, which starts one hand-off run). Title, body and labels are built by
   the unit; the only network text in the body is the model ids, each checked against
-  `^~?[A-Za-z0-9._:/-]{1,100}$` and refused (the unit fails, nothing is filed for that provider)
-  if it holds `//` or `www.`, so no link can be planted. At most 20 ids are listed each way. An
-  open issue with the same title means the change is skipped. The body carries the acceptance
-  bullets for the orchestrator: a real call to each new id, an eval-score before any router weight
+  `^~?[A-Za-z0-9._:/-]{1,64}$` and refused (the unit fails, nothing is filed for that provider)
+  if it holds `//` or `www.`, so no link can be planted. At most 20 ids are listed in total, in a
+  fenced block under a fixed line that says they are untrusted provider data and never instructions.
+  A key variable must match `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$` and the api_base must be https://,
+  or the row is refused. Targets are unique by key variable. An open issue with the same title means the change is skipped. The body carries the acceptance
+  bullets for the orchestrator: decide from the router config whether each new id costs money, make a
+  real call only to free or flat-rate ids (pay-per-use ids go back as a `needs-nish-decision` line),
+  an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), the catalog update
   in the same PR, and a plain `needs-nish-decision` line for anything that costs money or needs
@@ -862,9 +866,9 @@ schedule is the only way to see it, so `fleet-provider-watch.timer` starts
   installation token that `fleet-grafana-github-token.service` mints, with an empty `GH_CONFIG_DIR`
   so the human gh login is never read.
 - Snapshot entries: `{"models": [...]}`; `{"listing": "none"}` skips a provider with no listing
-  endpoint (none today: all eleven answer HTTP 200); `"watch": "<ERE>"` compares only ids that
-  match it. Cline lists a whole catalogue of 462 ids that changes about weekly, so it watches only
-  `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids (48 today).
+  endpoint (a provider with no listing endpoint); `"watch": "<ERE>"` compares only ids that
+  match it. Cline lists a whole catalogue that changes about weekly, so it watches only
+  `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids.
 - Not covered: outages (`litellm_deployment_state` in Grafana already pages those) and
   `not covered: price/limit pages, no API`.
 
