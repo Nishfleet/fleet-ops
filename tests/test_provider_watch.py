@@ -219,7 +219,7 @@ def test_listing_urls_follow_the_api_base(box):
     assert "https://beta.test/anthropic/v1/models" in urls
 
 
-def test_added_id_writes_the_changes_file_and_files_one_issue_with_no_id(box):
+def test_added_id_writes_the_changes_file_and_files_one_labelled_issue_with_no_id(box):
     box.serve("alpha.test", ["a1", "a2", "a3"])
     r = box.run()
     assert r.returncode == 0, r.stdout + r.stderr
@@ -227,8 +227,7 @@ def test_added_id_writes_the_changes_file_and_files_one_issue_with_no_id(box):
     creates = [ln for ln in gh if ln.startswith("issue create")]
     assert len(creates) == 1
     assert "--title Provider watch: alpha model list changed" in creates[0]
-    assert "--label provider-watch --body-file" in creates[0]
-    assert "needs-orchestrator" not in creates[0]
+    assert "--label provider-watch --label needs-orchestrator --body-file" in creates[0]
     assert "-R Nishfleet/fleet-ops" in creates[0]
     assert any(ln.startswith("label create provider-watch") for ln in gh)
     body = box.issue_body
@@ -237,6 +236,7 @@ def test_added_id_writes_the_changes_file_and_files_one_issue_with_no_id(box):
     for tag in ("(a)", "(b)", "(c)", "(d)"):
         assert tag in body
     assert "tests/evals" in body and "needs-nish-decision" in body
+    assert "The hand-off runs on that host as the runner user and reads the file there." in body
     for model in ("a1", "a2", "a3", "b1"):
         assert not re.search(rf"(?<![A-Za-z0-9]){model}(?![A-Za-z0-9])", body)
     (name, text), = box.changes().items()

@@ -18,8 +18,10 @@ Description=Daily check of each router provider's model list against the host sn
 #   plain line naming the provider and what Nish must do. No issue is filed for that.
 # - An added or removed id: the ids go to changes/<UTC date>-<provider>.txt in the state
 #   directory, then ONE issue per changed provider is filed on Nishfleet/fleet-ops with the
-#   label provider-watch only (fleet-ops#8304: control-plane work is never self-admitted, so
-#   the issue waits for a scoped hand-off). Title, body and label are fixed text: the title
+#   labels provider-watch and needs-orchestrator (fleet-ops#8304 says control-plane work is
+#   never self-admitted; the vault standing rule makes this one exception, Nish 2026-10-15,
+#   nish3451/nish-vault#23, and the worker App adds the label so agent-dispatch.yml starts
+#   one hand-off run, which reads the changes file on this host). Title, body and labels are fixed text: the title
 #   is "Provider watch: <provider> model list changed", the body holds the added and removed
 #   counts, the path of the changes file and the acceptance bullets. No text from the
 #   network reaches the issue. The snapshot is updated once the issue is filed (or an issue
@@ -129,12 +131,12 @@ day=$$(date -u +%%F); ch="changes/$$day-$$name.txt"; \
 t="Provider watch: $$name model list changed"; \
 { \
 echo "The $$name model list changed: $$na added, $$nr removed."; echo; \
-echo "The ids are in the host state file $$ch under the StateDirectory of fleet-provider-watch.service."; echo; \
+echo "The ids are in the host state file $$ch under the StateDirectory of fleet-provider-watch.service. The hand-off runs on that host as the runner user and reads the file there."; echo; \
 echo "Acceptance, for whoever takes this issue in a scoped hand-off:"; \
 if [ "$$(jq -r ".[env.NAME].billing // empty" "$$WATCH_CONFIG")" = flat ]; then echo "- (a) The $$name seat is flat-rate (a plan; billing recorded in config/provider-watch.json). Make one real call, through its own provider, only to an added id that is free or inside that plan, and if you are unsure treat it as paid. Record the HTTP status and the reply model. Any other id gets no call: send it back as one line with the needs-nish-decision label."; \
 else echo "- (a) The $$name seat is pay-per-use or its billing is not recorded in config/provider-watch.json. Make NO call to any id here: send them back as one line with the needs-nish-decision label."; fi; \
 echo "- (b) If a call worked, eval-score the model before it gets any router weight, with the repo eval mechanism: tests/evals (AGENTS.md AI-decision rule: held-out cases, scored by a model family other than the builder, no new script)."; \
-echo "- (c) Open a router PR only inside the standing rules in the config/litellm-proxy.yaml header: no new spend, stay at 3 to 5 providers, removing any router row needs a yes from Nish, and a model that scores lower than the one it replaces gets no extra weight. Never write a model id into an issue, a PR or a commit of a public repo."; \
+echo "- (c) Open a router PR only inside the standing rules in the config/litellm-proxy.yaml header: no new spend, stay at 3 to 5 providers, removing any router row needs a yes from Nish, and a model that scores lower than the one it replaces gets no extra weight. Keep ids out of issue text, PR text, comments and commit messages of this public repo; an id appears only in the router row you add to config/litellm-proxy.yaml."; \
 echo "- (d) Anything that costs money or needs a login from Nish goes back as one plain line with the needs-nish-decision label and no router PR. A removed id that a router row still serves is the same: open it with the evidence and do not remove the row."; \
 } > "$$d/body.md"; \
 if [ "$$ready" -eq 0 ]; then \
@@ -148,7 +150,7 @@ fi; \
 upd() { jq -s ".[0] + {(env.NAME): .[1]}" "$$snap" <(jq -Rn "[inputs]" < "$$d/ids") > "$$d/snap.new" && mv "$$d/snap.new" "$$snap"; }; \
 if grep -Fxq -- "$$t" "$$d/known"; then upd; echo "provider-watch: $$name changed (+$$na -$$nr), issue already open or recent, skipped; ids in $$ch"; continue; fi; \
 if [ "$$filed" -ge 3 ]; then echo "provider-watch: $$name changed (+$$na -$$nr), left for the next run (3 issues filed this run); ids in $$ch"; continue; fi; \
-"$$GH" issue create -R Nishfleet/fleet-ops --title "$$t" --label provider-watch --body-file "$$d/body.md" < /dev/null || { echo "provider-watch: $$name changed (+$$na -$$nr) but filing the issue failed"; bad=1; continue; }; \
+"$$GH" issue create -R Nishfleet/fleet-ops --title "$$t" --label provider-watch --label needs-orchestrator --body-file "$$d/body.md" < /dev/null || { echo "provider-watch: $$name changed (+$$na -$$nr) but filing the issue failed"; bad=1; continue; }; \
 upd; filed=$$((filed+1)); echo "$$t" >> "$$d/known"; echo "provider-watch: $$name changed (+$$na -$$nr), issue filed; ids in $$ch"; \
 done < "$$d/targets"; \
 [ "$$bad" -eq 0 ]'
