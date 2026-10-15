@@ -1,0 +1,346 @@
+# Monthly restore drill for every product database (fleet-ops#9769, audit items
+# 19 and 20). 0509 is the only product that has ever rehearsed a database
+# restore; this workflow rehearses the rest, so a backup that cannot be restored
+# is found by a drill and not by an outage.
+#
+# Per database: export the live database through the stock D1 export API, create
+# a scratch D1 database, import the export into it, count the rows of every table
+# in both, and record the two counts side by side. A failed export, a failed
+# import or a mismatched count fails the run and opens an issue.
+#
+# It never writes to live data: the export and the row counts are reads, and the
+# import lands in a scratch database the run deletes. A scratch database left by
+# a killed run is swept at the start of the next one, so they cannot accumulate.
+#
+# Credential: the repo secret CLOUDFLARE_API_TOKEN when one is set (the per-repo
+# token model in infra/cloudflare-tokens), else the host file
+# ~/.config/cloudflare/deploy-ci.env, which AGENTS.md names for D1 drills. The
+# job runs on the fleet's own runner, so either one is in reach.
+#
+# mailbox (0509-support-inbox) has no D1 database: its wrangler.jsonc binds R2
+# and Durable Objects only. The summary says so. 0509 and drive are not in the
+# list: 0509 uses Time Travel, and drive has its own weekly export
+# (.github/workflows/d1-export.yml).
+name: D1 restore drill
+
+on:
+  schedule:
+    # 04:17 UTC on the first of the month. An odd minute, so it does not start
+    # with the fleet's other scheduled work.
+    - cron: "17 4 1 * *"
+  workflow_dispatch: {}
+  push:
+    # A change to this file rehearses the drill, so a drill that cannot run is
+    # found before it is merged. Only a writer can push, so this never runs a
+    # stranger's code on the fleet's runner.
+    paths:
+      - .github/workflows/d1-drill.yml
+
+concurrency:
+  # A drill never kills a drill.
+  group: d1-drill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Opening the issue a failed drill reports itself in.
+  issues: write
+
+jobs:
+  drill:
+    name: drill
+    runs-on: [self-hosted, fleet-ci]
+    timeout-minutes: 30
+    steps:
+      - name: Restore every product database into a scratch database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          account="${CLOUDFLARE_ACCOUNT_ID:-f670a698e17bf160c8e4679823e68916}"
+          api_url="https://api.cloudflare.com/client/v4/accounts/$account"
+          work="${RUNNER_TEMP:-/tmp}/d1-drill"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -p "$work"
+
+          # The token goes into a 0600 config file, never into curl's argv:
+          # /proc/<pid>/cmdline is world-readable for the life of a call
+          # (fleet-ops#8403).
+          headers="$work/curl.conf"
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+          (umask 077 && cat > "$headers" <<EOF
+          header = "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+          EOF
+          )
+          else
+            host_file="$HOME/.config/cloudflare/deploy-ci.env"
+            if [ ! -s "$host_file" ]; then
+              echo "::error::no CLOUDFLARE_API_TOKEN secret and no $host_file on this runner"
+              exit 1
+            fi
+            (umask 077 && sed -n 's|^CLOUDFLARE_API_TOKEN=\(.*\)|header = "Authorization: Bearer \1"|p' "$host_file" > "$headers")
+          fi
+
+          api() { curl -sS --max-time 300 --config "$headers" "$@"; }
+
+          create_scratch() {
+            local resp
+            resp="$(api -H 'content-type: application/json' -d "$(jq -nc --arg n "$1" '{name:$n}')" "$api_url/d1/database")"
+            if [ "$(jq -r '.success' <<< "$resp")" != "true" ]; then
+              echo "create failed: $(jq -r '.errors[0].message // "unknown error"' <<< "$resp")" >&2
+              return 1
+            fi
+            jq -r '.result.uuid' <<< "$resp"
+          }
+
+          delete_db() {
+            local code
+            code="$(api -o /dev/null -w '%{http_code}' -X DELETE "$api_url/d1/database/$1" || true)"
+            if [ "$code" != "200" ]; then
+              echo "::warning::could not delete scratch database $1 (HTTP $code)"
+            fi
+            return 0
+          }
+
+          export_dump() {
+            local db="$1" out="$2" attempt bookmark="" state="" url="" resp
+            for attempt in $(seq 1 30); do
+              if [ -n "$bookmark" ]; then
+                resp="$(api -H 'content-type: application/json' -d "$(jq -nc --arg b "$bookmark" '{output_format:"polling", current_bookmark:$b}')" "$api_url/d1/database/$db/export")"
+              else
+                resp="$(api -H 'content-type: application/json' -d '{"output_format":"polling"}' "$api_url/d1/database/$db/export")"
+              fi
+              state="$(jq -r '
+                if .success != true then "error " + (.errors[0].message // "not successful")
+                elif .result.status == "error" then "error " + (.result.error // "export failed")
+                elif .result.status == "complete" then "done " + (.result.result.signed_url // "")
+                else "wait " + (.result.at_bookmark // "") end' <<< "$resp")"
+              case "$state" in
+                "done "*) url="${state#done }"; break ;;
+                "wait "*) bookmark="${state#wait }" ;;
+                "error "*) echo "export: ${state#error }" >&2; return 1 ;;
+                *) echo "export: unreadable answer: $resp" >&2; return 1 ;;
+              esac
+              if [ -z "$bookmark" ]; then
+                echo "export: no bookmark after poll $attempt" >&2
+                return 1
+              fi
+              sleep 10
+            done
+            if [ -z "$url" ]; then
+              echo "export: no download URL after 30 polls" >&2
+              return 1
+            fi
+            curl -sS --fail --max-time 600 --retry 3 --retry-all-errors -o "$out" "$url"
+          }
+
+          import_dump() {
+            local db="$1" dump="$2" etag resp upload filename bookmark="" status="" attempt
+            # The etag is the bare md5 hex: an "md5=" prefix makes the ingest
+            # step answer "Input file ... missing or invalid".
+            etag="$(md5sum "$dump" | cut -d' ' -f1)"
+            resp="$(api -H 'content-type: application/json' -d "$(jq -nc --arg e "$etag" '{action:"init", etag:$e}')" "$api_url/d1/database/$db/import")"
+            upload="$(jq -r '.result.upload_url // empty' <<< "$resp")"
+            filename="$(jq -r '.result.filename // empty' <<< "$resp")"
+            if [ -z "$upload" ] || [ -z "$filename" ]; then
+              echo "import: no upload URL: $resp" >&2
+              return 1
+            fi
+            curl -sS --fail --max-time 600 --retry 3 --retry-all-errors -X PUT \
+              --data-binary "@$dump" -H 'content-type: application/octet-stream' \
+              -o /dev/null "$upload"
+            resp="$(api -H 'content-type: application/json' -d "$(jq -nc --arg e "$etag" --arg f "$filename" '{action:"ingest", etag:$e, filename:$f}')" "$api_url/d1/database/$db/import")"
+            status="$(jq -r '.result.status // empty' <<< "$resp")"
+            if [ "$status" = "complete" ]; then
+              jq -r '.result.result.num_queries // 0' <<< "$resp"
+              return 0
+            fi
+            if [ "$status" = "error" ]; then
+              echo "import: $(jq -r '.result.error // "ingest failed"' <<< "$resp")" >&2
+              return 1
+            fi
+            bookmark="$(jq -r '.result.at_bookmark // empty' <<< "$resp")"
+            for attempt in $(seq 1 30); do
+              if [ -z "$bookmark" ]; then
+                break
+              fi
+              sleep 10
+              resp="$(api -H 'content-type: application/json' -d "$(jq -nc --arg b "$bookmark" '{action:"poll", current_bookmark:$b}')" "$api_url/d1/database/$db/import")"
+              status="$(jq -r '.result.status // empty' <<< "$resp")"
+              case "$status" in
+                complete) jq -r '.result.result.num_queries // 0' <<< "$resp"; return 0 ;;
+                error) echo "import: $(jq -r '.result.error // "import failed"' <<< "$resp")" >&2; return 1 ;;
+              esac
+              bookmark="$(jq -r '.result.at_bookmark // empty' <<< "$resp")"
+            done
+            echo "import: still running after 30 polls" >&2
+            return 1
+          }
+
+          query() {
+            api -H 'content-type: application/json' -d "$(jq -nc --arg s "$2" '{sql:$s}')" "$api_url/d1/database/$1/query"
+          }
+
+          tables_of() {
+            query "$1" "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> '_cf_KV' ORDER BY name" |
+              jq -r 'if ([.result[]?.success] | all) then (.result[]?.results[]?.name) else empty end'
+          }
+
+          # One statement per table: SQLite refuses a compound SELECT with six
+          # or more terms, so a UNION ALL over a wide schema fails.
+          row_counts() {
+            local db="$1" sql="" t="" resp
+            while IFS= read -r t; do
+              sql="${sql}SELECT '$t' AS tbl, COUNT(*) AS n FROM \"$t\";"
+            done < <(tables_of "$db")
+            if [ -z "$sql" ]; then
+              echo "row counts: no tables found" >&2
+              return 1
+            fi
+            resp="$(query "$db" "$sql")"
+            if [ "$(jq -r '[.result[]?.success] | all' <<< "$resp")" != "true" ]; then
+              echo "row counts: $(jq -r '[.result[]? | select(.success != true) | (.results[]?.error // "failed")] | join("; ")' <<< "$resp")" >&2
+              return 1
+            fi
+            jq -r '.result[]?.results[]? | "\(.tbl)\t\(.n)"' <<< "$resp"
+          }
+
+          summary="$work/summary.md"
+          failures="$work/failures.md"
+          scratch_ids="$work/scratch.txt"
+          : > "$scratch_ids"
+
+          # A run that is killed cannot delete its own scratch database. Delete
+          # any scratch database older than six hours (no run is that long)
+          # before starting, so they cannot accumulate.
+          sweep_stale_scratch() {
+            local uuid="" name="" created="" age="" now=""
+            now="$(date -u +%s)"
+            while IFS=$'\t' read -r uuid name created; do
+              [ -n "$uuid" ] || continue
+              age=$(( now - $(date -u -d "$created" +%s) ))
+              if [ "$age" -gt 21600 ]; then
+                echo "sweep: deleting scratch database $name ($uuid), ${age}s old"
+                delete_db "$uuid"
+              fi
+            done < <(api "$api_url/d1/database" | jq -r '.result[]? | select(.name | startswith("d1-drill-")) | "\(.uuid)\t\(.name)\t\(.created_at)"')
+          }
+
+          cleanup() {
+            local id=""
+            while IFS= read -r id; do
+              [ -n "$id" ] && delete_db "$id"
+            done < "$scratch_ids"
+            rm -f "$headers"
+          }
+
+          trap cleanup EXIT
+
+          sweep_stale_scratch
+
+          {
+            echo "D1 restore drill, ${stamp} UTC."
+            echo
+            echo "| database | product | dump bytes | tables | rows live | rows restored | import queries | seconds | result |"
+            echo "|---|---|---|---|---|---|---|---|---|"
+          } > "$summary"
+
+          failed=0
+          while IFS=: read -r product name uuid; do
+            [ -n "${uuid:-}" ] || continue
+            started="$(date -u +%s)"
+            dump="$work/$name.sql"
+            bytes=0 tables=0 live_rows=0 scratch_rows=0 queries=0
+            result="ok"
+            detail=""
+            if ! export_dump "$uuid" "$dump"; then
+              result="export failed"
+              detail="the export did not finish"
+            else
+              bytes="$(wc -c < "$dump")"
+              if ! scratch_uuid="$(create_scratch "d1-drill-$stamp-$name")"; then
+                result="create failed"
+                detail="the scratch database was not created"
+              else
+                echo "$scratch_uuid" >> "$scratch_ids"
+                if ! queries="$(import_dump "$scratch_uuid" "$dump")"; then
+                  result="import failed"
+                  detail="the export did not import into the scratch database"
+                elif ! live_counts="$(row_counts "$uuid")"; then
+                  result="count failed"
+                  detail="row counts failed on the live database"
+                elif ! scratch_counts="$(row_counts "$scratch_uuid")"; then
+                  result="count failed"
+                  detail="row counts failed on the restored database"
+                else
+                  tables="$(wc -l <<< "$live_counts")"
+                  live_rows="$(awk -F'\t' '{s+=$2} END {print s+0}' <<< "$live_counts")"
+                  scratch_rows="$(awk -F'\t' '{s+=$2} END {print s+0}' <<< "$scratch_counts")"
+                  if [ "$live_counts" != "$scratch_counts" ]; then
+                    result="mismatch"
+                    detail="the restored row counts differ from live"
+                    diff -u <(echo "$live_counts") <(echo "$scratch_counts") >> "$failures" || true
+                  fi
+                fi
+              fi
+            fi
+            seconds=$(( $(date -u +%s) - started ))
+            echo "| $name | $product | $bytes | $tables | $live_rows | $scratch_rows | $queries | $seconds | $result |" >> "$summary"
+            echo "$name: $result (${seconds}s)"
+            if [ "$result" != "ok" ]; then
+              failed=$((failed + 1))
+              echo "- **$name** ($product): $detail" >> "$failures"
+            fi
+          done <<'DBS'
+          seo-fix-kit:seofixkit_waitlist:887316c4-ca9d-4068-a7fa-1f530b479437
+          siterep:siterep_payments:ec176fc4-b4f2-44c0-a925-b36ec067cff5
+          aiconverter:aiconverter:376080eb-60f1-4bb8-aabb-06622acabb63
+          tinystudio:tinystudio_email_signups:ff360a55-14fc-468c-895f-893c89e0db79
+          DBS
+
+          echo >> "$summary"
+          echo "mailbox (0509-support-inbox) has no D1 database (R2 and Durable Objects only), so it has nothing to restore." >> "$summary"
+
+          if [ "$failed" -gt 0 ]; then
+            {
+              echo "The D1 restore drill failed: $failed of 4 databases did not restore."
+              echo
+              cat "$failures"
+            } > "$work/failures.md.tmp"
+            mv "$work/failures.md.tmp" "$failures"
+          fi
+
+          cat "$summary"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$failed" -gt 0 ]; then
+              cat "$failures" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$failed of 4 restore drills failed."
+            exit 1
+          fi
+          echo "all restore drills passed"
+
+      - name: Open an issue when a drill failed
+        if: failure() && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP:-/tmp}/d1-drill"
+          body="$work/issue.md"
+          {
+            echo "The monthly D1 restore drill failed. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            if [ -f "$work/failures.md" ]; then cat "$work/failures.md"; fi
+            if [ -f "$work/summary.md" ]; then cat "$work/summary.md"; fi
+          } > "$body"
+          existing="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search 'D1 restore drill failed in:title' --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body-file "$body"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "D1 restore drill failed ($(date -u +%Y-%m-%d))" --body-file "$body"
+          fi
