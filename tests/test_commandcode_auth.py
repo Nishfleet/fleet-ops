@@ -23,7 +23,8 @@ HOST = ROOT / "ansible/host.yml"
 FAKE = "user_fake0123456789abcdef"
 SEAT_NAME = "Give the Command Code seat the COMMAND_CODE_API_KEY name that cmd reads"
 SHELL_NAME = "Export COMMAND_CODE_API_KEY from the seat in nish's zsh and bash startup files"
-NAMES = ["Read the Command Code seat", SEAT_NAME, SHELL_NAME]
+DROP_NAME = "Drop the COMMAND_CODE_API_KEY line when the seat no longer has COMMANDCODE_API_KEY"
+NAMES = ["Read the Command Code seat", SEAT_NAME, DROP_NAME, SHELL_NAME]
 MARK_BEGIN = "# BEGIN fleet-ops: COMMAND_CODE_API_KEY for cmd, read from the seat"
 MARK_END = "# END fleet-ops: COMMAND_CODE_API_KEY for cmd, read from the seat"
 BASHRC = "# ~/.bashrc: executed by bash(1) for non-login shells.\ncase $- in\n    *i*) ;;\n      *) return;;\nesac\nexport INTERACTIVE_ONLY=1\n"
@@ -105,7 +106,7 @@ def test_tasks_run_as_nish_with_stock_modules_and_hide_the_key():
         assert task.get("become") is True and task.get("become_user") == "nish", name
         assert "owner" not in json.dumps(task) and "group" not in json.dumps(task), name
         assert [k for k in task if "." in k][0].startswith("ansible.builtin."), name
-    assert TASKS[NAMES[0]]["no_log"] is True and TASKS[NAMES[1]]["no_log"] is True
+    assert all(TASKS[n]["no_log"] is True for n in NAMES[:3])
     assert "ignore_errors" not in json.dumps([TASKS[n] for n in NAMES])
     names = [t["name"] for t in PLAY["tasks"]]
     assert [n for n in names if n in NAMES] == NAMES
@@ -119,7 +120,7 @@ def test_seat_gets_the_cli_name_once_with_the_same_value(tmp_path, line):
     _run(tmp_path)
     lines = seat.read_text().splitlines()
     assert lines.count(f"COMMAND_CODE_API_KEY={FAKE}") == 1
-    assert sum(1 for x in lines if x.lstrip("export ").startswith("COMMAND_CODE_API_KEY=")) == 1
+    assert sum(1 for x in lines if x.removeprefix("export ").startswith("COMMAND_CODE_API_KEY=")) == 1
     assert line in lines and "OTHER=1" in lines
 
 
@@ -150,9 +151,19 @@ def test_missing_seat_or_source_var_skips_cleanly(tmp_path):
     seat = _seat(tmp_path, "OTHER=1\nCOMMANDCODE_API_KEY=\n")
     _run(tmp_path)
     assert seat.read_text() == "OTHER=1\nCOMMANDCODE_API_KEY=\n"
-    only_cli = _seat(tmp_path, f"COMMAND_CODE_API_KEY={FAKE}\n")
+
+
+def test_revoking_the_source_var_drops_the_derived_line(tmp_path):
+    seat = _seat(tmp_path, f"OTHER=1\nCOMMANDCODE_API_KEY={FAKE}\n")
     _run(tmp_path)
-    assert only_cli.read_text() == f"COMMAND_CODE_API_KEY={FAKE}\n"
+    assert f"COMMAND_CODE_API_KEY={FAKE}" in seat.read_text()
+    seat.write_text(f"OTHER=1\nCOMMANDCODE_API_KEY=\nCOMMAND_CODE_API_KEY={FAKE}\n")
+    _run(tmp_path)
+    assert seat.read_text() == "OTHER=1\nCOMMANDCODE_API_KEY=\n"
+    seat.write_text(f"OTHER=1\nCOMMAND_CODE_API_KEY={FAKE}\n")
+    out = _run(tmp_path)
+    assert seat.read_text() == "OTHER=1\n" and FAKE not in out
+    assert "changed=0" in _run(tmp_path)
 
 
 def test_key_never_reaches_ansible_output(tmp_path):
@@ -164,6 +175,7 @@ def test_key_never_reaches_ansible_output(tmp_path):
 
 def test_startup_block_is_in_both_files_once_and_idempotent(tmp_path):
     (tmp_path / ".bashrc").write_text(BASHRC)
+    (tmp_path / ".bashrc").chmod(0o600)
     _run(tmp_path)
     zsh_text = (tmp_path / ".zshenv").read_text()
     bash_text = (tmp_path / ".bashrc").read_text()
@@ -173,22 +185,25 @@ def test_startup_block_is_in_both_files_once_and_idempotent(tmp_path):
     out = _run(tmp_path)
     assert (tmp_path / ".zshenv").read_text() == zsh_text and (tmp_path / ".bashrc").read_text() == bash_text
     assert "changed=0" in out
-    assert _mode(tmp_path / ".zshenv") == 0o644
+    assert _mode(tmp_path / ".bashrc") == 0o600
 
 
 def test_startup_block_exports_only_the_one_variable_and_never_prints_the_key():
     block = PLAY["vars"]["commandcode_shell_block"]
-    assert block.count("export ") == 1 and "export COMMAND_CODE_API_KEY=" in block
+    assert block.count(" export ") == 1 and " export COMMAND_CODE_API_KEY=" in block
     assert "echo" not in block and "printf" not in block and "set -x" not in block
+    assert "sed" not in block and "tail" not in block and "tr " not in block
     assert "COMMANDCODE_API_KEY" not in block
 
 
-@pytest.mark.parametrize("quoted", ["{k}", '"{k}"', "'{k}'"])
+@pytest.mark.parametrize("quoted", ["{k}", '"{k}"', "'{k}'", "{k}\n#", "export COMMAND_CODE_API_KEY={k}"])
 def test_sourcing_the_block_yields_the_value_and_prints_nothing(tmp_path, quoted):
     _seat(tmp_path, f"OTHER=secret_other\nCOMMANDCODE_API_KEY={FAKE}\n")
     _run(tmp_path)
     seat = _seat_path(tmp_path)
-    seat.write_text(f"OTHER=secret_other\nCOMMANDCODE_API_KEY={FAKE}\nCOMMAND_CODE_API_KEY={quoted.format(k=FAKE)}\n")
+    line = quoted.format(k=FAKE)
+    line = line if line.startswith("export ") else "COMMAND_CODE_API_KEY=" + line
+    seat.write_text(f"OTHER=secret_other\nCOMMANDCODE_API_KEY={FAKE}\n{line}")
     env_dump = "env | cut -d= -f1 | sort"
     for argv in (["zsh", "-f", "-c"], ["sh", "-c"], ["bash", "-c"]):
         before = _start(tmp_path, argv, env_dump).stdout.split()
@@ -211,8 +226,8 @@ def test_startup_files_load_the_key_in_the_shells_agents_use(tmp_path):
     assert zsh.stdout == FAKE and zsh.stderr == ""
     bash = _start(tmp_path, ["bash", "-c"], f'. "$HOME/.bashrc"; {probe}; printf " %s" "$INTERACTIVE_ONLY"')
     assert bash.stdout == FAKE + " " and bash.stderr == ""
-    login = _start(tmp_path, ["bash", "-c"], f". \"$HOME/.bashrc\"; env | grep -c '^COMMAND_CODE_API_KEY='")
-    assert login.stdout.strip() == "1"
+    exported = _start(tmp_path, ["bash", "-c"], f". \"$HOME/.bashrc\"; env | grep -c '^COMMAND_CODE_API_KEY='")
+    assert exported.stdout.strip() == "1"
 
 
 def test_absent_seat_or_key_exports_nothing_and_does_not_error(tmp_path):

@@ -97,9 +97,17 @@
       - "{{ nish_home }}/.bashrc"
     commandcode_shell_block: |
       if [ -r "$HOME/.config/fleet-ops/seats/commandcode.env" ]; then
-        _fleet_ops_cc_key="$(sed -n 's/^COMMAND_CODE_API_KEY=//p' "$HOME/.config/fleet-ops/seats/commandcode.env" 2>/dev/null | tail -n 1 | tr -d "\"'")"
+        _fleet_ops_cc_key=
+        while IFS= read -r _fleet_ops_cc_line || [ -n "$_fleet_ops_cc_line" ]; do
+          case "$_fleet_ops_cc_line" in
+            COMMAND_CODE_API_KEY=*|"export COMMAND_CODE_API_KEY="*) _fleet_ops_cc_key="${_fleet_ops_cc_line#*=}" ;;
+          esac
+        done < "$HOME/.config/fleet-ops/seats/commandcode.env"
+        case "$_fleet_ops_cc_key" in
+          \"?*\"|\'?*\') _fleet_ops_cc_key="${_fleet_ops_cc_key#?}"; _fleet_ops_cc_key="${_fleet_ops_cc_key%?}" ;;
+        esac
         if [ -n "$_fleet_ops_cc_key" ]; then export COMMAND_CODE_API_KEY="$_fleet_ops_cc_key"; fi
-        unset _fleet_ops_cc_key
+        unset _fleet_ops_cc_key _fleet_ops_cc_line
       fi
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -755,13 +763,23 @@
       no_log: true
       diff: false
 
+    - name: Drop the COMMAND_CODE_API_KEY line when the seat no longer has COMMANDCODE_API_KEY
+      become: true
+      become_user: nish
+      ansible.builtin.lineinfile:
+        path: "{{ commandcode_seat_file }}"
+        regexp: '^(?:export +)?COMMAND_CODE_API_KEY='
+        state: absent
+      when: commandcode_seat.content is defined and commandcode_seat_key == ''
+      no_log: true
+      diff: false
+
     - name: Export COMMAND_CODE_API_KEY from the seat in nish's zsh and bash startup files
       become: true
       become_user: nish
       ansible.builtin.blockinfile:
         path: "{{ item }}"
         create: true
-        mode: "0644"
         insertbefore: BOF
         marker: "# {mark} fleet-ops: COMMAND_CODE_API_KEY for cmd, read from the seat"
         block: "{{ commandcode_shell_block }}"
