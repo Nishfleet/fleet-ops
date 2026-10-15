@@ -483,7 +483,7 @@ jobs:
             refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
             # --chdir puts the worker directory on the bwrap command line, which is
             # what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator
-            # session's: no MCP servers, no skills, no user settings; managed
+            # session's: only the browser MCP server, no skills, no user settings; managed
             # settings still apply.
             # bypassPermissions is the same trust the other engines get (Devin runs
             # --permission-mode dangerous, pi runs with its tools on): the bwrap jail
@@ -494,6 +494,7 @@ jobs:
             # --settings outranks project and local settings.
             echo "$packet" | $claude_jail --chdir "$dir" -- \
               claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
+              --mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" \
               --strict-mcp-config --disable-slash-commands --setting-sources project,local \
               --settings '{"disableAllHooks":true}' \
               >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?

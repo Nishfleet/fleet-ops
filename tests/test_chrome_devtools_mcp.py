@@ -164,3 +164,18 @@ def test_hermes_line_lands_under_mcp_servers_once(tmp_path):
     if shutil.which("yq"):
         servers = json.loads(subprocess.run(["yq", "-o=json", ".mcp_servers", str(cfg)], capture_output=True, text=True, check=True).stdout)
         assert servers["chrome-devtools"] == {"command": f"{tmp_path}/.local/bin/chrome-devtools-mcp", "args": ARGS, "enabled": True}
+
+
+def test_claude_worker_lane_loads_the_browser_server_and_nothing_else():
+    shipped = json.loads((ROOT / "config/worker-mcp.json").read_text())
+    assert shipped == {"mcpServers": {"chrome-devtools": {"type": "stdio", "command": pathlib.Path(VARS["chrome_devtools_mcp_bin"]).name, "args": ARGS}}}
+    lane = re.search(r"claude -p --continue.*?try\.out", (ROOT / ".github/workflows/agent.yml").read_text(), re.S).group(0)
+    flat = " ".join(lane.replace("\\\n", " ").split())
+    assert '--mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" --strict-mcp-config' in flat
+
+
+def test_other_worker_lanes_pass_no_flag_that_hides_the_shared_configs():
+    text = (ROOT / ".github/workflows/agent.yml").read_text()
+    for lane in (r"devin -p --prompt-file.*", r"opencode run --dir.*", r"pi --print --no-context-files.*"):
+        for line in re.findall(lane, text):
+            assert not re.search(r"--(config|no-mcp|no-extensions)\b|\s-ne\b", line), line

@@ -630,7 +630,7 @@ pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
 
 | Agent | How it gets the tool |
 |---|---|
-| Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` pulls the claude-mods clone. Worker lanes run `--strict-mcp-config` and stay as they were. |
+| Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` pulls the claude-mods clone. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
 | Pi | the play writes `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle). |
 | OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
 | Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its command changed. |
@@ -638,6 +638,7 @@ pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
 | Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent. Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
 | Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
 
+- The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
 - Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
 - Switch off for one agent: remove its task (for Claude Code set
   `chrome-devtools@nish-mods` to `false` in `enabledPlugins`); `copy` never
