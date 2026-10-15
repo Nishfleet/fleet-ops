@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-tincan": {
+      "type": "stdio",
+      "command": "/home/nish/.local/bin/tincan",
+      "args": ["mcp"],
+      "env": {
+        "TINCAN_CONFIG": "/home/nish/.config/tincan/claude-vps.json"
+      }
+    }
+  }
+}

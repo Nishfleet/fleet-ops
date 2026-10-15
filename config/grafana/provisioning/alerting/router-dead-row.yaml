@@ -1,0 +1,63 @@
+# Router dead-row alarm (fleet-ops#9312 class fix). Stock Grafana only, no scripts.
+#
+# Why: LiteLLM v1.98.0 never cools a 402 or 403 (cooldown_handlers._is_cooldown_required
+# cools only 401/404/408/429/5xx), and session_affinity re-pins a dead row, so a row whose
+# provider ended the model or ran out of credit fails every caller routed to it until a
+# person edits config/litellm-proxy.yaml. CommandCode Space Bunny Alpha answered 403 "no
+# longer available" and killed drive#642 build-r2 on 2026-10-07; Cline Space Bunny Alpha
+# answered 402 "Insufficient balance" for a day. Both sat unseen. This rule finds the next
+# one in an hour instead of by hand.
+#
+# Rule: any single deployment (model_id) that returned HTTP 402, 403 or 404 more than 5
+# times in the last hour. litellm_deployment_failure_responses_total is on the LiteLLM
+# /metrics endpoint Prometheus already scrapes; its exception_status label is the upstream
+# status and model_id is the router row id. 429 is never counted: a quota wall is a
+# resting row, not a dead one (Nish 2026-10-02).
+#
+# Route: label signal=router-dead-row, and the series label model_id names the row.
+# cloudflare-spend-contact.yaml owns the one notification policy tree and sends it to a
+# fleet-ops issue (agent-ready + priority-now) with hermes-urgent as the continue fallback.
+# The issue asks Nish whether to remove the row; a worker never removes it by itself.
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: router-dead-row
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: router-dead-row
+        title: Router row answers 402, 403 or 404
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions: [{evaluator: {params: [5], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Router row {{ $labels.model_id }} answered 402, 403 or 404 {{ $values.A.Value | printf "%.0f" }} times in the last hour'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ $labels.model_id }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
+          value: '{{ $values.A.Value | printf "%.0f" }} failures in the last hour'
+          threshold: 'more than 5 in 1 hour'
+        labels: {signal: router-dead-row}
+        isPaused: false
