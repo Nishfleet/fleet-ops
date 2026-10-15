@@ -25,16 +25,22 @@
 #    matches no route, so it lands on the policy root, fleet-alert-dispatch,
 #    which files a fleet-ops issue. Its DatasourceError (a read problem) files
 #    an issue the same way.
-#  - group deploy-failed-24h (signal=deploy-failed-24h, for: 24h) is the same
-#    query and SQL held red for a day; the route in cloudflare-spend-contact.yaml
-#    sends it to hermes-urgent (Telegram), re-sent once a day. A pending period
-#    is used rather than a 24h group_wait because the token refresh reloads the
-#    notification config every 20 minutes, which can restart group timers;
-#    rule state is stored. execErrState KeepLast: its read errors are already filed
-#    by the first group. inish-site has no 24h rule: its ci.yml runs tests
-#    before the deploy job, and a run's result cannot say which failed, so it
-#    files issues only. tests/alert_routes_check.py lists the 24h rules as
-#    urgent.
+#  - group deploy-failed-24h (signal=deploy-failed-24h) reads the same query,
+#    and its SQL decides "red for a day" by itself, with no Grafana pending
+#    state: over the same counted runs, the failures after the newest success
+#    exist and the oldest of them is at least 24 hours old (so no success in
+#    the last day either). for: 10m only absorbs a passing read error. The
+#    route in cloudflare-spend-contact.yaml sends it to hermes-urgent
+#    (Telegram), re-sent once a day; its DatasourceError skips that route and
+#    files an issue at the root. inish-site has no 24h rule: its ci.yml runs
+#    tests before the deploy job, and a run's result cannot say which failed,
+#    so it files issues only. tests/alert_routes_check.py lists the 24h rules
+#    as urgent.
+#
+# nish3451 repos are read through the App's installation on the personal
+# account (fleet-github-personal). If that installation lacks a repo, the
+# repo's rules file DatasourceError issues and stay blind until it is added or
+# the repo moves to Nishfleet.
 #
 # One rule per repo: the plugin reads its queries one after another, so one
 # rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
@@ -307,20 +313,44 @@ groups:
   - orgId: 1
     name: deploy-failed-24h
     folder: fleet
-    interval: 30m
+    interval: 10m
     rules:
       - uid: deploy-failed-24h-0509
         title: Production deploy red for 24h Nishfleet/0509
         condition: C
         data:
           - *q-0509
-          - *deploy-failed-latest
+          - &deploy-failed-day
+            refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                WITH counted AS (
+                  SELECT id, created_at, CASE WHEN conclusion IN ('success', 'neutral') THEN 1 ELSE 0 END AS ok
+                  FROM (
+                    SELECT status, conclusion, created_at, id,
+                           MAX(CASE WHEN status = 'completed' AND conclusion <> 'skipped' THEN id END) OVER () AS newest_done
+                    FROM A
+                  ) AS runs
+                  WHERE status = 'completed' AND conclusion <> 'skipped'
+                    AND NOT (conclusion = 'cancelled' AND id < newest_done)
+                )
+                SELECT CASE WHEN UNIX_TIMESTAMP() - streak_start >= 86400 THEN 1 ELSE 0 END AS red_for_a_day
+                FROM (
+                  SELECT UNIX_TIMESTAMP(MIN(created_at)) AS streak_start
+                  FROM counted
+                  WHERE id > COALESCE((SELECT MAX(id) FROM counted WHERE ok = 1), 0)
+                ) AS streak
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in Nishfleet/0509 has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/Nishfleet/0509/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/0509 has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/0509, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/0509/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/0509, workflow: deploy-production.yml}
         isPaused: false
 
@@ -329,13 +359,13 @@ groups:
         condition: C
         data:
           - *q-aiconverter-app
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy.yml on main in Nishfleet/aiconverter-app has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/Nishfleet/aiconverter-app/actions/workflows/deploy.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy.yml on main in Nishfleet/aiconverter-app has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/aiconverter-app, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/aiconverter-app/actions/workflows/deploy.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/aiconverter-app, workflow: deploy.yml}
         isPaused: false
 
@@ -344,13 +374,13 @@ groups:
         condition: C
         data:
           - *q-drive
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in Nishfleet/drive has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/Nishfleet/drive/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/drive has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/drive, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/drive/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/drive, workflow: deploy-production.yml}
         isPaused: false
 
@@ -359,13 +389,13 @@ groups:
         condition: C
         data:
           - *q-mailbox
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in Nishfleet/mailbox has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/Nishfleet/mailbox/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/mailbox has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/mailbox, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/mailbox/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/mailbox, workflow: deploy-production.yml}
         isPaused: false
 
@@ -374,13 +404,13 @@ groups:
         condition: C
         data:
           - *q-siterep-public
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in Nishfleet/siterep-public has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in Nishfleet/siterep-public has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for Nishfleet/siterep-public, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: Nishfleet/siterep-public, workflow: deploy-production.yml}
         isPaused: false
 
@@ -389,13 +419,13 @@ groups:
         condition: C
         data:
           - *q-fleet-console-worker
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in nish3451/fleet-console-worker has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/nish3451/fleet-console-worker/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in nish3451/fleet-console-worker has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for nish3451/fleet-console-worker, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/fleet-console-worker/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: nish3451/fleet-console-worker, workflow: deploy-production.yml}
         isPaused: false
 
@@ -404,13 +434,13 @@ groups:
         condition: C
         data:
           - *q-inish-mail-filter
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in nish3451/inish-mail-filter has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/nish3451/inish-mail-filter/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in nish3451/inish-mail-filter has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for nish3451/inish-mail-filter, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/inish-mail-filter/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: nish3451/inish-mail-filter, workflow: deploy-production.yml}
         isPaused: false
 
@@ -419,12 +449,12 @@ groups:
         condition: C
         data:
           - *q-seo-fix-kit
-          - *deploy-failed-latest
+          - *deploy-failed-day
         noDataState: OK
-        execErrState: KeepLast
-        for: 24h
+        execErrState: Error
+        for: 10m
         annotations:
-          summary: 'Production deploy red for 24 hours: the latest run of deploy-production.yml on main in nish3451/seo-fix-kit has not succeeded for a day.'
-          description: 'Production is not running main, and the fleet issue filed a day ago has not fixed it. Runs: https://github.com/nish3451/seo-fix-kit/actions/workflows/deploy-production.yml?query=branch%3Amain'
+          summary: '{{ if $values }}Production deploy red for 24 hours: no run of deploy-production.yml on main in nish3451/seo-fix-kit has succeeded since a failure a day ago.{{ else }}The fleet cannot read GitHub runs for nish3451/seo-fix-kit, so its 24-hour deploy check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Production is not running main, and the fleet issue filed for it has not fixed it in a day.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/nish3451/seo-fix-kit/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {signal: deploy-failed-24h, repo: nish3451/seo-fix-kit, workflow: deploy-production.yml}
         isPaused: false
