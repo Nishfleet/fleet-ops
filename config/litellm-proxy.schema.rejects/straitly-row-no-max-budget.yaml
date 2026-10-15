@@ -1,0 +1,20 @@
+# A Straitly row with no max_budget has no LiteLLM cap, so the key's 6 USD/day wall or the
+# 0 USD balance answers 402 quota_exceeded, which LiteLLM v1.98.0 neither retries nor cools (fleet-ops#9788).
+model_list:
+- model_name: worker-public
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-1-flash
+    api_base: https://api.straitly.ai/v1
+    api_key: os.environ/STRAITLY_API_KEY
+    weight: 1
+    input_cost_per_token: 3.82e-08
+    output_cost_per_token: 1.529e-07
+    budget_duration: 30d
+  model_info:
+    mode: chat
+    id: straitly-ds41flasha-worker-public
+    supports_prompt_caching: true
+    cache_proof: "fixture row: only the rule named in this file is under test (#9365)."
+router_settings:
+  redis_url: redis://127.0.0.1:6379
+  cooldown_time: 60
