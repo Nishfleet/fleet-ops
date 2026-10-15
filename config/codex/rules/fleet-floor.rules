@@ -140,15 +140,11 @@ RM_FLAGS = [
     "-rf", "-fr", "-Rf", "-fR", "-rfv", "-frv",
     "-r", "-R", "--recursive",
 ]
-RM_ROOTS = [
-    "/", "/home", "/home/", "/home/nish", "/home/nish/",
-    "/home/nish/workspaces", "/home/nish/workspaces/",
-    "/home/nish/workspaces/products", "/home/nish/workspaces/products/",
-    "/home/nish/workspaces/tooling", "/home/nish/workspaces/tooling/",
-    "/home/nish/workspaces/agent-worktrees",
-    "/home/nish/workspaces/agent-worktrees/",
-    "~", "~/", "~/workspaces", "~/workspaces/",
-]
+HOME = "/home/nish"
+WS = HOME + "/workspaces"
+RM_ROOTS = ["/", "/home", "/home/", "~", "~/", "~/workspaces", "~/workspaces/"]
+for base in [HOME, WS, WS + "/products", WS + "/tooling", WS + "/agent-worktrees"]:
+    RM_ROOTS = RM_ROOTS + [base, base + "/"]
 
 for pre in SUDO:
     prefix_rule(
@@ -157,14 +153,14 @@ for pre in SUDO:
         justification = "Recursive delete of a root, home or workspaces directory.",
         match = [
             pre + ["rm", "-rf", "/"],
-            pre + ["rm", "-fr", "/home/nish"],
-            pre + ["rm", "-rf", "/home/nish/workspaces"],
+            pre + ["rm", "-fr", HOME],
+            pre + ["rm", "-rf", WS],
             pre + ["rm", "-rf", "~/workspaces"],
         ],
         not_match = [
             pre + ["rm", "-rf", "./build"],
             pre + ["rm", "-rf", "/tmp/build"],
-            pre + ["rm", "-rf", "/home/nish/workspaces/agent-worktrees/job-1"],
+            pre + ["rm", "-rf", WS + "/agent-worktrees/job-1"],
             pre + ["rm", "file"],
         ],
     )

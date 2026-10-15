@@ -16,6 +16,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/codex/rules/fleet-floor.rules"
 HOST = ROOT / "ansible/host.yml"
+HOME = "/home/nish"
 CODEX = os.environ.get("CODEX_BIN") or shutil.which("codex")
 
 if not CODEX:
@@ -67,8 +68,8 @@ FORBIDDEN = [
     "rm -rf /",
     "rm -fr /",
     "rm -rf /home",
-    "rm -rf /home/nish",
-    "rm -rf /home/nish/workspaces",
+    f"rm -rf {HOME}",
+    f"rm -rf {HOME}/workspaces",
     "rm -rf ~/workspaces",
     "sudo rm -rf /",
     "reboot",
@@ -94,7 +95,7 @@ HARMLESS = [
     "restic snapshots",
     "rm -rf ./build",
     "rm -rf /tmp/build",
-    "rm -rf /home/nish/workspaces/agent-worktrees/job-1",
+    f"rm -rf {HOME}/workspaces/agent-worktrees/job-1",
     "systemctl status fleet.service",
     "systemctl --user restart fleet.service",
     "ls -la",
