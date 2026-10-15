@@ -213,7 +213,7 @@
     - name: Seed the telegram chat id file from the installed alertmanager config
       ansible.builtin.shell: |
         set -o pipefail
-        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\) *$/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
+        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\) *\(#.*\)\?$/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
         [ -n "$id" ] && [ "$id" != 0 ] || exit 3
         install -o root -g root -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
       args:
@@ -240,8 +240,8 @@
 
     - name: Fail the run when the telegram chat id is not digits only
       ansible.builtin.assert:
-        that: (telegram_chat_id.content | b64decode | trim) is match('^-?[0-9]+$')
-        fail_msg: "/etc/prometheus/telegram_chat_id must hold digits only, with an optional leading minus for a group or channel id; the alertmanager config was not rendered."
+        that: (telegram_chat_id.content | b64decode | trim) is match('^-?[1-9][0-9]*$')
+        fail_msg: "/etc/prometheus/telegram_chat_id must hold digits only, with an optional leading minus for a group or channel id, and not 0; the alertmanager config was not rendered."
         quiet: true
       when: telegram_chat_id.content is defined
 

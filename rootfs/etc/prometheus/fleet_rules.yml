@@ -1,10 +1,10 @@
 # Fleet alert rules: the dead-man heartbeat, failed units, and the Hermes
 # gateway, plus node_exporter and config-reload health. Deliberately six small
-# rules, three of which page (HermesGatewayDown and the two reload alerts) and
-# one is the heartbeat. The repair-dispatch machinery and the 12 rules that fed
+# rules, four of which page (HermesGatewayDown, NodeExporterDown and the two reload
+# alerts) and one is the heartbeat. The repair-dispatch machinery and the 12 rules that fed
 # it were cut on 2026-09-29 (fleet-ops#8958); nothing here brings back a repair
-# worker or a second page path. NodeExporterDown is visible and pages nobody, so
-# a gateway that is down while node_exporter is also down is not paged.
+# worker or a second page path. NodeExporterDown pages because a down node_exporter
+# gates HermesGatewayDown off.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer) and Prometheus' own vector().
@@ -63,12 +63,13 @@ groups:
           summary: "hermes-gateway.service has not been active for 5 minutes"
           description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
-      # Visible, not paged: without node_exporter the gateway rule cannot see.
+      # Pages: without node_exporter the gateway rule is gated off and cannot see, so the
+      # exporter's own loss must reach Telegram (it did through absent_over_time before).
       - alert: NodeExporterDown
         expr: up{job="node"} == 0
         for: 5m
         labels:
-          severity: warning
+          severity: nish
         annotations:
           summary: "node_exporter is not being scraped"
           description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."

@@ -119,7 +119,7 @@ tests:
         alertname: NodeExporterDown
         exp_alerts:
           - exp_labels:
-              severity: warning
+              severity: nish
               job: node
             exp_annotations:
               summary: "node_exporter is not being scraped"
