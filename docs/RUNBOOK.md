@@ -141,14 +141,21 @@ rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
 unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
 
-`systemctl --user list-timers blacksmith-flip.timer` (hourly,
-`Persistent=true`) triggers `blacksmith-flip.service`, a oneshot piping
-`prompts/blacksmith-flip.yml` through `pi --print`. Read one run with
-`systemctl --user show blacksmith-flip.service -p Result -p ExecMainStatus
--p InvocationID`: the first two read `success`/`0` before the first run, so the
-journal at that `InvocationID` is the proof, ending `FLIP: SET` or `FLIP: DELETE`.
-That hourly decision sets org `CI_RUNNER` to `blacksmith-4vcpu-ubuntu-2404` below
-2,850 minutes (95% of the 3,000 free), deleted at or above (fleet-ops#8936).
+`CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
+(fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
+
+    gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
+
+`-v all` keeps the public repos on it; the default is private-only. While it is set, read
+`blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
+`runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
+or more, delete it again: `gh variable delete CI_RUNNER --org Nishfleet`. Nish owns this call -
+check `blacksmith usage` when a month's CI load is heavy, and set the variable again at the start
+of a month if CI should run on Blacksmith. There is no automatic guard: the vendor bills past the
+3,000 free minutes even with no card on file (fleet-ops#8935), and ships no usage webhook or
+alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody does. The retirement
+leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
+that changed nothing running, because nothing read it (fleet-ops#9670).
 
 ## LiteLLM stack (rebuild reference)
 
@@ -170,9 +177,9 @@ The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
 which overwrites a hand edit, and `fleet-litellm-proxy-config.path` restarts the
 proxy only when the bytes change. Edit the repo file and nothing else; CI checks
-it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the four
+it against `config/litellm-proxy.schema.json` (fleet-ops#8724). Keys resolve as `os.environ/<NAME>` from the three
 `EnvironmentFile=` entries in `fleet-litellm-proxy.container`: the optional `-%h/.config/fleet-ops/seats/*.env`,
-`-%h/.config/xkiro/.env` and `-%h/.config/straitly/straitly.env` (the leading `-` marks an optional file), and the
+and `-%h/.config/straitly/straitly.env` (the leading `-` marks an optional file), and the
 required `%h/.config/fleet-ops/litellm-master-key.env`. The container receives only the names that have a `PodmanArgs=--env=<NAME>` line in
 `fleet-litellm-proxy.container` (fleet-ops#9020), so a new `os.environ/<NAME>` in the yaml needs a
 matching `PodmanArgs=--env=<NAME>` line; `disable_prisma_schema_update: true` stays under `general_settings`
