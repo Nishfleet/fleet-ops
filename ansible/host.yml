@@ -753,15 +753,28 @@
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
-    - name: Read the Command Code seat
+    - name: Look for the Command Code seat
       become: true
       become_user: nish
-      ansible.builtin.slurp:
-        src: "{{ commandcode_seat_file }}"
-      register: commandcode_seat
-      failed_when: false
-      no_log: true
-      diff: false
+      ansible.builtin.stat:
+        path: "{{ commandcode_seat_file }}"
+      register: commandcode_seat_stat
+
+    - name: Read the Command Code seat (an unreadable seat is a warning, not a silent skip)
+      when: commandcode_seat_stat.stat.exists
+      block:
+        - name: Slurp the Command Code seat
+          become: true
+          become_user: nish
+          ansible.builtin.slurp:
+            src: "{{ commandcode_seat_file }}"
+          register: commandcode_seat
+          no_log: true
+          diff: false
+      rescue:
+        - name: Warn that the Command Code seat exists but cannot be read
+          ansible.builtin.debug:
+            msg: "WARNING: {{ commandcode_seat_file }} exists but could not be read; cmd keeps whatever login it has"
 
     - name: Create the Command Code login directory
       become: true
@@ -805,7 +818,7 @@
           ansible.builtin.debug:
             msg: "{{ commandcode_auth_file }} is not a readable JSON object; treating it as empty and rewriting it from the seat"
 
-    - name: Store the seat's key as the Command Code login (cmd reads auth.json when COMMAND_CODE_API_KEY is unset)
+    - name: Store the seat's key as the Command Code login when it has none (a login cmd made is never replaced)
       become: true
       become_user: nish
       ansible.builtin.copy:
@@ -816,9 +829,20 @@
         commandcode_now: "{{ commandcode_parsed | default({}) }}"
         commandcode_kept: "{{ commandcode_now | dict2items | rejectattr('key', 'in', commandcode_identity_keys) | items2dict }}"
         commandcode_next: "{{ commandcode_kept | combine({'apiKey': commandcode_seat_key}) }}"
-      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('') != commandcode_seat_key
+      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('', true) == ''
       no_log: true
       diff: false
+
+    - name: Keep the Command Code login at mode 0600 when it already holds the seat's key
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ commandcode_auth_file }}"
+        mode: "0600"
+      vars:
+        commandcode_now: "{{ commandcode_parsed | default({}) }}"
+      when: commandcode_seat_key != '' and commandcode_now.apiKey | default('', true) == commandcode_seat_key
+      no_log: true
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
