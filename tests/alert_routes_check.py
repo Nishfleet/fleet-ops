@@ -7,6 +7,10 @@ can reach (its own notification_settings receiver, otherwise the notification
 policy tree, also for the DatasourceError / DatasourceNoData alerts the rule can
 turn into), and fails when the set of rules that can reach hermes-urgent differs
 from URGENT below. Adding a paging rule means adding it here, with its reason.
+It also fails when a rule that can reach only the fleet has an annotation that
+dereferences $labels or $values outside a with/if guard, because a
+DatasourceError alert has no series labels and no value and would then render
+"[no value]" and "%!f(<nil>)" into the fleet issue.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -34,6 +38,8 @@ URGENT = {
 }
 PAGE = "hermes-urgent"
 ERR = ("DatasourceError", "DatasourceNoData")
+GUARDS = ("with", "if", "range")
+DEREF = re.compile(r"\$labels\.|\$values\.")
 
 
 def matches(matchers, labels):
@@ -78,8 +84,46 @@ def selftest():
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
 
 
+def template_defects(annotation):
+    """Unguarded $labels/$values dereferences, and any leftover open block.
+
+    A DatasourceError or DatasourceNoData alert carries the rule's own labels but
+    no series labels and no value, so a bare {{ $labels.model_id }} renders Go's
+    "[no value]" and {{ $values.A.Value | printf "%.0f" }} renders "%!f(<nil>)":
+    the issue body a worker then has to read (fleet-ops#9795 #9796 #9797 #9801,
+    and #9797 on cpu-pressure, fixed in #9802). Guard every dereference with
+    with/if and an else branch, the way paid-plan-idle.yaml does.
+    """
+    depth, unguarded = 0, []
+    for action in re.findall(r"\{\{(.*?)\}\}", annotation, re.S):
+        head = action.strip(" \t\r\n-")
+        parts = head.split(None, 1)
+        first = parts[0].rstrip("(") if parts else ""
+        if first in GUARDS:
+            depth += 1
+        elif first == "end":
+            depth -= 1
+        elif first == "else":
+            pass
+        elif depth == 0 and DEREF.search(head):
+            unguarded.append(head)
+    return unguarded, depth
+
+
+def selftest_templates():
+    guarded = 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}an unnamed row{{ end }} answered {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no{{ end }}{{ else }}no{{ end }} times'
+    assert template_defects(guarded) == ([], 0)
+    assert template_defects('{{ with $labels.model_id }}{{ . }}{{ else }}x{{ end }}') == ([], 0)
+    unguarded, _ = template_defects('Router row {{ $labels.model_id }} answered {{ $values.A.Value | printf "%.0f" }} times')
+    assert unguarded == ['$labels.model_id', '$values.A.Value | printf "%.0f"'], unguarded
+    assert template_defects('{{ with $labels.model_id }}{{ . }}')[1] == 1
+    assert template_defects('{{ if .Value }}{{ .Value }}{{ end }}{{ end }}')[1] == -1
+    assert template_defects('no template here') == ([], 0)
+
+
 def main(root):
     selftest()
+    selftest_templates()
     rules, policy, contacts = [], None, set()
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
@@ -101,6 +145,11 @@ def main(root):
             reached |= {own} if own else route(policy, labels)
         missing = reached - contacts
         assert not missing, f"{r['title']}: unknown contact point(s) {missing}"
+        if PAGE not in reached:
+            for k, v in (r.get("annotations") or {}).items():
+                unguarded, depth = template_defects(str(v))
+                assert not unguarded, f"{r['title']}: annotation {k} dereferences {unguarded} outside a with/if guard, so a DatasourceError renders [no value] or %!f(<nil>) in the fleet issue"
+                assert depth == 0, f"{r['title']}: annotation {k} leaves {depth} unclosed with/if block(s)"
         if PAGE in reached:
             paging[r["title"]] = sorted(reached)
     extra = sorted(set(paging) - set(URGENT))

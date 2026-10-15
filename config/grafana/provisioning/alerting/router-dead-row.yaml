@@ -55,9 +55,9 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'Router row {{ $labels.model_id }} answered 402, 403 or 404 {{ $values.A.Value | printf "%.0f" }} times in the last hour'
-          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ $labels.model_id }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
-          value: '{{ $values.A.Value | printf "%.0f" }} failures in the last hour'
+          summary: '{{ with $labels.model_id }}Router row {{ . }} answered 402, 403 or 404 {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no{{ end }}{{ else }}no{{ end }} times in the last hour{{ else }}The router-dead-row rule could not read a value for any row: this is a DatasourceError, not a real 402, 403 or 404{{ end }}'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ . }}{{ else }}the row{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
+          value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }} failures{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} in the last hour'
           threshold: 'more than 5 in 1 hour'
         labels: {signal: router-dead-row}
         isPaused: false
