@@ -316,7 +316,7 @@ is what stops it: `fleet-host-config.service` runs on every push to `main`.
 
 `restic-r2-restore-drill.timer` runs `restic-r2-restore-drill.service` once a
 month. The unit restores the whole latest snapshot into
-`/var/tmp/restic-restore-drill` (never over live paths) with
+the unit's private `/var/tmp` (never over live paths) with
 `restic restore --verify`, then compares one small file per `include.txt` path
 with its live copy, prints the paths compared and the bytes restored to the
 journal, and deletes the scratch dir. A failed unit triggers
@@ -325,7 +325,7 @@ journal, and deletes the scratch dir. A failed unit triggers
 `systemctl start restic-r2-restore-drill.service`; switch it off with
 `systemctl disable --now restic-r2-restore-drill.timer`. The duration is the
 unit's own `systemctl show -p ExecMainExitTimestamp,ExecMainStartTimestamp`.
-A live file that changed since the snapshot can show as a mismatch; re-run
+Only files unchanged for 2 days are compared; if one still differs, re-run
 before treating it as a bad backup.
 
 The rebuild-from-nothing plan lives in the private vault playbooks, not here.
