@@ -78,6 +78,9 @@
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    digest_prompts:
+      - digest-morning
+      - digest-evening
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -767,11 +770,64 @@
       when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
+    - name: Read Hermes' scheduled jobs
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ nish_home }}/.hermes/cron/jobs.json"
+      register: hermes_jobs
+      failed_when: false
+      diff: false
+
+    - name: Apply config/hermes/digest-*.md to the live digest jobs
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - edit
+          - "{{ job.id }}"
+          - --prompt
+          - "{{ wanted }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ digest_prompts }}"
+      loop_control:
+        loop_var: digest
+        label: "{{ digest }}"
+      vars:
+        job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
+        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+      when: job.id is defined and job.prompt != wanted
+      changed_when: true
+
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials.results | map(attribute='stat.exists') | min
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
         quiet: true
+
+    - name: Read Hermes' scheduled jobs again
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ nish_home }}/.hermes/cron/jobs.json"
+      register: hermes_jobs_after
+      failed_when: false
+      diff: false
+
+    - name: Fail when a live digest prompt differs from config/hermes/
+      ansible.builtin.assert:
+        that: job.prompt is defined and job.prompt == wanted
+        fail_msg: "The live {{ digest }} job is missing or its prompt differs from config/hermes/{{ digest }}.md, and the apply task above did not put it back."
+        quiet: true
+      loop: "{{ digest_prompts }}"
+      loop_control:
+        loop_var: digest
+        label: "{{ digest }}"
+      vars:
+        job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
+        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
 
 
   handlers:
