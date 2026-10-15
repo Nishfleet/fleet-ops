@@ -49,7 +49,7 @@ def test_each_rule_reads_one_main_workflow_through_its_owners_app_installation()
         assert r["labels"] == {"signal": "deploy-failed", "repo": full, "workflow": opts["workflow"]}
         for text in r["annotations"].values():
             assert full in text and opts["workflow"] in text, f"{r['title']}: annotation names another repo or workflow"
-        assert "TinyStudio" not in full
+        assert "not an outage" in r["annotations"]["summary"]
 
 
 def test_the_condition_is_the_sql_over_query_a_and_it_pages():
@@ -70,7 +70,14 @@ def test_the_condition_is_the_sql_over_query_a_and_it_pages():
     ([(1, "2026-10-01T10:00:00Z", "completed", "failure"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled"), (3, "2026-10-03T10:00:00Z", "completed", "skipped")], [1]),
     ([(1, "2026-10-01T10:00:00Z", "completed", "success"), (2, "2026-10-02T10:00:00Z", "in_progress", None), (3, "2026-10-03T10:00:00Z", "queued", None)], [0]),
     ([(1, "2026-10-01T10:00:00Z", "completed", "failure"), (2, "2026-10-01T10:00:00Z", "completed", "success")], [0]),
-    ([(1, "2026-10-01T10:00:00Z", "completed", "skipped"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled")], []),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "success"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled")], [1]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "skipped"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled")], [1]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "failure"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled"), (3, "2026-10-03T10:00:00Z", "completed", "success")], [0]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "success"), (2, "2026-10-02T10:00:00Z", "completed", "cancelled"), (3, "2026-10-03T10:00:00Z", "in_progress", None)], [0]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "failure"), (2, "2026-10-02T10:00:00Z", "completed", "neutral")], [0]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "success"), (2, "2026-10-02T10:00:00Z", "completed", "stale")], [1]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "success"), (2, "2026-10-02T10:00:00Z", "completed", "action_required")], [1]),
+    ([(1, "2026-10-01T10:00:00Z", "completed", "skipped")], []),
     ([], []),
 ])
 def test_the_sql_reads_the_newest_finished_run(runs, want):
