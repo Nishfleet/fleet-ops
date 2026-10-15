@@ -1,0 +1,19 @@
+# Every 15 minutes (fleet-ops#9758): an issue whose body carries a
+# `due: <date> <time> IST` line must reach agent-ready once that time passes.
+# A one-shot transient `later-*` timer that was told to wait for the due time
+# is lost when the user manager restarts, so an issue due later the same day
+# can sit unread for a day (fleet-ops#9376). A persistent timer cannot be lost
+# that way. It starts later-sweep.service, which promotes at most five overdue
+# issues a run and prints a verdict line every run.
+# fleet-sync.service (step 2f) links this pair and enables this timer on every
+# deploy. Switch off: remove step 2f from fleet-sync.service, then
+# systemctl --user disable --now later-sweep.timer. Delete: that, then remove
+# this file and later-sweep.service.
+
+[Timer]
+OnCalendar=*-*-* *:07/15:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
