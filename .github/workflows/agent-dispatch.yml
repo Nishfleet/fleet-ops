@@ -1029,8 +1029,9 @@ jobs:
             | ([$all[] | select(.state == "CLOSED" and .closedAt != null) | .closedAt | fromdateiso8601] | max) as $closed
             | ([$all[] | select((.createdAt | fromdateiso8601) > $now - 86400)] | length) as $recent
             | ($in.run // {}) as $run
+            | ([$open[] | select(([.labels[]?.name] | index("agent-in-progress")) == null) | .number]) as $idle
             | if $run.conclusion == "success" then
-                if ($open | length) > 0 then {action: "close", issues: [$open[].number], reason: "main is green again"} else {action: "none", issues: [], reason: "green, nothing open"} end
+                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "main is green again"} else {action: "none", issues: [], reason: "green, nothing open"} end
               elif $run.conclusion == "failure" then
                 if ($open | length) == 0 then
                   if $recent > 0 then {action: "none", issues: [], reason: "an issue was filed for it within a day"}
@@ -1047,8 +1048,9 @@ jobs:
         run: |
           set -euo pipefail
           branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
-          issues=$(gh issue list -R "$GITHUB_REPOSITORY" --state all -L 1000 --search '"red-main:" in:body' --json number,state,body,createdAt,closedAt,comments,author |
-            jq -c '[.[] | select((.author.login | IN("app/github-actions", "github-actions[bot]", "github-actions")) and ([.body // "" | split("\n")[] | rtrimstr("\r")] | any(startswith("red-main: "))))]')
+          f=number,state,body,createdAt,closedAt,comments,author,labels
+          issues=$({ gh issue list -R "$GITHUB_REPOSITORY" --state all -L 1000 --search '"red-main:" in:body' --json "$f"; gh issue list -R "$GITHUB_REPOSITORY" --state all -L 100 --json "$f"; } |
+            jq -sc 'add | unique_by(.number) | [.[] | select((.author.login | IN("app/github-actions", "github-actions[bot]", "github-actions")) and ([.body // "" | split("\n")[] | rtrimstr("\r")] | any(startswith("red-main: "))))]')
           printf '%s' "$issues" > "$RUNNER_TEMP/red-main-issues.json"
           workflows=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" --jq '.workflows[]
             | select(.state == "active" and (.path | startswith(".github/workflows/")) and (.path | endswith("/agent-dispatch.yml") | not))

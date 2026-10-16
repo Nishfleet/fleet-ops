@@ -40,10 +40,10 @@ def green(run_id=101, at=NOW - 60):
     return {"id": run_id, "conclusion": "success", "url": f"https://example.invalid/runs/{run_id}", "at": _iso(at), "sha": "a" * 40}
 
 
-def issue(number, file="deploy.yml", state="OPEN", run_id=100, age=2 * DAY, comments=(), closed_ago=None, author="app/github-actions"):
+def issue(number, file="deploy.yml", state="OPEN", run_id=100, age=2 * DAY, comments=(), closed_ago=None, author="app/github-actions", labels=("agent-ready",)):
     return {
         "number": number, "state": state, "body": f"red-main: {file}\nred-main-run: {run_id}\n\nbody",
-        "author": {"login": author}, "createdAt": _iso(NOW - age), "closedAt": None if closed_ago is None else _iso(NOW - closed_ago),
+        "author": {"login": author}, "labels": [{"name": n} for n in labels], "createdAt": _iso(NOW - age), "closedAt": None if closed_ago is None else _iso(NOW - closed_ago),
         "comments": list(comments),
     }
 
@@ -98,6 +98,15 @@ def test_duplicates_are_judged_on_the_lowest_number():
 def test_green_run_closes_every_open_issue():
     v = decide("deploy.yml", green(), [issue(9), issue(5), issue(7, state="CLOSED", closed_ago=DAY)])
     assert v == {"action": "close", "issues": [5, 9], "reason": "main is green again"}
+
+
+def test_green_run_leaves_an_issue_a_worker_has_claimed():
+    v = decide("deploy.yml", green(), [issue(5, labels=("agent-in-progress",)), issue(9)])
+    assert v == {"action": "close", "issues": [9], "reason": "main is green again"}
+
+
+def test_green_run_with_only_a_claimed_issue_does_nothing():
+    assert decide("deploy.yml", green(), [issue(5, labels=("agent-in-progress",))])["action"] == "none"
 
 
 def test_green_with_nothing_open_does_nothing():
