@@ -13,7 +13,7 @@ fails the run instead of passing silently:
        App's public key.
   POST /app/installations/<id>/access_tokens
        needs the same JWT and a body that asks for exactly repositories
-       [fleet-ops] and permissions {issues: write} (the Grafana token), or
+       [fleet-ops] and permissions {contents: write} (the Grafana token), or
        exactly the one repo whose installation was looked up and permissions
        {contents, issues, pull_requests: write} (the worker token).
 
@@ -90,7 +90,7 @@ class H(http.server.BaseHTTPRequestHandler):
         elif method == "POST" and self.path.startswith("/app/installations/") and self.path.endswith("/access_tokens"):
             iid = int(self.path.split("/")[3])
             repo = REPOS.get(iid)
-            wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
+            wants = [{"repositories": ["fleet-ops"], "permissions": {"contents": "write"}},
                      {"repositories": [repo], "permissions": WORKER_PERMS}]
             if repo is None or json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}

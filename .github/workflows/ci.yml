@@ -256,11 +256,11 @@ jobs:
         # touching a file.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py
-      - name: needs-triage admission, digest reply shape and red-main issues (fleet-ops#9706, #9308)
+      - name: needs-triage admission, digest reply shape, red-main issues and Grafana alert issues (fleet-ops#9706, #9308)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_grafana_alert_upsert.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -1751,7 +1751,7 @@ jobs:
           # container runs as that owner (on the host UserNS=keep-id maps the file
           # owner to the image's grafana uid), so a mode the reader cannot use fails here.
           chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
-          sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
+          sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/dispatches|http://127.0.0.1:18796/|' \
               -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' -e 's|repeat_interval: 24h|repeat_interval: 1m|' \
               config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
           cat > "$d/prov/fixture.yaml" <<'YAML'
@@ -1835,13 +1835,13 @@ jobs:
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
           sort "$d/sink.log" | uniq -c
           # A rule with no route of its own lands on the policy root,
-          # fleet-alert-dispatch: its payload must be a labelled fleet issue.
+          # fleet-alert-dispatch: its payload must be a grafana-alert dispatch.
           for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
           g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
-          jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
-            || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+          jq -e '.event_type == "grafana-alert" and .client_payload.kind == "generic" and .client_payload.status == "firing" and (.client_payload.url | contains("/alerting/grafana/drill-generic/view")) and (.client_payload.labels.signal == "drill-generic") and (.client_payload | length) <= 10' <<<"${g#BODY * }" >/dev/null \
+            || { echo "::error::fleet-alert-dispatch rendered an unexpected dispatch"; echo "$g"; exit 1; }
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule sent a grafana-alert dispatch"
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20

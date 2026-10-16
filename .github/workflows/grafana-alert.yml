@@ -1,0 +1,83 @@
+name: grafana-alert
+run-name: grafana alert ${{ github.event.client_payload.status }} ${{ github.event.client_payload.title }}
+
+on:
+  repository_dispatch:
+    types: [grafana-alert]
+
+permissions: {}
+
+concurrency:
+  group: grafana-alert-${{ github.event.client_payload.url }}
+  cancel-in-progress: false
+
+jobs:
+  upsert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          UPSERT: |
+            def clean($n): (. // "") | tostring | gsub("[\r\n]+"; " ") | gsub("^ +| +$"; "") | .[0:$n];
+            def txt: (. // "") | tostring | .[0:4000];
+            def line($k; $v): if ($v | txt) == "" then empty else "\($k): \($v | txt)" end;
+            . as $in
+            | $in.p as $p
+            | ("alert: " + $in.uid) as $m
+            | [$in.issues[] | select([.body // "" | split("\n")[] | rtrimstr("\r")] | index($m))] as $all
+            | ([$all[] | select(.state == "OPEN")] | sort_by(.number)) as $open
+            | ($p.kind // "generic") as $kind
+            | ($p.labels // {} | tojson) as $labels
+            | ({
+                cost: "Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue.",
+                deadrow: "Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml). Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence.",
+                generic: "Source: a Grafana rule in config/grafana/provisioning/alerting. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause and fix it."
+              }[$kind] // "Source: a Grafana rule in config/grafana/provisioning/alerting.") as $tail
+            | if $p.status == "resolved" then
+                ([$open[] | select(([.labels[]?.name] | index("agent-in-progress")) == null) | .number]) as $idle
+                | if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "Grafana reports the alert resolved"}
+                  else {action: "none", issues: [], reason: "resolved, nothing open to close"} end
+              elif $p.status != "firing" then {action: "none", issues: [], reason: "status is not firing or resolved"}
+              elif ($open | length) == 0 then
+                {action: "create", issues: [], reason: "firing with no open issue",
+                 title: ($p.title | clean(200) | if . == "" then "grafana alert" else . end),
+                 labels: (if $kind == "generic" then ["agent-ready"] else ["agent-ready", "priority-now"] end),
+                 body: ([$m, "alert-fired: " + ($in.now | todate), "", ($p.summary | txt), "", ($p.description | txt), "",
+                         line("Value"; $p.value), line("Threshold"; $p.threshold), "Labels: " + $labels,
+                         "Rule started firing \($p.starts | clean(40)) UTC (\($p.url | clean(300))).", "", $tail, "",
+                         "This is the one issue for this alert rule: it gets a comment when the alert is still firing a day later and closes itself when Grafana reports it resolved. Do not file another issue for it."] | join("\n"))}
+              else
+                $open[0] as $i
+                | ([$i.createdAt] + [$i.comments[]? | select((.body // "") | startswith("alert-fired: ")) | .createdAt] | map(fromdateiso8601) | max) as $last
+                | if ($in.now - $last) < 86400 then {action: "none", issues: [$i.number], reason: "reported within a day"}
+                  else {action: "comment", issues: [$i.number], reason: "still firing a day later",
+                        comment: (["alert-fired: " + ($in.now | todate), "", "Still firing: " + ($p.summary | txt), "", "Labels: " + $labels, "Rule started firing \($p.starts | clean(40)) UTC (\($p.url | clean(300)))."] | join("\n"))} end
+              end
+        run: |
+          set -euo pipefail
+          uid=$(jq -r '(.url // "") | capture("/alerting/grafana/(?<u>[A-Za-z0-9_-]{1,64})/view").u // empty' <<<"$PAYLOAD")
+          [ -n "$uid" ] || { echo "::error::the dispatch carries no rule uid"; exit 1; }
+          f=number,state,body,createdAt,closedAt,comments,labels,author
+          issues=$({ gh issue list -R "$GITHUB_REPOSITORY" --state all -L 1000 --search "\"alert: $uid\" in:body" --json "$f"; gh issue list -R "$GITHUB_REPOSITORY" --state all -L 100 --json "$f"; } |
+            jq -sc --arg m "alert: $uid" 'add | unique_by(.number) | [.[] | select((.author.login | IN("app/github-actions", "github-actions[bot]", "github-actions")) and ([.body // "" | split("\n")[] | rtrimstr("\r")] | index($m)))]')
+          v=$(jq -nc --argjson p "$PAYLOAD" --arg uid "$uid" --argjson now "$(date +%s)" --argjson issues "$issues" '{p: $p, uid: $uid, now: $now, issues: $issues}' | jq -c "$UPSERT")
+          action=$(jq -r .action <<<"$v")
+          echo "$uid: $action, $(jq -r .reason <<<"$v")"
+          case $action in
+            create)
+              jq -r .body <<<"$v" > "$RUNNER_TEMP/body.md"
+              args=()
+              while IFS= read -r l; do args+=(--label "$l"); done < <(jq -r '.labels[]' <<<"$v")
+              gh issue create -R "$GITHUB_REPOSITORY" "${args[@]}" --title "$(jq -r .title <<<"$v")" --body-file "$RUNNER_TEMP/body.md" ;;
+            comment)
+              jq -r .comment <<<"$v" > "$RUNNER_TEMP/comment.md"
+              gh issue comment "$(jq -r '.issues[0]' <<<"$v")" -R "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/comment.md" ;;
+            close)
+              for n in $(jq -r '.issues[]' <<<"$v"); do
+                gh issue close "$n" -R "$GITHUB_REPOSITORY" -r completed -c "Grafana reports this alert resolved: $(jq -r '.url // ""' <<<"$PAYLOAD")"
+              done ;;
+          esac

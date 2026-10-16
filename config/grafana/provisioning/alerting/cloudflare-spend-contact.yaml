@@ -1,11 +1,14 @@
 # Notification contact points and the one policy tree (fleet-ops#9355, #9445).
-# The webhooks post the GitHub issues API body from the payload template. The
-# token is a file reference, never a literal: $__file{} is Grafana's own
-# provisioning expansion and re-reads the file at every provisioning load. The
-# file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
-# only) that expires after one hour, so fleet-grafana-github-token.timer
-# re-mints it every 20 min and reloads provisioning. Every rule carries a
-# severity label (critical or warning) and the policy tree below routes on it.
+# The webhooks send a repository_dispatch event (the payload template below),
+# and .github/workflows/grafana-alert.yml upserts one fleet-ops issue per alert
+# rule from it: a comment on refire at most daily, closed when Grafana reports
+# the alert resolved. The token is a file reference, never a literal: $__file{}
+# is Grafana's own provisioning expansion and re-reads the file at every
+# provisioning load. The file holds a GitHub App installation token (contents:write
+# on Nishfleet/fleet-ops only, the permission repository_dispatch needs) that
+# expires after one hour, so fleet-grafana-github-token.timer re-mints it every
+# 20 min and reloads provisioning. Every rule carries a severity label (critical
+# or warning) and the policy tree below routes on it.
 apiVersion: 1
 
 contactPoints:
@@ -14,9 +17,9 @@ contactPoints:
     receivers:
       - uid: cf-spend-gh-issues
         type: webhook
-        disableResolveMessage: true
+        disableResolveMessage: false
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/dispatches
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
@@ -24,18 +27,16 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.resource)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
-                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- coll.Dict "event_type" "grafana-alert" "client_payload" (coll.Dict "kind" "cost" "status" .Status "title" (printf "cost alarm: %s" .Labels.alertname) "summary" .Annotations.summary "description" (printf "%s Top resource: %s." .Annotations.description .Annotations.top) "value" .Annotations.value "threshold" .Annotations.threshold "url" .GeneratorURL "starts" (.StartsAt.Format "2006-01-02 15:04:05") "labels" (.Labels.Remove (stringSlice "alertname" "grafana_folder"))) | data.ToJSON -}}
               {{- end -}}
   - orgId: 1
     name: router-dead-row-dispatch
     receivers:
       - uid: router-dead-row-gh-issues
         type: webhook
-        disableResolveMessage: true
+        disableResolveMessage: false
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/dispatches
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
@@ -43,9 +44,7 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "router dead row: %s" .Labels.model_id)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
-                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- coll.Dict "event_type" "grafana-alert" "client_payload" (coll.Dict "kind" "deadrow" "status" .Status "title" (printf "router dead row: %s" .Labels.model_id) "summary" .Annotations.summary "description" .Annotations.description "value" .Annotations.value "threshold" .Annotations.threshold "url" .GeneratorURL "starts" (.StartsAt.Format "2006-01-02 15:04:05") "labels" (.Labels.Remove (stringSlice "alertname" "grafana_folder"))) | data.ToJSON -}}
               {{- end -}}
 
   - orgId: 1
@@ -53,9 +52,9 @@ contactPoints:
     receivers:
       - uid: fleet-alert-gh-issues
         type: webhook
-        disableResolveMessage: true
+        disableResolveMessage: false
         settings:
-          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/dispatches
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
@@ -63,9 +62,7 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
-                     "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
+              {{- coll.Dict "event_type" "grafana-alert" "client_payload" (coll.Dict "kind" "generic" "status" .Status "title" (printf "grafana alert: %s" .Labels.alertname) "summary" .Annotations.summary "description" .Annotations.description "value" .Annotations.value "threshold" .Annotations.threshold "url" .GeneratorURL "starts" (.StartsAt.Format "2006-01-02 15:04:05") "labels" (.Labels.Remove (stringSlice "alertname" "grafana_folder"))) | data.ToJSON -}}
               {{- end -}}
 
 

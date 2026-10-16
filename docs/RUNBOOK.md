@@ -100,7 +100,7 @@ evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
 `cloudflare-spend-dispatch`. The webhook
-sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
+sends a GitHub App installation token (contents:write on Nishfleet/fleet-ops only, what repository_dispatch needs), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
@@ -114,8 +114,9 @@ paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They pag
 page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
 rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
-router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
-new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+router-dead-row variants) through a repository_dispatch to `.github/workflows/grafana-alert.yml`,
+which keeps one open issue per alert rule (marker line `alert: <rule uid>`): a still-firing alert
+comments at most once a day, and Grafana's resolved message closes the issue unless a worker is on it. CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
@@ -126,7 +127,7 @@ a file went stale and every delivery answered `401 Bad credentials` for days.
 `fleet-grafana-github-token.timer` (every 20 min, and 2 min after boot) starts
 `fleet-grafana-github-token.service`, which signs an RS256 App JWT with the nishfleet-worker
 key, asks the REST API for an installation token limited to `Nishfleet/fleet-ops` and
-`issues:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
+`contents:write`, writes it to `$XDG_RUNTIME_DIR/fleet-grafana-github-token/token` (tmpfs,
 0700 dir, 0600 file) and starts `fleet-grafana-provisioning.service`, the stock admin-API
 reload above. The contact points read the file with Grafana's `$__file{}`, which is
 re-read on every provisioning load. Wire once after merge (README "Wiring a NEW unit"):
