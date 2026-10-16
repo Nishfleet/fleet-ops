@@ -228,7 +228,7 @@ jobs:
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
       - name: Chrome DevTools MCP is pinned once and wired into every agent
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_hermes_computer_use.py
       - name: orchestrator hand-off cleanup keeps a worktree a running unit uses (fleet-ops#9377)
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
