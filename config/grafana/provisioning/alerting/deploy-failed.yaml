@@ -66,9 +66,9 @@
 # runs in about 43 s, against a 30 s evaluation timeout; 3 days was 199 runs,
 # 2 pages. A streak older than the window still reads as over 24 hours.
 #
-# Scope: the production deploy workflow of each live product repo in the
-# Nishfleet organization. Left out: fleet-ops deploy-box (the box, not a
-# product). To cover a new product, copy one rule in each group and change its
+# Scope: the production deploy workflow of each live repo in the Nishfleet
+# organization that deploys a site or worker to Cloudflare. Left out: fleet-ops
+# deploy-box (it deploys the box). To cover a new product, copy one rule in each group and change its
 # uid, title, labels, query anchor and annotations;
 # tests/test_deploy_failed_rule.py checks that they agree.
 # tests/test_deploy_failed_engine.py runs both SQLs on the pinned image, through
