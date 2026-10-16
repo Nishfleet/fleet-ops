@@ -26,7 +26,8 @@ UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 def seconds(text):
     parts = re.findall(r"(\d+)([smhdw])", str(text))
-    assert parts and "".join(f"{n}{u}" for n, u in parts) == str(text), f"unreadable duration {text!r}"
+    if not parts or "".join(f"{n}{u}" for n, u in parts) != str(text):
+        raise ValueError(f"unreadable duration {text!r}")
     return sum(int(n) * UNITS[u] for n, u in parts)
 
 
