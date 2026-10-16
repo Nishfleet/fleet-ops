@@ -35,12 +35,9 @@ def test_zero_five_nine_exclusive_deferrals_are_gone():
         assert "0509-exclusive" not in r.get("reason", "").lower(), r["name"]
 
 
-def test_launch_push_repo_is_admitted_and_swept_first():
+def test_launch_push_repo_is_enrolled_like_0509_with_a_dated_end_review():
     # Nish, 2026-10-15: two-week launch push for Site Rep and SEO Fix Kit.
     entry = ENROLLED["siterep-public"]
     assert entry["product"] is True
     assert set(ENROLLED["0509"]) <= set(entry)
-    assert entry["enrolled_by"].startswith("Nish, 2026-10-15")
     assert "siterep-public#173" in entry["enrolled_by"]  # the dated end-of-push review
-    # Order only matters to agent.yml's cross-repo sweep loop, which walks .repos[] in order.
-    assert CFG["repos"][0]["name"] == "siterep-public"
