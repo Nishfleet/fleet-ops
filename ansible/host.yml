@@ -784,7 +784,6 @@
           - xfwm4
           - xfdesktop4
           - xfce4-settings
-          - xfce4-terminal
           - dbus-x11
           - x11-xserver-utils
           - x11-utils
@@ -823,8 +822,8 @@
 
     - name: Warn that Hermes' cua-driver install failed
       ansible.builtin.debug:
-        msg: "WARNING: hermes computer-use install exited {{ hermes_cua_install.rc }}; computer_use stays off until it works"
-      when: hermes_cua_install.rc is defined and hermes_cua_install.rc != 0
+        msg: "WARNING: hermes computer-use status exited {{ hermes_cua_driver.rc }} and install exited {{ hermes_cua_install.rc | default('never ran') }}; computer_use stays off until it works"
+      when: (hermes_cua_install.rc is defined and hermes_cua_install.rc != 0) or (hermes_cua_driver.rc | default(0)) > 1
 
     - name: Let Hermes start its own headless Bot Desktop when computer_use needs a display
       become: true
@@ -834,7 +833,7 @@
         line: "bot_desktop: {auto_start: true}"
       vars:
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
-      when: hermes_text is not search('(?m)^bot_desktop:')
+      when: hermes_config.content is defined and hermes_text is not search('(?m)^bot_desktop:')
       diff: false
 
     - name: Look for the Command Code seat

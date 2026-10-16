@@ -137,7 +137,6 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Install the Codex execpolicy floor",
                 "Check whether Hermes has its cua-driver",
                 "Install Hermes' pinned cua-driver",
-                "Warn that Hermes' cua-driver install failed",
                 "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
             ), task["name"]
 

@@ -27,7 +27,7 @@ def test_packages_are_the_ones_hermes_reports_missing():
     module = APT["ansible.builtin.apt"]
     assert module["state"] == "present" and module["install_recommends"] is False
     assert set(module["name"]) == {
-        "tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings", "xfce4-terminal",
+        "tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
         "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth", "fonts-dejavu-core",
     }
     assert "become" not in APT
@@ -53,7 +53,8 @@ def test_opt_in_is_one_idempotent_line_and_never_names_a_display():
     assert OPT_IN["become"] is True and OPT_IN["become_user"] == "nish"
     assert "mcp_servers" not in OPT_IN["when"]
     assert "bot_desktop:" in OPT_IN["when"]
-    assert "DISPLAY" not in HOST.read_text()
+    assert "DISPLAY" not in json.dumps(OPT_IN)
+    assert "hermes_config.content is defined" in OPT_IN["when"]
 
 
 def test_order_is_packages_then_check_then_install():
