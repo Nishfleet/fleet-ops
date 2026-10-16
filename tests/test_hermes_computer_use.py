@@ -43,7 +43,8 @@ def test_driver_install_runs_as_nish_on_the_real_home_only_when_status_fails():
     assert INSTALL["ansible.builtin.command"]["argv"][1:] == ["computer-use", "install"]
     assert INSTALL["when"] == "(hermes_cua_driver.rc | default(0)) == 1"
     assert CHECK["check_mode"] is False and CHECK["timeout"] <= 120 and INSTALL["timeout"] <= 600
-    assert INSTALL["failed_when"] is False
+    assert "failed_when" not in INSTALL
+    assert "rc > 1" in CHECK["failed_when"] and "is not defined" in CHECK["failed_when"]
 
 
 def test_opt_in_is_one_idempotent_line_and_never_names_a_display():
