@@ -837,6 +837,93 @@ repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
 `ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
 and a fake router (`tests/test_triage_admit.py`).
 
+## Red main issues
+
+The hourly sweep (the `red-main` job in `agent-dispatch.yml`, on the caller's `GITHUB_TOKEN`) keeps exactly one open `agent-ready` issue per workflow file in an enrolled repo whose latest finished run on the default branch failed (CI included; disabled, dynamic and agent-dispatch workflows are skipped, and so are runs from forks). The issue body starts with the line `red-main: <workflow file>` and names the failing run, its first failing step and the last green sha. A `GITHUB_TOKEN` label fires no event, so the next sweep's `agent-ready` listing starts the worker.
+
+- A new failing run adds a comment (marker `red-main-run: <run id>`), at most one a day.
+- A green latest run closes the issue with a link to that run.
+- An issue closed after a failing run is not filed again for that run.
+- An issue is filed for a workflow at most once a day, and at most three new issues a day per repo, so a workflow that flips between red and green cannot start a worker every hour.
+- Builders do not file their own issue for a red main: they use this one (fleet-ops#9308).
+
+The sweep polls the latest run instead of reacting to `workflow_run`: that trigger takes literal workflow names in each caller stub (no wildcard), so a new or renamed workflow would be missed in every repo, and a missed event would leave an issue open after main turned green. The sweep reads the state itself, so it also closes.
+
+**Switch it off:** set the repo variable `RED_MAIN` to `off` on the calling repo. **Delete it:** remove the `red-main` job, `tests/test_red_main_sweep.py`, its name in the `gated` list and test step of `ci.yml`, and this section. `Nishfleet/fleet-ops` is not swept.
+
+## Workflow notes
+
+Reasons and switches that used to sit as comments in the workflow files.
+
+### agent-dispatch.yml: repo variables
+
+```
+Events that put work on the agent queue. Repo variable AGENT_MODE:
+  shadow (default) = only issues also labelled shadow-actions, no rework
+  live             = every agent-ready issue, plus rework on red CI
+Repo variable MISS_REVIEW:
+  off (default, unset) = miss-review jobs never start
+  live                 = a miss event starts one different-family review
+To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
+To delete it: revert the miss-review jobs in this file and the miss-review
+path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
+Repo variable ORCHESTRATE:
+  off                  = the orchestrate job never starts
+  live (default, unset) = a needs-orchestrator label starts one hand-off run.
+  Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
+  newly stubbed repo cannot sit off by omission.
+Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
+  Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
+  Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+  Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
+  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
+    ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
+  Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
+    the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
+To switch orchestration off: set ORCHESTRATE to off.
+To delete it: revert the orchestrate job in this file, the workflow-path
+detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
+already in flight finishes: the label gate only stops new ones.
+Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
+  true                   = every job that starts a worker or picks work to
+                           start skips, and the paused job logs one summary
+                           line per skipped event
+  anything else or unset = not paused
+ansible/update.yml sets it to true for the weekly update and back to false in
+its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
+workflow drops every trigger, so hold-risky could not hold a PR armed in that
+window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;
+ci.yml fails if a guard job gains the condition or a dispatch job loses it.
+Repo variable ADMIT_TRIAGE:
+  off                   = the admit job never starts
+  anything else or unset = an issue labelled needs-triage in an enrolled product
+  repo, filed AND labelled by the human owner login alone and admitted by Jev
+  (p >= 0.9), is queued. A bot login never admits; anything below 0.9 goes to
+  the orchestrator. Caps: ADMIT_DAILY_MAX admissions per IST day (default 10)
+  and ADMIT_BUDGET_SEC a run (default 780). Runs only while AGENT_MODE=live,
+  so a shadow-mode repo gets no agent-ready it did not ask for.
+  To delete it: remove the admit job, tests/test_triage_admit.py, its ci.yml
+  step and the README section.
+The orchestrate and admit jobs are the self-hosted jobs here: org runner group
+`agent` (id 3) must list this file @refs/heads/main in selected_workflows,
+or the job queues forever next to idle runners. Delete that entry with them.
+```
+
+### agent-dispatch.yml: stuck-prs STUCK program
+
+stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
+comments (API objects), red: names of failed required checks on the
+head}. Out: {class, reason, url}. class is arm, review or stuck.
+Only verdicts on the CURRENT head count, in the words agent.yml's
+review job writes. Nothing arms without a reviewer or approver
+approval of that head: an unreviewed head, held or not, is sent to
+the review job, the same one hold-risky starts. A conflict or a red
+check is stuck whatever the review said. Each review the sweep asks
+for leaves a `stuck-review: <sha>` comment, so after three asks
+with no verdict (a review job that died before it wrote one) the
+head is stuck: STUCK re-asks once the marker is 15 minutes old.
+config/stuck-pr-cases.json runs this program in CI.
+
 ## Worker capacity
 
 The concurrency bound is the runner count (#8429): 22 `agent` runners
