@@ -75,7 +75,7 @@ groups:
         execErrState: Error
         annotations:
           summary: CPU pressure above 25% for 15 minutes, so work is queueing for cores.
-          description: 'Pressure has held at {{ $values.A.Value | printf "%.1f" }}% for 15 minutes while the processor read {{ $values.B.Value | printf "%.1f" }}% busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. See #9306 for per-unit and per-container CPU, which no exporter on this box publishes yet.'
+          description: 'Pressure has held at {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} for 15 minutes while the processor read {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. See #9306 for per-unit and per-container CPU, which no exporter on this box publishes yet.'
         labels:
           signal: cpu-pressure
         isPaused: false
