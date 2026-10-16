@@ -135,6 +135,9 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Install the OpenCode managed config",
                 "Create Codex's rules directory",
                 "Install the Codex execpolicy floor",
+                "Check whether Hermes has its cua-driver",
+                "Install Hermes' pinned cua-driver",
+                "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
             ), task["name"]
 
 
