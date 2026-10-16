@@ -44,7 +44,7 @@ def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
         assert "siterep-public#173" in entry["enrolled_by"], name  # the dated end-of-push review
 
 
-def test_every_enrolled_product_repo_has_a_sweep_timer():
+def test_every_enrolled_repo_has_a_sweep_timer():
     sync = (pathlib.Path(__file__).parent.parent / "systemd" / "fleet-sync.service").read_text()
     for name in ENROLLED:
         assert f"fleet-pr-sweep@{name}.timer" in sync, name
