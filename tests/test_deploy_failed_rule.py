@@ -109,13 +109,15 @@ def test_only_a_day_red_is_critical_its_read_errors_are_muted_and_the_tree_pages
         assert r["labels"]["severity"] == ("critical" if r["labels"]["signal"] == "deploy-failed-24h" else "warning")
     policy = _yq(".policies[0]", POLICY)
     assert policy["receiver"] == "fleet-alert-dispatch"
-    matched = [r for r in policy["routes"] if any(m[0] == "signal" and m[2].startswith("deploy-failed") for m in r["object_matchers"])]
+    matched = [r for r in policy["routes"] if any(m[0] == "signal" and m[1] == "=" and m[2].startswith("deploy-failed") for m in r["object_matchers"])]
     assert len(matched) == 1
     muted = matched[0]
     assert muted["receiver"] == "fleet-alert-dispatch"
     assert sorted(muted["object_matchers"]) == [["alertname", "=~", "DatasourceError|DatasourceNoData"], ["signal", "=", "deploy-failed-24h"]]
     assert muted["mute_time_intervals"] == ["deploy-failed-24h-errors"]
     assert not muted.get("continue")
+    errors = next(r for r in policy["routes"] if r["receiver"] == "hermes-urgent" and ["alertname", "=~", "DatasourceError|DatasourceNoData"] in r["object_matchers"])
+    assert ["signal", "!=", "deploy-failed-24h"] in errors["object_matchers"]
     critical = next(r for r in policy["routes"] if ["severity", "=", "critical"] in r["object_matchers"])
     assert (critical["receiver"], critical["repeat_interval"], critical["continue"]) == ("hermes-urgent", "1h", True)
     assert _yq(".muteTimes", POLICY) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
