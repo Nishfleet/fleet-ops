@@ -1,40 +1,11 @@
-# Cloudflare cost alarm: contact point and notification policy (fleet-ops#9355).
-#
-# Nish (2026-10-07, "make it urgent for us to address urgently"): a firing
-# cost-alarm rule opens a fleet-ops issue labelled agent-ready + priority-now,
-# so the fleet picks it up first. Nish reads it in the normal Hermes digest.
-# hermes-urgent (paid-plan-idle.yaml) is the fallback, and it fires directly
-# when the alarm cannot do its job:
-#   - the rule cannot evaluate (alertname DatasourceError / DatasourceNoData
-#     skips the issue route and lands on the policy root, hermes-urgent);
-#   - the GitHub POST fails (the rule in cloudflare-spend-delivery.yaml reads
-#     Grafana's own webhook failure counter and routes to hermes-urgent).
-#
-# The webhook posts the GitHub issues API body from the payload template. The
+# Notification contact points and the one policy tree (fleet-ops#9355, #9445).
+# The webhooks post the GitHub issues API body from the payload template. The
 # token is a file reference, never a literal: $__file{} is Grafana's own
 # provisioning expansion and re-reads the file at every provisioning load. The
 # file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
 # only) that expires after one hour, so fleet-grafana-github-token.timer
-# re-mints it every 20 min and reloads provisioning (fleet-ops#9445; before
-# that it was a static token in an env file and went stale in an hour). Rules
-# carry label signal=cloudflare-spend and the policy below picks them up, so
-# there is one place that decides the route.
-# Who gets interrupted (Nish's message contract: only a real outage, a money
-# problem, or something only he can act on pages him; everything else is an
-# issue for the fleet). hermes-urgent (Telegram) is therefore NOT the policy
-# root any more: the root is fleet-alert-dispatch, which files a fleet-ops issue.
-# Rules that page, and why:
-#   cloudflare-spend (6 rules)      money: a cost alarm is the fleet reporting a bill
-#   cloudflare-spend-delivery       the cost alarm could not file its issue
-#   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
-#   prompt-cache-hit                money: a route that stopped caching pays full price
-#   deploy-failed-24h (5 rules)     outage: a product's production deploy on main red for a day
-#                                   (deploy-failed files the fleet issue first)
-# Rules that file an issue instead: router-dead-row (fleet-owned router rows),
-# cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
-# unit is an issue, not a page), and any new rule. A dead GitHub token is caught by
-# cloudflare-spend-delivery (counts every failed webhook, so fleet-alert-dispatch too). tests/alert_routes_check.py
-# (CI) fails when a rule outside that list can reach hermes-urgent.
+# re-mints it every 20 min and reloads provisioning. Every rule carries a
+# severity label (critical or warning) and the policy tree below routes on it.
 apiVersion: 1
 
 contactPoints:
@@ -100,60 +71,30 @@ contactPoints:
 
 policies:
   - orgId: 1
-    # Root: the fleet, not Nish. One issue per alert instance (group_by '...').
     receiver: fleet-alert-dispatch
     group_by: ['...']
     group_wait: 0s
     group_interval: 5m
     repeat_interval: 24h
     routes:
-      - receiver: cloudflare-spend-dispatch
+      - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", cloudflare-spend]
+          - [severity, "=", critical]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, product, resource]
+        group_by: ['...']
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 12h
+        repeat_interval: 1h
         continue: true
-      # Same matcher again: a spend alert also pages hermes-urgent, so a dead
-      # or expired GitHub token never silences it.
       - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", cloudflare-spend]
+          - [severity, "=", warning]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, product, resource]
-        group_wait: 0s
-        group_interval: 5m
-        repeat_interval: 12h
-      # A product's production deploy on main has been red for 24 hours (the
-      # deploy-failed rules filed a fleet issue at the root first): it pages.
-      - receiver: hermes-urgent
-        object_matchers:
-          - [signal, "=", deploy-failed-24h]
-          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, repo]
+        group_by: ['...']
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 24h
-      # Its read errors are muted: the deploy-failed rule on the same query files
-      # the one issue per repo (deploy-failed.yaml).
-      - receiver: fleet-alert-dispatch
-        object_matchers:
-          - [signal, "=", deploy-failed-24h]
-          - [alertname, "=~", "DatasourceError|DatasourceNoData"]
-        mute_time_intervals: [deploy-failed-24h-errors]
-      - receiver: router-dead-row-dispatch
-        object_matchers:
-          - [signal, "=", router-dead-row]
-          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
-        group_wait: 0s
-        group_interval: 5m
-        repeat_interval: 12h
-      # A cost rule that cannot evaluate (alertname DatasourceError or
-      # DatasourceNoData skips the dispatch route above) is the fleet unable to
-      # see a bill: it pages, like the cost alarm itself.
+        continue: true
       - receiver: hermes-urgent
         object_matchers:
           - [signal, "=", cloudflare-spend]
@@ -161,7 +102,36 @@ policies:
         group_by: [alertname, product]
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 12h
+        repeat_interval: 24h
+        continue: true
+      - receiver: cloudflare-spend-dispatch
+        object_matchers:
+          - [signal, "=", cloudflare-spend]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product, resource]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
+      - receiver: router-dead-row-dispatch
+        object_matchers:
+          - [signal, "=", router-dead-row]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, model_id]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [signal, "=", deploy-failed-24h]
+          - [alertname, "=~", "DatasourceError|DatasourceNoData"]
+        mute_time_intervals: [deploy-failed-24h-errors]
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [alertname, "=~", ".+"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
 
 # The deploy-failed-24h rules' read errors (route above): the deploy-failed rule
 # on the same query files that repo's one issue.

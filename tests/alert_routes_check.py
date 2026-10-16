@@ -1,12 +1,13 @@
-"""Who can Grafana page? (fleet-ops, Nish's message contract)
+"""Does every Grafana alert rule route by severity? (fleet-ops, Nish's alerting contract)
 
-Only a real outage, a money problem, or something only Nish can act on may reach
-hermes-urgent (Telegram); every other rule must reach the fleet as an issue.
-This reads the provisioning files, works out the contact points each alert rule
-can reach (its own notification_settings receiver, otherwise the notification
-policy tree, also for the DatasourceError / DatasourceNoData alerts the rule can
-turn into), and fails when the set of rules that can reach hermes-urgent differs
-from URGENT below. Adding a paging rule means adding it here, with its reason.
+Every alert rule carries a severity label, critical or warning, and no rule
+overrides the notification policy tree with its own notification_settings. The
+tree pages hermes-urgent (Telegram) by severity: critical re-sends at least
+hourly, warning at least daily. Every firing alert, whatever its severity, also
+reaches a webhook that files a fleet-ops issue. This reads the provisioning
+files, walks the policy tree for each rule (also for the DatasourceError and
+DatasourceNoData alerts the rule can turn into), and fails when any of that does
+not hold.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -16,27 +17,17 @@ from pathlib import Path
 
 import yaml
 
-URGENT = {
-    # money: the cost alarm and the rule that says the cost alarm could not report
-    "Cloudflare Workers AI neurons": "money",
-    "Cloudflare D1 rows read": "money",
-    "Cloudflare D1 rows written": "money",
-    "Cloudflare email sends": "money",
-    "Cloudflare R2 Standard storage total": "money",
-    "Cloudflare R2 bucket growth": "money",
-    "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
-    "Prompt-cache read share below 50%": "money: every request pays full input price",
-    # money: a paid plan sits unused, and cancelling it is Nish's call
-    "Cline idle": "money", "CommandCode idle": "money", "MiniMax idle": "money",
-    "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
-    "OpenCode Go idle": "money", "Pareto idle": "money",
-    "Alibaba token-plan SG idle": "money",
-    **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
-        "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
-        "Nishfleet/mailbox", "Nishfleet/siterep-public")},
-}
+SEVERITIES = {"critical": 3600, "warning": 86400}
 PAGE = "hermes-urgent"
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch"}
 ERR = ("DatasourceError", "DatasourceNoData")
+UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def seconds(text):
+    parts = re.findall(r"(\d+)([smhdw])", str(text))
+    assert parts and "".join(f"{n}{u}" for n, u in parts) == str(text), f"unreadable duration {text!r}"
+    return sum(int(n) * UNITS[u] for n, u in parts)
 
 
 def matches(matchers, labels):
@@ -53,30 +44,36 @@ def matches(matchers, labels):
     return True
 
 
-def route(node, labels):
-    """Receivers reached by an alert with these labels (Alertmanager tree walk)."""
-    out = set()
+def route(node, labels, repeat=None):
+    """(receiver, repeat seconds) pairs reached by an alert with these labels
+    (Alertmanager tree walk): a matching child contributes its own receivers and
+    stops the walk unless it has continue; the node's own receiver applies only
+    when no child matched; repeat_interval is inherited from the parent."""
+    if node.get("repeat_interval") is not None:
+        repeat = seconds(node["repeat_interval"])
+    out, matched = set(), False
     for child in node.get("routes") or []:
         if matches(child.get("object_matchers") or [], labels):
-            out |= route(child, labels)
+            matched = True
+            out |= route(child, labels, repeat)
             if not child.get("continue"):
                 return out
-    return out | {node["receiver"]}
+    return out if matched else {(node["receiver"], repeat)}
 
 
 def selftest():
-    """The tree walk must follow Alertmanager: a matching child (also with continue)
-    contributes its own receiver, or its sub-route's when one matches; a non-matching
-    sub-route leaves the child's receiver; the root applies only when nothing matched."""
-    tree = {"receiver": "root", "routes": [
-        {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True,
+    tree = {"receiver": "root", "repeat_interval": "24h", "routes": [
+        {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True, "repeat_interval": "1h",
          "routes": [{"receiver": "a-sub", "object_matchers": [["y", "=", "1"]]}]},
         {"receiver": "b", "object_matchers": [["x", "=~", "1|2"]]}]}
-    assert route(tree, {"x": "1", "y": "1"}) == {"a-sub", "b"}
-    assert route(tree, {"x": "1", "y": "0"}) == {"a", "b"}
-    assert route(tree, {"x": "2"}) == {"b"}
-    assert route(tree, {"x": "3"}) == {"root"}
-    assert route(tree, {"x": "11"}) == {"root"}  # =~ is anchored
+    assert route(tree, {"x": "1", "y": "1"}) == {("a-sub", 3600), ("b", 86400)}
+    assert route(tree, {"x": "1", "y": "0"}) == {("a", 3600), ("b", 86400)}
+    assert route(tree, {"x": "2"}) == {("b", 86400)}
+    assert route(tree, {"x": "3"}) == {("root", 86400)}
+    assert route(tree, {"x": "11"}) == {("root", 86400)}
+    only = {"receiver": "root", "routes": [{"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True}]}
+    assert route(only, {"x": "1"}) == {("a", None)}
+    assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
 
@@ -93,27 +90,38 @@ def main(root):
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
     assert policy, "no notification policy found"
-    paging = {}
+    assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
+    bad, counts = [], {s: 0 for s in SEVERITIES}
     for r in rules:
-        for k, v in (r.get("labels") or {}).items():
-            assert not re.search(r"\$[A-Za-z_{]", str(v).replace("$$", "")), f"{r['title']}: label {k} has an unescaped $ that Grafana provisioning expands before the template runs (write $$labels or drop the label)"
-        own = (r.get("notification_settings") or {}).get("receiver")
-        reached = set()
-        for alertname in (r["title"], *ERR):
-            labels = {**(r.get("labels") or {}), "alertname": alertname}
-            reached |= {own} if own else route(policy, labels)
-        missing = reached - contacts
-        assert not missing, f"{r['title']}: unknown contact point(s) {missing}"
-        if PAGE in reached:
-            paging[r["title"]] = sorted(reached)
-    extra = sorted(set(paging) - set(URGENT))
-    gone = sorted(set(URGENT) - set(paging))
-    for t in sorted(paging):
-        print(f"pages: {t} -> {paging[t]}")
-    if extra or gone:
-        print(f"::error::rules that can page but are not urgent: {extra}; urgent rules that no longer page: {gone}")
+        title, labels = r["title"], r.get("labels") or {}
+        for k, v in labels.items():
+            assert not re.search(r"\$[A-Za-z_{]", str(v).replace("$$", "")), f"{title}: label {k} has an unescaped $ that Grafana provisioning expands before the template runs (write $$labels or drop the label)"
+        severity = labels.get("severity")
+        if severity not in SEVERITIES:
+            bad.append(f"{title}: severity label is {severity!r}, want one of {sorted(SEVERITIES)}")
+            continue
+        counts[severity] += 1
+        if r.get("notification_settings"):
+            bad.append(f"{title}: notification_settings bypasses the policy tree")
+            continue
+        for alertname in (title, *ERR):
+            reached = route(policy, {**labels, "alertname": alertname})
+            unknown = {rc for rc, _ in reached} - contacts
+            if unknown:
+                bad.append(f"{title}: unknown contact point(s) {sorted(unknown)}")
+            if not {rc for rc, _ in reached} & ISSUE_SINKS:
+                bad.append(f"{title} ({alertname}): no webhook that files a fleet-ops issue")
+        reached = route(policy, {**labels, "alertname": title})
+        pages = [rep for rc, rep in reached if rc == PAGE]
+        if not pages:
+            bad.append(f"{title}: {severity} alert does not reach {PAGE}")
+        elif any(rep is None or rep > SEVERITIES[severity] for rep in pages):
+            bad.append(f"{title}: {severity} alert pages with repeat_interval {pages}, want <= {SEVERITIES[severity]}s")
+    if bad:
+        for b in bad:
+            print(f"::error::{b}")
         return 1
-    print(f"{len(paging)} of {len(rules)} rules can page; every other rule reaches the fleet only")
+    print(f"{len(rules)} rules: {counts['critical']} critical (page every <=1h), {counts['warning']} warning (page every <=24h), all also file a fleet-ops issue")
     return 0
 
 

@@ -105,18 +105,16 @@ sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only)
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
-Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
-or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
-cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
-nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price),
-the deploy-failed-24h rules (a product repo's production deploy on main has been red for a day;
-for the first day the deploy-failed rules in `deploy-failed.yaml` only file a fleet issue) and
-cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
-labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
-cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
-fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
-add it there with the reason. Switch off the fleet route: point the policy root back at
-`hermes-urgent` in `cloudflare-spend-contact.yaml`.
+Who gets paged. Every alert rule carries a `severity` label, `critical` (something is down or
+broken for users or the fleet, or money is running away) or `warning` (cost, efficiency and idle-seat
+signals), and the one policy tree in `cloudflare-spend-contact.yaml` routes on it: critical pages
+`hermes-urgent` (Telegram) again every hour until it resolves, warning every 24 hours. A rule never
+sets its own `notification_settings`. Every firing alert also reaches a webhook that files a
+fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and router-dead-row
+variants), re-filed at most daily while it keeps firing; the webhook cannot comment or close, so
+the same alert gets a new issue per day. Datasource errors file an issue and do not page, except the
+cost rules'. `tests/alert_routes_check.py` (CI) fails when a rule has no severity, overrides the tree,
+or a critical alert would re-send slower than hourly.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into

@@ -1,7 +1,7 @@
 # Paid-plan idle detector (fleet-ops#9221).
 # The paid-plan list lives in this file. A plan Nish cancels is removed here
 # in the same PR that removes its router rows.
-# Contact point: existing Hermes Telegram bot + TELEGRAM_HOME_CHANNEL.
+# Contact point: existing Hermes Telegram bot + TELEGRAM_HOME_CHANNEL, reached through the policy tree by severity warning.
 # Grafana file provisioning has no shared/foreach rule form (docs: groups[].rules
 # is a list of full rules). One rule per plan so absent_over_time matches that
 # api_base. disableResolveMessage is true: Hermes urgent is firing-only.
@@ -82,15 +82,10 @@ groups:
           summary: Cline served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: cline
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-commandcode
         title: CommandCode idle
         condition: C
@@ -144,15 +139,10 @@ groups:
           summary: CommandCode served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: commandcode
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-minimax
         title: MiniMax idle
         condition: C
@@ -206,15 +196,10 @@ groups:
           summary: MiniMax served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: minimax
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-stepfun
         title: StepFun idle
         condition: C
@@ -268,15 +253,10 @@ groups:
           summary: StepFun served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: stepfun
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-zai
         title: z.ai idle
         condition: C
@@ -330,15 +310,10 @@ groups:
           summary: z.ai served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: zai
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-ollama
         title: Ollama idle
         condition: C
@@ -392,15 +367,10 @@ groups:
           summary: Ollama served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: ollama
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-opencode-go
         title: OpenCode Go idle
         condition: C
@@ -454,15 +424,10 @@ groups:
           summary: OpenCode Go served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: opencode-go
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-pareto
         title: Pareto idle
         condition: C
@@ -516,15 +481,10 @@ groups:
           summary: Pareto served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: pareto
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-alibaba
         title: Alibaba token-plan SG idle
         condition: C
@@ -578,12 +538,7 @@ groups:
           summary: Alibaba token-plan SG served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: warning
           plan: alibaba-token-plan-sg
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
