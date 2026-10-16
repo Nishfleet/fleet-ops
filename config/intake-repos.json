@@ -29,6 +29,11 @@
       "name": "rera-report-card",
       "product": true,
       "enrolled_by": "Nish, 2026-10-13 (RERA Report Card approved)"
+    },
+    {
+      "name": "siterep-public",
+      "product": true,
+      "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; decision ledger entry nish-vault#27; the end-date review is Nishfleet/siterep-public#173, due that day)"
     }
   ],
   "excluded": [
