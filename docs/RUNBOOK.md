@@ -114,7 +114,7 @@ fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alar
 variants), re-filed at most daily while it keeps firing; the webhook cannot comment or close, so
 the same alert gets a new issue per day. Datasource errors file an issue and do not page, except the
 cost rules'. `tests/alert_routes_check.py` (CI) fails when a rule has no severity, overrides the tree,
-or a critical alert would re-send slower than hourly.
+or a critical alert would re-send slower than hourly. Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent` in `cloudflare-spend-contact.yaml`.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into

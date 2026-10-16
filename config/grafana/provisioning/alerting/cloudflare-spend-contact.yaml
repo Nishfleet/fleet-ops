@@ -64,7 +64,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, routed to the fleet because it is not one of the urgent classes (see the header of cloudflare-spend-contact.yaml). Find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
               {{- end -}}
 
@@ -81,7 +81,7 @@ policies:
         object_matchers:
           - [severity, "=", critical]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: ['...']
+        group_by: [alertname, repo, product, resource, model_id, plan, requested_model]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 1h
@@ -90,7 +90,7 @@ policies:
         object_matchers:
           - [severity, "=", warning]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: ['...']
+        group_by: [alertname, repo, product, resource, model_id, plan, requested_model]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 24h
@@ -102,7 +102,7 @@ policies:
         group_by: [alertname, product]
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 24h
+        repeat_interval: 12h
         continue: true
       - receiver: cloudflare-spend-dispatch
         object_matchers:
@@ -111,7 +111,7 @@ policies:
         group_by: [alertname, product, resource]
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 24h
+        repeat_interval: 12h
       - receiver: router-dead-row-dispatch
         object_matchers:
           - [signal, "=", router-dead-row]
@@ -119,7 +119,7 @@ policies:
         group_by: [alertname, model_id]
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 24h
+        repeat_interval: 12h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [signal, "=", deploy-failed-24h]

@@ -52,6 +52,8 @@ def route(node, labels, repeat=None):
     if node.get("repeat_interval") is not None:
         repeat = seconds(node["repeat_interval"])
     out, matched = set(), False
+    if node.get("mute_time_intervals"):
+        return {(node["receiver"] + "#muted", repeat)}
     for child in node.get("routes") or []:
         if matches(child.get("object_matchers") or [], labels):
             matched = True
@@ -106,9 +108,11 @@ def main(root):
             continue
         for alertname in (title, *ERR):
             reached = route(policy, {**labels, "alertname": alertname})
-            unknown = {rc for rc, _ in reached} - contacts
+            unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts
             if unknown:
                 bad.append(f"{title}: unknown contact point(s) {sorted(unknown)}")
+            if all(rc.endswith("#muted") for rc, _ in reached):
+                continue
             if not {rc for rc, _ in reached} & ISSUE_SINKS:
                 bad.append(f"{title} ({alertname}): no webhook that files a fleet-ops issue")
         reached = route(policy, {**labels, "alertname": title})
