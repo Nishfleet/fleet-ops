@@ -9,8 +9,10 @@
 # days and leads with the 24h absence branch, so these three cases pin the
 # behaviour:
 #
-#  - the incident shape (last call ~3.8 days ago, nothing since) stays silent,
-#    which the deployed 24h idle branch got wrong;
+#  - the incident shape stays silent: the row is present and its last call
+#    (here 91h before the eval, i.e. any gap over 24h and under 7d) is outside
+#    the old 24h idle branch and well inside the new 7d one. In the real
+#    incident the gap was 24h plus 40 seconds, the closest possible miss.
 #  - a plan with zero calls for 7 days still fires;
 #  - a row that vanishes from the router still fires after 24h of absence even
 #    when its counter moved within the last 7 days.
