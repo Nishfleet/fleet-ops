@@ -206,7 +206,7 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
-      - name: Every alert rule has a severity, pages by it and files a fleet issue
+      - name: Only the urgent rules are critical and page Nish hourly; every rule files a fleet issue (fleet-ops#9445)
         run: |
           sudo apt-get install -y -q python3-yaml >/dev/null
           python3 tests/alert_routes_check.py

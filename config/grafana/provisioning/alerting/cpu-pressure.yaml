@@ -14,7 +14,7 @@
 # sits near 2% when idle and reads 33% when the cores are saturated, so 25% is
 # above ordinary churn and well below a genuinely blocked box.
 #
-# Severity critical: the policy tree pages hermes-urgent hourly and files a fleet-ops issue.
+# Severity warning: the policy tree files a fleet-ops issue and does not page (fleet-ops#9445).
 apiVersion: 1
 
 groups:
@@ -74,6 +74,6 @@ groups:
           summary: CPU pressure above 25% for 15 minutes, so work is queueing for cores.
           description: 'Pressure has held at {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} for 15 minutes while the processor read {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}%{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} busy. Busy is the share of all cores in use; pressure is the share of time runnable work could not get a core. Runners per repo, the router and sessions all share this host, and none of them is named by this rule, so use `systemctl status` on the host to find the unit. See #9306 for per-unit and per-container CPU, which no exporter on this box publishes yet.'
         labels:
-          severity: critical
+          severity: warning
           signal: cpu-pressure
         isPaused: false

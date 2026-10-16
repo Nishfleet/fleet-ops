@@ -1,13 +1,15 @@
-"""Does every Grafana alert rule route by severity? (fleet-ops, Nish's alerting contract)
+"""Which Grafana rules page Nish, and how often? (fleet-ops, Nish's message contract)
 
-Every alert rule carries a severity label, critical or warning, and no rule
-overrides the notification policy tree with its own notification_settings. The
-tree pages hermes-urgent (Telegram) by severity: critical re-sends at least
-hourly, warning at least daily. Every firing alert, whatever its severity, also
-reaches a webhook that files a fleet-ops issue. This reads the provisioning
-files, walks the policy tree for each rule (also for the DatasourceError and
-DatasourceNoData alerts the rule can turn into), and fails when any of that does
-not hold.
+Only a real outage, a money problem, or something only Nish can act on may reach
+hermes-urgent (Telegram); every other rule reaches the fleet as an issue. Every
+rule carries a severity label: critical for the rules in URGENT (they page again
+at least hourly until they resolve), warning for every other rule (never pages).
+Every firing alert, whatever its severity, also reaches a webhook that files a
+fleet-ops issue. No rule may set its own notification_settings, which would
+bypass the policy tree. This reads the provisioning files, walks the policy tree
+for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
+can turn into), and fails when any of that does not hold. Adding a paging rule
+means adding it to URGENT here, with its reason, and labelling it critical.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -17,8 +19,28 @@ from pathlib import Path
 
 import yaml
 
-SEVERITIES = {"critical": 3600, "warning": 86400}
+URGENT = {
+    # money: the cost alarm and the rule that says the cost alarm could not report
+    "Cloudflare Workers AI neurons": "money",
+    "Cloudflare D1 rows read": "money",
+    "Cloudflare D1 rows written": "money",
+    "Cloudflare email sends": "money",
+    "Cloudflare R2 Standard storage total": "money",
+    "Cloudflare R2 bucket growth": "money",
+    "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
+    "Prompt-cache read share below 50%": "money: every request pays full input price",
+    # money: a paid plan sits unused, and cancelling it is Nish's call
+    "Cline idle": "money", "CommandCode idle": "money", "MiniMax idle": "money",
+    "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
+    "OpenCode Go idle": "money", "Pareto idle": "money",
+    "Alibaba token-plan SG idle": "money",
+    **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
+        "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
+        "Nishfleet/mailbox", "Nishfleet/siterep-public")},
+}
 PAGE = "hermes-urgent"
+SEVERITIES = ("critical", "warning")
+CRITICAL_REPEAT = 3600
 ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch"}
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -94,21 +116,24 @@ def main(root):
             contacts.add(c["name"])
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
-    bad, counts = [], {s: 0 for s in SEVERITIES}
+    bad, paging = [], {}
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():
             assert not re.search(r"\$[A-Za-z_{]", str(v).replace("$$", "")), f"{title}: label {k} has an unescaped $ that Grafana provisioning expands before the template runs (write $$labels or drop the label)"
         severity = labels.get("severity")
         if severity not in SEVERITIES:
-            bad.append(f"{title}: severity label is {severity!r}, want one of {sorted(SEVERITIES)}")
+            bad.append(f"{title}: severity label is {severity!r}, want one of {list(SEVERITIES)}")
             continue
-        counts[severity] += 1
+        if severity != ("critical" if title in URGENT else "warning"):
+            bad.append(f"{title}: severity {severity} but {'it is in' if title in URGENT else 'it is not in'} the urgent list")
         if r.get("notification_settings"):
             bad.append(f"{title}: notification_settings bypasses the policy tree")
             continue
+        reached_any = set()
         for alertname in (title, *ERR):
             reached = route(policy, {**labels, "alertname": alertname})
+            reached_any |= {rc for rc, _ in reached}
             unknown = {rc.removesuffix("#muted") for rc, _ in reached} - contacts
             if unknown:
                 bad.append(f"{title}: unknown contact point(s) {sorted(unknown)}")
@@ -116,17 +141,22 @@ def main(root):
                 continue
             if not {rc for rc, _ in reached} & ISSUE_SINKS:
                 bad.append(f"{title} ({alertname}): no webhook that files a fleet-ops issue")
-        reached = route(policy, {**labels, "alertname": title})
-        pages = [rep for rc, rep in reached if rc == PAGE]
-        if not pages:
-            bad.append(f"{title}: {severity} alert does not reach {PAGE}")
-        elif any(rep is None or rep > SEVERITIES[severity] for rep in pages):
-            bad.append(f"{title}: {severity} alert pages with repeat_interval {pages}, want <= {SEVERITIES[severity]}s")
+        if PAGE in reached_any:
+            paging[title] = sorted(reached_any)
+        pages = [rep for rc, rep in route(policy, {**labels, "alertname": title}) if rc == PAGE]
+        if severity == "critical" and (not pages or any(rep is None or rep > CRITICAL_REPEAT for rep in pages)):
+            bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {CRITICAL_REPEAT}s, got {pages}")
+    extra = sorted(set(paging) - set(URGENT))
+    gone = sorted(set(URGENT) - set(paging))
+    for t in sorted(paging):
+        print(f"pages: {t} -> {paging[t]}")
+    if extra or gone:
+        bad.append(f"rules that can page but are not urgent: {extra}; urgent rules that no longer page: {gone}")
     if bad:
         for b in bad:
             print(f"::error::{b}")
         return 1
-    print(f"{len(rules)} rules: {counts['critical']} critical (page every <=1h), {counts['warning']} warning (page every <=24h), all also file a fleet-ops issue")
+    print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
     return 0
 
 

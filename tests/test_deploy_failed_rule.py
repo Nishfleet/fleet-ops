@@ -104,9 +104,9 @@ def test_the_condition_is_the_sql_over_query_a():
         assert [d["refId"] for d in r["data"]] == ["A", r["condition"]]
 
 
-def test_every_deploy_rule_is_critical_its_read_errors_are_muted_and_the_tree_pages_and_files_an_issue():
+def test_only_a_day_red_is_critical_its_read_errors_are_muted_and_the_tree_pages_it_hourly():
     for r in _all_rules():
-        assert r["labels"]["severity"] == "critical"
+        assert r["labels"]["severity"] == ("critical" if r["labels"]["signal"] == "deploy-failed-24h" else "warning")
     policy = _yq(".policies[0]", POLICY)
     assert policy["receiver"] == "fleet-alert-dispatch"
     matched = [r for r in policy["routes"] if any(m[0] == "signal" and m[2].startswith("deploy-failed") for m in r["object_matchers"])]
