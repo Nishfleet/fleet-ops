@@ -36,7 +36,7 @@ URGENT = {
     "Alibaba token-plan SG idle": "money",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
-        "Nishfleet/mailbox", "Nishfleet/siterep-public")},
+        "Nishfleet/mailbox", "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
 }
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
