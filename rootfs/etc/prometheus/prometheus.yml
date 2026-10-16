@@ -101,6 +101,8 @@ scrape_configs:
     static_configs:
       - targets:
           - https://api.0509.io/
+          - https://seofixkit.com/
+          - https://siterep.net/
           - https://aiconverter.app/
           - https://inish.in/
     relabel_configs:
