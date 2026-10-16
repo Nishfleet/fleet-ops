@@ -86,7 +86,7 @@ def test_the_issue_group_covers_every_repo_and_the_24h_group_holds_the_same_quer
     groups = _groups()
     issue = {r["labels"]["repo"]: r for r in groups["deploy-failed"]}
     page = {r["labels"]["repo"]: r for r in groups["deploy-failed-24h"]}
-    assert set(page) == set(issue) - {"Nishfleet/inish-site"}
+    assert set(page) == set(issue) - {"Nishfleet/inish-site", "Nishfleet/fleet-console-worker", "Nishfleet/inish-mail-filter"}
     for repo, r in issue.items():
         assert (r["labels"]["signal"], r["for"], r["execErrState"], r["noDataState"]) == ("deploy-failed", "30m", "Error", "OK")
         assert "cannot read GitHub runs" in r["annotations"]["summary"]
