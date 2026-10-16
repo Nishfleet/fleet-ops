@@ -1011,7 +1011,7 @@ jobs:
       stuck_url: ${{ matrix.x.url }}
   red-main:
     if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.RED_MAIN != 'off' && github.repository != 'Nishfleet/fleet-ops' &&
+      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.RED_MAIN != 'off' && github.repository != 'Nishfleet/fleet-ops' && github.repository != 'Nishfleet/TinyStudio.io-public' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}

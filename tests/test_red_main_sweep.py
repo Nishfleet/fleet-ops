@@ -344,6 +344,7 @@ def test_red_main_job_is_gated_and_needs_no_new_token():
     cond = " ".join(_y(".jobs.red-main.if").split())
     assert cond.startswith("vars.FLEET_DISPATCH_PAUSED != 'true' && ")
     assert "github.repository != 'Nishfleet/fleet-ops'" in cond
+    assert "github.repository != 'Nishfleet/TinyStudio.io-public'" in cond
     assert _y(".jobs.red-main.steps[0].env.GH_TOKEN").strip() == "${{ github.token }}"
     assert dict(l.split(": ") for l in _y(".jobs.red-main.permissions").strip().splitlines()) == {"issues": "write", "actions": "read"}
 
