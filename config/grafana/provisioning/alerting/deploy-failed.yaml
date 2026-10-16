@@ -40,9 +40,11 @@
 #    it orders by run id. inish-site has no 24h rule: its ci.yml runs tests
 #    before the deploy job, and a run's result cannot say which failed.
 #
-# The nish3451 repos moved to Nishfleet on 2026-10-16, so fleet-github (an
-# all-repos installation, see datasources/fleet.yaml) reads them. seo-fix-kit,
-# fleet-console-worker and inish-mail-filter are covered. The last two are in
+# The nish3451 repos moved to Nishfleet on 2026-10-16. seo-fix-kit,
+# fleet-console-worker and inish-mail-filter are covered from fleet-github,
+# whose installation datasources/fleet.yaml records as all Nishfleet repos; its
+# read of these three was not tested live before they were added, so a repo it
+# cannot read files a "cannot read GitHub runs" issue. The last two are in
 # the deploy-failed group only, with no 24h rule: their deploys have never
 # succeeded (no Cloudflare key until 2026-10-16) and their fix PRs (#10, #8)
 # are not merged, so a 24h page would only repeat a known red. Add their 24h
