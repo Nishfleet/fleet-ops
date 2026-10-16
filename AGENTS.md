@@ -112,8 +112,15 @@ file, never print it, never copy it into a repo, PR or issue:
 
 - `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
-  KV list, `workersInvocationsAdaptive`). Use it for D1 drills, preview uploads
-  and analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186).
+  KV list, `workersInvocationsAdaptive`). Use it for preview uploads and
+  analytics queries (0509#4179 #4180 #4182 #4183 #4184 #4186). **Never use it
+  for restore drills or any other D1 create, import, execute-write or delete.**
+  A restore drill imports a backup into a local SQLite file (`sqlite3`) and
+  compares row counts there; it never creates a Cloudflare database. Restore
+  drills need no D1 Write token; a live row count is one read-only `COUNT`
+  query. Scratch D1 databases made by drills wrote 17M rows in 5 days (14-19 Sep) and 205k rows
+  in one hour (15 Oct, fleet-ops#9781); the `cf-d1-rows-written` alarm fires
+  above 68,493 rows/h, and when it fires you stop drilling.
 - `~/.config/cloudflare/email.env` — `CLOUDFLARE_EMAIL_TOKEN`, narrowed 2026-09-25: Email
   Routing (addresses, rules, suppressions), Email Sending, R2 storage and Turnstile only, and it
   works only from this VPS's IPs. It cannot create tokens, touch DNS or Workers, or read analytics.
@@ -240,6 +247,7 @@ Hard rules:
 - Maintain the todo list via the loaded todo extension, one item per acceptance bullet; if no item has been completed in 10 minutes, stop polishing, commit what works, and either open the PR or post a `blocked-on:` proposal.
 - The bar is 'extremely well', never 'perfect'. (69 hang-kills at 42 min; 27-min low-yield sessions. NOT adopted: agent-to-agent chat loops, 96 sub-agents.)
 - A failing test is only "not mine" after proving it also fails on `origin/main` — run the same test on the base branch without your changes before you call it pre-existing, flaky or someone else's; "the diff does not touch it" is not that proof (fleet-ops#9016, Amp docs/orbs/shipping).
+- On a repo the red-main sweep covers (every enrolled repo with `AGENT_MODE=live` and no `RED_MAIN=off`, except fleet-ops), a check that also fails on `origin/main` is never filed as a new issue (fleet-ops#9308: seven duplicates for one red main in two hours). The hourly sweep files exactly one open issue per workflow whose latest run on the default branch failed, with the line `red-main: <workflow file>` in its body (`gh issue list --search '"red-main:" in:body'` finds it), and closes it when that workflow is green. Link your PR to that issue and comment there only when you hold new evidence; if none exists yet, leave it for the next sweep. On fleet-ops, on a shadow-mode repo and where `RED_MAIN=off` no sweep runs, so file it as before.
 - GEO/AEO (ledger 2026-08-27, fleet-ops#1245): measurement and owned-content tactics only; brand gate is preview-then-autonomous; Reddit/community and digital-PR are Nish-reserved (the grants[] config store was deleted in the glue sweep — Nish's word in the ledger is the only grant); llms.txt: skip except developer docs.
   pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch stays ours. Do NOT bank a dirty worktree: your unit removes the worktree in its own ExecStopPost, so uncommitted work did not happen — commit and push before you finish. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 

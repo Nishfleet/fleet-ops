@@ -57,6 +57,12 @@
           "maxTokens": 32768
         },
         {
+          "id": "worker-public",
+          "name": "LiteLLM worker-public (Straitly credit, public repos only, falls back to worker-capable)",
+          "contextWindow": 140000,
+          "maxTokens": 32768
+        },
+        {
           "id": "senior",
           "name": "LiteLLM senior (ordered fallback ladder)",
           "contextWindow": 500000,
