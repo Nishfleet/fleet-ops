@@ -256,11 +256,11 @@ jobs:
         # touching a file.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py
-      - name: needs-triage admission (Jev verdict, then queue) and digest reply shape (fleet-ops#9706)
+      - name: needs-triage admission, digest reply shape and red-main issues (fleet-ops#9706, #9308)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -836,7 +836,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
