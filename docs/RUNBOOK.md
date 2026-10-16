@@ -106,17 +106,19 @@ window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
 Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
-or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
-cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
-nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price),
-the deploy-failed-24h rules (a product repo's production deploy on main has been red for a day;
-for the first day the deploy-failed rules in `deploy-failed.yaml` only file a fleet issue) and
-cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
-labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
-cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
-fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
-add it there with the reason. Switch off the fleet route: point the policy root back at
-`hermes-urgent` in `cloudflare-spend-contact.yaml`.
+or something only he can act on interrupts him. Every alert rule carries a `severity` label and
+the one policy tree in `cloudflare-spend-contact.yaml` routes on it. `critical` is exactly the
+urgent list in `tests/alert_routes_check.py`: the cost alarm, its delivery-failed rule, the nine
+paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They page `hermes-urgent`
+(Telegram) again every hour until they resolve, and cost, plan and cache rules that cannot evaluate
+page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
+rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
+a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
+router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
+new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+without being on the urgent list (or the reverse), or a critical alert would re-send slower than
+hourly. To make a new rule page, add it to the list there with the reason and label it critical.
+Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
