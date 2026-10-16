@@ -1983,7 +1983,7 @@ jobs:
             else
               echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
               jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
-              echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
+              echo "This check passes once nish3451 comments coordinator-approval: $sha on this head. A bot review does not count." >> "$GITHUB_STEP_SUMMARY"
               bad=1
             fi
           done

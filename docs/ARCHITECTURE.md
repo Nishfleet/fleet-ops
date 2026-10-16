@@ -153,7 +153,7 @@ The rules still in force:
   Only nish3451's comment or status counts (`APPROVERS`, Nish 2026-10-16, after
   0509#7657 merged on a bot approval). agent.yml's `review` job (called by
   `review-risky`) still reads the held head's diff and posts its review and a
-  GitHub `Approve` review as an aid for the approver; the `main-merge-queue`
+  GitHub `Approve` review as advice for the approver, and never arms (the hourly `stuck-arm` sweep arms once nish3451's comment names the head); the `main-merge-queue`
   ruleset requires one approving review and dismisses it on a push, but that
   review does not clear the hold. The gate and `hold-risky` read their programs
   and the path list from the base branch, so a PR cannot loosen the rules that
