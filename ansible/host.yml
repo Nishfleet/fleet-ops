@@ -795,6 +795,7 @@
         install_recommends: false
         update_cache: true
         cache_valid_time: 86400
+        lock_timeout: 300
 
     - name: Check whether Hermes has its cua-driver
       become: true
@@ -803,6 +804,8 @@
         argv: ["{{ nish_home }}/.local/bin/hermes", computer-use, status]
       environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
       register: hermes_cua_driver
+      check_mode: false
+      timeout: 60
       changed_when: false
       failed_when: false
 
@@ -812,9 +815,16 @@
       ansible.builtin.command:
         argv: ["{{ nish_home }}/.local/bin/hermes", computer-use, install]
       environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
+      register: hermes_cua_install
       timeout: 600
-      when: hermes_cua_driver.rc != 0
+      when: (hermes_cua_driver.rc | default(0)) == 1
       changed_when: true
+      failed_when: false
+
+    - name: Warn that Hermes' cua-driver install failed
+      ansible.builtin.debug:
+        msg: "WARNING: hermes computer-use install exited {{ hermes_cua_install.rc }}; computer_use stays off until it works"
+      when: hermes_cua_install.rc is defined and hermes_cua_install.rc != 0
 
     - name: Let Hermes start its own headless Bot Desktop when computer_use needs a display
       become: true
@@ -822,10 +832,9 @@
       ansible.builtin.lineinfile:
         path: "{{ nish_home }}/.hermes/config.yaml"
         line: "bot_desktop: {auto_start: true}"
-        regexp: '^bot_desktop:'
       vars:
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
-      when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^bot_desktop:')
+      when: hermes_text is not search('(?m)^bot_desktop:')
       diff: false
 
     - name: Look for the Command Code seat

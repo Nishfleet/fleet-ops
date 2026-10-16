@@ -41,13 +41,17 @@ def test_driver_install_runs_as_nish_on_the_real_home_only_when_status_fails():
     assert CHECK["ansible.builtin.command"]["argv"][1:] == ["computer-use", "status"]
     assert CHECK["changed_when"] is False
     assert INSTALL["ansible.builtin.command"]["argv"][1:] == ["computer-use", "install"]
-    assert INSTALL["when"] == "hermes_cua_driver.rc != 0"
+    assert INSTALL["when"] == "(hermes_cua_driver.rc | default(0)) == 1"
+    assert CHECK["check_mode"] is False and CHECK["timeout"] <= 120 and INSTALL["timeout"] <= 600
+    assert INSTALL["failed_when"] is False
 
 
 def test_opt_in_is_one_idempotent_line_and_never_names_a_display():
     module = OPT_IN["ansible.builtin.lineinfile"]
     assert module["line"] == "bot_desktop: {auto_start: true}"
-    assert module["regexp"] == "^bot_desktop:"
+    assert "regexp" not in module
+    assert OPT_IN["become"] is True and OPT_IN["become_user"] == "nish"
+    assert "mcp_servers" not in OPT_IN["when"]
     assert "bot_desktop:" in OPT_IN["when"]
     assert "DISPLAY" not in HOST.read_text()
 
