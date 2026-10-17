@@ -299,10 +299,10 @@ jobs:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
       # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
+      # Only nish3451 counts (Nish, 2026-10-16: a bot approval let a labelled migration PR merge, 0509#7657).
+      # review-risky's bot comment is a review aid, not an approval. The coordinator posts Nish's OK line from his login.
+      # Keep stuck-prs' APPROVERS in step: ci.yml asserts they are equal.
+      APPROVERS: nish3451
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
       # risky-paths.json or null. patches is [{file, patch}] with patch null
@@ -470,19 +470,17 @@ jobs:
             echo "### hold-risky: #$PR held at \`$sha\`"
             jq -r '.why[] | "- \(.)"' <<<"$verdict"
             echo
-            echo "review-risky reviews this exact head next and arms it once the review approves. Nothing here needs a person."
+            echo "Held until nish3451 comments coordinator-approval on this exact head. A bot review does not clear it."
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$ok" = true ]
-  # Independent review of a held risky PR (Nish 2026-10-05: reviewed PRs merge
-  # themselves, no pasted approval lines). agent.yml's review job reads the
-  # head's diff through the API, never checks out PR code, asks a model with no
-  # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot]; the same run's arm
-  # job then arms the PR.
-  # hold-risky stays the only door: it reads that comment like any other.
+  # Advice for the person who approves a held risky PR (Nish 2026-10-16: only
+  # nish3451 approves). agent.yml's review job reads the head's diff through
+  # the API, never checks out PR code, asks a model with no tools for findings
+  # and Jev for approve or block, and posts its review. hold-risky ignores
+  # that bot comment: only nish3451's coordinator-approval counts.
   # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
-  # needs two reviews to approve: the judge and a second reviewer of a
-  # different model family. No person is asked. Paused fleets do not review.
+  # gets two reviews: the judge and a second reviewer of a different model
+  # family. Paused fleets do not review.
   review-risky:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
@@ -800,7 +798,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Logins whose unedited `coordinator-approval: <sha>` comment counts,
           # hold-risky's APPROVERS.
-          APPROVERS: nish3451 github-actions[bot]
+          APPROVERS: nish3451
           STUCK: |
             .pr.headRefOid as $sha
             | $sha[0:7] as $s7
