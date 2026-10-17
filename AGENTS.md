@@ -5,6 +5,8 @@
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 - Any diff under `.github/workflows/`: the three offline gates the required `ci` check runs, all before the push — `actionlint .github/workflows/*.yml`, `uvx zizmor@1.30.1 --offline --format plain .github/workflows` (picks up `.github/zizmor.yml`, same pin as `ci.yml`), and `shellcheck` on every changed shell file. semgrep does not cover this surface: a zizmor-only finding turned `ci` red on PR 9212 (fleet-ops#9214). Put all three results in the PR body, and name a gate that did not run.
 
+- Unit files: run `XDG_RUNTIME_DIR="$(mktemp -d)" systemd-analyze verify <unit>`, never a bare `systemd-analyze verify` or `systemd-analyze --user verify`. A bare run rebinds the live user manager's `systemd/private` socket and breaks `podman auto-update` and `fleet-update.service` until the manager is re-executed. The `ci` step "Unit files checked by systemd-analyze in a private runtime dir" fails on any verify line outside Markdown that lacks it; this bullet is the rule for Markdown and for hand runs.
+
 ## Prompt prefix
 
 - Any prompt we build puts static text first, then the one marker line `=== FLEET-DYNAMIC-BELOW ===`, then all dynamic text (target id, issue text, paths, dates, run ids), so the prompt-cache prefix is shared across runs (fleet-ops#9363). The `ci` check "Static prompt prefix before the dynamic marker" enforces it on `prompts/` and `agent.yml`.

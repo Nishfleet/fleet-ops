@@ -96,7 +96,7 @@ jobs:
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         with:
           version: v0.11.0
-      - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
+      - name: apt binaries the unit-file verify step needs (promtool, bwrap, redis-server, ansible-pull)
         if: always()
         run: sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
@@ -120,7 +120,7 @@ jobs:
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
           amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
           promtool test rules config/prometheus-tests/*.test.yml
-      - name: stub host-only binaries for systemd-analyze verify
+      - name: stub host-only binaries for the unit-file verify step
         if: always()
         run: |
           for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
@@ -129,21 +129,17 @@ jobs:
           for b in cursor-agent leviathan tofu; do
             install -D -m0755 /bin/true "$HOME/.local/bin/$b"
           done
-      - name: systemd-analyze verify over unit files
-        # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
-        # glob reaches systemd-analyze as a literal filename -> rc 1. With
-        # nullglob an empty set expands to nothing and a future .path unit is
-        # verified again by this same line.
-        # systemd/system/*.slice too (fleet-ops#8638): the root glob never
-        # matched systemd/system/, so agent.slice and claude.slice shipped
-        # unverified. Slices carry no Exec line, so they need none of the
-        # binary stubs above. Root-owned units moved to rootfs/etc/systemd/system/
-        # (fleet-host-config, thread "fix everything like pro devs"); the
-        # host-config service and timer are verified with the slices.
+      - name: Unit files checked by systemd-analyze in a private runtime dir
+        # nullglob: an unmatched glob reaches systemd-analyze as a literal filename
+        # (#8474 deleted the last .path unit). systemd/system/*.slice too (#8638):
+        # slices carry no Exec line, so they need no stubs. Root-owned units live in
+        # rootfs/etc/systemd/system/. The git grep fails the step on any
+        # non-markdown verify line without a private XDG_RUNTIME_DIR.
         if: always()
         run: |
           shopt -s nullglob
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
+          git grep -nE 'systemd-analyz[e]( +-[-a-z=]+)* +verify' -- . ':!*.md' | grep -v 'XDG_RUNTIME_DIR=' && { echo '::error::systemd-analyze verify needs a private XDG_RUNTIME_DIR'; exit 1; }
+          XDG_RUNTIME_DIR="$(mktemp -d)" systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
