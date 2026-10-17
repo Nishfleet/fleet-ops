@@ -31,6 +31,8 @@ The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: 
 
 If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 
+**Restore drills burn paid D1 rows per iteration (fleet-ops#9781).** A drill that restores a product database into a scratch Cloudflare D1 database writes every row on every run. The 2026-10-15 hand-off on fleet-ops#9769 re-imported product databases while tuning and wrote 205,124 rows in one hour (2 rows in each of the two hours before it), and the `cf-d1-rows-written` cost alarm fired mid-run. Budget the burn: one full restore per drill run. Verify with row counts read from the export or one count pass on the scratch database, never by importing again. Name every scratch database `d1-drill-<UTC stamp>-<source>` and delete it when the drill ends, failure included. Tune the drill against a local copy (sqlite or miniflare) or a small sample export, not the production export. A drill that needs a second full import in the same run to prove itself is the defect: stop and fix the drill, do not loop it.
+
 ## 4. Deliver
 
 1. Commit and `git push origin orch/issue-<N>`.
