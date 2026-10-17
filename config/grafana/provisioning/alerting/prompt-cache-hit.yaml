@@ -34,20 +34,32 @@
 # hour of steady traffic before this pages, so one bad upstream reply does not.
 #
 # The four vendors that report no cache field at all (cline, zai, ollama,
-# openrouter) are NOT an incident here: their providers return a usage block
-# with prompt_tokens_details null, so there is no cache number to report. See
-# docs/prompt-cache-routes.md for that per-vendor proof. The rule therefore
-# reads per requested_model, where those rows share an alias with the caching
-# lanes, and never fires on a total-zero cache for its own sake.
+# openrouter) are NOT an incident here, and the query now says so: a row whose
+# provider sends no cache number has no cached-token series, so the
+# `and on (model_id)` filter below drops it from both sides of the ratio
+# instead of counting its tokens as misses. See docs/prompt-cache-routes.md for
+# the per-vendor proof.
 #
 # Known coverage limits, stated rather than hidden:
-#  - A dip is a dip in the alias's share, not proof that a caching route broke.
-#    Replayed over 24h of live data 2026-10-07, the rule reads 1 on
-#    worker-capable for 125 straight minutes (2026-10-06T14:39Z-16:39Z, share
-#    0.206 at 5358 input tok/s), and 43.8% of that traffic was on a cline row
-#    that reports no cache field at all. So a page can be a mix shift toward
-#    those vendors. Drill down by model_id with the PromQL in
-#    docs/prompt-cache-routes.md before calling it a regression.
+#  - A dip is a dip in the alias's MEASURABLE share. Rows the router cannot
+#    measure are excluded, so a mix shift toward those vendors no longer moves
+#    this rule. It did twice: 2026-10-07 (read 1 on worker-capable for 125
+#    straight minutes, 2026-10-06T14:39Z-16:39Z, share 0.206 at 5358 input
+#    tok/s, 43.8% of that traffic on a cline row with no cache field) and
+#    2026-10-17 (fleet-ops#9881). What is left is a real drop on a caching
+#    row, and the per-model drill-down in docs/prompt-cache-routes.md still
+#    names it.
+#  - A row that stops reporting its cache AND loses its cached-token series in
+#    the same window is not covered: one scrape cannot tell it from a row that
+#    never reported one. In-process that is not reachable, because a sparse
+#    counter keeps being exported once instantiated, so a route that stops
+#    reporting reads a flat series and fires. A proxy restart re-opens the
+#    gap, because the counters start again at zero: until a lane's rows cache
+#    once, it reads NoData, and noDataState: OK keeps that quiet. A rename of
+#    the cached metric, or a model_id dropped from either metric's labels,
+#    reads NoData the same way and is silent rather than loud. The old
+#    `or (0 * input)` branch failed loud instead, but false, which is the
+#    false page this change removes.
 #  - The volume floor covers lanes with real traffic. On this fleet that is
 #    worker-capable (~25,000 input tok/s); worker-cheap (~20) and senior (~4)
 #    run far below the floor, so a regression confined to those two is not
@@ -79,14 +91,44 @@ groups:
           # same shape (`== bool 0` in the query, `gt 0` at the threshold), so
           # the verdict lives in the query and C only has to read it.
           #
-          # The numerator is `cached OR (0 * input)`. Without the `or`, a
-          # deployment that keeps sending input tokens but STOPS exporting a
-          # cached-token series makes the whole ratio vanish, which Grafana
-          # reports as NoData and this rule treats as OK (no data is not an
-          # incident). The `or (0 * input)` branch re-introduces that lane at a
-          # share of exactly 0, so "the provider stopped reporting cache" fires
-          # the same way a real 0% share does. The trailing volume gate still
-          # requires real input traffic, so a genuinely idle lane stays silent.
+          # Both sides of the ratio are restricted to the same row set: the
+          # rows whose cache the router can measure. The denominator keeps the
+          # input rows that also have a cached-token series, and the numerator
+          # keeps the cached rows that also have an input series, so the two
+          # sets are identical by construction. That matters when a row shows
+          # up in one metric and not the other, which is what a metric whose
+          # labels drift looks like: a cached-only row would otherwise inflate
+          # the numerator past 1 and read as healthy while the lane was broken.
+          # That counter is SPARSE:
+          # LiteLLM instantiates a deployment's label set only once it has
+          # reported a non-zero cached_tokens (integrations/prometheus.py,
+          # _inc_sparse_usage_counters skips values <= 0). A row with no
+          # cached-token series is therefore a row whose provider never sent a
+          # cache number, while a row that HAD one keeps exporting it flat,
+          # which is what keeps "a caching route went to 0" firing.
+          #
+          # Without the filter a measured numerator is divided by an unmeasured
+          # denominator. On 2026-10-17 one orchestration burst on
+          # ollama-ds41flashh-worker-capable (828 input tok/s, no cached series,
+          # because LiteLLM's ollama_chat transformation never reads Ollama's
+          # own prompt_eval_cached_count) held worker-capable's alias-wide share
+          # at 0.083 and its volume over the floor for 40 minutes, paging this
+          # rule on a route whose cache was working. With the filter that row is
+          # dropped and the alias's measurable traffic (211 tok/s) falls under
+          # the volume floor, the same way a probe lane does.
+          #
+          # `on (model_id)`, not a bare `and`: model_id is the deployment's
+          # model_info.id, the row identity, while a bare `and` would also
+          # require every other label (end_user, team, job) to match and would
+          # silently stop filtering if a label were added to one metric and not
+          # the other.
+          #
+          # There is no `or (0 * input)` branch any more. It existed to keep a
+          # lane that stopped exporting its cached series from vanishing into
+          # NoData, but such a lane is now excluded from the ratio on purpose:
+          # one scrape cannot tell "never reported a cache" from "stopped
+          # reporting one", and the first is the false positive this filter
+          # removes. See the coverage limits at the top of this file.
           #
           # The `and on (requested_model)` volume gate is a plain label match,
           # so it drops a sub-floor lane from the result instead of leaving it
@@ -101,15 +143,13 @@ groups:
               editorMode: code
               expr: |-
                 (
-                  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))
-                  or
-                  0 * sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
+                  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h]))
+                  /
+                  sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total)
+                  < bool 0.5
                 )
-                /
-                sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))
-                < bool 0.5
                 and on (requested_model)
-                sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000
+                sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200

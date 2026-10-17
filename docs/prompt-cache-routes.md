@@ -54,7 +54,10 @@ carries one of three keys (`litellm/types/utils.py`, the `Usage` constructor):
 - `prompt_cache_hit_tokens` (DeepSeek shape)
 
 If the provider sends none of them, `prompt_tokens_details` stays `None` and
-there is no cache number to report. Nothing in fleet-ops config changes this:
+there is no cache number to report. One route is a second case: Ollama's own
+API reports a cache counter in a field LiteLLM never reads, so there the
+provider does cache and the router still reports nothing. Section 3 has the
+proof. Nothing in fleet-ops config changes this:
 for an OpenAI-compatible chat endpoint, prompt caching is server-side and
 automatic, and LiteLLM actively **strips** the Anthropic-only `cache_control`
 marker before sending (`remove_cache_control_flag_from_messages_and_tools` in
@@ -92,7 +95,7 @@ The same 80-minute window, so the rows are directly comparable:
 | --- | --- | --- |
 | cline | **Unsupported / not reported.** Not a fleet bug. | Every one of 230 calls on `cline-lagunas21-worker-capable` in the window has `prompt_tokens_details: null`. The Cline free/quota API returns a bare `usage.prompt_tokens`. No config change can make a vendor report a number it does not send. |
 | zai | **Unsupported / not reported.** | Real traffic rows (e.g. `zai-glm53flashg-worker-capable`, prompt_tokens 32927 / 78952 / 32266) all carry `"prompt_tokens_details": null`. The row already declares `cache_read_input_token_cost`, which is a cost hint, not a request flag. |
-| ollama | **Unsupported / not reported, and LiteLLM cannot surface it.** | The row uses `ollama_chat/`, whose transformation builds `litellm.Usage(prompt_tokens, completion_tokens, total_tokens)` with no `prompt_tokens_details` at all (`litellm/llms/ollama/chat/transformation.py`). Ollama's own `prompt_eval_count` is a single already-aggregated number with no cache field split out, so there is nothing for LiteLLM to read even if Ollama caches. |
+| ollama | **Caches, but LiteLLM cannot surface it.** | The row uses `ollama_chat/`, whose transformation builds `litellm.Usage(prompt_tokens, completion_tokens, total_tokens)` with no `prompt_tokens_details` at all (`litellm/llms/ollama/chat/transformation.py`: `prompt_tokens = response_json.get("prompt_eval_count", ...)`). Ollama's cache counter is a **separate** field, `prompt_eval_cached_count`, and no LiteLLM through 1.105.1 reads it, so the router reports 0 cached while Ollama caches. Re-probed on this box 2026-10-17: one 8839-token prompt posted twice to `https://ollama.com/api/chat` reads `prompt_eval_cached_count: 0` on the first call and **8710 of 8839** on the second, and a real 48-call burst on `ollama_chat/deepseek-v4.1-flash` carries `prompt_tokens_details: null` on every row. Upstream: berriai/litellm#45021. This section's earlier verdict, that `prompt_eval_count` "is a single already-aggregated number with no cache field split out", was wrong: the field exists and is split out, LiteLLM just does not read it (fleet-ops#9881). |
 | openrouter | **Unsupported / not reported.** | Real rows on `openrouter-nemotronultra-worker-capable` carry `"prompt_tokens_details": null`. OpenRouter does return cache fields on models that support them, so this is a property of the specific `:free` rows this fleet uses, not of LiteLLM's OpenAI-compatible path. |
 
 Together these four vendors carry about 5.4e8 input tokens, and served 425 of
@@ -170,10 +173,20 @@ above are final, read after the sessions ended on 2026-10-07.
 ## 5. What the alert does and does not cover
 
 `config/grafana/provisioning/alerting/prompt-cache-hit.yaml` watches the share
-per `requested_model`. It deliberately does **not** alert on the four vendors
-above, because a total-zero cache for a vendor that reports no cache field is
-not a regression. If a vendor that does report caching today stops, the share
-for its alias falls and the rule fires.
+per `requested_model`, over the rows whose cache the router can **measure**.
+Both sides of the ratio are pinned to that row set with an `and on (model_id)`
+filter: the denominator keeps the input rows that also carry a cached-token
+series, and the numerator keeps the cached rows that also carry an input series,
+so the two sets are identical and a row present in only one metric cannot skew
+the alias either way. That counter is sparse — LiteLLM instantiates a
+deployment's label set only on its first non-zero `cached_tokens` — so the
+filter is exactly "rows this router can measure", and it is what stops the four
+vendors above from diluting an alias.
+A row that *had* a cached series keeps exporting it flat, so a caching route
+that drops to 0 still fires. Before this filter, a single unmeasurable row
+carrying most of an alias's input could hold the alias under 50% and page on a
+route whose cache was working, which is what happened on 2026-10-17
+(fleet-ops#9881, and its earlier duplicate #9856).
 
 The rule is unit-tested with `promtool`. The fixture
 `config/grafana/tests/prompt-cache-hit.test.yml` carries the
@@ -191,8 +204,8 @@ provisioning, so a promtool file there stops Grafana at startup ("failure to map
 file ... rule group has no folder set"). CI runs this test in the `ci` job and
 boots the quadlet's Grafana in the `grafana-boot` job.
 
-It covers nine cases in two kinds, because they check different things. The
-six `alert_rule_test` cases run the rule through the Prometheus alert engine,
+It covers twelve cases in two kinds, because they check different things. The
+seven `alert_rule_test` cases run the rule through the Prometheus alert engine,
 which fires on any series the expression returns, so they answer "which lanes are
 in the result":
 
@@ -203,29 +216,46 @@ in the result":
 4. a broken lane beside a healthy one in the same scrape fires for the broken
    one only, so the `and on (requested_model)` does not cross lanes;
 5. a **total** cache failure (cached series present and exactly 0) fires;
-6. a lane whose **cached series vanished entirely** while input kept flowing
-   fires, via the `or (0 * input)` branch.
+6. the 2026-10-17 page as a case: an unmeasurable row carries 828 of the alias's
+   1039 input tok/s with no cached series, which the old query read as a 0.083
+   share and a page, while the filtered query leaves 211 tok/s, under the floor,
+   so the lane is held off;
+7. the same shape with the measurable row above the floor: 900 cached of 1200
+   input tok/s is a healthy 0.75, and the unmeasurable row's 800 tok/s must not
+   drag the alias to 0.45.
 
-The three `promql_expr_test` cases answer what the alert_rule_test cases cannot:
+The five `promql_expr_test` cases answer what the alert_rule_test cases cannot:
 not which series appear, but **what Grafana's threshold step then reads**.
 Grafana's C is a threshold of `> 0` over A, so a lane reads Alerting at 1 and
 Normal at 0:
 
-7. a total cache failure, share exactly 0, returns **1**, so it pages;
-8. a healthy busy lane returns **0** beside a broken one at **1**, and a
+8. a total cache failure, share exactly 0, returns **1**, so it pages;
+9. a healthy busy lane returns **0** beside a broken one at **1**, and a
    sub-floor lane is absent from the result entirely (which is what makes
    `noDataState: OK` the right policy for an idle fleet);
-9. a vanished cached series with input still flowing returns **1**.
+10. case 7's shape returns **0**, where the old query returned **1**;
+11. a row whose provider never sent a cache number returns **nothing**: it is
+    not a lane in the ratio at all, and the per-model drill-down is what covers
+    it;
+12. the two sides are pinned to one row set: a measurable row caching 1200 of
+    its 20000 input tok/s is a 0.06 breach that returns **1**, while a
+    cached-only row adding 30000 cached tok/s must not lift the bare ratio to
+    1.56 and read as healthy. That case fails on the pre-fix query, which
+    returned **0**.
+
+Every series in the fixture carries the `model_id` label the deployment rows
+carry, because the filter matches on it: a fixture without `model_id` would let
+`and on (model_id)` match on an empty label and prove nothing.
 
 That split is load-bearing. Query A ends in `bool`, so it returns the 0/1 breach
 verdict rather than the ratio, and the inlined test rule wraps it in `> 0` to
 reproduce the threshold the Prometheus engine does not have. The `bool` is what
-makes case 7 fire at all:
+makes case 8 fire at all:
 
 ```
-# pre-fix A (no `bool`), case 7's series, threshold applied by hand (fires iff > 0):
+# pre-fix A (no `bool`), case 8's series, threshold applied by hand (fires iff > 0):
 #   exp 1E+00   got 0E+00        -> a 0% share read 0, `0 > 0` is false, Grafana held it Normal
-# current A, all nine cases -> SUCCESS
+# current A, all twelve cases -> SUCCESS
 ```
 
 Without `bool` only shares strictly between 0 and 0.5 would have paged, and the
@@ -257,8 +287,10 @@ knowing what caused that dip before treating a page as a regression. At that
 instant 43.8% of worker input ran on `cline-ds41flash-worker-capable` and about
 15% on the `ollama-*` rows, both of section 3's no-cache-field vendors, so the
 alias's share fell because the **mix** leaned on vendors that cannot report a
-cache number, not because a caching route broke. A page therefore wants the
-per-model drill-down first:
+cache number, not because a caching route broke. That is the mix-shift cause the
+`and on (model_id)` filter now excludes, and the 2026-10-17 page was the same
+cause with one row instead of two. A page therefore wants the per-model
+drill-down first:
 
 ```
 sum by (model_id) (rate(litellm_input_cached_tokens_metric_total[1h]))
@@ -266,6 +298,16 @@ sum by (model_id) (rate(litellm_input_cached_tokens_metric_total[1h]))
 ```
 
 One deployment that stops caching shows as a `model_id` whose share drops while
-the rest hold. A fleet-wide mix shift toward section 3's vendors shows as
-several of them rising at once, which is a routing question rather than a cache
-regression.
+the rest hold. A fleet-wide mix shift toward section 3's vendors used to show as
+several of them rising at once; since fleet-ops#9881 those rows are outside the
+ratio, so that pattern no longer pages and what is left in the drill-down is a
+real drop on a row that does report a cache number.
+
+Coverage limit, stated rather than hidden: a row that stops reporting its cache
+**and** loses its cached-token series in the same window is not covered, because
+one scrape cannot tell it from a row that never reported one. In-process that is
+not reachable — a sparse counter keeps being exported once instantiated, so a
+route that stops reporting reads a flat series and still fires — and hiding it
+takes a proxy restart. `docs/prompt-cache-routes.md` section 3's vendor table
+stays the record of which rows can report a cache at all, so a row moving into
+that list is a documentation and router change rather than an alert one.
