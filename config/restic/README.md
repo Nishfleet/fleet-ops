@@ -316,3 +316,21 @@ hand-installed copies with the tracked ones on the next
 Until that run happens the daily drift check fails again on every merge. That
 is the intended signal that a root-owned file changed by hand, and the merge
 is what stops it: `fleet-host-config.service` runs on every push to `main`.
+
+## Monthly restore drill (fleet-ops#9770)
+
+`restic-r2-restore-drill.timer` runs `restic-r2-restore-drill.service` once a
+month. The unit restores the whole latest snapshot into
+the unit's private `/var/tmp` (never over live paths) with
+`restic restore --verify`, then compares one small file per `include.txt` path
+with its live copy, prints the paths compared and the bytes restored to the
+journal, and deletes the scratch dir. A failed unit triggers
+`fleet-unit-failed@`. Read the last result with
+`journalctl -u restic-r2-restore-drill -n 20`; run it now with
+`systemctl start restic-r2-restore-drill.service`; switch it off with
+`systemctl disable --now restic-r2-restore-drill.timer`. The duration is the
+unit's own `systemctl show -p ExecMainExitTimestamp,ExecMainStartTimestamp`.
+Only files unchanged for 2 days are compared; if one still differs, re-run
+before treating it as a bad backup.
+
+The rebuild-from-nothing plan lives in the private vault playbooks, not here.
