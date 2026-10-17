@@ -65,14 +65,6 @@ locals {
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
     }
-    "TinyStudio.io-public" = {
-      repo        = "TinyStudio.io-public"
-      environment = null
-      secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Workers Scripts Write", "Workers R2 Storage Write", "Account Settings Read"]
-      zone        = ["Zone Read", "Workers Routes Write"]
-      vps_only    = false
-    }
     "inish-site" = {
       repo        = "inish-site"
       environment = null
@@ -83,14 +75,6 @@ locals {
     }
     "aiconverter-app" = {
       repo        = "aiconverter-app"
-      environment = null
-      secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Pages Write", "Account Settings Read"]
-      zone        = []
-      vps_only    = false
-    }
-    "tinystudio-in" = {
-      repo        = "tinystudio-in"
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       account     = ["Pages Write", "Account Settings Read"]
