@@ -10,6 +10,10 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- the stored-item command avoids the two shapes the digest model mangled when it
+  re-typed the program on 2026-10-16 and 2026-10-17 (a double-backslash escape
+  that made jq answer "Invalid escape", and a nested if that collected an extra
+  end and made jq answer "syntax error, unexpected end"),
 - ansible/host.yml applies the prompts to the live jobs.
 """
 import datetime
@@ -59,6 +63,27 @@ def test_shipped_count_has_no_command_substitution_in_its_loop():
         line = next(x for x in prompt.read_text().splitlines() if "COUNT FAILED" in x and "for r in" in x)
         loop = line[line.index("do "):line.index("; done")]
         assert "$(" not in loop, prompt.name
+
+
+def _stored_item_program(prompt):
+    line = _command(prompt, "R=$(hermes cron notepad")
+    start = line.rindex("'", 0, line.index("def tr:")) + 1
+    return line[start:line.index("'", start)]
+
+
+def _if_depth(prog):
+    depth = high = 0
+    for word in re.findall(r"[a-z]+", re.sub(r'"(?:[^"\\\\]|\\\\.)*"', "", prog)):
+        depth += (word == "if") - (word == "end")
+        high = max(high, depth)
+    return high
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_program_avoids_the_shapes_the_model_mangled(prompt):
+    prog = _stored_item_program(prompt)
+    assert prog.count("\\\\") == 0, f"{prompt.name}: a double-backslash escape is the shape the digest model dropped"
+    assert _if_depth(prog) <= 1, f"{prompt.name}: a nested if is the shape that collected an extra end"
 
 
 def test_host_yml_applies_the_prompts_to_the_live_jobs():
