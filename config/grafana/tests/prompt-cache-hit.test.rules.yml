@@ -12,12 +12,17 @@
 # The closing paren sits directly after the volume gate's `> 1000` on purpose:
 # comparison operators chain left to right, so `(...)> 1000 > 0` would compare
 # the gate's own 0/1 against 0 and return the volume gate alone.
+#
+# The `and on (model_id) litellm_input_cached_tokens_metric_total` filter on
+# both sides of the ratio is part of that inlined text too: it drops rows whose
+# provider never sent a cache number (fleet-ops#9881), and a copy without it
+# would test a query the fleet does not run.
 groups:
 - interval: 1m
   name: prompt-cache-hit
   rules:
   - alert: PromptCacheHitLow
-    expr: "(\n(\n  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))\n  or\n  0 * sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n)\n/\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]))\n< bool 0.5\nand on (requested_model)\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h])) > 1000\n)\n> 0"
+    expr: "(\n(\n  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))\n/\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total)\n< bool 0.5\n)\nand on (requested_model)\nsum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000\n)\n> 0"
     for: 30m
     labels:
       grafana_folder: fleet
