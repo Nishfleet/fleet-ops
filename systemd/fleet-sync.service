@@ -127,7 +127,7 @@ ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-provider-watch.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
-ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer fleet-pr-sweep@seo-fix-kit.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)
