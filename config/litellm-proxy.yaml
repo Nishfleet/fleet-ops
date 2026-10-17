@@ -47,7 +47,7 @@
 # OpenCode zen union-alpha answered 0 of 68 calls in the last 7 days (last attempt 2026-09-30 16:30 UTC, LiteLLM_SpendLogs); a direct probe on 2026-10-01 returns 400 "Upstream request failed: Model is unavailable." That 400 maps to BadRequestError, which v1.98.0 never cools, so no setting below can move a job off such a row: its four rows are removed. The opencodego-ds41flash rows on the Go endpoint (same key) stay: they are walled by a monthly quota (429 GoUsageLimitError, limitName monthly), not dead. A 900 s cool re-failed into worker groups every 15 min (0 of 68 calls in the 24 h to 2026-10-02 19:05 UTC). Those three rows now cool 21600 s and park on the first 429 (RateLimitErrorAllowedFails: 0), the same treatment #9075 gave the daily-quota rows (fleet-ops#9122). The opencodego2 rows on the second key stay at 900 s.
 # Pareto: glm-5.3-flash, never in judge.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
-# Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows (cline-lagunas21, 2 rows) park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto keeps 300 s (its 429s are the 3-parallel key cap, fleet-ops#8458) but parks on the first: a 5-min park costs less than leaking a saturated key's 429s to callers. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
+# Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows (cline-lagunas21, 2 rows) park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto now cools 21600 s too (fleet-ops#9876): its 429s are a depleted prepaid balance, not a transient - at or above max_tokens 40960 the provider returns budget_error/credit_insufficient ("Insufficient credits for this request. Reduce max_tokens.") while the affordable ceiling drifts down as the balance drains, and direct probes found no parallel-key cap (fleet-ops#8458's 3-parallel explanation did not reproduce: 4 parallel small requests all returned 200). It parks on the first 429 (RateLimitErrorAllowedFails: 0), so a drained lane costs callers nothing: 0 caller-facing 429s in the 24 h to 2026-10-17 while worker-capable fell back to worker-cheap. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
 # Selection share (weighted; the Command Code rows removed 2026-10-15 are listed in the record above): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". Command Code left DeepSeek on 2026-10-15 (#9744), so the 2 OpenCode Go ds41flash rows in each worker group (opencodego-, opencodego2-) carry a litellm_params weight and every other worker row carries weight 1, the Command Code GLM-5.3-Flash rows included. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=2, n=41, w=10 gives 20/59 = 33.9% (was 40/79 = 50.6% with the 4 DS rows); worker-cheap k=2, n=13, w=3 gives 6/17 = 35.3% (was 12/23 = 52.2%). The weights are unchanged, so the share falls. Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 30-60%).
 model_list:
@@ -313,8 +313,10 @@ model_list:
     max_budget: 10.0
     budget_duration: 1d
     max_parallel_requests: 1
-    # Pareto's 429s come from its 3-parallel key limit (fleet-ops#8458), not a quota, so 5 min is enough.
-    cooldown_time: 300
+    # 6 h, sized to Pareto's depleted prepaid balance (fleet-ops#9876): a request at or above
+    # max_tokens 40960 429s with budget_error/credit_insufficient while the balance drains, and
+    # the affordable ceiling drifts down, so 5 min only re-failed the same wall every 5 min.
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -392,7 +394,8 @@ model_list:
     max_budget: 10.0
     budget_duration: 1d
     max_parallel_requests: 1
-    cooldown_time: 300
+    # 6 h, sized to Pareto's depleted prepaid balance (fleet-ops#9876), same as the worker-capable row.
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -1587,7 +1590,9 @@ router_settings:
     # policy's nameable exception fields, so no config value can cool it -
     # agent.yml's Router wall treats a run killed by one as infra instead.
     AuthenticationErrorAllowedFails: 0
-    # one 429 cools the deployment: Pareto's 3-parallel cap is already held by max_parallel_requests.
+    # one 429 cools the deployment: the judge's own cooldown_time (900 s) is the parking window, so
+    # this router-level value is read with the row's duration, not on its own. (fleet-ops#9876 fixed
+    # the stale Pareto rationale that used to sit here; this row is Alibaba's, not Pareto's.)
     RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
