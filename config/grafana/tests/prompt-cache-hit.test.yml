@@ -12,11 +12,16 @@
 #    at 0 and a broken lane at 1 pages exactly on the broken one, while a rule
 #    that returned the raw ratio would stay Normal on an exact-0% share.
 #
-# Every series carries the model_id label the deployment rows carry, because the
-# `and on (model_id) litellm_input_cached_tokens_metric_total` filter on both
-# sides of the ratio is what separates a measurable row from a row whose
-# provider never sent a cache number. A fixture without model_id would let that
-# filter match on an empty label and prove nothing.
+# Every series carries the model_id label the deployment rows carry, because
+# both filters in the ratio match on model_id. A fixture without it would let
+# the filter match on an empty label and prove nothing.
+#
+# A cached-token counter never reads 0 while its series exists: LiteLLM
+# instantiates a deployment's label set only once it has reported a non-zero
+# cached_tokens. A lane whose cache has stopped therefore reads a counter that
+# rose and then went flat, which is what `0+300000x3 900000x17` models, not a
+# flat 0. The rate over the last hour is 0 either way; only the counter is
+# realistic.
 evaluation_interval: 5m
 rule_files:
 - prompt-cache-hit.test.rules.yml
@@ -48,7 +53,8 @@ tests:
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
     values: 0+4680000x20
   interval: 5m
-# 3. A low-volume probe lane with zero cache is silent, held off by the floor.
+# 3. A low-volume probe lane that once cached and has since gone idle is
+#    silent, held off by the floor and not by the filter.
 - alert_rule_test:
   - alertname: PromptCacheHitLow
     eval_time: 100m
@@ -57,7 +63,7 @@ tests:
   - series: litellm_input_tokens_metric_total{requested_model="senior",model_id="pareto-glm53flash-senior"}
     values: 0+1200x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="senior",model_id="pareto-glm53flash-senior"}
-    values: '0x20'
+    values: 0+60000x3 240000x17
   interval: 5m
 # 4. A broken lane beside a healthy one fires for the broken one only, so the
 #    `and on (requested_model)` does not cross lanes.
@@ -74,13 +80,14 @@ tests:
   - series: litellm_input_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
-    values: '0x20'
+    values: 0+300000x3 900000x17
   - series: litellm_input_tokens_metric_total{requested_model="worker-cheap",model_id="opencodego2-ds41flash-worker-cheap"}
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-cheap",model_id="opencodego2-ds41flash-worker-cheap"}
     values: 0+4700000x20
   interval: 5m
-# 5. A TOTAL cache failure (cached series present and exactly 0) fires.
+# 5. A TOTAL cache failure on a lane that had been caching fires: the counter
+#    rose, then stopped, so the share is exactly 0.
 - alert_rule_test:
   - alertname: PromptCacheHitLow
     eval_time: 100m
@@ -94,7 +101,7 @@ tests:
   - series: litellm_input_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
-    values: '0x20'
+    values: 0+300000x3 900000x17
   interval: 5m
 # 6. The 2026-10-17 page (fleet-ops#9881), as a case. An unmeasurable row
 #    carries most of the alias's input and has no cached series, so counting it
@@ -131,21 +138,21 @@ tests:
 # The deployed A expression, verbatim, as Grafana evaluates it before the
 # threshold step. Every case below states what C's `> 0` reads.
 - promql_expr_test:
-  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
+  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
     eval_time: 100m
     exp_samples:
     - labels: '{requested_model="worker-capable"}'
       value: 1
   input_series:
-  # Cached series present and flat at 0: a total cache failure, the share is
+  # The counter rose and then stopped: a total cache failure, the share is
   # exactly 0. A threshold of `> 0` on the raw ratio would read this as Normal.
   - series: litellm_input_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
-    values: '0x20'
+    values: 0+300000x3 900000x17
   interval: 5m
 - promql_expr_test:
-  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
+  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
     eval_time: 100m
     exp_samples:
     # A healthy busy lane reads 0, so `> 0` is false and the rule stays Normal.
@@ -165,14 +172,14 @@ tests:
   - series: litellm_input_tokens_metric_total{requested_model="worker-cheap",model_id="opencodego2-ds41flash-worker-cheap"}
     values: 0+6000000x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="worker-cheap",model_id="opencodego2-ds41flash-worker-cheap"}
-    values: '0x20'
+    values: 0+300000x3 900000x17
   - series: litellm_input_tokens_metric_total{requested_model="senior",model_id="pareto-glm53flash-senior"}
     values: 0+1200x20
   - series: litellm_input_cached_tokens_metric_total{requested_model="senior",model_id="pareto-glm53flash-senior"}
-    values: '0x20'
+    values: 0+60000x3 240000x17
   interval: 5m
 - promql_expr_test:
-  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
+  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
     eval_time: 100m
     exp_samples:
     # Case 7's shape (an unmeasurable row beside a measurable one) reads 0
@@ -189,7 +196,7 @@ tests:
     values: 0+270000x20
   interval: 5m
 - promql_expr_test:
-  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
+  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
     eval_time: 100m
     # A row whose provider never sent a cache number is not a lane here at all:
     # it has no cached series, so the filter leaves it out of both sides and the
@@ -199,4 +206,24 @@ tests:
   input_series:
   - series: litellm_input_tokens_metric_total{requested_model="worker-capable",model_id="ollama-ds41flashh-worker-capable"}
     values: 0+6000000x20
+  interval: 5m
+# The two sides of the ratio are pinned to one row set. A row present in the
+# cached metric and absent from the input metric cannot inflate the numerator:
+# here worker-capable's one measurable row is caching only 1200 of its 20000
+# input tok/s, which is a 0.06 breach that must fire, while a cached-only row
+# adds 30000 cached tok/s that would push the bare ratio to 1.56 and read as
+# healthy.
+- promql_expr_test:
+  - expr: (sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h])) / sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) < bool 0.5) and on (requested_model) sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total) > 1000
+    eval_time: 100m
+    exp_samples:
+    - labels: '{requested_model="worker-capable"}'
+      value: 1
+  input_series:
+  - series: litellm_input_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
+    values: 0+6000000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="minimax-m31-worker-capable"}
+    values: 0+360000x20
+  - series: litellm_input_cached_tokens_metric_total{requested_model="worker-capable",model_id="opencodego2-ds41flash-worker-capable"}
+    values: 0+9000000x20
   interval: 5m

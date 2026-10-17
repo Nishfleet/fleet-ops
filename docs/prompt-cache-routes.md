@@ -174,12 +174,14 @@ above are final, read after the sessions ended on 2026-10-07.
 
 `config/grafana/provisioning/alerting/prompt-cache-hit.yaml` watches the share
 per `requested_model`, over the rows whose cache the router can **measure**.
-Both sides of the ratio carry
-`and on (model_id) litellm_input_cached_tokens_metric_total`, which keeps a row
-that has never reported a cache number out of the denominator. That counter is
-sparse — LiteLLM instantiates a deployment's label set only on its first
-non-zero `cached_tokens` — so the filter is exactly "rows this router can
-measure", and it is what stops the four vendors above from diluting an alias.
+Both sides of the ratio are pinned to that row set with an `and on (model_id)`
+filter: the denominator keeps the input rows that also carry a cached-token
+series, and the numerator keeps the cached rows that also carry an input series,
+so the two sets are identical and a row present in only one metric cannot skew
+the alias either way. That counter is sparse — LiteLLM instantiates a
+deployment's label set only on its first non-zero `cached_tokens` — so the
+filter is exactly "rows this router can measure", and it is what stops the four
+vendors above from diluting an alias.
 A row that *had* a cached series keeps exporting it flat, so a caching route
 that drops to 0 still fires. Before this filter, a single unmeasurable row
 carrying most of an alias's input could hold the alias under 50% and page on a
@@ -202,7 +204,7 @@ provisioning, so a promtool file there stops Grafana at startup ("failure to map
 file ... rule group has no folder set"). CI runs this test in the `ci` job and
 boots the quadlet's Grafana in the `grafana-boot` job.
 
-It covers eleven cases in two kinds, because they check different things. The
+It covers twelve cases in two kinds, because they check different things. The
 seven `alert_rule_test` cases run the rule through the Prometheus alert engine,
 which fires on any series the expression returns, so they answer "which lanes are
 in the result":
@@ -222,7 +224,7 @@ in the result":
    input tok/s is a healthy 0.75, and the unmeasurable row's 800 tok/s must not
    drag the alias to 0.45.
 
-The four `promql_expr_test` cases answer what the alert_rule_test cases cannot:
+The five `promql_expr_test` cases answer what the alert_rule_test cases cannot:
 not which series appear, but **what Grafana's threshold step then reads**.
 Grafana's C is a threshold of `> 0` over A, so a lane reads Alerting at 1 and
 Normal at 0:
@@ -234,7 +236,12 @@ Normal at 0:
 10. case 7's shape returns **0**, where the old query returned **1**;
 11. a row whose provider never sent a cache number returns **nothing**: it is
     not a lane in the ratio at all, and the per-model drill-down is what covers
-    it.
+    it;
+12. the two sides are pinned to one row set: a measurable row caching 1200 of
+    its 20000 input tok/s is a 0.06 breach that returns **1**, while a
+    cached-only row adding 30000 cached tok/s must not lift the bare ratio to
+    1.56 and read as healthy. That case fails on the pre-fix query, which
+    returned **0**.
 
 Every series in the fixture carries the `model_id` label the deployment rows
 carry, because the filter matches on it: a fixture without `model_id` would let
@@ -248,7 +255,7 @@ makes case 8 fire at all:
 ```
 # pre-fix A (no `bool`), case 8's series, threshold applied by hand (fires iff > 0):
 #   exp 1E+00   got 0E+00        -> a 0% share read 0, `0 > 0` is false, Grafana held it Normal
-# current A, all eleven cases -> SUCCESS
+# current A, all twelve cases -> SUCCESS
 ```
 
 Without `bool` only shares strictly between 0 and 0.5 would have paged, and the

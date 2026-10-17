@@ -43,14 +43,23 @@
 # Known coverage limits, stated rather than hidden:
 #  - A dip is a dip in the alias's MEASURABLE share. Rows the router cannot
 #    measure are excluded, so a mix shift toward those vendors no longer moves
-#    this rule (it did on 2026-10-17, fleet-ops#9881). What is left is a real
-#    drop on a caching row, and the per-model drill-down in
-#    docs/prompt-cache-routes.md still names it.
+#    this rule. It did twice: 2026-10-07 (read 1 on worker-capable for 125
+#    straight minutes, 2026-10-06T14:39Z-16:39Z, share 0.206 at 5358 input
+#    tok/s, 43.8% of that traffic on a cline row with no cache field) and
+#    2026-10-17 (fleet-ops#9881). What is left is a real drop on a caching
+#    row, and the per-model drill-down in docs/prompt-cache-routes.md still
+#    names it.
 #  - A row that stops reporting its cache AND loses its cached-token series in
 #    the same window is not covered: one scrape cannot tell it from a row that
 #    never reported one. In-process that is not reachable, because a sparse
 #    counter keeps being exported once instantiated, so a route that stops
-#    reporting reads a flat series and fires. Hiding it takes a proxy restart.
+#    reporting reads a flat series and fires. A proxy restart re-opens the
+#    gap, because the counters start again at zero: until a lane's rows cache
+#    once, it reads NoData, and noDataState: OK keeps that quiet. A rename of
+#    the cached metric, or a model_id dropped from either metric's labels,
+#    reads NoData the same way and is silent rather than loud. The old
+#    `or (0 * input)` branch failed loud instead, but false, which is the
+#    false page this change removes.
 #  - The volume floor covers lanes with real traffic. On this fleet that is
 #    worker-capable (~25,000 input tok/s); worker-cheap (~20) and senior (~4)
 #    run far below the floor, so a regression confined to those two is not
@@ -82,9 +91,15 @@ groups:
           # same shape (`== bool 0` in the query, `gt 0` at the threshold), so
           # the verdict lives in the query and C only has to read it.
           #
-          # Both sides of the ratio are restricted to rows whose cache the
-          # router can measure, with `and on (model_id)
-          # litellm_input_cached_tokens_metric_total`. That counter is SPARSE:
+          # Both sides of the ratio are restricted to the same row set: the
+          # rows whose cache the router can measure. The denominator keeps the
+          # input rows that also have a cached-token series, and the numerator
+          # keeps the cached rows that also have an input series, so the two
+          # sets are identical by construction. That matters when a row shows
+          # up in one metric and not the other, which is what a metric whose
+          # labels drift looks like: a cached-only row would otherwise inflate
+          # the numerator past 1 and read as healthy while the lane was broken.
+          # That counter is SPARSE:
           # LiteLLM instantiates a deployment's label set only once it has
           # reported a non-zero cached_tokens (integrations/prometheus.py,
           # _inc_sparse_usage_counters skips values <= 0). A row with no
@@ -128,7 +143,7 @@ groups:
               editorMode: code
               expr: |-
                 (
-                  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]))
+                  sum by (requested_model) (rate(litellm_input_cached_tokens_metric_total[1h]) and on (model_id) rate(litellm_input_tokens_metric_total[1h]))
                   /
                   sum by (requested_model) (rate(litellm_input_tokens_metric_total[1h]) and on (model_id) litellm_input_cached_tokens_metric_total)
                   < bool 0.5
