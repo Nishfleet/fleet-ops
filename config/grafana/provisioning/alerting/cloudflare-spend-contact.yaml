@@ -117,6 +117,21 @@ policies:
           - [signal, "=", deploy-failed-24h]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
         mute_time_intervals: [deploy-failed-24h-errors]
+      # A plan out of credit keeps this rule firing until the balance is refilled,
+      # and the remedy (top up, cancel, bench the rows) is Nish's call, so its
+      # daily issue re-filed the same alert every 24h: fleet-ops#9845, #9857,
+      # #9876 and #9897 are one Pareto credit wall across four issues, and each
+      # new issue started a worker run against a decision already parked on Nish.
+      # The plan rule keeps paging on the critical routes above (1h, and 12h for a
+      # datasource error) and files its one issue weekly instead. This route is
+      # terminal, so a plan alert stops here and never reaches the catch-all below.
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [plan, "=~", ".+"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 7d
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]
