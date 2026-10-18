@@ -42,6 +42,13 @@ PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
 ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch"}
+GENERIC_SINK = "fleet-alert-dispatch"
+# A paid plan out of credit keeps its rule firing until Nish acts, and the
+# remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
+# #9857, #9876 and #9897 are one Pareto credit wall across four issues. Paging is
+# unchanged, a critical plan alert still reaches hermes-urgent at 1h.
+PLAN_REPEAT = 604800
+DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -146,6 +153,12 @@ def main(root):
         pages = [rep for rc, rep in route(policy, {**labels, "alertname": title}) if rc == PAGE]
         if severity == "critical" and (not pages or any(rep is None or rep > CRITICAL_REPEAT for rep in pages)):
             bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {CRITICAL_REPEAT}s, got {pages}")
+        sinks = {rc.removesuffix("#muted"): rep for rc, rep in route(policy, {**labels, "alertname": title})}
+        want = PLAN_REPEAT if "plan" in labels else DEFAULT_REPEAT
+        got = sinks.get(GENERIC_SINK)
+        if got is not None and got != want:
+            bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
+                       f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
