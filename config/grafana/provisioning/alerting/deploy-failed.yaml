@@ -22,14 +22,16 @@
 # a SQL expression as the input of another expression, and a non-zero value
 # fires. No finished run in the window is NoData, which is OK.
 #
-# The contract this rule reads: a deploy workflow holds nothing but the deploy
-# job. The signal is a run-level conclusion, so a post-deploy job inside a deploy
-# workflow makes this rule lie. 0509 carried the production Lighthouse audit in
-# deploy-production.yml, and its red on a successful deploy read here as
-# "Production is not running main" for days (fleet-ops#9889; the audit measured
-# the Access login page, fixed in Nishfleet/0509#7698). A check that cannot
-# report on a pull request belongs on its own schedule or its own workflow, never
-# inside the deploy run: the deploy run's conclusion is what this rule reads.
+# The contract this rule reads: a deploy workflow holds nothing but the deploy job
+# (inish-site's ci.yml is the exception, named below). The signal is a run-level
+# conclusion, so a post-deploy job inside a deploy workflow makes this rule lie:
+# that job shares the deploy run's pass/fail result without being the deploy. 0509
+# carried the production Lighthouse audit in deploy-production.yml, and its red on
+# a successful deploy read here as "Production is not running main" for days
+# (fleet-ops#9889; the audit measured the Access login page, fixed in
+# Nishfleet/0509#7698). A post-deploy check belongs on its own schedule or its
+# own workflow, never inside the deploy run: the deploy run's conclusion is what
+# this rule reads.
 #
 # Two groups (the policy tree in cloudflare-spend-contact.yaml routes on severity):
 #  - group deploy-failed (one rule per repo, signal=deploy-failed, for: 30m),
