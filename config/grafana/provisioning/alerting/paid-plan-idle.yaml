@@ -40,7 +40,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[24h])
               instant: true
@@ -54,7 +74,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -77,7 +97,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: Cline served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -97,7 +117,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])
               instant: true
@@ -111,7 +151,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -134,7 +174,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: CommandCode served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -154,7 +194,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])
               instant: true
@@ -168,7 +228,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.minimax.io/anthropic.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -191,7 +251,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: MiniMax served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -211,7 +271,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])
               instant: true
@@ -225,7 +305,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -248,7 +328,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: StepFun served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -268,7 +348,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])
               instant: true
@@ -282,7 +382,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -305,7 +405,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: z.ai served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -325,7 +425,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[24h])
               instant: true
@@ -339,7 +459,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -362,7 +482,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: Ollama served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -382,7 +502,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])
               instant: true
@@ -396,7 +536,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -419,7 +559,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: OpenCode Go served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -439,7 +579,27 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])) == bool 0)
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[5m] offset 24h) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])
               instant: true
@@ -453,7 +613,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -476,7 +636,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: Pareto served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
@@ -503,9 +663,29 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h])
+                (
+                  (
+                    (
+                      sum(
+                        increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])
+                        and
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[5m] offset 7d) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                    +
+                    (
+                      sum(
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[5m]) > bool 0)
+                        unless
+                        (count_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[5m] offset 7d) > bool 0)
+                      )
+                      or vector(0)
+                    )
+                  ) == bool 0
+                )
                 or
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0)
+                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h])
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -517,7 +697,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[24h])) or vector(0)
+              expr: ((sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[24h]) and (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)) + (sum((count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[5m]) > bool 0) unless (count_over_time(litellm_deployment_failure_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*",exception_status="429"}[5m] offset 24h) > bool 0)) or vector(0)))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -540,7 +720,7 @@ groups:
               type: threshold
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 5m
         annotations:
           summary: Alibaba token-plan SG served zero fleet calls for 7 days (or vanished from the router for 24 hours).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
