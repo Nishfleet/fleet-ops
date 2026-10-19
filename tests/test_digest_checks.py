@@ -10,6 +10,9 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- a stored broken item is classified from that workflow's own latest run on
+  main, read directly, so a busy main branch cannot push the workflow out of a
+  run window and turn a real status into an unreadable one (fleet-ops#9902),
 - ansible/host.yml applies the prompts to the live jobs.
 """
 import datetime
@@ -85,6 +88,8 @@ elif a[:2] == ["issue", "view"]:
     print(json.dumps(d["issues"][key]))
 elif a[:2] == ["run", "list"]:
     key = a[a.index("--repo") + 1]
+    if "--workflow" in a:
+        key = key + "::" + a[a.index("--workflow") + 1]
     if key not in d["runs"]:
         sys.exit(1)
     print(json.dumps(d["runs"][key]))
@@ -166,6 +171,11 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
                 _run_row("timed_out", "Slow", 0),
             ],
             "Nishfleet/beta": [_run_row("failure", "Build", 1), _run_row("success", "Build", 3)],
+            "Nishfleet/alpha::Midrun": [_run_row("", "Midrun", 0)],
+            "Nishfleet/alpha::Nullrun": [_run_row(None, "Nullrun", 0)],
+            "Nishfleet/alpha::Cancelled": [_run_row("cancelled", "Cancelled", 0)],
+            "Nishfleet/alpha::Healed": [_run_row("success", "Healed", 0)],
+            "Nishfleet/alpha::Slow": [_run_row("timed_out", "Slow", 0)],
         },
     }
     store = json.dumps({
@@ -205,6 +215,69 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "broken:alpha:Slow": "failure",
         "broken:beta:Build": "failure",
     }
+
+
+_WINDOW_PUSHES = 30
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_broken_item_outside_the_main_window_reads_the_workflows_own_run(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {},
+        "runs": {
+            "Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)],
+            "Nishfleet/alpha::Deploy production": [_run_row("failure", "Deploy production", 4)],
+        },
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Deploy production": "failure"}))
+    assert "ROW broken:alpha:Deploy production UNCHANGED" in lines
+    assert not any("UNKNOWN" in l for l in lines)
+    assert saved == {"broken:alpha:Deploy production": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_broken_item_fixed_when_the_workflows_own_latest_run_passed(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {},
+        "runs": {
+            "Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)],
+            "Nishfleet/alpha::Deploy production": [_run_row("success", "Deploy production", 4)],
+        },
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Deploy production": "failure"}))
+    assert any(l.startswith("ROW broken:alpha:Deploy production FIXED ") for l in lines)
+    assert not any("UNKNOWN" in l for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_broken_item_unknown_only_when_the_workflows_own_read_fails(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {},
+        "runs": {"Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)]},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Deploy production": "failure"}))
+    assert "ROW broken:alpha:Deploy production UNKNOWN" in lines
+    assert saved == {"broken:alpha:Deploy production": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_broken_item_with_a_run_still_in_progress_is_unchanged(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {},
+        "runs": {
+            "Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)],
+            "Nishfleet/alpha::Deploy production": [_run_row(None, "Deploy production", 0)],
+        },
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Deploy production": "failure"}))
+    assert "ROW broken:alpha:Deploy production UNCHANGED" in lines
+    assert not any("UNKNOWN" in l for l in lines)
+    assert saved == {"broken:alpha:Deploy production": "failure"}
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
