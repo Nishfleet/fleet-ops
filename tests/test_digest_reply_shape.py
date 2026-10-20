@@ -13,6 +13,10 @@ holds the machine side:
   tests/evals/cases/digest_reply_shape.json - the builder graded none),
 - the first shipped reply after the fix (digest-evening execution 634b61c6,
   2026-10-13T09:46 IST, delivered to Telegram) must pass clean,
+- the reply shapes that shipped on 2026-10-19 (execution 682de9846caa run
+  "All facts gathered" plus bold sections and duplicated lines) and on
+  2026-10-20 (execution 59de77f7: "are both live", "nothing new to wait on")
+  must flag, so the classes that came back after the first fix cannot return,
 - ci.yml must run this file, so a rewired CI cannot drop the gate silently.
 """
 import json
@@ -38,7 +42,7 @@ _FORBIDDEN_NAMES = [
     "prometheus", "agent-dispatch", "agent dispatch", "opus-vet",
     "e2e-scheduled", "lighthouse", "opencode",
     "cursor", "devin", "claude", "cron", "cron_mode", "reserved-class",
-    "reserved class", "workflow", "worker", "seat", "lane",
+    "reserved class", "workflow", "worker", "seat", "lane", "cloudflare",
     "0509", "fleet-ops", "aiconverter", "tinystudio", "siterep",
     "inish-site", "nishfleet", "nish3451",
 ]
@@ -71,6 +75,15 @@ _NOISE_RES = [
     re.compile(r":\s*\d{3}\b"),
     re.compile(r"\bno new\b", re.IGNORECASE),
     re.compile(r"\b(active|all[ -]green|healthy|nothing (is )?broken)\b", re.IGNORECASE),
+    re.compile(r"\bnothing (new|to wait|changed)\b", re.IGNORECASE),
+    re.compile(r"\bboth live\b|\b(are|is|were|was)\s+live\b", re.IGNORECASE),
+    re.compile(r"\bup and running\b|\brunning normally\b|\b(are|is)\s+up\b|\bback online\b", re.IGNORECASE),
+]
+_NARRATION_RES = [
+    re.compile(r"\ball facts gathered\b", re.IGNORECASE),
+    re.compile(r"\bnow i have\b", re.IGNORECASE),
+    re.compile(r"\bi have everything\b", re.IGNORECASE),
+    re.compile(r"\bhere (is|are) the (reply|digest|summary)\b", re.IGNORECASE),
 ]
 _PERSON_RES = re.compile(r"\bI\b|\b(I'll|I've|I'm|me|my|myself)\b", re.IGNORECASE)
 _BULLET_RES = re.compile(r"^\s*[-*•]\s")
@@ -92,7 +105,7 @@ def check_reply_shape(reply: str) -> list[str]:
         if _BULLET_RES.match(ln) or _HEADER_RES.match(ln) or "**" in ln:
             violations.append("sections")
     for ln in lines:
-        if _SECTION_RES.match(_URL_RES.sub(" ", ln)):
+        if _SECTION_RES.match(ln):
             violations.append("sections")
     lowered = text.lower()
     if any(re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?:s|es)?(?![a-z0-9])", lowered) for name in _FORBIDDEN_NAMES) or any(r.search(text) for r in _FORBIDDEN_RES):
@@ -105,6 +118,8 @@ def check_reply_shape(reply: str) -> list[str]:
         violations.append("commands-or-paths")
     if any(r.search(text) for r in _NOISE_RES):
         violations.append("all-green-noise")
+    if any(r.search(text) for r in _NARRATION_RES):
+        violations.append("narration")
     if _PERSON_RES.search(text):
         violations.append("first-person")
     return sorted(set(violations))
@@ -125,6 +140,12 @@ def _required_contract():
         "never its cause, never a tool, setting, profile or permission name",
         "Quiet 12 hours",
         "Only the short reply described in the last step (REPLY) is the product",
+        "The reply is your whole final response",
+        "a line whose only point is that a check passed or a service is live, active, up or running",
+        "vendor or cloud provider names",
+        'never write "nothing new", "nothing to wait on"',
+        "Before you send, re-read your draft",
+        "not even as a sentence that it is live, up or running",
     ]
 
 
@@ -139,7 +160,7 @@ def test_labelled_replies_flag():
     """Every fixture shaped like a shipped reply the outside labeler called a violation must flag here."""
     data = json.loads(CASES.read_text())
     assert data["labeller"]["calls"] == 1
-    assert {c["id"] for c in data["cases"]} == {"m11", "e11", "m12", "e12", "m13"}, (
+    assert {c["id"] for c in data["cases"]} == {"m11", "e11", "m12", "e12", "m13", "e20", "e19"}, (
         "a labelled case went missing: the gate weakens silently"
     )
     for case in data["cases"]:
@@ -156,6 +177,27 @@ def test_post_fix_reply_passes():
 
 def test_quiet_template_passes():
     assert check_reply_shape(_QUIET_LINE) == []
+
+
+def test_green_status_and_no_news_lines_flag():
+    for reply in [
+        "3 merged: the nightly publish, a token fix, and a CI check. Gateway and tincan relay are both live.",
+        "The nightly publish went out and the secret scan is up.",
+        "51 watched items unchanged; nothing new to wait on.",
+        "Nothing changed and nothing is broken.",
+        "All facts gathered. Now I have everything for the reply.\n3 merged.",
+    ]:
+        got = check_reply_shape(reply)
+        assert "all-green-noise" in got or "narration" in got or "internal-names" in got, (reply, got)
+
+
+def test_plain_status_lines_pass():
+    for reply in [
+        "Nothing merged in the last 12 hours.",
+        "3 merged: the nightly publish, a sign-in fix, and a CI check.",
+        "And 2 more waiting; 47 items unchanged.",
+    ]:
+        assert check_reply_shape(reply) == [], reply
 
 
 def test_issue_number_in_text_flags():

@@ -7,6 +7,13 @@
     "calls": 1,
     "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). Task id orch-fleet-ops-9706-labels."
   },
+  "labeller_repeat": {
+    "group": "worker-cheap",
+    "served_model": "openai/z-ai/glm-5.3-flash",
+    "calls": 1,
+    "labelled": ["m11", "e11", "m12", "e12", "m13", "e20", "e19"],
+    "note": "the two 2026-10-19 and 2026-10-20 reply shapes were labelled by a non-Claude model from the digests' own lane (worker-cheap), blind to which replies are new and to the builder's intent; the builder wrote none (AI-decision rule). Task id orch-fleet-ops-9921-eval, 2026-10-20. The same call re-labelled the five earlier fixtures and agreed with every stored label."
+  },
   "cases": [
     {
       "id": "m11",
@@ -47,6 +54,22 @@
       "label": "violation",
       "why": "Far exceeds 6 lines with headed sections and bullet lists, names repos, workflow names, internal tools and env-var tokens in the text, and references file paths (CLAUDE.md).",
       "reply": "Shipped 58 PRs across 7 repos. Notable: an onboarding polish wave (22 PRs), a shared header and footer (17 PRs), launch video and speed fixes.\n\nBroken (proven, with links):\n- alpha site: Deploy production failed -> https://example.com/alpha/actions/runs/5\n- beta: Lighthouse failed -> https://example.com/beta/actions/runs/6\n\nWaiting on Nish (reserved-class items, new or changed since last digest):\n- alpha: support emails still route to a dead Worker -> https://example.com/alpha/issues/7\n- alpha: remove retired vendor secrets; keep billing keys -> https://example.com/alpha/issues/8\n- alpha: the CLAUDE.md file references tokens the jail cannot read -> https://example.com/alpha/issues/9\n- beta: please approve the key rotation -> https://example.com/beta/issues/10"
+    },
+    {
+      "id": "e20",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 (execution 59de77f7, the case in Nishfleet/fleet-ops#9921); names, links and the site address replaced",
+      "label": "violation",
+      "why": "Spends reply lines saying internal services are live and that nothing new is waiting, and names an internal relay and a deploy token in the text.",
+      "reply": "3 PRs merged in the last 12 hours: the nightly publish, a deploy-token fix, and a production CI check. Gateway and tincan relay are both live. The daily page published a new edition (2026-10-20). Two deploys that were failing are now green: the production deploy and the secret scan. 51 watched items unchanged; nothing new to wait on."
+    },
+    {
+      "id": "e19",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-19 (execution 682de9846caa run); names, links and titles replaced",
+      "label": "violation",
+      "why": "Opens with a run-summary line before the reply, then splits the report into bold sections and repeats the same facts twice.",
+      "reply": "All facts gathered. Now I have everything for the reply.\n\n**2 newly failing scheduled runs** (the speed check and the weekly backup), both new with links. The daily page changed to today edition. Shipped total is 4. Newly broken speed check and a weekly backup failure. Daily page republished with today edition. 45 items unchanged."
     }
   ]
 }

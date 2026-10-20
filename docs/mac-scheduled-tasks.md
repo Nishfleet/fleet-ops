@@ -81,7 +81,11 @@ files by `ansible/host.yml`, never edited by hand:
    gate `tests/test_digest_reply_shape.py` and the check gate
    `tests/test_digest_checks.py` run in CI; the first fails a prompt that drops
    the reply contract, the second fails a prompt that reads the wrong feed or
-   uses a command the Hermes shell guard blocks).
+   uses a command the Hermes shell guard blocks). The shape gate flags a reply
+   with sections, internal names, questions or asks, config advice, commands or
+   paths, a first-person voice, a line whose only point is that a check passed
+   or a service is live, up or running, a line that only says nothing happened,
+   and any line written before the reply itself (fleet-ops#9921).
 2. The deploy applies it: `fleet-host-config.service` (started on every push to
    main) runs `ansible/host.yml`, whose task "Apply config/hermes/digest-*.md to
    the live digest jobs" runs the stock `hermes cron edit <job id> --prompt`
