@@ -10,13 +10,13 @@ a variable. GitHub only ever holds the narrow tokens this config writes.
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
 (`time_rotating`). Account: the `account_id` default in `variables.tf`.
 
-Status: applied for the 10 repos below on 2026-10-09 with the minter token
-(`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
-group name against the live API. Which jobs have run on the new tokens is in
-the PR body. A weekly timer renews them (see "Renewal"). `inish-mail-filter`
-was added on 2026-10-20 (fleet-ops#9917); the next apply of that timer creates
-its token and writes its secret, so no run had used it when the list was last
-written.
+Status: applied for the 10 repos that were in the list on 2026-10-09 with the
+minter token (`~/.config/cloudflare/token-minter.env`); the plan resolved every
+permission group name against the live API. Which jobs have run on the new
+tokens is in the PR body. A weekly timer renews them (see "Renewal").
+`inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
+apply` after that merge creates its token and writes its secret, so the state
+holds it before any run has used it.
 
 ## What it creates
 
