@@ -13,7 +13,10 @@ Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
 Status: applied for the 10 repos below on 2026-10-09 with the minter token
 (`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
 group name against the live API. Which jobs have run on the new tokens is in
-the PR body. A weekly timer renews them (see "Renewal").
+the PR body. A weekly timer renews them (see "Renewal"). `inish-mail-filter`
+was added on 2026-10-20 (fleet-ops#9917); the next apply of that timer creates
+its token and writes its secret, so no run had used it when the list was last
+written.
 
 ## What it creates
 
@@ -29,6 +32,7 @@ the PR body. A weekly timer renews them (see "Renewal").
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
 | `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
+| `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
 
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
