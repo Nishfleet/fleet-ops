@@ -111,6 +111,7 @@
     cua_cli: /opt/Cua Spaces/resources/native/cua
     cua_release_prefix: cua-spaces-v
     cua_desk_space: local:desk
+    cua_desk_agent_dir: agents/desk
     cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
@@ -406,9 +407,12 @@
         # fetched, checked against that release's checksums and installed. The
         # daemon that hosts the persistent desk agent runs the old binary until
         # it restarts, and its Space has no working Volume mount afterwards, so
-        # the Space is deleted and created again; the agent's files live in the
-        # Volume on the host and survive. Skipped while a desk run is turning.
-        # Any failure is recorded and fails the run at the final assert.
+        # the Space is deleted and created again. The agent's files live in
+        # the Cua Volume on the host: they are read before the delete (the
+        # update stops when they are not there), archived once per upgrade, and
+        # read again after the create. A run in any state but idle holds the
+        # update back until the next day. Any failure is recorded and fails the
+        # run at the final assert.
         - name: Update Cua Spaces and recreate the desk Space
           become: true
           become_user: nish
@@ -438,21 +442,21 @@
               changed_when: false
               failed_when: cua_release.rc != 0 or (cua_release.stdout | trim | length) == 0
 
-            - name: List the runs in the desk Space
-              ansible.builtin.command:
-                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
-              register: cua_runs
-              changed_when: false
-
-            - name: Name the release and whether a desk run is turning
+            - name: Name the release
               ansible.builtin.set_fact:
                 cua_tag: "{{ cua_release.stdout | trim }}"
                 cua_target: "{{ cua_release.stdout | trim | regex_replace('^' ~ cua_release_prefix, '') }}"
-                cua_desk_busy: "{{ cua_runs.stdout | from_json | selectattr('status', 'equalto', 'running') | list | length > 0 }}"
 
-            - name: Decide whether to upgrade
+            - name: Compare it with the installed version the way dpkg does
+              ansible.builtin.command:
+                argv: [dpkg, --compare-versions, "{{ cua_target }}", gt, "{{ cua_installed.stdout }}"]
+              register: cua_compare
+              changed_when: false
+              failed_when: cua_compare.rc not in [0, 1]
+
+            - name: Say whether a newer release exists
               ansible.builtin.set_fact:
-                cua_upgrade: "{{ cua_target is version(cua_installed.stdout, '>') and not cua_desk_busy }}"
+                cua_newer: "{{ cua_compare.rc == 0 }}"
 
             - name: Create the download directory
               become: false
@@ -460,7 +464,7 @@
                 path: "{{ cua_package_dir }}"
                 state: directory
                 mode: "0755"
-              when: cua_upgrade
+              when: cua_newer
 
             - name: Download the package, checked against the release checksums
               become: false
@@ -469,7 +473,34 @@
                 dest: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
                 checksum: "sha256:https://github.com/trycua/cua/releases/download/{{ cua_tag }}/checksums.txt"
                 mode: "0644"
-              when: cua_upgrade
+              when: cua_newer
+
+            - name: Read the desk agent's files from the Volume before touching the Space
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_before
+              changed_when: false
+              failed_when: cua_volume_before.rc != 0 or 'CLAUDE.md' not in cua_volume_before.stdout
+              when: cua_newer
+
+            - name: Archive the Volume once per upgrade
+              ansible.builtin.archive:
+                path: "{{ nish_env.HOME }}/.cua/volume"
+                dest: "{{ nish_env.HOME }}/backups/cua-volume-{{ cua_installed.stdout }}-before-{{ cua_target }}.tgz"
+                format: gz
+              when: cua_newer
+
+            - name: List the runs in the desk Space just before the install
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
+              register: cua_runs
+              changed_when: false
+              when: cua_newer
+
+            - name: Decide whether to upgrade now
+              ansible.builtin.set_fact:
+                cua_desk_busy: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length > 0) }}"
+                cua_upgrade: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length == 0) }}"
 
             - name: Install the package
               become: false
@@ -504,6 +535,24 @@
             - name: Create the desk Space again
               ansible.builtin.command:
                 argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ cua_desk_space | regex_replace('^local:', '') }}", --on, local]
+              when: cua_upgrade
+
+            - name: Read the desk agent's files from the Volume again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_after
+              changed_when: false
+              failed_when: cua_volume_after.rc != 0 or 'CLAUDE.md' not in cua_volume_after.stdout
+              when: cua_upgrade
+
+            - name: Check the new desk Space has the Volume mounted
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, exec, "{{ cua_desk_space }}", "grep -c ' /volume ' /proc/mounts"]
+              register: cua_volume_mount
+              until: cua_volume_mount.rc == 0 and cua_volume_mount.stdout | trim == '1'
+              retries: 10
+              delay: 3
+              changed_when: false
               when: cua_upgrade
 
             - name: Smoke-test a Space on the new version
@@ -544,7 +593,7 @@
               ansible.builtin.file:
                 path: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
                 state: absent
-              when: cua_upgrade
+              when: cua_newer
           rescue:
             - name: Record that the Cua Spaces update failed
               ansible.builtin.set_fact:
