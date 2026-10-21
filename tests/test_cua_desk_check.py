@@ -71,6 +71,7 @@ def test_desk_not_ready_fails_loud(tmp_path, sandboxes, shown):
     r = _run(_env(tmp_path, sandboxes, OK_ROUTINE))
     assert r.returncode == 1
     assert f"cua desk BROKEN: local:desk is {shown} (want ready)" in r.stdout
+    assert "failed routine" not in r.stdout
 
 
 def test_cua_that_cannot_run_fails_loud(tmp_path):
@@ -87,9 +88,18 @@ def test_failed_routine_fails_loud_and_names_it(tmp_path):
     ]
     r = _run(_env(tmp_path, READY, routines))
     assert r.returncode == 1
-    assert "cua desk BROKEN" in r.stdout
+    assert "cua desk BROKEN: failed routine:" in r.stdout
     assert "0509 daily walk" in r.stdout and "failed: instance desk not found" in r.stdout
     assert '"other"' not in r.stdout
+    assert "want ready" not in r.stdout
+
+
+def test_desk_down_and_failed_routine_names_both(tmp_path):
+    routines = [{"botID": "desk", "title": "0509 daily walk", "lastOutcome": "failed: instance desk not found"}]
+    r = _run(_env(tmp_path, [], routines))
+    assert r.returncode == 1
+    assert "local:desk is missing (want ready)" in r.stdout
+    assert "failed routine:" in r.stdout and "0509 daily walk" in r.stdout
 
 
 @pytest.mark.parametrize("routines", [None, "not json"])

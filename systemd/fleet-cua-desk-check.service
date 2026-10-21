@@ -36,5 +36,6 @@ Environment=FAILED=failed
 ExecStart=/bin/sh -c 'desk=$$("$$CUA" sandbox ls --local --json --no-size 2>/dev/null | jq -r ".[] | select(.id == env.DESK) | .status" 2>/dev/null); \
 runs=$$(jq -c ".[] | select(.lastOutcome // null | tostring | startswith(env.FAILED)) | {botID, title, lastFiredAt, lastOutcome}" "$$ROUTINES" 2>&1) || runs="cannot read $$ROUTINES: $$runs"; \
 [ "$$desk" = ready ] && [ -z "$$runs" ] && { echo "cua desk ok: $$DESK ready, no failed routine"; exit 0; }; \
-echo "cua desk BROKEN: $$DESK is $${desk:-missing} (want ready); failed routines: $${runs:-none}. Fix: vault _system/agent-memory/cua-desk-agent.md (recreate the Space; never cua host setup while a run is live)"; exit 1'
+[ "$$desk" = ready ] || echo "cua desk BROKEN: $$DESK is $${desk:-missing} (want ready). Fix: vault _system/agent-memory/cua-desk-agent.md (recreate the Space; never cua host setup while a run is live)"; \
+[ -z "$$runs" ] || echo "cua desk BROKEN: failed routine: $$runs. Read the run in the Cua daemon log; the next good run clears this"; exit 1'
 TimeoutStartSec=60
