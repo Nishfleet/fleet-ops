@@ -30,7 +30,7 @@ OnFailure=fleet-unit-failed@%N.service
 Environment=FLEET_TASK_ID=tincan-relay
 StateDirectory=tincan-relay
 StateDirectoryMode=0700
-ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --dist %S/tincan-relay/dist --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
+ExecStart=%h/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --dist %S/tincan-relay/dist --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
 Restart=always
 RestartSec=10
 # --dist: relay-upgrade --from-github downloads the release here (v0.9.0 had none, so the upgrade was refused).
