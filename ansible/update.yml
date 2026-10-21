@@ -450,15 +450,6 @@
           changed_when: (hermes_version_after.stdout | default('') | trim) != (app_versions_before.results[0].stdout | default('') | trim)
           failed_when: false
 
-        - name: Restart the Hermes services on the new code
-          ansible.builtin.systemd_service:
-            name: "{{ item }}"
-            state: restarted
-          loop: [hermes-gateway.service, hermes-serve.service]
-          when: hermes_version_after is changed and not (hermes_update.failed | default(false))
-          register: hermes_restart
-          ignore_errors: true
-
         - name: Find the banned tools Hermes has installed
           ansible.builtin.find:
             paths: "{{ nish_env.HOME }}/.hermes/tools"
@@ -473,6 +464,17 @@
           loop: "{{ hermes_banned_tools.files }}"
           loop_control:
             label: "{{ item.path }}"
+          register: hermes_banned_removed
+          ignore_errors: true
+
+        - name: Restart the Hermes services on the new code
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: restarted
+          loop: [hermes-gateway.service, hermes-serve.service]
+          when: hermes_version_after is changed and not (hermes_update.failed | default(false))
+          register: hermes_restart
+          ignore_errors: true
 
         # tincan upgrade replaces the binary next to the old one and renames it
         # over, so a running listener keeps the old build until it restarts.
@@ -521,6 +523,7 @@
           loop: "{{ (tincan_units | default({})).stdout_lines | default([]) }}"
           register: tincan_cgroups
           changed_when: false
+          ignore_errors: true
 
         # A listener's cgroup lists its own process and, while it drains the
         # inbox, the headless agent session too. One pid means idle. A failed
@@ -533,6 +536,7 @@
           loop_control:
             label: "{{ item.item }}"
           register: tincan_procs
+          ignore_errors: true
 
         - name: Name the idle listeners
           ansible.builtin.set_fact:
@@ -547,6 +551,7 @@
             argv: [systemctl, --user, restart, "{{ item }}"]
           loop: "{{ tincan_idle | default([]) }}"
           register: tincan_listeners
+          ignore_errors: true
 
         # syncthing upgrade exits 4 once it has replaced the binary and 2 when
         # none is newer. The unit runs with --no-upgrade, so the new binary
@@ -1165,6 +1170,9 @@
               - "not (hermes_update | default({})).failed | default(false)"
               - "not (hermes_restart | default({})).failed | default(false)"
               - "not (tincan_upgrade | default({})).failed | default(false)"
+              - "(hermes_banned_removed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tincan_cgroups | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tincan_procs | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_listeners | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(app_versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"

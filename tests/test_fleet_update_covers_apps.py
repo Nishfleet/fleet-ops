@@ -1,4 +1,4 @@
-"""The daily update covers Hermes and tincan, restarts what runs old code, and fails loud on a banned tool."""
+"""The daily update covers Hermes and tincan, restarts what runs old code, and removes a banned Hermes tool before the restart."""
 import json
 import pathlib
 import shutil
@@ -47,6 +47,7 @@ def test_tincan_listeners_restart_only_when_idle_and_the_version_moved():
 def test_banned_hermes_tools_are_removed_not_left_to_page():
     assert INNER["Remove them, and list them in the report"]["ansible.builtin.file"]["state"] == "absent"
     assert NAMES.index("Find the banned tools Hermes has installed") < NAMES.index("Remove them, and list them in the report")
+    assert NAMES.index("Remove them, and list them in the report") < NAMES.index("Restart the Hermes services on the new code")
 
 
 def test_report_reads_stay_safe_when_a_command_prints_nothing():
