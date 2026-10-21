@@ -13,6 +13,9 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
+- a stored broken item whose latest run passed before the digest window started
+  is dropped as STALE and never reported as newly fixed, because a pass from
+  days earlier is not a repair that happened now (fleet-ops#9924),
 - ansible/host.yml applies the prompts to the live jobs.
 """
 import datetime
@@ -149,6 +152,11 @@ def _run_row(conclusion, name, days_ago=1):
     return {"workflowName": name, "conclusion": conclusion, "url": f"https://example.com/{name}/{days_ago}", "createdAt": when}
 
 
+def _recent_run(conclusion, name, hours_ago):
+    when = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"workflowName": name, "conclusion": conclusion, "url": f"https://example.com/{name}/h{hours_ago}", "createdAt": when}
+
+
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
 def test_stored_item_command_classifies_each_item(prompt, tmp_path):
     gh = {
@@ -237,17 +245,35 @@ def test_broken_item_outside_the_main_window_reads_the_workflows_own_run(prompt,
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
-def test_broken_item_fixed_when_the_workflows_own_latest_run_passed(prompt, tmp_path):
+def test_broken_item_fixed_when_the_workflows_own_latest_run_passed_in_the_window(prompt, tmp_path):
     gh = {
         "repos": ["alpha"],
         "issues": {},
         "runs": {
             "Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)],
-            "Nishfleet/alpha::Deploy production": [_run_row("success", "Deploy production", 4)],
+            "Nishfleet/alpha::Deploy production": [_recent_run("success", "Deploy production", 2)],
         },
     }
     lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Deploy production": "failure"}))
     assert any(l.startswith("ROW broken:alpha:Deploy production FIXED ") for l in lines)
+    assert not any("UNKNOWN" in l for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+@pytest.mark.parametrize("hours_ago", [13, 97])
+def test_broken_item_that_healed_before_the_window_is_stale_never_fixed(prompt, tmp_path, hours_ago):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {},
+        "runs": {
+            "Nishfleet/alpha": [_run_row("success", "Chatter", d) for d in range(_WINDOW_PUSHES)],
+            "Nishfleet/alpha::Site secret scan": [_recent_run("success", "Site secret scan", hours_ago)],
+        },
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"broken:alpha:Site secret scan": "failure"}))
+    assert any(l.startswith("ROW broken:alpha:Site secret scan STALE ") for l in lines)
+    assert not any(" FIXED " in l for l in lines)
     assert not any("UNKNOWN" in l for l in lines)
     assert saved == {}
 
