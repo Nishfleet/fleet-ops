@@ -219,11 +219,17 @@ not that key; the cap takes effect when the key is minted and that seat file
 holds it. LiteLLM v1.98 has no declarative key list, so minting is one
 admin-API call, not a config edit.
 
-Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
-litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
-The restic backup, verify and restore-test jobs are root units installed
-outside this repo (under `/etc/systemd/system/restic-r2-*`), so this section
-does not schedule them.
+Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
+into `agent-state/backups/litellm.dump` before every run, and that dump is the
+only LiteLLM Postgres copy in restic: the raw data dir is not in
+`config/restic/include.txt` (a file copy of a running Postgres is not
+crash-consistent and churned about 700 MiB a day). Restore with `pg_restore`.
+Retention is one policy for the backup and maintenance units, kept 7 daily,
+4 weekly and 3 monthly snapshots grouped by host and tags
+(`config/restic/retention.env`, `config/restic/README.md` "Retention"). The
+restic backup, verify and restore-test jobs are root units installed
+outside this repo (under `/etc/systemd/system/restic-r2-*`), with drop-ins from
+`rootfs/`, so this section does not schedule them.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
