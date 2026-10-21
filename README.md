@@ -103,7 +103,7 @@ script, or prompt lands unseen.
   `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
   binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
-  second-login env line for the Tincan listener. They were hand-placed on the
+  env line that picks the Tincan listener's own Claude login. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
