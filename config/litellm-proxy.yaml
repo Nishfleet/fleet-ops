@@ -1504,6 +1504,321 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# assistant: DeepSeek-V4.1-Flash only, on prepaid rows, for the Hermes chat agent (Nish 2026-10-21). Falls back to worker-capable.
+- model_name: assistant
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-assistant
+    tags:
+    - prepaid
+    - opencode-go
+    order: 1
+    weight: 10
+    max_parallel_requests: 4
+    # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own."
+    id: opencodego-ds41flash-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: assistant
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet2-worker-capable
+    tags:
+    - prepaid
+    - opencode-go
+    order: 1
+    weight: 10
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
+    id: opencodego2-ds41flash-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: openai/cline-pass/deepseek-v4.1-flash
+    api_base: https://api.cline.bot/api/v1
+    api_key: os.environ/CLINE_API_KEY
+    tags:
+    - prepaid
+    - cline
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
+    id: cline-ds41flash-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
+      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
+      RateLimitErrorAllowedFails: 3
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flash-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashb-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashc-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashd-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashe-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashf-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashg-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashh-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashi-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: assistant
+  litellm_params:
+    model: ollama_chat/deepseek-v4.1-flash
+    api_base: https://ollama.com
+    api_key: os.environ/OLLAMA_API_KEY
+    tags:
+    - prepaid
+    - ollama
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 1.0
+    budget_duration: 1d
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-07, native prompt_eval_cached_count 0->6016 of 6024 and /v1 cached_tokens 0->6016 (#9365). LiteLLM v1.98.0 ollama_chat reads prompt_eval_count only and drops it."
+    id: ollama-ds41flashj-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
@@ -1557,6 +1872,7 @@ router_settings:
     - worker-capable: [worker-cheap]
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
+    - assistant: [worker-capable]
   cooldown_time: 60
   allowed_fails: 1
   # a same-group retry re-hits the same wall; fallbacks fire on the first failure (fleet-ops#5792).
