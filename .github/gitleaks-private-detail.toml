@@ -57,5 +57,5 @@ condition = "AND"
 description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
-regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|\.beacon/(endpoint/logs/runtime\.jsonl(\.lock)?|hermes/state\.json(\.lock)?)|workspaces/tooling/nish-vault/00)''']
+regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|workspaces/tooling/nish-vault/00)''']
 condition = "AND"

@@ -133,9 +133,20 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     below, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 ExecStart=/bin/sh -c 'for f in fleet-cua-desk-check.service fleet-cua-desk-check.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.timer
+# 2i. The Beacon Hermes poll watcher (beacon-hermes-poll.service): link it so every deploy
+#     carries edits to it, the same way as step 2h, and enable it on every deploy, because a
+#     capture that is silently off is the failure it ships to fix. The restart after enable
+#     applies edits to a service that is already running (enable --now does not). The lines are
+#     prefixed with `-` so a broken capture watcher cannot stop the deploy steps after it (the
+#     pr-sweep timers below); the unit's OnFailure= pages when it fails. Off switch: delete this
+#     step and the enable line below, then `systemctl --user disable --now beacon-hermes-poll.service`.
+-ExecStart=/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
+-ExecStart=/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
+-ExecStart=/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service

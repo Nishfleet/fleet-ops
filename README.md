@@ -81,6 +81,16 @@ script, or prompt lands unseen.
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
+- `systemd/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish), exactly
+  `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
+  new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
+  `harness.name=hermes`, `collection_method=poll` events to
+  `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
+  have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
+  (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
+  again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
+  deploy. Off switch: remove that step and its enable line, then
+  `systemctl --user disable --now beacon-hermes-poll.service`.
 - `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
   /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
   Anthropic API reads a week of sessions inside a bwrap jail with no gh login and

@@ -126,7 +126,7 @@ jobs:
           for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
             sudo install -D -m0755 /bin/true "$b"
           done
-          for b in cursor-agent leviathan tofu; do
+          for b in beacon cursor-agent leviathan tofu; do
             install -D -m0755 /bin/true "$HOME/.local/bin/$b"
           done
       - name: systemd-analyze verify over unit files
