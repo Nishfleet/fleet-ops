@@ -357,7 +357,7 @@
             patterns: ".*-stage-*"
             file_type: directory
             hidden: true
-            age: 10m
+            age: 1m
           register: npm_stage_dirs
 
         - name: Remove them, because npm reads each as an invalid package name
@@ -809,13 +809,13 @@
             - name: Count the netcup runners GitHub sees online
               ansible.builtin.command:
                 argv: [gh, api, "{{ item }}", --paginate, --jq,
-                       '[.runners[] | select(.status == "online" and (.name | startswith("netcup-")))] | length']
+                       '.runners[] | select(.status == "online" and (.name | startswith("netcup-"))) | .name']
               loop:
                 # drive's runners are org runners since it moved to Nishfleet
                 # (2026-10-06); its repo endpoint now lists 0 and would fail this.
                 - orgs/Nishfleet/actions/runners
               register: online
-              until: online.stdout | int > 0
+              until: online.stdout_lines | length > 0
               retries: 20
               delay: 15
               changed_when: false
@@ -935,7 +935,7 @@
               versions_before: "{{ (versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
               versions_after: "{{ (versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
-              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
+              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
               cua_spaces:
                 installed: "{{ (cua_installed | default({})).stdout | default('unknown') }}"
