@@ -108,6 +108,10 @@
         stdin: ""
       - argv: [amp, update]
         stdin: ""
+    cua_cli: /opt/Cua Spaces/resources/native/cua
+    cua_release_prefix: cua-spaces-v
+    cua_desk_space: local:desk
+    cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
@@ -397,6 +401,154 @@
           ansible.builtin.command:
             argv: [systemctl, --user, --machine=nish@.host, restart, syncthing.service]
           when: syncthing_upgrade is changed
+
+        # Cua Spaces has no apt repository, so its newest stable release is
+        # fetched, checked against that release's checksums and installed. The
+        # daemon that hosts the persistent desk agent runs the old binary until
+        # it restarts, and its Space has no working Volume mount afterwards, so
+        # the Space is deleted and created again; the agent's files live in the
+        # Volume on the host and survive. Skipped while a desk run is turning.
+        # Any failure is recorded and fails the run at the final assert.
+        - name: Update Cua Spaces and recreate the desk Space
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            - name: Read the installed Cua Spaces version
+              ansible.builtin.command:
+                argv: [dpkg-query, --show, --showformat, "${Version}", cua-spaces]
+              register: cua_installed
+              changed_when: false
+
+            - name: Find the newest stable Cua Spaces release
+              ansible.builtin.command:
+                argv:
+                  - gh
+                  - release
+                  - list
+                  - --repo
+                  - trycua/cua
+                  - --limit
+                  - "50"
+                  - --json
+                  - tagName,isPrerelease
+                  - --jq
+                  - '[.[] | select((.tagName | startswith("{{ cua_release_prefix }}")) and (.isPrerelease | not))][0].tagName // ""'
+              register: cua_release
+              changed_when: false
+              failed_when: cua_release.rc != 0 or (cua_release.stdout | trim | length) == 0
+
+            - name: List the runs in the desk Space
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
+              register: cua_runs
+              changed_when: false
+
+            - name: Name the release and whether a desk run is turning
+              ansible.builtin.set_fact:
+                cua_tag: "{{ cua_release.stdout | trim }}"
+                cua_target: "{{ cua_release.stdout | trim | regex_replace('^' ~ cua_release_prefix, '') }}"
+                cua_desk_busy: "{{ cua_runs.stdout | from_json | selectattr('status', 'equalto', 'running') | list | length > 0 }}"
+
+            - name: Decide whether to upgrade
+              ansible.builtin.set_fact:
+                cua_upgrade: "{{ cua_target is version(cua_installed.stdout, '>') and not cua_desk_busy }}"
+
+            - name: Create the download directory
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}"
+                state: directory
+                mode: "0755"
+              when: cua_upgrade
+
+            - name: Download the package, checked against the release checksums
+              become: false
+              ansible.builtin.get_url:
+                url: "https://github.com/trycua/cua/releases/download/{{ cua_tag }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                dest: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                checksum: "sha256:https://github.com/trycua/cua/releases/download/{{ cua_tag }}/checksums.txt"
+                mode: "0644"
+              when: cua_upgrade
+
+            - name: Install the package
+              become: false
+              ansible.builtin.apt:
+                deb: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: present
+                lock_timeout: 300
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+              when: cua_upgrade
+
+            - name: Restart the daemon that hosts the desk agent
+              ansible.builtin.command:
+                argv: [systemctl, --user, restart, cua-desk-daemon.service]
+              when: cua_upgrade
+
+            - name: Wait until the daemon answers
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_daemon_up
+              until: cua_daemon_up.rc == 0
+              retries: 15
+              delay: 2
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Delete the desk Space, whose Volume mount died with the old daemon
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, delete, "{{ cua_desk_space }}", --force]
+              when: cua_upgrade
+
+            - name: Create the desk Space again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ cua_desk_space | regex_replace('^local:', '') }}", --on, local]
+              when: cua_upgrade
+
+            - name: Smoke-test a Space on the new version
+              when: cua_upgrade
+              block:
+                - name: Create a throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, create, linux, --name, update-smoke, --on, local]
+
+                - name: Run a command in it
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", sandbox, exec, "local:update-smoke", "echo smoke-ok"]
+                  register: cua_smoke
+                  changed_when: false
+                  failed_when: cua_smoke.rc != 0 or cua_smoke.stdout | trim != 'smoke-ok'
+              always:
+                - name: Delete the throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, delete, "local:update-smoke", --force]
+                  ignore_errors: true
+
+            - name: Read the desk Space status
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_sandboxes
+              changed_when: false
+              failed_when: "(cua_sandboxes.stdout | from_json | selectattr('id', 'equalto', cua_desk_space) | selectattr('status', 'equalto', 'ready') | list | length) != 1"
+              when: cua_upgrade
+
+            - name: Check the relay host service is still up
+              ansible.builtin.command:
+                argv: [systemctl, --user, is-active, cua-spacesd-host.service]
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Drop the downloaded package
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: absent
+              when: cua_upgrade
+          rescue:
+            - name: Record that the Cua Spaces update failed
+              ansible.builtin.set_fact:
+                cua_update_failed: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stderr | default('') }}"
 
         # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
         # image and restarts the unit; a unit that fails to start is rolled
@@ -736,6 +888,11 @@
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
+              cua_spaces:
+                installed: "{{ (cua_installed | default({})).stdout | default('unknown') }}"
+                newest: "{{ cua_target | default('unknown') }}"
+                upgraded: "{{ cua_upgrade | default(false) }}"
+                desk_busy: "{{ cua_desk_busy | default('unknown') }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
@@ -747,6 +904,7 @@
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "not (syncthing_upgrade | default({})).failed | default(false)"
+              - "cua_update_failed is not defined"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
@@ -767,6 +925,7 @@
               {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
               pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};

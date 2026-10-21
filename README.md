@@ -510,6 +510,12 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.
+   Cua Spaces has no apt repository, so when a newer stable release exists and
+   no desk run is turning, the run downloads its `.deb`, checks the sha256
+   against the release's `checksums.txt`, installs it, restarts the Cua daemon,
+   deletes and creates the `desk` Space again (the agent's files stay in the
+   Cua Volume on the host), and smoke-tests one throwaway Space. Any failure
+   fails the run.
 4. Resume, even when a step failed: start the runners, set
    `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
    sweep each queue. The repos it paused are listed in
