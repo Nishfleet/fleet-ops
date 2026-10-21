@@ -94,8 +94,17 @@ def test_the_digest_reads_every_registration_through_the_tolerant_idiom():
     assert "digest_fixed | default([])" in build
     errors = CHECKS["Name every check that could not read its item"]["ansible.builtin.set_fact"]["digest_check_errors"]
     assert errors.count("selectattr('failed', 'defined') | selectattr('failed')") == 3
+    assert errors.count("selectattr('item', 'defined')") == 3
     for register in ("presence_results", "pi_pin_heads", "container_tags"):
         assert f"({register} | default({{}})).results | default([])" in errors, register
+
+
+def test_no_digest_fact_swallows_its_own_template_error():
+    for name in ("Hold the digest lines that come from one fixed check each",
+                 "Build the digest of every item checked but not applied",
+                 "Name every check that could not read its item",
+                 "Report those checks in the digest instead of dropping them"):
+        assert CHECKS[name].get("ignore_errors") is None, name
 
 
 def test_the_digest_is_built_in_the_update_block_and_reported_at_the_end():

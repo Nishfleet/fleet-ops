@@ -927,8 +927,7 @@
                   - -c
                   - >-
                     if path=$(command -v "$1"); then
-                    echo "$1: $("$path" --version 2>&1 | head -n 1) installed,
-                    updated here when it is one of the tools above";
+                    echo "$1: $("$path" --version 2>&1 | head -n 1) present, and this line only reports it";
                     else echo "$1: not installed, nothing to update"; fi
                   - presence-check
                   - "{{ item }}"
@@ -962,7 +961,7 @@
             - name: Report a newer commit for each pinned pi extension
               become: true
               become_user: nish
-              environment: "{{ nish_env }}"
+              environment: "{{ nish_env | combine({'GIT_TERMINAL_PROMPT': '0'}) }}"
               ansible.builtin.command:
                 argv:
                   - bash
@@ -1015,13 +1014,17 @@
                   - -c
                   - |
                     set -eu
-                    newest=$(curl -fsSL --retry 3 --max-time 20 "{{ item.url }}" \
-                      | jq -r '{{ item.jq }}')
-                    if [ "$newest" = "{{ item.pinned }}" ]; then
-                      echo "{{ item.image }}:{{ item.pinned }} is the newest published tag"
-                    else
-                      echo "{{ item.image }}:{{ item.pinned }} to $newest published, and a tag change lands by PR, never rewritten mid-run"
-                    fi
+                    image=${3%:*}
+                    old=${3##*:}
+                    newest=$(curl -fsSL --retry 3 --max-time 20 "$1" | jq -r "$2" | head -n 1)
+                    case "$newest" in
+                      ''|none|null) echo "image $image: no tag newer than $old published, and a tag change lands by PR, never rewritten mid-run" ;;
+                      *) echo "image $image:$old to $newest published, and a tag change lands by PR, never rewritten mid-run" ;;
+                    esac
+                  - tag-check
+                  - "{{ item.url }}"
+                  - "{{ item.jq }}"
+                  - "{{ item.image }}:{{ item.pinned }}"
               loop: "{{ container_tag_checks }}"
               loop_control:
                 label: "{{ item.image }}:{{ item.pinned }}"
@@ -1073,7 +1076,6 @@
                   - "ansible-galaxy collections: shipped in the ansible-core apt package, so apt dist-upgrade above is their update path"
                   - "ghcr.io/berriai/litellm: the tag is pinned in its quadlet and its tag list needs a token, so a release is checked by PR, not here"
                   - "aiostreams: no container and no unit by that name on this box, so there is nothing to update"
-              ignore_errors: true
 
             - name: Build the digest of every item checked but not applied
               ansible.builtin.set_fact:
@@ -1085,7 +1087,6 @@
                    + ((container_tags | default({})).results | default([])
                       | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
                    + (digest_fixed | default([])) }}
-              ignore_errors: true
 
             # The container check loops over dicts, so its item needs a name
             # that reads as one, not the whole entry.
@@ -1094,16 +1095,18 @@
                 digest_check_errors: >-
                   {{ ((presence_results | default({})).results | default([])
                       | selectattr('failed', 'defined') | selectattr('failed')
+                      | selectattr('item', 'defined')
                       | map(attribute='item') | map('string') | list)
                    + ((pi_pin_heads | default({})).results | default([])
                       | selectattr('failed', 'defined') | selectattr('failed')
+                      | selectattr('item', 'defined')
                       | map(attribute='item') | map('string') | list)
                    + ((container_tags | default({})).results | default([])
                       | selectattr('failed', 'defined') | selectattr('failed')
+                      | selectattr('item', 'defined')
                       | map(attribute='item') | map(attribute='image') | map('string') | list)
                    + (['the pi extension list read from settings.json']
                       if (pi_git_pins | default({})).failed | default(false) else []) }}
-              ignore_errors: true
 
             # A failed check keeps running (ignore_errors) but has no stdout,
             # so without this line the digest would drop the item it was
@@ -1115,7 +1118,6 @@
                      + (['a check could not read its item, so it has no line above: '
                          ~ (digest_check_errors | join(', '))]
                         if digest_check_errors | default([]) else []) }}
-              ignore_errors: true
 
         - name: Record Hermes and tincan versions after the update
           become: true
@@ -1434,7 +1436,7 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (gh_extensions | default({})).failed | default(false)"
-              - "(digest | default([])) | length >= 10 or 'the check block did not run' in (digest | default([''])) | join(' ')"
+              - "(digest | default([])) | length >= (10 + presence_checks | length + container_tag_checks | length) or 'the check block did not run' in (digest | default([''])) | join(' ')"
               - "not (plugin_results | default({})).failed | default(false)"
               - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
