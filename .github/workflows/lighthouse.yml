@@ -13,6 +13,14 @@ on:
         description: Keep the full reports as a run artifact. Off unless the caller asks.
         type: boolean
         default: false
+      non_blocking:
+        description: When true, a failed audit sets the red output instead of failing the run.
+        type: boolean
+        default: false
+    outputs:
+      red:
+        description: True when the audit failed or could not run. Always set under non_blocking.
+        value: ${{ jobs.lighthouse.outputs.red }}
 
 permissions:
   contents: read
@@ -21,6 +29,8 @@ jobs:
   lighthouse:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      red: ${{ steps.verdict.outputs.red }}
     steps:
       # A reusable workflow cannot see its called ref, so the config is read from main.
       - name: Fetch the Lighthouse config
@@ -32,6 +42,8 @@ jobs:
           sparse-checkout: config/lighthouserc.json
           persist-credentials: false
       - name: Audit the URLs against the assertions
+        id: audit
+        continue-on-error: ${{ inputs.non_blocking }}
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:
           urls: ${{ inputs.urls }}
@@ -39,3 +51,14 @@ jobs:
           configPath: ./fleet-ops/config/lighthouserc.json
           uploadArtifacts: ${{ inputs.upload_reports }}
           temporaryPublicStorage: false
+      - name: Export the audit verdict
+        id: verdict
+        # The default step condition is success(), so after a failed earlier
+        # step this would be skipped and the verdict would never say red.
+        if: ${{ !cancelled() && inputs.non_blocking }}
+        run: |
+          case "${{ steps.audit.outcome }}" in
+            success) red=false ;;
+            *) red=true ;;
+          esac
+          echo "red=$red" >> "$GITHUB_OUTPUT"
