@@ -352,23 +352,9 @@
           changed_when: false
 
         # No age filter: a dir younger than a minute (command-code self-updates
-        # on start) failed the run on 2026-10-21. Instead, refuse to remove
-        # anything while an npm is running as nish: the play fails loud, never
-        # deletes a staging dir a live npm is writing.
-        - name: Check that no npm is running as nish before its staging dirs go
-          become: true
-          become_user: nish
-          ansible.builtin.command:
-            argv: [pgrep, -u, nish, -f, 'npm-cli\.js']
-          register: npm_running
-          failed_when: npm_running.rc not in [0, 1]
-          changed_when: false
-
-        - name: Refuse to remove staging dirs while an npm is running
-          ansible.builtin.assert:
-            that: npm_running.rc == 1
-            fail_msg: "npm is running as nish, so its staging dirs are left alone"
-
+        # on start) failed the run on 2026-10-21. Instead, when staging dirs exist,
+        # fail loud if any npm process (by bin name or npm-cli.js) runs as nish,
+        # so a live npm's dir is never removed.
         - name: Find stale npm staging dirs a stopped self-update left behind
           ansible.builtin.find:
             paths: "{{ npm_global_root.stdout }}"
@@ -376,6 +362,22 @@
             file_type: directory
             hidden: true
           register: npm_stage_dirs
+
+        - name: Check that no npm is running as nish before its staging dirs go
+          become: true
+          become_user: nish
+          ansible.builtin.command:
+            argv: [pgrep, -u, nish, -f, '(^|/)npm( |$)|npm-cli\.js']
+          register: npm_running
+          failed_when: npm_running.rc not in [0, 1]
+          changed_when: false
+          when: npm_stage_dirs.matched > 0
+
+        - name: Refuse to remove staging dirs while an npm is running
+          ansible.builtin.assert:
+            that: npm_running.rc == 1
+            fail_msg: "npm is running as nish, so its staging dirs are left alone"
+          when: npm_stage_dirs.matched > 0
 
         - name: Remove them, because npm reads each as an invalid package name
           ansible.builtin.file:
@@ -619,15 +621,26 @@
         # podman talks to the user manager on /run/user/<uid>/systemd/private. On
         # 2026-10-21 that socket file stayed with no listener (connect refused),
         # and every podman auto-update failed. A daemon-reexec of the user manager
-        # restores the listener; it restarts no unit. Verified on the box the same
-        # day (podman auto-update --dry-run listed the redis quadlet again).
-        - name: Re-exec the user systemd manager so podman can reach its socket
+        # restores the listener and restarts no unit. It runs only when the probe
+        # below meets that refusal, so a healthy box is not touched.
+        - name: Probe the user systemd socket podman needs
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_socket_probe
+          changed_when: false
+          failed_when: false
+
+        - name: Re-exec the user systemd manager when podman is refused its socket
           become: true
           become_user: nish
           environment: "{{ nish_env }}"
           ansible.builtin.command:
             argv: [systemctl, --user, daemon-reexec]
-          changed_when: false
+          when: podman_socket_probe.stderr is search('connection refused')
+          changed_when: true
 
         # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
         # image and restarts the unit; a unit that fails to start is rolled
