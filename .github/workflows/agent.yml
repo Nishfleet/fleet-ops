@@ -801,12 +801,12 @@ jobs:
           CORES: ${{ steps.host.outputs.cores }}
           SWAP_USED_KB: ${{ steps.host.outputs.swap_used_kb }}
           ROUTER_ERR: ${{ steps.host.outputs.router_err }}
+          ENGINE: ${{ steps.gate.outputs.engine }}
           SHORT_RUN_SECS: '600'
           WORKER_TIMEOUT_SECS: '3240'
           CPU_LOAD_FACTOR: '5'
           SWAP_GUARD_KB: '4194304'
-          # Infra requeues since the newest park before a death strikes anyway,
-          # so a host that stays overloaded cannot requeue one issue forever.
+          # Infra requeues since the newest park before a death strikes anyway: a host stuck overloaded, or a pi loop, cannot requeue forever.
           INFRA_REQUEUE_CAP: '3'
         # Two strikes, counted from these comments since the newest park: comment
         # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
@@ -834,8 +834,8 @@ jobs:
           # slots sat free). Three signatures count as infra: a cancelled Worker (the runner's
           # shutdown signal), a Worker that failed in under 10 minutes on a router 429/500
           # (fleet-ops#9372), and one that failed at the 55-minute cap (>= 54 min) while load1
-          # was above 5x cores or swap above 4G. A runner that died never gets here. Everything
-          # else strikes: an early worker failure, a timeout with no guard sample.
+          # was above 5x cores or swap above 4G, or at the cap on pi (#9955: --continue resumes it). A
+          # runner that died never gets here. Else strikes: an early failure, a timeout with no guard sample.
           verdict=strike
           if [ "$WORKER_OUTCOME" = cancelled ]; then
             verdict=infra
@@ -846,7 +846,7 @@ jobs:
              [ $((ENDED - STARTED)) -ge "$WORKER_TIMEOUT_SECS" ]; then
             overloaded=$(awk -v l="$LOAD1" -v c="$CORES" -v f="$CPU_LOAD_FACTOR" -v s="$SWAP_USED_KB" -v g="$SWAP_GUARD_KB" \
               'BEGIN { print ((c + 0 > 0 && l + 0 > f * c) || s + 0 > g + 0) ? "yes" : "no" }')
-            [ "$overloaded" = yes ] && verdict=infra
+            { [ "$overloaded" = yes ] || [ "$ENGINE" = pi ]; } && verdict=infra
           fi
           if [ "$verdict" = infra ]; then
             # shellcheck disable=SC2016 # $v is a jq variable
