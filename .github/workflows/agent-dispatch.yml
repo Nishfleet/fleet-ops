@@ -1666,21 +1666,25 @@ jobs:
           # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
           hook_args=(--settings '{"disableAllHooks":true}')
           [ "$HOOKS" != on ] || hook_args=()
-          # Start-up trim (measured on the VPS, bare "OK" prompt, cold cache: 51,407 input
-          # tokens and $0.334 untrimmed, 36,440 and $0.146 trimmed): no MCP servers, no
-          # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
-          # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
-          # delete the three flags below.
-          env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
-            "${model_args[@]}" \
-            "${hook_args[@]}" \
-            --strict-mcp-config \
-            --disable-slash-commands \
-            --setting-sources project,local \
-            --output-format json \
-            --permission-mode bypassPermissions \
-            --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+          # Start-up trim (measured on the VPS, bare "OK" prompt, cold cache: 51,407 input tokens and $0.334 untrimmed, 36,440 and $0.146 trimmed): no MCP servers, no skills, no user settings (drops the user Stop agent hook, user plugins, user env). Managed settings still apply (model-lanes gate, secret-read denies). Off switch: delete the three flags below.
+          # A usage wall on the runner's login (config/claude-wall.re, the one list every claude call reads; the CLI prints it on stdout and exits 1, and --output-format json carries it as an error result, and only a short error result counts, so the model's own closing text cannot trigger it) retries the same hand-off once on seat b, the default login; any other failure, or a second wall, fails the step as before.
+          orch_claude() {
+            env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 "$HOME/.local/bin/claude" -p \
+              "${model_args[@]}" \
+              "${hook_args[@]}" \
+              --strict-mcp-config \
+              --disable-slash-commands \
+              --setting-sources project,local \
+              --output-format json \
+              --permission-mode bypassPermissions \
+              --max-turns "$TURNS" \
+              < "$RUNNER_TEMP/orchestrator-prompt.md"
+          }
+          rc=0; orch_claude > "$RUNNER_TEMP/orchestrator.out" || rc=$?; cat "$RUNNER_TEMP/orchestrator.out"
+          if [ "$rc" != 0 ] && jq -r 'select(.is_error == true) | .result | select(length < 300)' "$RUNNER_TEMP/orchestrator.out" 2>/dev/null | tail -n 3 | grep -qiEf "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re"; then
+            echo "claude orchestrator: seat=a -> b (usage limit)"; rc=0; (unset CLAUDE_CONFIG_DIR; orch_claude) || rc=$?
+          fi
+          exit "$rc"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:

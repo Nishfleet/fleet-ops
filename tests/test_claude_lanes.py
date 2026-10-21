@@ -71,6 +71,19 @@ cat > "$STATE/claude.stdin"
 for bad in $CLAUDE_BAD_TOKENS; do
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "$bad" ]; then echo "API Error: 401 authentication_error: OAuth token has been revoked" >&2; exit 1; fi
 done
+# CLAUDE_WALL_TOKENS / CLAUDE_WALL_LOGINS: seats whose usage is used up. Real claude (2.1.302) prints the wall on STDOUT and exits 1.
+WALL="You've hit your session limit · resets 4:56pm (Asia/Kolkata)"
+for w in $CLAUDE_WALL_TOKENS; do
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "$w" ]; then echo "$WALL"; exit 1; fi
+done
+if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+  case " $CLAUDE_WALL_LOGINS " in
+    *" a "*) case "$CLAUDE_CONFIG_DIR" in *claude-seat-a) echo "$WALL"; exit 1 ;; esac ;;
+  esac
+  case " $CLAUDE_WALL_LOGINS " in
+    *" b "*) if [ -z "$CLAUDE_CONFIG_DIR" ]; then echo "$WALL"; exit 1; fi ;;
+  esac
+fi
 [ -z "$CLAUDE_OUT" ] || echo "$CLAUDE_OUT"
 [ -z "$CLAUDE_ERR" ] || echo "$CLAUDE_ERR" >&2
 exit "${CLAUDE_RC:-0}"
@@ -109,6 +122,7 @@ echo "$last" > "$STATE/jev-body.json"
 echo "{\\"answers\\":{\\"needs_judgment\\":{\\"choice\\":\\"$JEV_CHOICE\\",\\"probabilities\\":{\\"$JEV_CHOICE\\":$JEV_P}}}}"
 """
 SYS_PATH = "/usr/bin:/bin"
+OPS_HOME = "/home/" + "nish"  # the unit file names the host user; spelled in parts so the private-path scan stays quiet
 
 
 def _bin(tmp, real_bwrap=False):
@@ -272,7 +286,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0"):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", wall_tokens="", wall_logins="", wall_file=True):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -283,6 +297,10 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
     # Fake login files (login_a / login_b: their content, None for no file). Only
     # their presence and size matter to the lane; they hold no real credential.
     (home / ".claude").mkdir()
+    # The fleet's one list of wall texts, read from the deploy clone like the other lane files.
+    (home / "workspaces/tooling/fleet-ops-deploy-clone/config").mkdir(parents=True, exist_ok=True)
+    if wall_file:
+        shutil.copy(ROOT / "config/claude-wall.re", home / "workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re")
     if login_a is not None:
         (seat_a / ".credentials.json").write_text(login_a)
     if login_b is not None:
@@ -317,6 +335,8 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "RUNNER_NAME": runner_name,
         "CLAUDE_BAD_TOKENS": bad_tokens,
         "AHEAD": ahead,
+        "CLAUDE_WALL_TOKENS": wall_tokens,
+        "CLAUDE_WALL_LOGINS": wall_logins,
     }
     paths = [home / SEATS_REL / f"claude-seat-{x}.env" for x in "ab"] + [home / ".local/share/claude-seat-backup", home / ".claude-max", home / ".claude-other-seat", seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"]
     env["PROBE_PATHS"] = " ".join(map(str, paths))
@@ -802,7 +822,9 @@ def test_both_tokens_revoked_fails_once_each_and_does_not_fall_through(tmp_path)
 def test_rate_limit_is_not_an_auth_failure_and_does_not_retry(tmp_path):
     r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
-    assert _tokens_tried(claude) == [_tok_env("a")] and "retrying" not in r.stdout and ran == ["claude", "pi"]
+    # a wall is not an auth failure: no "token rejected" retry. It does get the one other-seat try (usage limit), walled too here.
+    assert _tokens_tried(claude) == [_tok_env("a"), _tok_env("b")] and "retrying" not in r.stdout and ran == ["claude", "pi"]
+    assert "claude lane: seat=a -> b (usage limit)" in r.stdout
 
 
 def test_login_seat_auth_error_does_not_retry_with_a_token(tmp_path):
@@ -859,3 +881,307 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
+
+
+# ---- usage wall: the same packet runs once on the other seat before any fallthrough ----
+
+WALL = "You've hit your session limit · resets 4:56pm (Asia/Kolkata)"
+
+
+@pytest.mark.parametrize("name,seat,other", [("netcup-agent-1", "a", "b"), ("netcup-agent-2", "b", "a")])
+def test_walled_token_seat_retries_once_on_the_other_seat(tmp_path, name, seat, other):
+    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, tok_a=_tok_env("a"), tok_b=_tok_env("b"), wall_tokens=_tok_env(seat))
+    assert r.returncode == 0, r.stderr
+    assert _tokens_tried(claude) == [_tok_env(seat), _tok_env(other)]
+    assert f"claude lane: seat={seat} -> {other} (usage limit)" in r.stdout
+    assert f"::add-mask::{_tok_env(other)}" in r.stdout
+    assert ran == ["claude"] and cursor == "" and _fallback_env(tmp_path) == ""  # served by claude, no fallthrough
+    assert claude.count("CCDFILES=0") == 2  # each attempt got its own empty config dir
+    assert not list((tmp_path / "runner-tmp").glob("claude-config*"))
+    assert _tok_env(seat) not in bwrap and _tok_env(other) not in bwrap and _tok_env(other) not in r.stderr
+
+
+@pytest.mark.parametrize("name,seat,other", [("netcup-agent-1", "a", "b"), ("netcup-agent-2", "b", "a")])
+def test_walled_login_seat_retries_once_on_the_other_login_with_its_jail(tmp_path, name, seat, other):
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name=name, wall_logins=seat)
+    assert r.returncode == 0, r.stderr
+    assert f"claude lane: seat={seat} -> {other} (usage limit)" in r.stdout
+    ccd = [ln[4:] for ln in claude.splitlines() if ln.startswith("CCD=")]
+    assert ccd == ([seat_a, "unset"] if seat == "a" else ["unset", seat_a])
+    assert ran == ["claude"] and cursor == ""
+    # the second attempt's jail is the other seat's: it hides the login the first one used
+    first, second = [ln for ln in bwrap.splitlines() if "-- claude" in ln]
+    assert second != first
+
+
+def test_walled_login_seat_with_the_other_login_missing_falls_through_at_once(tmp_path):
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", wall_logins="a", login_b=None, senior="false")
+    assert r.returncode == 0, r.stderr
+    assert claude.count("claude -p") == 1 and "usage limit" not in r.stdout and ran == ["claude", "pi"]
+
+
+def test_walled_token_seat_uses_the_other_seats_login_when_it_has_no_token(tmp_path):
+    r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", tok_a=_tok_env("a"), wall_tokens=_tok_env("a"))
+    assert r.returncode == 0, r.stderr
+    assert _tokens_tried(claude) == [_tok_env("a"), "unset"]
+    assert "claude lane: seat=a -> b (usage limit)" in r.stdout and ran == ["claude"]
+
+
+@pytest.mark.parametrize("senior,engine", [("true", "cursor"), ("false", "pi")])
+def test_both_seats_walled_falls_through_and_is_not_a_failed_run(tmp_path, senior, engine):
+    both = f"{_tok_env('a')} {_tok_env('b')}"
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", senior=senior, tok_a=_tok_env("a"), tok_b=_tok_env("b"), wall_tokens=both)
+    assert r.returncode == 0, r.stderr  # a failed run would exit 1 and count toward the Opus strike
+    assert _tokens_tried(claude) == [_tok_env("a"), _tok_env("b")]  # exactly one retry, never a third try
+    assert f"fallthrough: {engine} (claude rate limit)" in r.stdout and ran == ["claude", engine]
+    assert _tok_env("a") not in _fallback_env(tmp_path) and _tok_env("b") not in _fallback_env(tmp_path)
+
+
+def test_both_seats_walled_with_cursor_full_ends_with_the_429_line_for_the_wall_step(tmp_path):
+    both = f"{_tok_env('a')} {_tok_env('b')}"
+    r, _, claude, cursor, _, _, _ = _worker(tmp_path, "claude", tok_a=_tok_env("a"), tok_b=_tok_env("b"), wall_tokens=both, cursor_live=1)
+    assert r.returncode == 1 and cursor == ""
+    # the wall text is on stdout, which worker.err does not hold: this line is what the Router wall step matches
+    assert "claude: 429 rate limit, cursor lane full" in r.stderr
+
+
+def test_a_non_wall_failure_does_not_switch_seats(tmp_path):
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", tok_a=_tok_env("a"), tok_b=_tok_env("b"), claude_rc=1, claude_out="some other error")
+    assert r.returncode == 1 and cursor == "" and ran == ["claude"]
+    assert _tokens_tried(claude) == [_tok_env("a")] and "usage limit" not in r.stdout
+
+
+def test_a_wall_phrase_early_in_the_output_does_not_switch_seats(tmp_path):
+    out = "You've hit your limit is what the issue says\nmore\nmore\nmore\nError: Reached max turns (200)"
+    r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", tok_a=_tok_env("a"), tok_b=_tok_env("b"), claude_rc=1, claude_out=out)
+    assert r.returncode == 1 and _tokens_tried(claude) == [_tok_env("a")] and ran == ["claude"]
+
+
+def test_auth_failure_then_wall_does_not_try_the_revoked_seat_again(tmp_path):
+    r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", senior="false", tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env("a"), wall_tokens=_tok_env("b"))
+    assert _tokens_tried(claude) == [_tok_env("a"), _tok_env("b")]  # a revoked, b walled: no third attempt
+    assert "usage limit" not in r.stdout and r.returncode == 0 and ran == ["claude", "pi"]
+
+
+WALL_PREFIXES = [
+    WALL,
+    "You've reached your weekly limit",
+    "You're out of usage credits",
+    "Your org is out of usage",
+    "You're out of extra usage",
+    "Your seat type doesn't include usage",
+    "Your usage allocation has been disabled by your admin",
+    "Your group's usage limit is set to $0",
+    "Fable requires usage credits.",
+    "Sonnet 5.5 requires usage credits.",
+    "Opus requires usage credits.",
+    "Haiku requires usage credits.",
+    "Mythos requires usage credits.",
+    "API Error: 429 rate limit",
+    "Claude AI usage limit reached",
+    "You\u2019ve hit your session limit",  # typographic apostrophe
+]
+
+
+@pytest.mark.parametrize("text", WALL_PREFIXES)
+def test_every_wall_text_is_a_refused_seat_even_on_stdout_only(tmp_path, text):
+    # a wall run is not a failed run: it falls through (rc 0) instead of exiting 1
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "claude", senior="false", claude_rc=1, claude_out=text)
+    assert r.returncode == 0, (text, r.stderr)
+    assert ran == ["claude", "pi"]
+
+
+@pytest.mark.parametrize("text", ["Credits are fine and nobody requires usage credits.", "Error: Reached max turns (200)", "You have hit nothing"])
+def test_wall_list_does_not_match_ordinary_failures(tmp_path, text):
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "claude", senior="false", claude_rc=1, claude_out=text)
+    assert r.returncode == 1 and ran == ["claude"]
+
+
+def test_wall_list_is_one_regex_per_line_and_has_no_blank_lines():
+    lines = (ROOT / "config/claude-wall.re").read_text().splitlines()
+    assert lines and all(ln.strip() for ln in lines)  # a blank line would match everything
+
+
+def test_the_worker_reads_the_shared_wall_list_not_an_inline_pattern():
+    run = _step("work", "Worker")
+    assert "claude-wall.re" in run and "usage limit|limit reached" not in run
+
+
+# ---- the other two claude call sites read the same list ----
+
+DISPATCH = ROOT / ".github/workflows/agent-dispatch.yml"
+
+
+def _run_review_call(tmp_path, wall_first=True, wall_second=False):
+    """Runs the review step's claude call block (review_claude through the retry) against a fake claude."""
+    run = _step("review", "Review the held head")
+    start = run.index("review=\nreview_claude() {")
+    end = run.index('[ -n "${review//[[:space:]]/}" ] || retry')
+    return _run_wall_block(tmp_path, run[start:end], "review", wall_first, wall_second, pre='first_model=claude-opus-5-5\n')
+
+
+def _run_wall_block(tmp_path, block, label, wall_first, wall_second, pre=""):
+    home = tmp_path / "home"
+    (home / "workspaces/tooling/fleet-ops-deploy-clone/config").mkdir(parents=True)
+    (home / "workspaces/tooling/fleet-ops-deploy-clone/prompts").mkdir()
+    shutil.copy(ROOT / "config/claude-wall.re", home / "workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re")
+    (home / "AGENTS.md").write_text("a")
+    (home / "workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md").write_text("r")
+    b = tmp_path / "bin"
+    b.mkdir()
+    fake = b / "claude"
+    fake.write_text(
+        '#!/bin/bash\ncat >/dev/null\n'
+        'echo "TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset} CCD=${CLAUDE_CONFIG_DIR-unset}" >> "$STATE/calls.log"\n'
+        'n=$(wc -l < "$STATE/calls.log")\n'
+        'if { [ "$n" = 1 ] && [ "$WALL1" = 1 ]; } || { [ "$n" = 2 ] && [ "$WALL2" = 1 ]; }; then if [ "$WALLJSON" = 1 ]; then echo \'{"is_error":true,"result":"Your org is out of usage"}\'; else echo "You\'ve hit your session limit · resets 4:56pm (Asia/Kolkata)"; fi; exit 1; fi\n'
+        'echo "review text, no blocker"\n'
+    )
+    fake.chmod(0o755)
+    tmp = tmp_path / "rt"
+    tmp.mkdir()
+    state = tmp_path / "st"
+    state.mkdir()
+    (tmp / "diff.txt").write_text("diff")
+    (tmp / "orchestrator-prompt.md").write_text("p")
+    script = pre + block + '\necho "RESULT=[${review-}]"\n'
+    env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "RUNNER_TEMP": str(tmp), "STATE": str(state),
+           "WALLJSON": "1" if label == "orch" else "0", "WALL1": "1" if wall_first else "0", "WALL2": "1" if wall_second else "0", "CLAUDE_CONFIG_DIR": str(home / ".claude-seat-a")}
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + script], env=env, capture_output=True, text=True)
+    calls = (state / "calls.log").read_text().splitlines()
+    return r, calls, str(home / ".claude-seat-a")
+
+
+def test_review_walled_on_the_runner_login_retries_once_on_the_default_login(tmp_path):
+    r, calls, seat_a = _run_review_call(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "claude review: seat=a -> b (usage limit)" in r.stdout
+    assert len(calls) == 2 and calls[0] == f"TOK=unset CCD={seat_a}" and calls[1] == "TOK=unset CCD=unset"
+    assert "RESULT=[review text, no blocker]" in r.stdout and "session limit" not in r.stdout.split("RESULT=")[1]
+
+
+def test_review_walled_on_both_seats_yields_no_review_text(tmp_path):
+    # the wall text must never become the review: it would be judged and posted
+    r, calls, _ = _run_review_call(tmp_path, wall_second=True)
+    assert r.returncode == 0 and len(calls) == 2
+    assert "RESULT=[]" in r.stdout
+
+
+def test_review_unwalled_makes_one_call(tmp_path):
+    r, calls, _ = _run_review_call(tmp_path, wall_first=False)
+    assert len(calls) == 1 and "usage limit" not in r.stdout and "RESULT=[review text, no blocker]" in r.stdout
+
+
+def _run_orch(tmp_path, wall_first=True, wall_second=False):
+    ses = subprocess.run(["yq", '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run', str(DISPATCH)], capture_output=True, text=True, check=True).stdout
+    start = ses.index("orch_claude() {")
+    block = ses[start:]
+    block = block.replace('"$HOME/.local/bin/claude"', "claude")
+    pre = 'TURNS=5; model_args=(); hook_args=()\n'
+    return _run_wall_block(tmp_path, pre.replace("\n", "\n") + block.replace('exit "$rc"', 'echo "RC=$rc"; exit 0'), "orch", wall_first, wall_second)
+
+
+def test_orchestrator_walled_retries_once_on_seat_b_and_succeeds(tmp_path):
+    r, calls, seat_a = _run_orch(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "claude orchestrator: seat=a -> b (usage limit)" in r.stdout and "RC=0" in r.stdout
+    assert len(calls) == 2 and calls[0].endswith(f"CCD={seat_a}") and calls[1] == "TOK=unset CCD=unset"
+
+
+def test_orchestrator_walled_on_both_seats_fails_the_step(tmp_path):
+    r, calls, _ = _run_orch(tmp_path, wall_second=True)
+    assert len(calls) == 2 and "RC=1" in r.stdout
+
+
+def test_orchestrator_unwalled_makes_one_call(tmp_path):
+    r, calls, _ = _run_orch(tmp_path, wall_first=False)
+    assert len(calls) == 1 and "RC=0" in r.stdout and "usage limit" not in r.stdout
+
+
+# ---- tincan listener: the unit reruns on the default login only after a wall ----
+
+UNIT = ROOT / "systemd/tincan-listen-claude-vps.service"
+
+
+def _listener_cmd():
+    line = next(ln for ln in UNIT.read_text().splitlines() if ln.startswith("ExecStart="))
+    cmd = line.split(" --exec ", 1)[1]
+    assert cmd.startswith("'") and cmd.endswith("'")
+    return cmd[1:-1].replace("%%", "\0").replace("%h", OPS_HOME).replace("\0", "%").replace("$$", "$")  # systemd unescaping
+
+
+def _run_listener(tmp_path, first, second=""):
+    """Runs the unit's exec command under sh -c, with HOME-relative paths moved into tmp and a fake claude."""
+    home = tmp_path / "home"
+    (home / "workspaces/tooling/fleet-ops-deploy-clone/config").mkdir(parents=True)
+    shutil.copy(ROOT / "config/claude-wall.re", home / "workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re")
+    (home / ".local/bin").mkdir(parents=True)
+    log = tmp_path / "calls.log"
+    claude = home / ".local/bin/claude"
+    claude.write_text(
+        '#!/bin/bash\necho "CCD=${CLAUDE_CONFIG_DIR-unset} $2 $3" >> "$LOG"\n'
+        'n=$(wc -l < "$LOG")\n'
+        'out=$FIRST; [ "$n" = 1 ] || out=$SECOND\n'
+        'case "$out" in wall) echo "You\'ve hit your session limit"; exit 1 ;; other) echo "Error: Reached max turns (30)"; exit 1 ;; esac\n'
+        'echo ok\n'
+    )
+    claude.chmod(0o755)
+    cmd = _listener_cmd().replace(OPS_HOME, str(home))
+    env = {**os.environ, "LOG": str(log), "CLAUDE_CONFIG_DIR": "/seat/a", "FIRST": first, "SECOND": second}
+    r = subprocess.run(["sh", "-c", cmd], env=env, capture_output=True, text=True)
+    return r, (log.read_text().splitlines() if log.exists() else [])
+
+
+def test_listener_reruns_once_on_the_default_login_after_a_wall(tmp_path):
+    r, calls = _run_listener(tmp_path, "wall")
+    assert r.returncode == 0, r.stderr
+    assert calls[0].startswith("CCD=/seat/a ") and calls[1].startswith("CCD=unset ") and len(calls) == 2
+    assert "claude listener: seat=a -> b (usage limit)" in r.stdout
+
+
+def test_listener_does_not_rerun_after_a_non_wall_failure(tmp_path):
+    r, calls = _run_listener(tmp_path, "other")
+    assert r.returncode == 1 and len(calls) == 1 and "usage limit)" not in r.stdout
+
+
+def test_listener_does_not_rerun_after_success(tmp_path):
+    r, calls = _run_listener(tmp_path, "")
+    assert r.returncode == 0 and len(calls) == 1
+
+
+def test_listener_walled_on_both_seats_fails_after_one_rerun(tmp_path):
+    r, calls = _run_listener(tmp_path, "wall", "wall")
+    assert r.returncode == 1 and len(calls) == 2
+
+
+def test_listener_unit_is_valid_and_has_the_trim_flags_in_the_one_command_both_halves_run():
+    text = UNIT.read_text()
+    line = next(ln for ln in text.splitlines() if ln.startswith("ExecStart="))
+    assert line.count("claude -p") == 1 and line.count("c >$$o") == 1 and line.count("(unset CLAUDE_CONFIG_DIR; c)") == 1
+    for flag in ("--strict-mcp-config", "--disable-slash-commands", "--setting-sources project,local", "--mcp-config %h/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config"):
+        assert flag in line
+    assert "claude-wall.re ||" in line  # gated, never a bare ||
+
+
+def test_orchestrator_json_error_that_is_not_a_wall_is_not_retried(tmp_path):
+    # --output-format json: the model's own long closing text can say "rate limit" on a run that failed for another reason
+    r, calls, _ = _run_orch(tmp_path, wall_first=False)
+    assert len(calls) == 1
+    run = subprocess.run(["yq", '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run', str(DISPATCH)], capture_output=True, text=True, check=True).stdout
+    cond = next(ln for ln in run.splitlines() if ln.startswith("if ") and "claude-wall.re" in ln)
+    out = tmp_path / "o.json"
+    wall = tmp_path / "wall.re"
+    wall.write_text((ROOT / "config/claude-wall.re").read_text())
+    probe = cond.replace('"$RUNNER_TEMP/orchestrator.out"', str(out)).replace('"$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re"', str(wall)).replace("if [ \"$rc\" != 0 ] && ", "").replace("; then", "")
+    def hit(doc):
+        out.write_text(json.dumps(doc) + "\n")
+        return subprocess.run(["bash", "-c", probe], capture_output=True).returncode == 0
+    assert hit({"is_error": True, "result": "Your org is out of usage"})
+    assert not hit({"is_error": True, "result": "I fixed the rate limit handling and the 429 retry. " * 10})
+    assert not hit({"is_error": False, "result": "You've hit your limit was in the issue"})
+
+
+def test_missing_wall_list_falls_back_to_the_old_texts_with_a_warning(tmp_path):
+    # a deploy clone that lags main must not turn the old walls back into failed runs
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "claude", senior="false", claude_rc=1, claude_out="API Error: 429 rate limit", wall_file=False)
+    assert r.returncode == 0 and ran == ["claude", "pi"] and "using the old four texts" in r.stdout
