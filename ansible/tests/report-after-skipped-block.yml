@@ -143,8 +143,8 @@
           - "digest_check_errors == ['docker.io/library/postgres:16']"
         fail_msg: >-
           This models the shape only. The gate on the expressions update.yml
-          actually runs is test_the_digest_reads_every_registration_through_the_tolerant_idiom
-          in tests/test_fleet_update_covers_apps.py.
+          actually runs is in tests/test_fleet_update_covers_apps.py, which
+          reads ansible/update.yml itself.
 
     # The class gate on the real file: every occurrence of the old idiom in
     # ansible/update.yml must be gone, and every `.results` read must use the

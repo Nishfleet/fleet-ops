@@ -146,20 +146,21 @@
     # The newest published tag of each image the quadlets pin. Reported, never
     # applied: the file header says a tag change lands in a PR, and this run
     # must not rewrite a quadlet or restart the proxy mid-flight. `pinned` is
-    # the tag the quadlet carries; `jq` selects the newest tag in that line
-    # (same major for postgres and redis, same major.minor for grafana).
+    # the tag the quadlet carries, `name` asks Docker Hub for that line only
+    # (its default page is the 100 most recently updated tags, which a newer
+    # major would fill), and `jq` selects the newest tag in the line.
     container_tag_checks:
       - image: docker.io/library/postgres
         pinned: "16"
-        url: https://hub.docker.com/v2/repositories/library/postgres/tags?page_size=100&ordering=last_updated
+        url: https://hub.docker.com/v2/repositories/library/postgres/tags?page_size=100&name=16.&ordering=last_updated
         jq: '[.results[].name | select(test("^16\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
       - image: docker.io/library/redis
         pinned: "7"
-        url: https://hub.docker.com/v2/repositories/library/redis/tags?page_size=100&ordering=last_updated
+        url: https://hub.docker.com/v2/repositories/library/redis/tags?page_size=100&name=7.&ordering=last_updated
         jq: '[.results[].name | select(test("^7\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
       - image: docker.io/grafana/grafana
         pinned: "13.2.3"
-        url: https://hub.docker.com/v2/repositories/grafana/grafana/tags?page_size=100&ordering=last_updated
+        url: https://hub.docker.com/v2/repositories/grafana/grafana/tags?page_size=100&name=13.&ordering=last_updated
         jq: '[.results[].name | select(test("^13\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
 
   tasks:
@@ -976,11 +977,11 @@
                     repo=${ref#git:}
                     repo=${repo%@*}
                     if ! printf '%s' "$pin" | grep -Eq '^[0-9a-f]{40}$'; then
-                      echo "pi extension $repo: no commit pin, so this run leaves it alone"
+                      echo "pi extension $repo: pin is not a full commit SHA, so this run leaves it alone"
                       exit 0
                     fi
                     case "$repo" in
-                      http*|ssh*|git@*) url=$repo ;;
+                      *://*|*@*) url=$repo ;;
                       *[!A-Za-z0-9._/-]*) echo "pi extension $repo: not a repo path, pin ${pin:0:7} unchecked"; exit 0 ;;
                       *) url=https://$repo ;;
                     esac
@@ -1017,7 +1018,7 @@
                     set -eu
                     image=${3%:*}
                     old=${3##*:}
-                    newest=$(curl -fsSL --retry 3 --max-time 20 "$1" | jq -r "$2" | head -n 1)
+                    newest=$(curl -fsSL --retry 3 --max-time 20 "$1" | jq -r "$2")
                     case "$newest" in
                       ''|none|null) echo "image $image: no tag newer than $old in the first page, and a tag change lands by PR, never rewritten mid-run"; exit 0 ;;
                     esac
@@ -1082,16 +1083,24 @@
                   - pipefail
                   - -c
                   - |
-                    set -u
-                    units=$(systemctl --user list-unit-files --no-legend --plain 2>/dev/null | grep -i aiostreams || true)
-                    ctrs=$(podman ps -a --format json 2>/dev/null | jq -r '.[] | "\(.Names) \(.Image)"' | grep -i aiostreams || true)
+                    set -euo pipefail
+                    if ! command -v podman >/dev/null; then
+                      echo "aiostreams: podman is not installed, so this run could not check"
+                      exit 0
+                    fi
+                    if ! command -v jq >/dev/null; then
+                      echo "aiostreams: jq is not installed, so this run could not check"
+                      exit 0
+                    fi
+                    units=$(systemctl --user list-unit-files --no-legend --plain | grep -i aiostreams || true)
+                    ctrs=$(podman ps -a --format json | jq -r '.[] | "\(.Names) \(.Image)"' | grep -i aiostreams || true)
                     if [ -n "$units$ctrs" ]; then
                       echo "aiostreams: $ctrs$units"
                     else
                       echo "aiostreams: no container and no unit by that name, so there is nothing to update"
                     fi
                     galaxy=$(readlink -f "$(command -v ansible-galaxy)")
-                    pkg=$(dpkg-query -S "$galaxy" 2>/dev/null | cut -d: -f1)
+                    pkg=$(dpkg-query -S "$galaxy" | cut -d: -f1 || true)
                     echo "ansible-galaxy: $galaxy ships in ${pkg:-no apt package}, so apt dist-upgrade above is its update path"
               register: extra_checks
               changed_when: false
@@ -1101,11 +1110,11 @@
             - name: Hold the digest lines that come from one fixed check each
               ansible.builtin.set_fact:
                 digest_fixed:
-                  - "fwupd: {{ ((fwupd_updates | default({})).stdout | default('') ~ ' ' ~ (fwupd_updates | default({})).stderr | default('')) | trim | regex_replace('\\s+', ' ') }} (firmware takes effect at the drain's reboot, never in this run)"
+                  - "fwupd: {{ ((fwupd_updates | default({})).stdout | default('') ~ ' ' ~ (fwupd_updates | default({})).stderr | default('')) | trim | regex_replace('\\s+', ' ') | default('nothing was read', true) }} (firmware takes effect at the drain's reboot, never in this run)"
                   - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown', true) }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown', true) }}"
                   - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown', true) }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown', true) }}"
                   - "GitHub runners: {{ (runner_units | default({})).stdout_lines | default([]) | length }} installed, each updates itself, so this run only restarts and counts them"
-                  - "not checked here: ghcr.io/berriai/litellm, whose tag list needs a token, so a release is checked by PR"
+                  - "not checked here: ghcr.io/berriai/litellm, whose tag list needs a token this run does not hold, so its tag was not read"
 
             - name: Build the digest of every item checked but not applied
               ansible.builtin.set_fact:
@@ -1468,7 +1477,7 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (gh_extensions | default({})).failed | default(false)"
-              - "'reboot: ' in ((digest | default([])) | join(' '))"
+              - "((digest | default([])) | join(' ')) is search('reboot: (not required|required)')"
               - "'fwupd: ' in ((digest | default([])) | join(' ')) or 'the check block did not run' in ((digest | default([])) | join(' '))"
               - "presence_checks | select('in', ((digest | default([])) | join(' '))) | list | length == presence_checks | length or 'the check block did not run' in ((digest | default([])) | join(' '))"
               - "container_tag_checks | map(attribute='image') | select('in', ((digest | default([])) | join(' '))) | list | length == container_tag_checks | length or 'the check block did not run' in ((digest | default([])) | join(' '))"
