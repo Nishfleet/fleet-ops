@@ -1785,6 +1785,21 @@ jobs:
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: router-dead-row, model_id: drill}
+                - uid: drill-dead-row-unknown
+                  title: drill dead row without a row
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: router-dead-row}
                 - uid: drill-generic
                   title: drill generic
                   condition: B
@@ -1833,6 +1848,11 @@ jobs:
           curl -fsS -X POST --config <(pwcfg) -H 'content-type: application/json' --data @"$d/rule2.json" http://127.0.0.1:3998/api/v1/provisioning/alert-rules >/dev/null
           for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
+          # A dead-row alert with no model_id labels no row, and the issue title is
+          # built from that label alone: without the fallback the title is
+          # "router dead row: " and the issue names nothing to check (fleet-ops#9938).
+          for _ in $(seq 1 60); do grep -q '\"title\":\"router dead row: unknown row\"' "$d/sink.log" && break; sleep 3; done
+          grep -q '\"title\":\"router dead row: unknown row\"' "$d/sink.log" || { echo "::error::a dead-row alert with no model_id filed an issue that names no row"; sort "$d/sink.log" | uniq -c; exit 1; }
           sort "$d/sink.log" | uniq -c
           # A rule with no route of its own lands on the policy root,
           # fleet-alert-dispatch: its payload must be a labelled fleet issue.

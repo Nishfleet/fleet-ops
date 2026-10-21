@@ -1,0 +1,87 @@
+# Gate for the router-dead-row rule's A expression (fleet-ops#9938).
+#
+# The rule files a fleet-ops issue naming the dead router row, formatted from the
+# model_id label. A series with no model_id has no row to name: it is the proxy
+# refusing the call itself, before any deployment is picked. That is what
+# happened on 2026-10-21 13:00 IST, when a key aliased inish-daily asked for
+# deepseek-v4.1-flash (a model that key may not reach) six times in six seconds
+# and got a 403 ProxyException every time. The rule counted the empty row as 6
+# failures, fired, and the issue came out titled "router dead row: ".
+#
+# The deployed expression now keeps only series that carry a model_id, and these
+# cases pin it from both sides:
+#
+#  - the incident shape is silent, and it is the shape the old expression fired
+#    on, so the case fails if the filter is dropped;
+#  - a real row past the threshold still fires, with model_id on the alert, so
+#    the filter cannot be widened into silence without failing here;
+#  - a real row at 4 failures in the hour stays quiet, and a 429 on a real row
+#    stays quiet too (a quota wall is a resting row, not a dead one).
+#
+# Every series is fed one failure per minute for a full hour, so `increase` over
+# the 1h window reads 60 for the loud cases and 3.05 for the quiet one: the
+# cases stand on which series the expression keeps, not on a count that sits
+# next to the threshold.
+evaluation_interval: 1m
+rule_files:
+- router-dead-row.test.rules.yml
+tests:
+# 1. The incident: six 403s in six seconds from the proxy itself, no model_id,
+#    no row to name. Grafana's threshold never sees a series.
+- alert_rule_test:
+  - alertname: RouterDeadRow
+    eval_time: 60m
+    exp_alerts: []
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",exception_class="ProxyException",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x60
+  interval: 1m
+# 2. A real dead row, the case this rule exists for: Cline's deepseek row
+#    answering 403 "the user is not subscribed to required model plan" on every
+#    call routed to it.
+- alert_rule_test:
+  - alertname: RouterDeadRow
+    eval_time: 60m
+    exp_alerts:
+    - exp_labels:
+        alertname: RouterDeadRow
+        model_id: cline-ds41flash-worker-cheap
+        severity: warning
+        signal: router-dead-row
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",model_id="cline-ds41flash-worker-cheap"}
+    values: 0+1x60
+  interval: 1m
+# 3. The same row well under the threshold: 4 failures spread into the hour and
+#    nothing since, which must not page.
+- alert_rule_test:
+  - alertname: RouterDeadRow
+    eval_time: 60m
+    exp_alerts: []
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",model_id="cline-ds41flash-worker-cheap"}
+    values: 0+1x4 4x56
+  interval: 1m
+# 4. A row answering 429 on every call is resting, not dead (Nish 2026-10-02).
+- alert_rule_test:
+  - alertname: RouterDeadRow
+    eval_time: 60m
+    exp_alerts: []
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="429",model_id="cline-ds41flash-worker-cheap"}
+    values: 0+1x60
+  interval: 1m
+# 5. What the threshold actually reads, both series in one hour: the deployed
+#    expression returns the real row at 60 and drops the incident series.
+- promql_expr_test:
+  - expr: sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404", model_id!=""}[1h]))
+    eval_time: 60m
+    exp_samples:
+    - labels: '{model_id="cline-ds41flash-worker-cheap"}'
+      value: 60
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",model_id="cline-ds41flash-worker-cheap"}
+    values: 0+1x60
+  - series: litellm_deployment_failure_responses_total{exception_status="403",exception_class="ProxyException",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x60
+  interval: 1m

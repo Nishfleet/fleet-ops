@@ -14,6 +14,13 @@
 # status and model_id is the router row id. 429 is never counted: a quota wall is a
 # resting row, not a dead one (Nish 2026-10-02).
 #
+# Only a series that carries a model_id counts: model_id is the deployment row id, and a
+# series without one was refused by the proxy before a deployment was picked, so there is no
+# row to remove and nothing the issue could ask about. On 2026-10-21 13:00 IST a key aliased
+# inish-daily asked for deepseek-v4.1-flash, which that key may not reach, six times in six
+# seconds; every answer was a 403 ProxyException with no model_id, this rule called the empty
+# row dead, and the issue came out titled "router dead row: " with no row named (fleet-ops#9938).
+#
 # Route: severity warning, so it does not page; label signal=router-dead-row, and the
 # series label model_id names the row, files a fleet-ops issue (agent-ready + priority-now) through
 # the policy tree in cloudflare-spend-contact.yaml.
@@ -37,7 +44,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[1h]))
+              expr: sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404", model_id!=""}[1h]))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
