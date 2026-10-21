@@ -825,28 +825,6 @@
         install_recommends: false
         lock_timeout: 300
 
-    - name: Check whether Hermes has its cua-driver
-      become: true
-      become_user: nish
-      ansible.builtin.command:
-        argv: ["{{ nish_home }}/.local/bin/hermes", computer-use, status]
-      environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
-      register: hermes_cua_driver
-      check_mode: false
-      timeout: 60
-      changed_when: false
-      failed_when: hermes_cua_driver.rc is not defined or hermes_cua_driver.rc > 1
-
-    - name: Install Hermes' pinned cua-driver
-      become: true
-      become_user: nish
-      ansible.builtin.command:
-        argv: ["{{ nish_home }}/.local/bin/hermes", computer-use, install]
-      environment: "{{ nish_env | combine({'HERMES_HOME': nish_home ~ '/.hermes'}) }}"
-      timeout: 600
-      when: (hermes_cua_driver.rc | default(0)) == 1
-      changed_when: true
-
     - name: Let Hermes start its own headless Bot Desktop when computer_use needs a display
       become: true
       become_user: nish
