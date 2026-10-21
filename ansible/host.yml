@@ -773,7 +773,7 @@
         regexp: '^  chrome-devtools: \{'
       vars:
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
-      when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^ +chrome-devtools:')
+      when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^mcp_servers:\n(?:[ \t].*\n|\n)*?[ \t]+chrome-devtools:')
       diff: false
 
     - name: Install the Bot Desktop packages Hermes computer_use needs on a headless host
