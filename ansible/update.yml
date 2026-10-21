@@ -18,9 +18,10 @@
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater (Hermes on its stable channel with its
 #              services restarted, tincan with its idle listeners restarted,
-#              yt-dlp, the npm and uv tools) and the redis container through
-#              `podman auto-update`. Stale npm staging dirs go first, so
-#              one interrupted self-update cannot fail `npm update`.
+#              yt-dlp, the npm and uv tools, gh's own extensions) and the
+#              redis container through `podman auto-update`. Stale npm staging
+#              dirs go first, so one interrupted self-update cannot fail
+#              `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -31,6 +32,13 @@
 #              extensions loaded and every one of them pinned, no failed
 #              unit, router ready, Remote Control up. One assert at the end
 #              fails the unit (and pages) if any check or tool update failed.
+#
+# The digest. Some updates this run must not apply itself: a pin that is
+# deliberate, a tag that moves in a PR, firmware that waits for the drain's
+# reboot, a tool that is absent, a tool with no stock updater. Each one is
+# still checked here and prints one plain line in the run's report
+# (`digest:`), with the reason, so no item on the box is skipped silently
+# (fleet-ops#9965).
 #
 # Never reboots (standing rule: never auto-reboot). When a package needs a
 # reboot, the run opens one needs-nish-decision issue in fleet-ops instead.
@@ -130,6 +138,29 @@
     # an install must never bring it back.
     hermes_banned_tool_glob: "cua-driver-*"
     version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, amp, syncthing]
+    # Checked every run, never applied by it: an agent CLI or a toolchain with
+    # no updater this run may call, because it is absent from the box or has no
+    # stock command. Each one still writes one plain line to the digest at the
+    # end, so a run never skips a tool silently (fleet-ops#9965).
+    presence_checks: [codex, gemini, grok, droid, cargo, rustup]
+    # The newest published tag of each image the quadlets pin. Reported, never
+    # applied: the file header says a tag change lands in a PR, and this run
+    # must not rewrite a quadlet or restart the proxy mid-flight. `pinned` is
+    # the tag the quadlet carries; `jq` selects the newest tag in that line
+    # (same major for postgres and redis, same major.minor for grafana).
+    container_tag_checks:
+      - image: docker.io/library/postgres
+        pinned: "16"
+        url: https://hub.docker.com/v2/repositories/library/postgres/tags?page_size=100&ordering=last_updated
+        jq: '[.results[].name | select(test("^16\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
+      - image: docker.io/library/redis
+        pinned: "7"
+        url: https://hub.docker.com/v2/repositories/library/redis/tags?page_size=100&ordering=last_updated
+        jq: '[.results[].name | select(test("^7\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
+      - image: docker.io/grafana/grafana
+        pinned: 13.2.3
+        url: https://hub.docker.com/v2/repositories/grafana/grafana/tags?page_size=100&ordering=last_updated
+        jq: '[.results[].name | select(test("^13\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -859,6 +890,187 @@
           register: plugin_results
           ignore_errors: true
 
+        # gh ships its own extension manager, so this is the stock path: it
+        # upgrades every installed extension and prints nothing when there is
+        # none, so the task needs no guard (fleet-ops#9965).
+        - name: Upgrade every installed gh extension
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [gh, extension, upgrade, --all]
+            stdin: ""
+          register: gh_extensions
+          timeout: 600
+          changed_when: >-
+            gh_extensions.stdout_lines | default([])
+            | reject('search', 'already up to date') | list | length > 0
+          ignore_errors: true
+
+        # Everything below is checked and reported, never applied: a pin that
+        # was set on purpose, a tag that moves in a PR, firmware that needs a
+        # drain, or a tool with no stock updater on this box. Each task records
+        # its own error and stays in the run (fleet-ops#9964), and each writes
+        # one plain line into the digest, so nothing is skipped silently
+        # (fleet-ops#9965).
+        - name: Check the items this run must report instead of applying
+          block:
+            - name: Report whether each agent CLI and toolchain is on this box
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv:
+                  - bash
+                  - -o
+                  - pipefail
+                  - -c
+                  - >-
+                    if path=$(command -v {{ item }}); then
+                    echo "{{ item }}: $("$path" --version 2>&1 | head -n 1) installed,
+                    updated here when it is one of the tools above";
+                    else echo "{{ item }}: not installed, nothing to update"; fi
+              loop: "{{ presence_checks }}"
+              register: presence_results
+              changed_when: false
+              ignore_errors: true
+
+            - name: List the pi extensions pinned to a commit
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv:
+                  - jq
+                  - --raw-output
+                  - '[.packages[] | select(startswith("git:"))] | .[]'
+                  - /home/nish/.pi/agent/settings.json
+              register: pi_git_pins
+              changed_when: false
+              ignore_errors: true
+
+            # A pin is a full 40-character SHA on purpose (`pi update --all`
+            # moved an unpinned extension and broke every pi start,
+            # fleet-ops#9262), so a newer commit is reported and the pin is
+            # never moved (fleet-ops#9965).
+            - name: Report a newer commit for each pinned pi extension
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv:
+                  - bash
+                  - -o
+                  - pipefail
+                  - -c
+                  - |
+                    set -eu
+                    ref={{ item }}
+                    pin=${ref##*@}
+                    repo=${ref#git:}
+                    repo=${repo%@*}
+                    case "$repo" in
+                      http*|ssh*|git@*) url=$repo ;;
+                      *) url=https://$repo ;;
+                    esac
+                    if head=$(git ls-remote "$url" HEAD 2>/dev/null | cut -f1); then
+                      if [ "$head" != "$pin" ]; then
+                        echo "pi extension $repo: newer commit ${head:0:7} available, pinned ${pin:0:7} left alone (a pin is never moved by this run)"
+                      else
+                        echo "pi extension $repo: pinned ${pin:0:7} is the branch tip"
+                      fi
+                    else
+                      echo "pi extension $repo: could not read $url, pin ${pin:0:7} unchanged"
+                    fi
+              loop: "{{ (pi_git_pins | default({})).stdout_lines | default([]) }}"
+              loop_control:
+                label: "{{ item }}"
+              register: pi_pin_heads
+              changed_when: false
+              timeout: 120
+              ignore_errors: true
+
+            - name: Report the newest published tag of each pinned image
+              ansible.builtin.command:
+                argv:
+                  - bash
+                  - -o
+                  - pipefail
+                  - -c
+                  - |
+                    set -eu
+                    newest=$(curl -fsSL --retry 3 --max-time 20 "{{ item.url }}" \
+                      | jq -r '{{ item.jq }}')
+                    if [ "$newest" = "{{ item.pinned }}" ]; then
+                      echo "{{ item.image }}:{{ item.pinned }} is the newest published tag"
+                    else
+                      echo "{{ item.image }}:{{ item.pinned }} to $newest published, and a tag change lands by PR, never rewritten mid-run"
+                    fi
+              loop: "{{ container_tag_checks }}"
+              loop_control:
+                label: "{{ item.image }}:{{ item.pinned }}"
+              register: container_tags
+              changed_when: false
+              timeout: 120
+              ignore_errors: true
+
+            # Root: fwupd reads the daemon's device state. It is never applied
+            # here even when it has an update, because firmware takes effect at
+            # the reboot the drain owns, not in this run.
+            - name: Check fwupd for firmware updates
+              ansible.builtin.command:
+                argv: [fwupdmgr, get-updates, --no-reboot-check]
+              register: fwupd_updates
+              changed_when: false
+              failed_when: false
+              timeout: 300
+
+            - name: Read each checked-but-not-applied timer's state
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv: [systemctl, --user, is-active, "{{ item }}"]
+              loop: [fleet-provider-watch.timer, skills-update.timer]
+              register: watch_timer_states
+              changed_when: false
+              failed_when: false
+
+            - name: Read the result of each one's last run
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv: [systemctl, --user, show, "{{ item }}", --property=Result]
+              loop: [fleet-provider-watch.service, skills-update.service]
+              register: watch_results
+              changed_when: false
+              failed_when: false
+
+            - name: Hold the digest lines that come from one fixed check each
+              ansible.builtin.set_fact:
+                digest_fixed:
+                  - "fwupd: {{ ((fwupd_updates | default({})).stdout | default('') ~ ' ' ~ (fwupd_updates | default({})).stderr | default('')) | trim | regex_replace('\\s+', ' ') }} (firmware takes effect at the drain's reboot, never in this run)"
+                  - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
+                  - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | last) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | last) | default('unknown') }}"
+                  - "GitHub runners: {{ (runner_units | default({})).stdout_lines | default([]) | length }} installed, each updates itself, so this run only restarts and counts them"
+                  - "ansible-galaxy collections: shipped in the ansible-core apt package, so apt dist-upgrade above is their update path"
+                  - "ghcr.io/berriai/litellm: the tag is pinned in its quadlet and its tag list needs a token, so a release is checked by PR, not here"
+                  - "aiostreams: no container and no unit by that name on this box, so there is nothing to update"
+              ignore_errors: true
+
+            - name: Build the digest of every item checked but not applied
+              ansible.builtin.set_fact:
+                digest: >-
+                  {{ ((presence_results | default({})).results | default([])
+                      | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+                   + ((pi_pin_heads | default({})).results | default([])
+                      | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+                   + ((container_tags | default({})).results | default([])
+                      | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+                   + (digest_fixed | default([])) }}
+              ignore_errors: true
+
         - name: Record Hermes and tincan versions after the update
           become: true
           become_user: nish
@@ -1077,6 +1289,14 @@
             path: /run/reboot-required
           register: reboot_flag
 
+        # Last, because the flag is read here: the digest names the reboot too,
+        # which is the one update this run never applies (Nish's drain owns it).
+        - name: Add the reboot state to the digest
+          ansible.builtin.set_fact:
+            digest: >-
+              {{ (digest | default([]))
+                 + ['reboot: ' ~ ('required, waiting for the drain (see the issue below)' if reboot_flag.stat.exists else 'not required')] }}
+
         - name: Ask Nish for the reboot (one open issue at a time)
           when: reboot_flag.stat.exists
           become: true
@@ -1156,6 +1376,10 @@
                 desk_busy: "{{ cua_desk_busy | default('unknown') }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
+              gh_extensions_upgraded: "{{ (gh_extensions | default({})).stdout_lines | default([]) }}"
+              # One plain line per item checked but not applied, with the reason
+              # it was not applied (fleet-ops#9965).
+              digest: "{{ digest | default(['the digest block did not run']) }}"
 
         - name: Fail loudly if any step or check went wrong
           ansible.builtin.assert:

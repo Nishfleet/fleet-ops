@@ -108,6 +108,30 @@
           sweeps: []
           runners_online: []
 
+    # The digest (fleet-ops#9965) is built inside the update block, so a failed
+    # step above skips every check it reads, and the report must still render.
+    - name: The report's digest line renders before the block has run
+      ansible.builtin.assert:
+        that:
+          - "(digest | default(['the digest block did not run'])) == ['the digest block did not run']"
+
+    - name: Build the digest from skipped registrations, the way update.yml does
+      ansible.builtin.set_fact:
+        digest: >-
+          {{ ((skipped_when | default({})).results | default([])
+              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+           + ((skipped_when | default({})).results | default([])
+              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+           + (digest_fixed | default([])) }}
+
+    - name: The digest renders as an empty list over skipped registrations
+      ansible.builtin.assert:
+        that:
+          - digest == []
+        fail_msg: >-
+          The digest expression no longer tolerates a skipped registration, so
+          ansible/update.yml's `Report the run` can crash on the digest line.
+
     # The class gate on the real file: every occurrence of the old idiom in
     # ansible/update.yml must be gone, and every `.results` read must use the
     # tolerant idiom. This is what fails CI if the bug is reintroduced

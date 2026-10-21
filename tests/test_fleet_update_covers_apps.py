@@ -64,3 +64,49 @@ def test_every_new_step_is_checked_in_the_final_assert():
 
 def test_yt_dlp_is_in_the_tool_updates():
     assert ["yt-dlp", "--update"] in [u["argv"] for u in PLAY["vars"]["tool_updates"]]
+
+
+CHECK_BLOCK = INNER["Check the items this run must report instead of applying"]["block"]
+CHECKS = {t["name"]: t for t in CHECK_BLOCK}
+
+
+def test_gh_extensions_upgrade_through_their_own_manager():
+    task = INNER["Upgrade every installed gh extension"]
+    assert task["ansible.builtin.command"]["argv"] == ["gh", "extension", "upgrade", "--all"]
+    assert task["become_user"] == "nish"
+    assert task["ignore_errors"] is True
+
+
+def test_a_check_that_cannot_apply_its_item_never_fails_the_unit():
+    for name, task in CHECKS.items():
+        if "ansible.builtin.set_fact" in task:
+            continue
+        assert task.get("ignore_errors") is True or task.get("failed_when") is False, name
+        assert task.get("changed_when") is False, name
+
+
+def test_the_digest_is_built_in_the_update_block_and_reported_at_the_end():
+    report = next(t for t in BLOCK["always"] if t["name"] == "Report the run")["ansible.builtin.debug"]["msg"]
+    assert "digest" in report
+    order = [NAMES.index("Check the items this run must report instead of applying"),
+             NAMES.index("Record Hermes and tincan versions after the update")]
+    assert order == sorted(order)
+    reboot = next(t for t in BLOCK["always"] if t["name"] == "Add the reboot state to the digest")
+    assert BLOCK["always"].index(reboot) < BLOCK["always"].index(
+        next(t for t in BLOCK["always"] if t["name"] == "Report the run"))
+
+
+def test_a_pi_extension_pin_is_reported_and_never_moved():
+    script = CHECKS["Report a newer commit for each pinned pi extension"]["ansible.builtin.command"]["argv"][-1]
+    assert "git ls-remote" in script and "left alone" in script
+    readers = [n for n, t in CHECKS.items() if "settings.json" in json.dumps(t)]
+    assert readers == ["List the pi extensions pinned to a commit"]
+
+
+def test_firmware_and_a_container_tag_are_checked_but_never_applied():
+    assert CHECKS["Check fwupd for firmware updates"]["ansible.builtin.command"]["argv"] == [
+        "fwupdmgr", "get-updates", "--no-reboot-check"]
+    for task in CHECK_BLOCK:
+        argv = json.dumps(task.get("ansible.builtin.command", {}).get("argv", []))
+        assert "fwupdmgr update" not in argv
+        assert "podman pull" not in argv
