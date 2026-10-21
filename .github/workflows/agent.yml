@@ -252,21 +252,7 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ]
           }
-          # Claude does the judgment work, the free workers do the mechanical work,
-          # and Jev decides which is which. strong-only (senior) work always goes to
-          # Claude Code first. Any other issue is classified by Jev from its title
-          # and body: p >= 0.9 that completing it needs engineering judgment sends
-          # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
-          # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, then opencode, then Devin, and never Cursor
-          # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the runner's number (netcup-agent-N):
-          # odd runs seat a, even runs the default login (seat b), so
-          # the jobs split across both seats and a job never changes seat (no
-          # clock, and the prompt cache holds). A seat at its usage limit shows up
-          # as a rate limit in the Worker, which falls through (below). There is no
-          # cap on live claude workers: nothing stock gives N slots, and
-          # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
+          # Claude does the judgment work, the free workers do the mechanical work, and Jev decides which is which. strong-only (senior) work always goes to Claude Code first. Any other issue is classified by Jev from its title and body: p >= 0.9 that completing it needs engineering judgment sends it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and anything between, or a Jev call that fails, goes to the free lanes. The free order is pi, then opencode, then Devin, and never Cursor (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two failed runs. The seat follows the runner's number (netcup-agent-N): odd runs seat a, even runs the default login (seat b), so the jobs split across both seats and the prompt cache holds (no clock). A seat at its usage limit hands the packet to the other seat once, then falls through (Worker, below). There is no cap on live claude workers: nothing stock gives N slots, and agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           # judgment_p: asks Jev whether the issue needs engineering judgment and sets
           # jp to the probability of yes (empty when the call fails). The issue text
@@ -401,17 +387,8 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the runner's number
-            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
-            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
-            # login). A name with no number keeps seat a. The seat never changes
-            # inside a job, except to the other seat when its own login is missing
-            # (below). A run that dies on a rate limit or
-            # a usage limit sends the same packet to the Cursor lane for senior
-            # work, or to pi (the first of the ordinary lanes) for any other job,
-            # which never uses Cursor; either continues from whatever the branch
-            # holds (worker.md step 2b). Other engines never see these seats'
-            # logins (the jail lines above); this one sees only the seat it runs on.
+            # Claude Code on one of the two seats, chosen by the runner's number (RUNNER_NAME is netcup-agent-N): odd keeps the runner's CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default login); a name with no number keeps seat a. The seat changes inside a job only to the other seat, when its own login is missing or it hits a usage wall (below).
+            # A run that still dies on a rate limit or usage limit sends the same packet to the Cursor lane for senior work, or to pi for any other job, which never uses Cursor; either continues from whatever the branch holds (worker.md step 2b). Other engines never see these seats' logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
@@ -448,6 +425,7 @@ jobs:
             if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
             [ "$claude_auth" != token ] || claude_jail="$jail_base"
           fi
+          # shellcheck disable=SC2030,SC2031 # claude_try sets the token seat's env in a subshell on purpose; the login-seat switch sets CLAUDE_CONFIG_DIR in the shell
           if [ "$ENGINE" = claude ]; then
             echo "claude lane: seat=$claude_seat auth=$claude_auth runner=${RUNNER_NAME:-unknown}"
             mark claude
@@ -455,14 +433,16 @@ jobs:
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
             # the model's own text (an issue about rate limits mentions them), and a
             # run that stopped on the turn cap is a failed run, not a refused seat.
-            refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
+            # The wall texts are one list for every claude call, config/claude-wall.re. The CLI prints the wall on stdout and exits 1, so try.out is read too; the Router wall step reads only worker.err, which has no stdout, and matches the 429 line written below.
+            wall_re=$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re; [ -r "$wall_re" ] || { echo "::warning::claude lane: $wall_re is unreadable (deploy clone behind main), using the old four texts"; printf '%s\n' 'rate[ _-]?limit' '\b429\b' 'usage limit' 'limit reached' > "$RUNNER_TEMP/wall.re"; wall_re=$RUNNER_TEMP/wall.re; }
+            refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiEf "$wall_re" 2>/dev/null; }
             # One attempt; $1 is the token to log in with, empty for the seat's login. The token and a fresh empty config dir are exported inside a subshell, so they reach claude (bwrap passes the environment through) and nothing else.
             claude_cfg_root=
             claude_try() {
               local cfg=; rc=0
               if [ -n "$1" ]; then [ -n "$claude_cfg_root" ] || { claude_cfg_root=$(mktemp -d "$RUNNER_TEMP/claude-config.XXXXXX"); trap 'rm -rf "$claude_cfg_root"' EXIT; }; cfg=$(mktemp -d "$claude_cfg_root/c.XXXXXX"); fi
               (
-                if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; fi
+                  if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; fi
                 echo "$packet" | $claude_jail --chdir "$dir" -- \
                   claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --max-turns "$CLAUDE_MAX_TURNS" \
                   --mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" \
@@ -481,9 +461,19 @@ jobs:
                 echo "::add-mask::$claude_tok"
                 echo "::warning::claude lane: seat=$claude_seat token rejected, retrying with seat=$claude_other"
                 claude_seat=$claude_other
+                claude_switched=1
                 echo "claude lane: seat=$claude_seat auth=token retry=after-auth-failure runner=${RUNNER_NAME:-unknown}"
                 claude_try "$claude_tok"
               fi
+            fi
+            # A usage wall retries the same packet once on the other seat (its token, else its login and that seat's jail) before the fallthrough below; a seat the auth retry just left is not tried again. A wall is the provider, not the packet: never a failed run, never an Opus strike.
+            if [ "$rc" != 0 ] && [ -z "${claude_switched:-}" ] && refused; then
+              claude_tok=$(claude_tok_of "$claude_other")
+              if [ -n "$claude_tok" ]; then echo "::add-mask::$claude_tok"; claude_jail=$jail_base
+              elif seat_login "$claude_other"; then
+                if [ "$claude_other" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; claude_jail=$claude_jail_a; else unset CLAUDE_CONFIG_DIR; claude_jail=$claude_jail_b; fi
+              else claude_other=; fi
+              if [ -n "$claude_other" ]; then echo "claude lane: seat=$claude_seat -> $claude_other (usage limit)"; claude_seat=$claude_other; claude_try "$claude_tok"; fi
             fi
             unset claude_tok
             [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"
@@ -1080,18 +1070,21 @@ jobs:
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
-          # The model gets the diff as text and no tools (--tools ""): a tool could open the
-          # runner's own key files and the review is posted publicly (the installed claude honors
-          # an empty --tools, checked 2026-10-10). The call runs on the runner's own login. A call
-          # that fails or answers nothing, a usage limit included, means the review did not finish:
-          # retry comments that and fails the job, and a re-run reviews the head again. There is
-          # no fallback to another family's model, and a head is never approved without this review.
+          # The model gets the diff as text and no tools (--tools ""): a tool could open the runner's own key files and the review is posted publicly (the installed claude honors an empty --tools, checked 2026-10-10). The call runs on the runner's own login; a usage wall retries once on the other seat (below). A call that fails or answers nothing, a second wall included, means the review did not finish: retry comments that and fails the job, and a re-run reviews the head again. There is no fallback to another family's model, and a head is never approved without this review.
           review=
-          review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
-            --strict-mcp-config --disable-slash-commands --setting-sources project,local \
-            --settings '{"disableAllHooks":true}' \
-            --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" \
-            < "$RUNNER_TEMP/diff.txt") || review=
+          review_claude() {
+            timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
+              --strict-mcp-config --disable-slash-commands --setting-sources project,local \
+              --settings '{"disableAllHooks":true}' \
+              --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" \
+              < "$RUNNER_TEMP/diff.txt" 2> "$RUNNER_TEMP/review.err"
+          }
+          rc=0; review=$(review_claude) || rc=$?; cat "$RUNNER_TEMP/review.err" >&2
+          # A usage wall (config/claude-wall.re lists the texts; the CLI prints it on stdout and exits 1) is not a review: rerun once on seat b, the default login, and never keep the wall text as the review.
+          if [ "$rc" != 0 ] && { printf '%s\n' "$review"; cat "$RUNNER_TEMP/review.err"; } | tail -n 3 | grep -qiEf "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/claude-wall.re"; then
+            echo "claude review: seat=a -> b (usage limit)"; rc=0; review=$(unset CLAUDE_CONFIG_DIR; review_claude) || rc=$?
+          fi
+          [ "$rc" = 0 ] || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest",
             state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
