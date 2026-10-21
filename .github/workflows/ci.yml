@@ -255,7 +255,7 @@ jobs:
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py
       - name: needs-triage admission, digest reply shape, red-main issues and the Lighthouse wall skip (fleet-ops#9706, #9308, #9932)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.

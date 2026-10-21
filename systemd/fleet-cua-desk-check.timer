@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the Cua desk agent and its routines hourly
+# A stopped or deleted desk changes no file the fleet watches, and a failed
+# routine only rewrites routines.json. See fleet-cua-desk-check.service.
+# Switch off: systemctl --user disable --now fleet-cua-desk-check.timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
