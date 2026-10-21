@@ -35,9 +35,16 @@ def test_zero_five_nine_exclusive_deferrals_are_gone():
         assert "0509-exclusive" not in r.get("reason", "").lower(), r["name"]
 
 
-def test_launch_push_repo_is_enrolled_like_0509_with_a_dated_end_review():
+def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
     # Nish, 2026-10-15: two-week launch push for Site Rep and SEO Fix Kit.
-    entry = ENROLLED["siterep-public"]
-    assert entry["product"] is True
-    assert set(ENROLLED["0509"]) <= set(entry)
-    assert "siterep-public#173" in entry["enrolled_by"]  # the dated end-of-push review
+    for name in ("siterep-public", "seo-fix-kit"):
+        entry = ENROLLED[name]
+        assert entry["product"] is True, name
+        assert set(ENROLLED["0509"]) <= set(entry), name
+        assert "siterep-public#173" in entry["enrolled_by"], name  # the dated end-of-push review
+
+
+def test_every_enrolled_repo_has_a_sweep_timer():
+    sync = (pathlib.Path(__file__).parent.parent / "systemd" / "fleet-sync.service").read_text()
+    for name in ENROLLED:
+        assert f"fleet-pr-sweep@{name}.timer" in sync, name
