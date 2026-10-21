@@ -1099,6 +1099,10 @@
                     else
                       echo "aiostreams: no container and no unit by that name, so there is nothing to update"
                     fi
+                    if ! command -v ansible-galaxy >/dev/null; then
+                      echo "ansible-galaxy: not installed, so this run could not check"
+                      exit 0
+                    fi
                     galaxy=$(readlink -f "$(command -v ansible-galaxy)")
                     pkg=$(dpkg-query -S "$galaxy" | cut -d: -f1 || true)
                     echo "ansible-galaxy: $galaxy ships in ${pkg:-no apt package}, so apt dist-upgrade above is its update path"
