@@ -533,7 +533,7 @@
 
     # gh comes from the vendor's apt repository, so the daily dist-upgrade in
     # update.yml keeps it current. The unit files that name nish's
-    # ~/.local/bin/gh keep working through the link below.
+    # ~/.local/bin/gh keep working through the link further down.
     - name: Install the GitHub CLI apt key
       ansible.builtin.get_url:
         url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
@@ -557,13 +557,6 @@
         update_cache: true
         cache_valid_time: 3600
         lock_timeout: 300
-
-    - name: Replace nish's own gh binary with a link to the packaged one
-      ansible.builtin.file:
-        path: "{{ nish_home }}/.local/bin/gh"
-        src: /usr/bin/gh
-        state: link
-        force: true
 
     # Files the repo used to leave live and now removes. Each path is named,
     # so a deletion is always a reviewed line in this file. system.control
@@ -988,6 +981,15 @@
       failed_when: false
       diff: false
       no_log: true
+
+    - name: Link the packaged gh into nish's ~/.local/bin
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ nish_home }}/.local/bin/gh"
+        src: /usr/bin/gh
+        state: link
+        force: true
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:

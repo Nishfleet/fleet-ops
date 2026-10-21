@@ -117,6 +117,7 @@ USER_FILE_TASKS = [
     "Read Hermes' scheduled jobs",
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
+    "Link the packaged gh into nish's ~/.local/bin",
 ]
 
 
