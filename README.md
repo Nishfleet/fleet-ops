@@ -19,8 +19,8 @@ script, or prompt lands unseen.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
   and once a day, and fails on a hand-installed file.
-- `ansible/update.yml` — the weekly safe full update of the box (see
-  [Weekly update](#weekly-update)). `fleet-update.service` runs it as root
+- `ansible/update.yml` — the daily safe full update of the box (see
+  [Daily update](#daily-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
 - `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
   token per repo and writes it into that repo's GitHub Actions secret, replaced
@@ -491,9 +491,9 @@ under real memory pressure. sshd, tailscaled, and the runner services are out
 of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
-## Weekly update
+## Daily update
 
-`fleet-update.timer` starts `fleet-update.service` every Sunday at 03:30 IST.
+`fleet-update.timer` starts `fleet-update.service` every day at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
 1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
@@ -506,7 +506,10 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone).
+   plugins, cursor-agent, devin, uv, bun, rclone, amp, syncthing). Stale npm
+   staging dirs (`.*-stage-*` under the npm global root) are deleted first,
+   because one left by an interrupted self-update makes `npm update --global`
+   exit non-zero.
 4. Resume, even when a step failed: start the runners, set
    `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
    sweep each queue. The repos it paused are listed in
@@ -524,6 +527,8 @@ It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
 stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
+`hermes-gateway.service` and `hermes-serve.service` are not restarted by it
+either, so they run on old system libraries until the next reboot.
 `claude-remote-control.service` is never restarted, by either path. A change to
 it is therefore staged on merge: the file is copied in and the running server
 keeps its old session until Nish restarts it, because that restart cuts his
@@ -545,7 +550,7 @@ number after the restart is the real test.
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
-- Switch it off: a PR that drops "Enable the weekly update" in
+- Switch it off: a PR that drops "Enable the daily update" in
   `ansible/host.yml` and adds a task with `state: stopped, enabled: false`.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
@@ -692,7 +697,7 @@ for narrow fan-out only and its entries are not touched.
 `npx` and no `@latest` at runtime); `ansible/host.yml` owns the argument list.
 The play copies both files under `~/.local/share/chrome-devtools-mcp`, runs
 `npm ci --ignore-scripts` there when they changed or `node_modules` is missing
-(not `npm -g`: the weekly `npm update --global` would move a global install
+(not `npm -g`: the daily `npm update --global` would move a global install
 past the pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
 
 Every task that touches nish's home runs `become_user: nish`, never as root:
@@ -918,7 +923,7 @@ Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
                            start skips, and the paused job logs one summary
                            line per skipped event
   anything else or unset = not paused
-ansible/update.yml sets it to true for the weekly update and back to false in
+ansible/update.yml sets it to true for the update and back to false in
 its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
 workflow drops every trigger, so hold-risky could not hold a PR armed in that
 window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;

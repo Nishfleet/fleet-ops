@@ -1,4 +1,4 @@
-# Weekly full update of the fleet box. fleet-update.service runs this as root
+# Daily full update of the fleet box. fleet-update.service runs this as root
 # through ansible-pull, the same way fleet-host-config.service runs host.yml.
 #
 # Order, and why:
@@ -17,7 +17,8 @@
 #              packages after it, a service restart for what still runs old
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater and the redis container through
-#              `podman auto-update`.
+#              `podman auto-update`. Stale npm staging dirs go first, so
+#              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -41,10 +42,10 @@
 # aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
 # `podman auto-update` below moves it inside this paused window. podman reads
 # that label from the running container, so redis needs one restart in this
-# window before the first weekly run does anything:
+# window before the first scheduled run does anything:
 # `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
-# purpose: GitHub runners (they update themselves), syncthing (built-in
-# auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
+# purpose: GitHub runners (they update themselves) and the raw binaries in
+# ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -105,11 +106,13 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
+      - argv: [amp, update]
+        stdin: ""
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
     # (fleet-ops#9262), so pi's check is the real call below.
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, amp, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -334,6 +337,32 @@
           register: needrestart_run
           changed_when: "'Restarting services' in needrestart_run.stdout"
 
+        - name: Find where npm keeps global packages
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [npm, root, --global]
+          register: npm_global_root
+          changed_when: false
+
+        - name: Find stale npm staging dirs a stopped self-update left behind
+          ansible.builtin.find:
+            paths: "{{ npm_global_root.stdout }}"
+            patterns: ".*-stage-*"
+            file_type: directory
+            hidden: true
+            age: 10m
+          register: npm_stage_dirs
+
+        - name: Remove them, because npm reads each as an invalid package name
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ npm_stage_dirs.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+
         - name: Update each user-level tool through its own updater
           become: true
           become_user: nish
@@ -347,6 +376,27 @@
           timeout: 600
           register: tool_results
           ignore_errors: true
+
+        # syncthing upgrade exits 4 once it has replaced the binary and 2 when
+        # none is newer. The unit runs with --no-upgrade, so the new binary
+        # only runs after the restart below.
+        - name: Upgrade syncthing through its own upgrader
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [syncthing, upgrade, "--home={{ nish_env.HOME }}/.config/syncthing"]
+            stdin: ""
+          register: syncthing_upgrade
+          changed_when: syncthing_upgrade.rc == 4
+          failed_when: syncthing_upgrade.rc not in [0, 4] and 'no upgrade available' not in (syncthing_upgrade.stdout ~ syncthing_upgrade.stderr)
+          timeout: 600
+          ignore_errors: true
+
+        - name: Restart syncthing on its new binary
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, restart, syncthing.service]
+          when: syncthing_upgrade is changed
 
         # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
         # image and restarts the unit; a unit that fails to start is rolled
@@ -686,6 +736,7 @@
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
+              npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
         - name: Fail loudly if any step or check went wrong
@@ -695,6 +746,7 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
+              - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"

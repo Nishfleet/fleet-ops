@@ -522,7 +522,7 @@
       ignore_errors: "{{ ansible_check_mode }}"
 
     # Starting the timer only schedules ansible/update.yml; it never runs it now.
-    - name: Enable the weekly update
+    - name: Enable the daily update
       ansible.builtin.systemd_service:
         name: fleet-update.timer
         enabled: true
