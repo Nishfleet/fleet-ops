@@ -412,6 +412,12 @@
         - exclude.txt
         - retention.env
 
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
     # that changes the URL and the checksum together, and this block's

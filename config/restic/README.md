@@ -206,9 +206,9 @@ summary. The unit fails with exit **78** when either limit is crossed:
   every day (04:38 and 06:16). `Requisite=` was not an option: a finished
   oneshot is inactive, so the copy would be skipped every day.
   `restic-r2-locked-copy.service.d/10-needs-backup.conf` keeps `After=` only.
-  The box-only `restic-r2-locked-copy.timer` is now redundant and is disabled
-  on the box (`systemctl disable --now restic-r2-locked-copy.timer`): a timer
-  run would copy even after a failed backup. Both units take the same `flock`,
+  The box-only `restic-r2-locked-copy.timer` is now redundant, and a timer
+  run would copy even after a failed backup, so `ansible/host.yml` stops and
+  disables it (task "Stop the locked-copy timer"). Both units take the same `flock`,
   so they cannot overlap.
 - The failed unit is the signal: `systemctl list-units --state=failed` shows
   `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
@@ -287,7 +287,11 @@ of about 1.5 GiB. Grouping by host and tags treats the whole history as one.
 The units are drop-ins on the box-only base units, so a base unit keeps its
 own old forget line until a drop-in replaces it: `20-retention.conf` resets
 `ExecStartPost=` (the old line and the heartbeat ping) and puts back the new
-forget and the ping, and the maintenance drop-in resets `ExecStart=`.
+forget and the ping, and the maintenance drop-in resets `ExecStart=`. The
+resets were checked line by line against the base units: the backup unit
+carried exactly that forget and the ping, and the maintenance unit exactly a
+forget and a check (its heartbeat is an `ExecStartPost=` the drop-in leaves
+alone). Neither forget line has a `-` prefix: a failed prune fails the unit.
 
 The locked bucket is a copy, not a second repository: `restic-r2-locked-copy`
 runs `rclone copy` and then `rclone sync --min-age 31d`, so a pack the live
