@@ -97,8 +97,13 @@ def test_the_digest_is_built_in_the_update_block_and_reported_at_the_end():
 
 
 def test_a_pi_extension_pin_is_reported_and_never_moved():
-    script = CHECKS["Report a newer commit for each pinned pi extension"]["ansible.builtin.command"]["argv"][-1]
-    assert "git ls-remote" in script and "left alone" in script
+    argv = CHECKS["Report a newer commit for each pinned pi extension"]["ansible.builtin.command"]["argv"]
+    script = next(a for a in argv if "git ls-remote" in a)
+    assert "left alone" in script
+    # The entry comes from settings.json, so it must arrive as an argument and
+    # never be pasted into the script text.
+    assert 'ref=$1' in script and argv[-1] == "{{ item }}"
+    assert "{{ item }}" not in script
     readers = [n for n, t in CHECKS.items() if "settings.json" in json.dumps(t)]
     assert readers == ["List the pi extensions pinned to a commit"]
 

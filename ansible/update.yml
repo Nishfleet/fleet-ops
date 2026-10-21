@@ -952,7 +952,8 @@
             # A pin is a full 40-character SHA on purpose (`pi update --all`
             # moved an unpinned extension and broke every pi start,
             # fleet-ops#9262), so a newer commit is reported and the pin is
-            # never moved (fleet-ops#9965).
+            # never moved (fleet-ops#9965). The entry arrives as an argument,
+            # not pasted into the script, because it is read from a file.
             - name: Report a newer commit for each pinned pi extension
               become: true
               become_user: nish
@@ -965,12 +966,17 @@
                   - -c
                   - |
                     set -eu
-                    ref={{ item }}
+                    ref=$1
                     pin=${ref##*@}
                     repo=${ref#git:}
                     repo=${repo%@*}
+                    if ! printf '%s' "$pin" | grep -Eq '^[0-9a-f]{40}$'; then
+                      echo "pi extension $repo: no commit pin, so this run leaves it alone"
+                      exit 0
+                    fi
                     case "$repo" in
                       http*|ssh*|git@*) url=$repo ;;
+                      *[!A-Za-z0-9._/-]*) echo "pi extension $repo: not a repo path, pin ${pin:0:7} unchecked"; exit 0 ;;
                       *) url=https://$repo ;;
                     esac
                     if head=$(git ls-remote "$url" HEAD 2>/dev/null | cut -f1); then
@@ -982,6 +988,8 @@
                     else
                       echo "pi extension $repo: could not read $url, pin ${pin:0:7} unchanged"
                     fi
+                  - pi-pin-check
+                  - "{{ item }}"
               loop: "{{ (pi_git_pins | default({})).stdout_lines | default([]) }}"
               loop_control:
                 label: "{{ item }}"
@@ -1069,6 +1077,31 @@
                    + ((container_tags | default({})).results | default([])
                       | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
                    + (digest_fixed | default([])) }}
+              ignore_errors: true
+
+            - name: Name every check that could not read its item
+              ansible.builtin.set_fact:
+                digest_check_errors: >-
+                  {{ ((presence_results | default({})).results | default([])
+                      + (pi_pin_heads | default({})).results | default([])
+                      + (container_tags | default({})).results | default([]))
+                     | selectattr('failed', 'defined') | selectattr('failed')
+                     | selectattr('item', 'defined')
+                     | map(attribute='item') | map('string') | list
+                     + (['pi extensions pinned to a commit']
+                        if (pi_git_pins | default({})).failed | default(false) else []) }}
+              ignore_errors: true
+
+            # A failed check keeps running (ignore_errors) but has no stdout,
+            # so without this line the digest would drop the item it was
+            # meant to name. That is the "nothing skipped silently" rule.
+            - name: Report those checks in the digest instead of dropping them
+              ansible.builtin.set_fact:
+                digest: >-
+                  {{ (digest | default([]))
+                     + (['a check could not read its item, so it has no line above: '
+                         ~ (digest_check_errors | join(', '))]
+                        if digest_check_errors | default([]) else []) }}
               ignore_errors: true
 
         - name: Record Hermes and tincan versions after the update
@@ -1294,7 +1327,7 @@
         - name: Add the reboot state to the digest
           ansible.builtin.set_fact:
             digest: >-
-              {{ (digest | default([]))
+              {{ (digest | default(['the check block did not run, so the reboot is the only line here']))
                  + ['reboot: ' ~ ('required, waiting for the drain (see the issue below)' if reboot_flag.stat.exists else 'not required')] }}
 
         - name: Ask Nish for the reboot (one open issue at a time)

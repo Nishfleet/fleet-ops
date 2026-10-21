@@ -115,22 +115,50 @@
         that:
           - "(digest | default(['the digest block did not run'])) == ['the digest block did not run']"
 
-    - name: Build the digest from skipped registrations, the way update.yml does
+    - name: Hold a check registration whose loop item failed before printing
+      # The shape every check in update.yml has under `ignore_errors`: the
+      # registration exists and carries a result, but that result has no
+      # `stdout_lines` for the digest to read.
+      ansible.builtin.set_fact:
+        failed_check:
+          failed: true
+          results:
+            - failed: true
+              item: docker.io/library/postgres:16
+
+    - name: Build the digest from registrations the block skipped or failed, as update.yml does
       ansible.builtin.set_fact:
         digest: >-
           {{ ((skipped_when | default({})).results | default([])
               | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+           + ((failed_check | default({})).results | default([])
+              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
            + ((skipped_when | default({})).results | default([])
+              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+           + ((failed_check | default({})).results | default([])
               | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
            + (digest_fixed | default([])) }}
 
-    - name: The digest renders as an empty list over skipped registrations
+    - name: Name the check that failed instead of dropping its item
+      ansible.builtin.set_fact:
+        digest_check_errors: >-
+          {{ ((failed_check | default({})).results | default([])
+              + (skipped_when | default({})).results | default([]))
+             | selectattr('failed', 'defined') | selectattr('failed')
+             | selectattr('item', 'defined')
+             | map(attribute='item') | map('string') | list
+             + (['pi extensions pinned to a commit']
+                if (skipped_pin_list | default({})).failed | default(false) else []) }}
+
+    - name: The digest renders empty and names the check it could not read
       ansible.builtin.assert:
         that:
           - digest == []
+          - "digest_check_errors == ['docker.io/library/postgres:16']"
         fail_msg: >-
-          The digest expression no longer tolerates a skipped registration, so
-          ansible/update.yml's `Report the run` can crash on the digest line.
+          The digest expression no longer tolerates a skipped or failed
+          registration, so ansible/update.yml's `Report the run` can crash on
+          the digest line, or drop an item's line without naming it.
 
     # The class gate on the real file: every occurrence of the old idiom in
     # ansible/update.yml must be gone, and every `.results` read must use the
