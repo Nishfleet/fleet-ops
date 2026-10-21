@@ -79,11 +79,30 @@ def test_gh_extensions_upgrade_through_their_own_manager():
 
 
 def test_a_check_that_cannot_apply_its_item_never_fails_the_unit():
+    expected = {
+        "Report whether each agent CLI and toolchain is on this box",
+        "List the pi extensions pinned to a commit",
+        "Report a newer commit for each pinned pi extension",
+        "Report the newest published tag of each pinned image",
+        "Check fwupd for firmware updates",
+        "Check the two items whose update path is a rule, not a command",
+        "Read each checked-but-not-applied timer's state",
+        "Read the result of each one's last run",
+    }
     commands = {n: t for n, t in CHECKS.items() if "ansible.builtin.command" in t}
-    assert len(commands) >= 6
+    assert set(commands) == expected
     for name, task in commands.items():
         assert task.get("ignore_errors") is True or task.get("failed_when") is False, name
         assert task.get("changed_when") is False, name
+
+
+def test_the_two_rule_items_are_measured_not_asserted():
+    fixed = " ".join(CHECKS["Hold the digest lines that come from one fixed check each"]["ansible.builtin.set_fact"]["digest_fixed"])
+    assert "aiostreams" not in fixed and "ansible-galaxy" not in fixed
+    script = CHECKS["Check the two items whose update path is a rule, not a command"]["ansible.builtin.command"]["argv"][4]
+    assert "aiostreams" in script and "ansible-galaxy" in script and "dpkg-query" in script
+    errors = CHECKS["Name every check that could not read its item"]["ansible.builtin.set_fact"]["digest_check_errors"]
+    assert "extra_checks" in errors
 
 
 def test_the_digest_reads_every_registration_through_the_tolerant_idiom():

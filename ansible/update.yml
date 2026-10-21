@@ -903,7 +903,7 @@
           register: gh_extensions
           timeout: 600
           changed_when: >-
-            gh_extensions.stdout_lines | default([])
+            ((gh_extensions.stdout_lines | default([])) + (gh_extensions.stderr_lines | default([])))
             | reject('search', 'already up to date', ignorecase=True) | list | length > 0
           ignore_errors: true
 
@@ -972,6 +972,7 @@
                     set -eu
                     ref=$1
                     pin=${ref##*@}
+                    pin=${pin,,}
                     repo=${ref#git:}
                     repo=${repo%@*}
                     if ! printf '%s' "$pin" | grep -Eq '^[0-9a-f]{40}$'; then
@@ -1018,9 +1019,13 @@
                     old=${3##*:}
                     newest=$(curl -fsSL --retry 3 --max-time 20 "$1" | jq -r "$2" | head -n 1)
                     case "$newest" in
-                      ''|none|null) echo "image $image: no tag newer than $old published, and a tag change lands by PR, never rewritten mid-run" ;;
-                      *) echo "image $image:$old to $newest published, and a tag change lands by PR, never rewritten mid-run" ;;
+                      ''|none|null) echo "image $image: no tag newer than $old in the first page, and a tag change lands by PR, never rewritten mid-run"; exit 0 ;;
                     esac
+                    if [ "$(printf '%s\n%s\n' "$newest" "$old" | sort -V | tail -n 1)" = "$newest" ] && [ "$newest" != "$old" ]; then
+                      echo "image $image:$old to $newest published, and a tag change lands by PR, never rewritten mid-run"
+                    else
+                      echo "image $image:$old is the newest tag in the first page, and a tag change lands by PR, never rewritten mid-run"
+                    fi
                   - tag-check
                   - "{{ item.url }}"
                   - "{{ item.jq }}"
@@ -1066,16 +1071,41 @@
               changed_when: false
               failed_when: false
 
+            - name: Check the two items whose update path is a rule, not a command
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
+              ansible.builtin.command:
+                argv:
+                  - bash
+                  - -o
+                  - pipefail
+                  - -c
+                  - |
+                    set -u
+                    units=$(systemctl --user list-unit-files --no-legend --plain 2>/dev/null | grep -i aiostreams || true)
+                    ctrs=$(podman ps -a --format json 2>/dev/null | jq -r '.[] | "\(.Names) \(.Image)"' | grep -i aiostreams || true)
+                    if [ -n "$units$ctrs" ]; then
+                      echo "aiostreams: $ctrs$units"
+                    else
+                      echo "aiostreams: no container and no unit by that name, so there is nothing to update"
+                    fi
+                    galaxy=$(readlink -f "$(command -v ansible-galaxy)")
+                    pkg=$(dpkg-query -S "$galaxy" 2>/dev/null | cut -d: -f1)
+                    echo "ansible-galaxy: $galaxy ships in ${pkg:-no apt package}, so apt dist-upgrade above is its update path"
+              register: extra_checks
+              changed_when: false
+              timeout: 120
+              ignore_errors: true
+
             - name: Hold the digest lines that come from one fixed check each
               ansible.builtin.set_fact:
                 digest_fixed:
                   - "fwupd: {{ ((fwupd_updates | default({})).stdout | default('') ~ ' ' ~ (fwupd_updates | default({})).stderr | default('')) | trim | regex_replace('\\s+', ' ') }} (firmware takes effect at the drain's reboot, never in this run)"
-                  - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
-                  - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
+                  - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown', true) }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown', true) }}"
+                  - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown', true) }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown', true) }}"
                   - "GitHub runners: {{ (runner_units | default({})).stdout_lines | default([]) | length }} installed, each updates itself, so this run only restarts and counts them"
-                  - "ansible-galaxy collections: shipped in the ansible-core apt package, so apt dist-upgrade above is their update path"
-                  - "ghcr.io/berriai/litellm: the tag is pinned in its quadlet and its tag list needs a token, so a release is checked by PR, not here"
-                  - "aiostreams: no container and no unit by that name on this box, so there is nothing to update"
+                  - "not checked here: ghcr.io/berriai/litellm, whose tag list needs a token, so a release is checked by PR"
 
             - name: Build the digest of every item checked but not applied
               ansible.builtin.set_fact:
@@ -1086,6 +1116,7 @@
                       | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
                    + ((container_tags | default({})).results | default([])
                       | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
+                   + ((extra_checks | default({})).stdout_lines | default([]))
                    + (digest_fixed | default([])) }}
 
             # The container check loops over dicts, so its item needs a name
@@ -1105,6 +1136,7 @@
                       | selectattr('failed', 'defined') | selectattr('failed')
                       | selectattr('item', 'defined')
                       | map(attribute='item') | map(attribute='image') | map('string') | list)
+                   + ((extra_checks | default({})).failed | default(false) | ternary(['the aiostreams and ansible-galaxy check'], []) | list)
                    + (['the pi extension list read from settings.json']
                       if (pi_git_pins | default({})).failed | default(false) else []) }}
 
@@ -1424,7 +1456,7 @@
                 desk_busy: "{{ cua_desk_busy | default('unknown') }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
-              gh_extensions_upgraded: "{{ (gh_extensions | default({})).stdout_lines | default([]) }}"
+              gh_extensions_upgraded: "{{ ((gh_extensions | default({})).stdout_lines | default([])) + ((gh_extensions | default({})).stderr_lines | default([])) }}"
               # One plain line per item checked but not applied, with the reason
               # it was not applied (fleet-ops#9965).
               digest: "{{ digest | default(['the digest block did not run']) }}"
@@ -1436,7 +1468,11 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (gh_extensions | default({})).failed | default(false)"
-              - "(digest | default([])) | length >= (10 + presence_checks | length + container_tag_checks | length) or 'the check block did not run' in (digest | default([''])) | join(' ')"
+              - "'reboot: ' in ((digest | default([])) | join(' '))"
+              - "'fwupd: ' in ((digest | default([])) | join(' ')) or 'the check block did not run' in ((digest | default([])) | join(' '))"
+              - "presence_checks | select('in', ((digest | default([])) | join(' '))) | list | length == presence_checks | length or 'the check block did not run' in ((digest | default([])) | join(' '))"
+              - "container_tag_checks | map(attribute='image') | select('in', ((digest | default([])) | join(' '))) | list | length == container_tag_checks | length or 'the check block did not run' in ((digest | default([])) | join(' '))"
+              - "digest_check_errors | default([]) | length == 0 or 'a check could not read its item' in ((digest | default([])) | join(' '))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
