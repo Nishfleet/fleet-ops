@@ -79,16 +79,28 @@ def test_gh_extensions_upgrade_through_their_own_manager():
 
 
 def test_a_check_that_cannot_apply_its_item_never_fails_the_unit():
-    for name, task in CHECKS.items():
-        if "ansible.builtin.set_fact" in task:
-            continue
+    commands = {n: t for n, t in CHECKS.items() if "ansible.builtin.command" in t}
+    assert len(commands) >= 6
+    for name, task in commands.items():
         assert task.get("ignore_errors") is True or task.get("failed_when") is False, name
         assert task.get("changed_when") is False, name
 
 
+def test_the_digest_reads_every_registration_through_the_tolerant_idiom():
+    build = CHECKS["Build the digest of every item checked but not applied"]["ansible.builtin.set_fact"]["digest"]
+    for register in ("presence_results", "pi_pin_heads", "container_tags"):
+        assert f"(({register} | default({{}})).results | default([])" in build, register
+    assert build.count("selectattr('stdout_lines', 'defined')") == 3
+    assert "digest_fixed | default([])" in build
+    errors = CHECKS["Name every check that could not read its item"]["ansible.builtin.set_fact"]["digest_check_errors"]
+    assert errors.count("selectattr('failed', 'defined') | selectattr('failed')") == 3
+    for register in ("presence_results", "pi_pin_heads", "container_tags"):
+        assert f"({register} | default({{}})).results | default([])" in errors, register
+
+
 def test_the_digest_is_built_in_the_update_block_and_reported_at_the_end():
-    report = next(t for t in BLOCK["always"] if t["name"] == "Report the run")["ansible.builtin.debug"]["msg"]
-    assert "digest" in report
+    report = json.dumps(next(t for t in BLOCK["always"] if t["name"] == "Report the run")["ansible.builtin.debug"]["msg"])
+    assert "digest" in report and "the digest block did not run" in report
     order = [NAMES.index("Check the items this run must report instead of applying"),
              NAMES.index("Record Hermes and tincan versions after the update")]
     assert order == sorted(order)
@@ -101,8 +113,6 @@ def test_a_pi_extension_pin_is_reported_and_never_moved():
     argv = CHECKS["Report a newer commit for each pinned pi extension"]["ansible.builtin.command"]["argv"]
     script = next(a for a in argv if "git ls-remote" in a)
     assert "left alone" in script
-    # The entry comes from settings.json, so it must arrive as an argument and
-    # never be pasted into the script text.
     assert 'ref=$1' in script and argv[-1] == "{{ item }}"
     assert "{{ item }}" not in script
     readers = [n for n, t in CHECKS.items() if "settings.json" in json.dumps(t.get("ansible.builtin.command", {}))]

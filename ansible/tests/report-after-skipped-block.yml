@@ -108,17 +108,7 @@
           sweeps: []
           runners_online: []
 
-    # The digest (fleet-ops#9965) is built inside the update block, so a failed
-    # step above skips every check it reads, and the report must still render.
-    - name: The report's digest line renders before the block has run
-      ansible.builtin.assert:
-        that:
-          - "(digest | default(['the digest block did not run'])) == ['the digest block did not run']"
-
-    - name: Hold a check registration whose loop item failed before printing
-      # The shape every check in update.yml has under `ignore_errors`: the
-      # registration exists and carries a result, but that result has no
-      # `stdout_lines` for the digest to read.
+    - name: Model the shape a skipped or failed registration gives the digest
       ansible.builtin.set_fact:
         failed_check:
           failed: true
@@ -152,9 +142,9 @@
           - digest == []
           - "digest_check_errors == ['docker.io/library/postgres:16']"
         fail_msg: >-
-          The digest expression no longer tolerates a skipped or failed
-          registration, so ansible/update.yml's `Report the run` can crash on
-          the digest line, or drop an item's line without naming it.
+          This models the shape only. The gate on the expressions update.yml
+          actually runs is test_the_digest_reads_every_registration_through_the_tolerant_idiom
+          in tests/test_fleet_update_covers_apps.py.
 
     # The class gate on the real file: every occurrence of the old idiom in
     # ansible/update.yml must be gone, and every `.results` read must use the

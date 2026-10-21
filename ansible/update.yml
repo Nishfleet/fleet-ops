@@ -904,7 +904,7 @@
           timeout: 600
           changed_when: >-
             gh_extensions.stdout_lines | default([])
-            | reject('search', 'already up to date') | list | length > 0
+            | reject('search', 'already up to date', ignorecase=True) | list | length > 0
           ignore_errors: true
 
         # Everything below is checked and reported, never applied: a pin that
@@ -1004,6 +1004,9 @@
               ignore_errors: true
 
             - name: Report the newest published tag of each pinned image
+              become: true
+              become_user: nish
+              environment: "{{ nish_env }}"
               ansible.builtin.command:
                 argv:
                   - bash
@@ -1431,6 +1434,7 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (gh_extensions | default({})).failed | default(false)"
+              - "(digest | default([])) | length >= 10 or 'the check block did not run' in (digest | default([''])) | join(' ')"
               - "not (plugin_results | default({})).failed | default(false)"
               - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
