@@ -8,8 +8,9 @@
 #              start work, wait until no runner has a job (agent jobs time out
 #              at 60 min), then stop the runner services so no CI job lands
 #              on a half-upgraded box.
-#   2. prune   apt's download cache, Docker containers stopped for a day,
-#              dangling images and old build cache, the npm and uv caches.
+#   2. prune   apt's download cache, stopped Docker containers created over a
+#              day ago (never a Cua-managed one), dangling images and old
+#              build cache, the npm and uv caches.
 #              Before the update, so the downloads have room. Volumes, repos,
 #              worktrees and backups are never touched.
 #   3. update  Every Ubuntu package (apt dist-upgrade), old kernels and unused
@@ -256,9 +257,14 @@
           ansible.builtin.apt:
             autoclean: true
 
-        - name: Prune Docker containers stopped for over a day
+        # until=24h filters on a container's creation time, not on when it
+        # stopped, so a long-lived container stopped minutes ago still goes.
+        # Cua-managed containers are kept: a reboot leaves Cua's desk sandbox
+        # stopped (restart policy no), and this prune deleted it on 2026-10-18,
+        # so the daily walks failed until its Space was recreated on 10-21.
+        - name: Prune stopped Docker containers created over a day ago, except Cua's
           ansible.builtin.command:
-            argv: [docker, container, prune, --force, --filter, until=24h]
+            argv: [docker, container, prune, --force, --filter, until=24h, --filter, "label!=ai.cua.managed=true"]
           register: prune_containers
           changed_when: "'Total reclaimed space: 0B' not in prune_containers.stdout"
 

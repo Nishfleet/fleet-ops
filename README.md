@@ -88,6 +88,13 @@ script, or prompt lands unseen.
   is the job; `config/retro-public-deny.txt` is the check every follow-up issue
   must pass before it is filed; `config/retro-weekly-claude.json` is the tool
   list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
+  as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
+  starts with `failed` (2026-10-18: the desk was pruned and three daily walks failed
+  with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
+  enables the timer on every deploy. Off switch: remove that step and its enable
+  line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
