@@ -216,7 +216,7 @@ jobs:
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
       - name: ansible/update.yml parses (ansible-playbook --syntax-check)
-        # fleet-update.service runs this playbook as root once a week.
+        # fleet-update.service runs this playbook as root every day.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
