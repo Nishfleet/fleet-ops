@@ -126,7 +126,7 @@ jobs:
           for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do # gitleaks:allow
             sudo install -D -m0755 /bin/true "$b"
           done
-          for b in cursor-agent leviathan tofu; do
+          for b in cursor-agent leviathan tofu tincan; do
             install -D -m0755 /bin/true "$HOME/.local/bin/$b"
           done
       - name: systemd-analyze verify over unit files
@@ -624,9 +624,11 @@ jobs:
           # shellcheck disable=SC2016 # the fake's body is literal script text
           printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/pi"
           chmod +x "$t/pi"
-          grep -qF /home/nish/.local/bin/claude <<<"$ses"
+          # shellcheck disable=SC2016 # the step text holds a literal $HOME
+          needle='"$HOME/.local/bin/claude"'
+          grep -qF "$needle" <<<"$ses"
           grep -qF /home/nish/.local/bin/pi <<<"$ses"
-          ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
+          ses=${ses//"$needle"/$t\/claude}
           ses=${ses//\/home\/nish\/.local\/bin\/pi/$t\/pi}
           mkdir -p "$t/wt/prompts"
           echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
@@ -682,9 +684,10 @@ jobs:
           set -euo pipefail
           u=systemd/tincan-listen-claude-vps.service
           exec_line=$(grep '^ExecStart=' "$u")
-          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
+          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config %h/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
           done
+          grep -qF '(unset CLAUDE_CONFIG_DIR; c "' <<<"$exec_line" || { echo "$u: the wall fallback does not rerun c on the default login"; exit 1; }
           jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
           # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
           # settings source is ~/.claude/settings.json (the user file) and

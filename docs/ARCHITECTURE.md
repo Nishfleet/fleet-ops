@@ -110,8 +110,12 @@ The rules still in force:
   included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
-  limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
-  any other job. Nothing polls usage.
+  limit (the wall text is on stdout; `config/claude-wall.re` is the one list of wall texts, read from the last 3 lines),
+  the same packet first runs once on the other seat (`claude lane: seat=a -> b (usage limit)`): the other seat's
+  token if it has one, else its login with its own jail. Only if that seat is walled too, or has no
+  login, does the packet fall through: Cursor (cap 1) for `strong-only`, pi for any other job. A wall is not a
+  failed run and never counts toward the Opus strike. The risky-PR review, the orchestrator hand-off and the
+  Tincan listener make the same one retry on seat b. Nothing polls usage.
   Routing by judgment, in plain words: Claude does the judgment work, free
   workers do the mechanical work, and Jev decides which is which. For an issue
   that is not `strong-only`, the Gate asks Jev one typed question from the issue
