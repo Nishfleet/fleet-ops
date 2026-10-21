@@ -1,4 +1,4 @@
-# Weekly full update of the fleet box. fleet-update.service runs this as root
+# Daily full update of the fleet box. fleet-update.service runs this as root
 # through ansible-pull, the same way fleet-host-config.service runs host.yml.
 #
 # Order, and why:
@@ -17,7 +17,8 @@
 #              packages after it, a service restart for what still runs old
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater and the redis container through
-#              `podman auto-update`.
+#              `podman auto-update`. Stale npm staging dirs go first, so
+#              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -41,10 +42,10 @@
 # aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
 # `podman auto-update` below moves it inside this paused window. podman reads
 # that label from the running container, so redis needs one restart in this
-# window before the first weekly run does anything:
+# window before the first scheduled run does anything:
 # `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
-# purpose: GitHub runners (they update themselves), syncthing (built-in
-# auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
+# purpose: GitHub runners (they update themselves) and the raw binaries in
+# ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -105,11 +106,18 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
+      - argv: [amp, update]
+        stdin: ""
+    cua_cli: /opt/Cua Spaces/resources/native/cua
+    cua_release_prefix: cua-spaces-v
+    cua_desk_space: local:desk
+    cua_desk_agent_dir: agents/desk
+    cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
     # (fleet-ops#9262), so pi's check is the real call below.
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, amp, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -334,6 +342,32 @@
           register: needrestart_run
           changed_when: "'Restarting services' in needrestart_run.stdout"
 
+        - name: Find where npm keeps global packages
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [npm, root, --global]
+          register: npm_global_root
+          changed_when: false
+
+        - name: Find stale npm staging dirs a stopped self-update left behind
+          ansible.builtin.find:
+            paths: "{{ npm_global_root.stdout }}"
+            patterns: ".*-stage-*"
+            file_type: directory
+            hidden: true
+            age: 10m
+          register: npm_stage_dirs
+
+        - name: Remove them, because npm reads each as an invalid package name
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ npm_stage_dirs.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+
         - name: Update each user-level tool through its own updater
           become: true
           become_user: nish
@@ -347,6 +381,223 @@
           timeout: 600
           register: tool_results
           ignore_errors: true
+
+        # syncthing upgrade exits 4 once it has replaced the binary and 2 when
+        # none is newer. The unit runs with --no-upgrade, so the new binary
+        # only runs after the restart below.
+        - name: Upgrade syncthing through its own upgrader
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [syncthing, upgrade, "--home={{ nish_env.HOME }}/.config/syncthing"]
+            stdin: ""
+          register: syncthing_upgrade
+          changed_when: syncthing_upgrade.rc == 4
+          failed_when: syncthing_upgrade.rc not in [0, 4] and 'no upgrade available' not in (syncthing_upgrade.stdout ~ syncthing_upgrade.stderr)
+          timeout: 600
+          ignore_errors: true
+
+        - name: Restart syncthing on its new binary
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, restart, syncthing.service]
+          when: syncthing_upgrade is changed
+
+        # Cua Spaces has no apt repository, so its newest stable release is
+        # fetched, checked against that release's checksums and installed. The
+        # daemon that hosts the persistent desk agent runs the old binary until
+        # it restarts, and its Space has no working Volume mount afterwards, so
+        # the Space is deleted and created again. The agent's files live in
+        # the Cua Volume on the host: they are read before the delete (the
+        # update stops when they are not there), archived once per upgrade, and
+        # read again after the create. A run in any state but idle holds the
+        # update back until the next day. Any failure is recorded and fails the
+        # run at the final assert.
+        - name: Update Cua Spaces and recreate the desk Space
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            - name: Read the installed Cua Spaces version
+              ansible.builtin.command:
+                argv: [dpkg-query, --show, --showformat, "${Version}", cua-spaces]
+              register: cua_installed
+              changed_when: false
+
+            - name: Find the newest stable Cua Spaces release
+              ansible.builtin.command:
+                argv:
+                  - gh
+                  - release
+                  - list
+                  - --repo
+                  - trycua/cua
+                  - --limit
+                  - "50"
+                  - --json
+                  - tagName,isPrerelease
+                  - --jq
+                  - '[.[] | select((.tagName | startswith("{{ cua_release_prefix }}")) and (.isPrerelease | not))][0].tagName // ""'
+              register: cua_release
+              changed_when: false
+              failed_when: cua_release.rc != 0 or (cua_release.stdout | trim | length) == 0
+
+            - name: Name the release
+              ansible.builtin.set_fact:
+                cua_tag: "{{ cua_release.stdout | trim }}"
+                cua_target: "{{ cua_release.stdout | trim | regex_replace('^' ~ cua_release_prefix, '') }}"
+
+            - name: Compare it with the installed version the way dpkg does
+              ansible.builtin.command:
+                argv: [dpkg, --compare-versions, "{{ cua_target }}", gt, "{{ cua_installed.stdout }}"]
+              register: cua_compare
+              changed_when: false
+              failed_when: cua_compare.rc not in [0, 1]
+
+            - name: Say whether a newer release exists
+              ansible.builtin.set_fact:
+                cua_newer: "{{ cua_compare.rc == 0 }}"
+
+            - name: Create the download directory
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}"
+                state: directory
+                mode: "0755"
+              when: cua_newer
+
+            - name: Download the package, checked against the release checksums
+              become: false
+              ansible.builtin.get_url:
+                url: "https://github.com/trycua/cua/releases/download/{{ cua_tag }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                dest: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                checksum: "sha256:https://github.com/trycua/cua/releases/download/{{ cua_tag }}/checksums.txt"
+                mode: "0644"
+              when: cua_newer
+
+            - name: Read the desk agent's files from the Volume before touching the Space
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_before
+              changed_when: false
+              failed_when: cua_volume_before.rc != 0 or 'CLAUDE.md' not in cua_volume_before.stdout
+              when: cua_newer
+
+            - name: Archive the Volume once per upgrade
+              ansible.builtin.archive:
+                path: "{{ nish_env.HOME }}/.cua/volume"
+                dest: "{{ nish_env.HOME }}/backups/cua-volume-{{ cua_installed.stdout }}-before-{{ cua_target }}.tgz"
+                format: gz
+              when: cua_newer
+
+            - name: List the runs in the desk Space just before the install
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
+              register: cua_runs
+              changed_when: false
+              when: cua_newer
+
+            - name: Decide whether to upgrade now
+              ansible.builtin.set_fact:
+                cua_desk_busy: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length > 0) }}"
+                cua_upgrade: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length == 0) }}"
+
+            - name: Install the package
+              become: false
+              ansible.builtin.apt:
+                deb: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: present
+                lock_timeout: 300
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+              when: cua_upgrade
+
+            - name: Restart the daemon that hosts the desk agent
+              ansible.builtin.command:
+                argv: [systemctl, --user, restart, cua-desk-daemon.service]
+              when: cua_upgrade
+
+            - name: Wait until the daemon answers
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_daemon_up
+              until: cua_daemon_up.rc == 0
+              retries: 15
+              delay: 2
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Delete the desk Space, whose Volume mount died with the old daemon
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, delete, "{{ cua_desk_space }}", --force]
+              when: cua_upgrade
+
+            - name: Create the desk Space again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ cua_desk_space | regex_replace('^local:', '') }}", --on, local]
+              when: cua_upgrade
+
+            - name: Read the desk agent's files from the Volume again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_after
+              changed_when: false
+              failed_when: cua_volume_after.rc != 0 or 'CLAUDE.md' not in cua_volume_after.stdout
+              when: cua_upgrade
+
+            - name: Check the new desk Space has the Volume mounted
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, exec, "{{ cua_desk_space }}", "grep -c ' /volume ' /proc/mounts"]
+              register: cua_volume_mount
+              until: cua_volume_mount.rc == 0 and cua_volume_mount.stdout | trim == '1'
+              retries: 10
+              delay: 3
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Smoke-test a Space on the new version
+              when: cua_upgrade
+              block:
+                - name: Create a throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, create, linux, --name, update-smoke, --on, local]
+
+                - name: Run a command in it
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", sandbox, exec, "local:update-smoke", "echo smoke-ok"]
+                  register: cua_smoke
+                  changed_when: false
+                  failed_when: cua_smoke.rc != 0 or cua_smoke.stdout | trim != 'smoke-ok'
+              always:
+                - name: Delete the throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, delete, "local:update-smoke", --force]
+                  ignore_errors: true
+
+            - name: Read the desk Space status
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_sandboxes
+              changed_when: false
+              failed_when: "(cua_sandboxes.stdout | from_json | selectattr('id', 'equalto', cua_desk_space) | selectattr('status', 'equalto', 'ready') | list | length) != 1"
+              when: cua_upgrade
+
+            - name: Check the relay host service is still up
+              ansible.builtin.command:
+                argv: [systemctl, --user, is-active, cua-spacesd-host.service]
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Drop the downloaded package
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: absent
+              when: cua_newer
+          rescue:
+            - name: Record that the Cua Spaces update failed
+              ansible.builtin.set_fact:
+                cua_update_failed: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stderr | default('') }}"
 
         # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
         # image and restarts the unit; a unit that fails to start is rolled
@@ -686,6 +937,12 @@
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
+              cua_spaces:
+                installed: "{{ (cua_installed | default({})).stdout | default('unknown') }}"
+                newest: "{{ cua_target | default('unknown') }}"
+                upgraded: "{{ cua_upgrade | default(false) }}"
+                desk_busy: "{{ cua_desk_busy | default('unknown') }}"
+              npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
         - name: Fail loudly if any step or check went wrong
@@ -695,6 +952,8 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
+              - "not (syncthing_upgrade | default({})).failed | default(false)"
+              - "cua_update_failed is not defined"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
@@ -715,6 +974,7 @@
               {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
               pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};
