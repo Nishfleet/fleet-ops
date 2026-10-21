@@ -129,6 +129,26 @@
         group: root
         mode: preserve
 
+    # Restic backup include and exclude lists and the retention policy
+    # (config/restic/). The backup and maintenance units read them from
+    # /etc/restic/ on every run, so they are installed before the unit drop-ins
+    # that name retention.env; a change here is live after
+    # the next fleet-host-config run, no daemon-reload needed. README.md is not
+    # copied: it is repo documentation, not box config. Rendered as templates
+    # so newer lines can name the home directory through nish_home. Keep
+    # Jinja markers ({{, {% and {#) out of their comments and patterns.
+    - name: Install restic include, exclude and retention files
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../config/restic/{{ item }}"
+        dest: /etc/restic/{{ item }}
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - include.txt
+        - exclude.txt
+        - retention.env
+
     - name: Install systemd units, slices and drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/systemd/system/"
@@ -392,23 +412,6 @@
         owner: root
         group: root
         mode: "0644"
-
-    # Restic backup include and exclude lists (config/restic/). The backup unit
-    # reads them from /etc/restic/ on every run; a change here is live after
-    # the next fleet-host-config run, no daemon-reload needed. README.md is not
-    # copied: it is repo documentation, not box config. Rendered as templates
-    # so newer lines can name the home directory through nish_home. Keep
-    # Jinja markers ({{, {% and {#) out of their comments and patterns.
-    - name: Install restic include and exclude lists
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/../config/restic/{{ item }}"
-        dest: /etc/restic/{{ item }}
-        owner: root
-        group: root
-        mode: '0644'
-      loop:
-        - include.txt
-        - exclude.txt
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
@@ -773,7 +776,7 @@
         regexp: '^  chrome-devtools: \{'
       vars:
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
-      when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^mcp_servers:\n(?:[ \t].*\n|\n)*?[ \t]+chrome-devtools:')
+      when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
       diff: false
 
     - name: Install the Bot Desktop packages Hermes computer_use needs on a headless host
