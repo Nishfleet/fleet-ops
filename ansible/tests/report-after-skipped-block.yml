@@ -133,10 +133,6 @@
               | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
            + ((failed_check | default({})).results | default([])
               | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
-           + ((skipped_when | default({})).results | default([])
-              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
-           + ((failed_check | default({})).results | default([])
-              | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | flatten)
            + (digest_fixed | default([])) }}
 
     - name: Name the check that failed instead of dropping its item

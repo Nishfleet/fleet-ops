@@ -58,7 +58,8 @@ def test_report_reads_stay_safe_when_a_command_prints_nothing():
 
 def test_every_new_step_is_checked_in_the_final_assert():
     that = " ".join(ASSERT["ansible.builtin.assert"]["that"])
-    for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners", "app_versions_after"):
+    for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners",
+                "app_versions_after", "gh_extensions"):
         assert var in that
 
 
@@ -104,8 +105,27 @@ def test_a_pi_extension_pin_is_reported_and_never_moved():
     # never be pasted into the script text.
     assert 'ref=$1' in script and argv[-1] == "{{ item }}"
     assert "{{ item }}" not in script
-    readers = [n for n, t in CHECKS.items() if "settings.json" in json.dumps(t)]
+    readers = [n for n, t in CHECKS.items() if "settings.json" in json.dumps(t.get("ansible.builtin.command", {}))]
     assert readers == ["List the pi extensions pinned to a commit"]
+
+
+def test_a_presence_check_is_read_from_an_argument_too():
+    argv = CHECKS["Report whether each agent CLI and toolchain is on this box"]["ansible.builtin.command"]["argv"]
+    assert '"$1"' in argv[4] and argv[-1] == "{{ item }}"
+    assert "{{ item }}" not in argv[4]
+
+
+def test_a_timer_state_is_read_by_name_not_by_loop_position():
+    digest_fixed = CHECKS["Hold the digest lines that come from one fixed check each"]["ansible.builtin.set_fact"]["digest_fixed"]
+    for unit in ("fleet-provider-watch.timer", "skills-update.timer", "fleet-provider-watch.service", "skills-update.service"):
+        assert f"selectattr('item', 'equalto', '{unit}')" in " ".join(digest_fixed)
+
+
+def test_a_check_that_fails_is_named_in_readable_text():
+    errors = CHECKS["Name every check that could not read its item"]["ansible.builtin.set_fact"]["digest_check_errors"]
+    assert "map(attribute='image')" in errors
+    named = CHECKS["Report those checks in the digest instead of dropping them"]["ansible.builtin.set_fact"]["digest"]
+    assert "no line above" in named
 
 
 def test_firmware_and_a_container_tag_are_checked_but_never_applied():

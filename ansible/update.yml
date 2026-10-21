@@ -158,7 +158,7 @@
         url: https://hub.docker.com/v2/repositories/library/redis/tags?page_size=100&ordering=last_updated
         jq: '[.results[].name | select(test("^7\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
       - image: docker.io/grafana/grafana
-        pinned: 13.2.3
+        pinned: "13.2.3"
         url: https://hub.docker.com/v2/repositories/grafana/grafana/tags?page_size=100&ordering=last_updated
         jq: '[.results[].name | select(test("^13\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // "none"'
 
@@ -926,13 +926,18 @@
                   - pipefail
                   - -c
                   - >-
-                    if path=$(command -v {{ item }}); then
-                    echo "{{ item }}: $("$path" --version 2>&1 | head -n 1) installed,
+                    if path=$(command -v "$1"); then
+                    echo "$1: $("$path" --version 2>&1 | head -n 1) installed,
                     updated here when it is one of the tools above";
-                    else echo "{{ item }}: not installed, nothing to update"; fi
+                    else echo "$1: not installed, nothing to update"; fi
+                  - presence-check
+                  - "{{ item }}"
               loop: "{{ presence_checks }}"
+              loop_control:
+                label: "{{ item }}"
               register: presence_results
               changed_when: false
+              timeout: 60
               ignore_errors: true
 
             - name: List the pi extensions pinned to a commit
@@ -1059,8 +1064,8 @@
               ansible.builtin.set_fact:
                 digest_fixed:
                   - "fwupd: {{ ((fwupd_updates | default({})).stdout | default('') ~ ' ' ~ (fwupd_updates | default({})).stderr | default('')) | trim | regex_replace('\\s+', ' ') }} (firmware takes effect at the drain's reboot, never in this run)"
-                  - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
-                  - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | last) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | last) | default('unknown') }}"
+                  - "provider watch timer: {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'fleet-provider-watch.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
+                  - "Claude skills update: timer {{ ((watch_timer_states | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.timer') | selectattr('stdout', 'defined') | map(attribute='stdout') | list | first) | default('unknown') }}, its last run {{ ((watch_results | default({})).results | default([]) | selectattr('item', 'equalto', 'skills-update.service') | selectattr('stdout', 'defined') | map(attribute='stdout') | map('regex_replace', '^Result=', '') | list | first) | default('unknown') }}"
                   - "GitHub runners: {{ (runner_units | default({})).stdout_lines | default([]) | length }} installed, each updates itself, so this run only restarts and counts them"
                   - "ansible-galaxy collections: shipped in the ansible-core apt package, so apt dist-upgrade above is their update path"
                   - "ghcr.io/berriai/litellm: the tag is pinned in its quadlet and its tag list needs a token, so a release is checked by PR, not here"
@@ -1079,17 +1084,22 @@
                    + (digest_fixed | default([])) }}
               ignore_errors: true
 
+            # The container check loops over dicts, so its item needs a name
+            # that reads as one, not the whole entry.
             - name: Name every check that could not read its item
               ansible.builtin.set_fact:
                 digest_check_errors: >-
                   {{ ((presence_results | default({})).results | default([])
-                      + (pi_pin_heads | default({})).results | default([])
-                      + (container_tags | default({})).results | default([]))
-                     | selectattr('failed', 'defined') | selectattr('failed')
-                     | selectattr('item', 'defined')
-                     | map(attribute='item') | map('string') | list
-                     + (['pi extensions pinned to a commit']
-                        if (pi_git_pins | default({})).failed | default(false) else []) }}
+                      | selectattr('failed', 'defined') | selectattr('failed')
+                      | map(attribute='item') | map('string') | list)
+                   + ((pi_pin_heads | default({})).results | default([])
+                      | selectattr('failed', 'defined') | selectattr('failed')
+                      | map(attribute='item') | map('string') | list)
+                   + ((container_tags | default({})).results | default([])
+                      | selectattr('failed', 'defined') | selectattr('failed')
+                      | map(attribute='item') | map(attribute='image') | map('string') | list)
+                   + (['the pi extension list read from settings.json']
+                      if (pi_git_pins | default({})).failed | default(false) else []) }}
               ignore_errors: true
 
             # A failed check keeps running (ignore_errors) but has no stdout,
@@ -1420,6 +1430,7 @@
             that:
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
+              - "not (gh_extensions | default({})).failed | default(false)"
               - "not (plugin_results | default({})).failed | default(false)"
               - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
