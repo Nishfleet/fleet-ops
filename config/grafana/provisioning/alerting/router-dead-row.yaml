@@ -20,6 +20,8 @@
 # inish-daily asked for deepseek-v4.1-flash, which that key may not reach, six times in six
 # seconds; every answer was a 403 ProxyException with no model_id, this rule called the empty
 # row dead, and the issue came out titled "router dead row: " with no row named (fleet-ops#9938).
+# That class is not unwatched: router-refused-call.yaml reports it by key and model, which is
+# what an issue about it can act on.
 #
 # Route: severity warning, so it does not page; label signal=router-dead-row, and the
 # series label model_id names the row, files a fleet-ops issue (agent-ready + priority-now) through

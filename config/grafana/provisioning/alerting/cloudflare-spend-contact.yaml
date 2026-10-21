@@ -44,7 +44,25 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "router dead row: %s" (or .Labels.model_id "unknown row"))
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
+              {{- end -}}
+  - orgId: 1
+    name: router-refused-call-dispatch
+    receivers:
+      - uid: router-refused-call-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "router refused call: %s for %s" (or .Labels.requested_model "unknown model") (or .Labels.api_key_alias "unknown key"))
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-refused-call rule (config/grafana/provisioning/alerting/router-refused-call.yaml), fleet-ops#9938. No deployment was picked, so this is the caller's model scope or the model name, not a dead router row." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
@@ -109,6 +127,14 @@ policies:
           - [signal, "=", router-dead-row]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, model_id]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 12h
+      - receiver: router-refused-call-dispatch
+        object_matchers:
+          - [signal, "=", router-refused-call]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, requested_model, api_key_alias]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
