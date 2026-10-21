@@ -1,13 +1,12 @@
 # The fleet's Lighthouse speed budget, defined once: the caller passes the URLs, the assertions are
-# config/lighthouserc.json from fleet-ops main, because a called ref is invisible to a reusable workflow.
 name: Lighthouse
 
 on:
   workflow_call:
     inputs:
-      urls:
-        required: true
-        type: string
+      urls: {description: "Page URLs to audit, one per line.", required: true, type: string}
+      require_audit: {description: "Fail the job when no URL is left to audit.", type: boolean, default: false}
+      upload_reports: {description: "Keep the full reports as a run artifact. Off unless the caller asks.", type: boolean, default: false}
 
 permissions:
   contents: read
@@ -17,19 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Fetch the Lighthouse config
+      - name: Fetch the Lighthouse config from fleet-ops main, because a called ref is invisible to a reusable workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Nishfleet/fleet-ops
           ref: main
-          path: fleet-ops
           sparse-checkout: config/lighthouserc.json
           persist-credentials: false
       - name: Skip a URL that answers the Cloudflare Access login, and name it
         id: reach
-        env: {URLS: "${{ inputs.urls }}"}
+        env: {URLS: "${{ inputs.urls }}", REQUIRE: "${{ inputs.require_audit }}"}
         run: |
-          for u in $URLS; do [ -n "$u" ] || continue; case "$(curl -sm10 -o /dev/null -w '%{redirect_url}' "$u")" in *cloudflareaccess.com/cdn-cgi/access/login*) echo "::warning::$u answers the Cloudflare Access login, not the site, so it was not measured";; *) ok+="$u"$'\n';; esac; done
+          while IFS= read -r u; do [ -n "$u" ] || continue; case "$(curl -sm10 -o /dev/null -w '%{redirect_url}' "$u")" in *cloudflareaccess.com/cdn-cgi/access/login*) echo "::warning::$u answers the Cloudflare Access login, not the site, so it was not measured";; *) ok+="$u"$'\n';; esac; done <<<"$URLS"
+          [ -n "$ok" ] || [ "$REQUIRE" != true ] || { echo "::error::every URL answers the Cloudflare Access login, so nothing was audited"; exit 1; }
           { echo 'urls<<END'; printf %s "$ok"; echo END; } >> "$GITHUB_OUTPUT"
       - name: Audit the URLs against the assertions
         if: steps.reach.outputs.urls != ''
@@ -37,5 +36,6 @@ jobs:
         with:
           urls: ${{ steps.reach.outputs.urls }}
           runs: 5
-          configPath: ./fleet-ops/config/lighthouserc.json
+          configPath: ./config/lighthouserc.json
+          uploadArtifacts: ${{ inputs.upload_reports }}
           temporaryPublicStorage: false
