@@ -45,6 +45,28 @@
 /home/nish/.hermes/lsp
 /home/nish/.hermes/logs
 
+# The same trees inside Hermes rollback dirs. An update copies the whole agent
+# checkout and tool trees into backups/pre-update-* (4.8 GiB, 73,730 files on
+# 2026-10-21); the databases and config beside them are kept.
+/home/nish/.hermes/backups/*/hermes-agent
+/home/nish/.hermes/backups/*/tools
+/home/nish/.hermes/backups/*/cache
+/home/nish/.hermes/backups/*/installs
+/home/nish/.hermes/backups/*/node
+/home/nish/.hermes/backups/*/bin
+/home/nish/.hermes/backups/*/lsp
+/home/nish/.hermes/backups/*/logs
+
+# Rebuildable or superseded copies inside kept directories. The stale
+# Postgres datadir copy is 1.2 GiB and the live dump is the real backup; the
+# skills-prune tarballs are rollback copies of skills already in git; the
+# litellm pycache volume is bytecode the proxy writes again; the Hermes hub
+# index-cache is a downloaded index.
+/home/nish/workspaces/agent-state/backups/litellm-postgres-2026-09-25
+/home/nish/workspaces/agent-state/backups/skills-prune-*.tgz
+/home/nish/.local/share/containers/storage/volumes/fleet-litellm-pycache
+/home/nish/.hermes/skills/.hub/index-cache
+
 # Grafana plugins are installed from the plugin catalog; the state is not.
 /home/nish/.local/share/fleet-grafana/plugins
 
