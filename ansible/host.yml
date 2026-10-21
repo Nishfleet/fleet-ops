@@ -393,13 +393,14 @@
         group: root
         mode: "0644"
 
-    # Restic backup include and exclude lists (config/restic/). The backup unit
-    # reads them from /etc/restic/ on every run; a change here is live after
+    # Restic backup include and exclude lists and the retention policy
+    # (config/restic/). The backup and maintenance units read them from
+    # /etc/restic/ on every run; a change here is live after
     # the next fleet-host-config run, no daemon-reload needed. README.md is not
     # copied: it is repo documentation, not box config. Rendered as templates
     # so newer lines can name the home directory through nish_home. Keep
     # Jinja markers ({{, {% and {#) out of their comments and patterns.
-    - name: Install restic include and exclude lists
+    - name: Install restic include, exclude and retention files
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../config/restic/{{ item }}"
         dest: /etc/restic/{{ item }}
@@ -409,6 +410,13 @@
       loop:
         - include.txt
         - exclude.txt
+        - retention.env
+
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
