@@ -24,6 +24,12 @@ ExecStart=%h/.local/bin/beacon endpoint hermes sync --watch --interval 1m
 Restart=on-failure
 RestartSec=30
 MemoryMax=256M
+# It parses Telegram text the gateway wrote, so it gets the hardening a user unit allows.
+# Writes are limited to Beacon's own directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.beacon
+PrivateTmp=yes
 
 [Install]
 WantedBy=default.target
