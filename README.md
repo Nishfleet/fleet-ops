@@ -608,49 +608,68 @@ system unit with its own service user.
 | Service user and config directory | `ansible/host.yml` creates the `tether` system user and `/etc/tether` (root:tether 0750) |
 | Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700, the unit's working directory) |
 | Credentials | `/etc/tether/tether.env`, root:tether 0640, live-only and never in git |
-| App | `/opt/tether`, root:root 0755, read-only to the `tether` user, installed by root from a `Nishfleet/tether` release |
+| App | `/opt/tether`, root:root 0755, read-only to the `tether` user |
+| Egress rule | `ansible/templates/tether.nft.j2`, installed as `/etc/nftables.d/tether.nft`, table `inet tether` |
 
-The unit is staged: `host.yml` enables it at boot but never starts it, and
-`ConditionPathExists=/opt/tether/dist/index.js` turns a start into a skip until
-the app is installed. The app is at a root-owned path on purpose: the service
-user can write only `/var/lib/tether`, so it cannot rewrite its own code. The
-install is a root step from a release of `Nishfleet/tether`; a reviewed
-installer with a pinned version and checksum is still to come.
+The unit is staged and stays disabled. `host.yml` never enables or starts
+`tether-agent.service`: that waits for a reviewed installer that puts a
+pinned, checksummed, CI-built release of `Nishfleet/tether` into `/opt/tether`.
+Until then nothing runs it, and `ConditionPathExists=/opt/tether/dist/index.js`
+turns any start into a skip. The app is at a root-owned path on purpose: the
+service user can write only `/var/lib/tether`, so it cannot rewrite its own
+code. `host.yml` also installs the distro `nodejs` (the `18.19.*` series, not an
+apt hold) for the unit's `/usr/bin/node`; that runtime is old, so the installer
+that replaces this step should pick the runtime.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
-is capped: `StartLimitBurst=5` in `StartLimitIntervalSec=600`, and with
-`RestartSec=5` a crash loop reaches that in about 25 seconds. The unit is then
-`failed`, and `OnFailure=fleet-unit-failed@%N.service` sends the healthchecks.io
-fail ping, the same page the other units use. So a poison checkpoint, or a
-missing `/etc/tether/tether.env`, ends in one page and a stopped unit, not
-thousands of restarts and paid model calls. After fixing the cause, run
-`systemctl reset-failed tether-agent.service` and start it.
+is capped: `StartLimitBurst=5` in `StartLimitIntervalSec=3600`, so a fast crash
+loop reaches it in about 25 seconds, and any loop that crashes at least every
+12 minutes reaches it within the hour. A slower loop is bounded only by the
+router key's budget (below). The unit is
+then `failed`, and `OnFailure=fleet-unit-failed@%N.service` sends the
+healthchecks.io fail ping, the same page the other units use. After fixing the
+cause, run `systemctl reset-failed tether-agent.service` and start it.
 
-Warning: the last command of the first block removes its memory and its
-credentials, and cannot be undone. Switch off, about two minutes, as root:
+Models go through the LiteLLM router at `127.0.0.1:4000`, never a direct
+provider key. The unit allows `127.0.0.1/32` and `127.0.0.53/32` and denies
+the rest of loopback. `IPAddressAllow=` takes no port, so the `inet tether`
+nftables table matches the `tether` uid (numeric, so `deluser` cannot break the
+file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`
+and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
+addresses (from ansible facts, plus `fib daddr type local`), `172.16.0.0/12`,
+`10.0.0.0/8`, `192.168.0.0/16`, IPv4 link-local, every docker or podman bridge
+subnet present, the tailnet's CGNAT block and the tailnet, ULA and link-local
+IPv6 ranges. Internet egress stays open. The table is its own
+table, loaded by the host's `nftables.service` through
+`include "/etc/nftables.d/*.nft"` in `rootfs/etc/nftables.conf`, so it never
+touches the `filter` table or docker's rules and a boot re-applies it.
+
+LiteLLM virtual keys are minted by hand with the admin API (the RUNBOOK says
+the proxy has no declarative key list), so no key is created here. After merge
+the orchestrator mints one: `POST /key/generate` with `key_alias` `tether`,
+`models` `["assistant"]`, `max_budget` 2, `budget_duration` `1d` and
+`rpm_limit` 20. Port 4000 also serves `/jev` and `/metrics`, so after minting
+check that this key is refused there. Its value goes only into `/etc/tether/tether.env`
+(root:tether 0640), never into a repo.
+
+Warning: `deluser` frees the service uid and `rm -rf` removes its memory and
+credentials, and neither can be undone. Switch off, about two minutes, as root:
 
 ```
-touch /etc/fleet-ops/tether-off    # lasting: the host-config run keeps the unit disabled and stopped
+touch /etc/fleet-ops/tether-off    # lasting: the host-config run creates nothing for tether and keeps the unit disabled and stopped
 systemctl disable --now tether-agent.service
 deluser tether                     # optional: also drop the service user
 rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and cannot be undone
 ```
 
 The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
-the daily and on-merge `fleet-host-config.service` run enables the unit again
-and recreates the user and `/etc/tether`. While the marker exists that run
-creates nothing for tether, keeps the unit disabled and stops it. Remove the
-marker to allow it again. To delete tether for good, open a PR that removes
-`rootfs/etc/systemd/system/tether-agent.service` and the tether tasks in
-`ansible/host.yml`, and adds the unit path to `retired`.
-
-`node` is the distro `nodejs` package at `/usr/bin/node`. The unit allows
-`AF_INET`/`AF_INET6` because iMessage needs the internet, and denies every
-loopback address except the DNS stub `127.0.0.53`, so the unauthenticated
-Alertmanager API, Prometheus and the model router on `127.0.0.1:4000` are not
-reachable from it. `IPAddressAllow=` takes no port, so reaching the router from
-the unit needs its own reviewed change; none is made here.
+the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+user and `/etc/tether`. While the marker exists that run creates nothing for
+tether, removes its firewall rule, and keeps the unit disabled and stopped.
+Remove the marker to allow it again. To delete tether for good, open a PR that
+removes `rootfs/etc/systemd/system/tether-agent.service` and the tether tasks
+in `ansible/host.yml`, and adds the unit path to `retired`.
 
 In-band, without root, Nish's own off-switch is the `STOP` text. The app that
 handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is

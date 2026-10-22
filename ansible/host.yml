@@ -18,6 +18,7 @@
   gather_facts: false
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    tether_off_marker: /etc/fleet-ops/tether-off
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -514,25 +515,29 @@
         enabled: true
 
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
-    # because per-user units silently ignore sandbox settings on this box. The
-    # unit is enabled at boot only; nothing starts it until the app from
-    # Nishfleet/tether is installed at /opt/tether (root-owned, so the service
-    # user cannot rewrite its own code), and the unit's ConditionPathExists
-    # makes a start a no-op before that. The marker file /etc/fleet-ops/tether-off
-    # is the lasting off-switch: while it exists this run leaves the user and
-    # /etc/tether alone and keeps the unit disabled and stopped.
+    # because per-user units silently ignore sandbox settings on this box. This
+    # run never enables or starts tether-agent.service: it stays disabled until
+    # a reviewed installer puts a pinned, checksummed release at /opt/tether
+    # (root-owned, so the service user cannot rewrite its own code). The marker
+    # file is the lasting off-switch: while it exists this run creates nothing
+    # for tether, removes its firewall rule and keeps the unit disabled and
+    # stopped. The marker path is a var so the test in
+    # tests/test_systemd_unit_keys.py can run these tasks under --check.
     - name: Look for the tether off marker
+      tags: [tether]
       ansible.builtin.stat:
-        path: /etc/fleet-ops/tether-off
+        path: "{{ tether_off_marker }}"
       register: tether_off
 
     - name: Create the tether group
+      tags: [tether]
       ansible.builtin.group:
         name: tether
         system: true
       when: not tether_off.stat.exists
 
     - name: Create the tether service user
+      tags: [tether]
       ansible.builtin.user:
         name: tether
         group: tether
@@ -542,6 +547,7 @@
       when: not tether_off.stat.exists
 
     - name: Create the tether config directory
+      tags: [tether]
       ansible.builtin.file:
         path: /etc/tether
         state: directory
@@ -549,8 +555,11 @@
         group: tether
         mode: "0750"
       when: not tether_off.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
 
     - name: Create the tether app directory, root-owned
+      tags: [tether]
       ansible.builtin.file:
         path: /opt/tether
         state: directory
@@ -559,12 +568,76 @@
         mode: "0755"
       when: not tether_off.stat.exists
 
-    - name: Enable tether at boot, or keep it off while the marker exists
+    # The distro nodejs for the unit's /usr/bin/node, pinned to the 18.19 series
+    # (not an apt hold).
+    - name: Install the distro nodejs for tether
+      tags: [tether]
+      ansible.builtin.apt:
+        name: nodejs=18.19.*
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # tether's egress firewall: its own table, loaded by the host's existing
+    # nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
+    # or `systemctl reload nftables` re-applies it). The rule matches the
+    # numeric uid, so a later `deluser tether` cannot break the file's load.
+    - name: Look up the tether uid
+      tags: [tether]
+      ansible.builtin.getent:
+        database: passwd
+        key: tether
+        fail_key: false
+      when: not tether_off.stat.exists
+
+    - name: Read the host's addresses and bridges
+      tags: [tether]
+      ansible.builtin.setup:
+        gather_subset: ["!all", "!min", network]
+      when: not tether_off.stat.exists
+
+    - name: Create the nftables drop-in directory
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the tether egress rule
+      tags: [tether]
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/tether.nft.j2"
+        dest: /etc/nftables.d/tether.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      vars:
+        tether_uid: "{{ getent_passwd.tether[1] }}"
+      when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
+      notify: Reload nftables
+
+    - name: Remove the tether egress rule while the marker exists
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/nftables.d/tether.nft
+        state: absent
+      when: tether_off.stat.exists
+      notify: Reload nftables
+
+    - name: Keep tether disabled and stopped while the marker exists
+      tags: [tether]
       ansible.builtin.systemd_service:
         name: tether-agent.service
-        enabled: "{{ not tether_off.stat.exists }}"
-        state: "{{ 'stopped' if tether_off.stat.exists else omit }}"
+        enabled: false
+        state: stopped
         daemon_reload: true
+      when: tether_off.stat.exists
       # Under --check the copy above did not really install the unit yet.
       ignore_errors: "{{ ansible_check_mode }}"
 

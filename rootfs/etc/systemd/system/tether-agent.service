@@ -3,15 +3,20 @@ Description=Tether, the always-on iMessage agent (fleet-ops#9980 phase 1)
 Documentation=https://github.com/Nishfleet/tether/blob/main/README.md
 Wants=network-online.target
 After=network-online.target
+# Tether stops when the firewall service stops: the `inet tether` table is what
+# narrows its 127.0.0.1 access to the router port.
+Requires=nftables.service
+After=nftables.service
 # The app ships from Nishfleet/tether and is installed under /opt/tether, owned
 # by root, so the service user cannot rewrite its own code. Until that binary
 # exists a start is skipped, not failed, so this unit is safe to enable at boot
 # from the day it lands.
 ConditionPathExists=/opt/tether/dist/index.js
-# Finite start limit: 5 starts in 10 minutes (RestartSec=5 reaches it in about
-# 25 s), then the unit is failed and OnFailure= pages. A poison checkpoint or a
-# missing credential file stops looping instead of repeating paid model calls.
-StartLimitIntervalSec=600
+# Finite start limit: 5 starts in an hour, then the unit is failed and
+# OnFailure= pages. A fast crash loop (RestartSec=5) reaches it in about 25 s,
+# and a slow one that crashes minutes after each start still does within the
+# hour, so neither repeats paid model calls unattended.
+StartLimitIntervalSec=3600
 StartLimitBurst=5
 OnFailure=fleet-unit-failed@%N.service
 
@@ -59,10 +64,12 @@ ProcSubset=pid
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# No loopback service (unauthenticated Alertmanager, the router, Prometheus) is
-# reachable. The one allow is the systemd-resolved stub, so DNS still works.
+# Loopback is denied except the router (127.0.0.1) and the resolved stub
+# (127.0.0.53). IPAddressAllow= takes no port, so the nftables table
+# `inet tether` (ansible/templates/tether.nft.j2) narrows 127.0.0.1 to tcp 4000
+# and 127.0.0.53 to port 53, and drops every other host-local destination.
 IPAddressDeny=localhost
-IPAddressAllow=127.0.0.53
+IPAddressAllow=127.0.0.1/32 127.0.0.53/32
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RestrictRealtime=true
