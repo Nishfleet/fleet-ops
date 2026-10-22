@@ -1,0 +1,19 @@
+risky-unapproved|7|Add x (#7)|7|||||1|
+label-only-unapproved|7|Add x (#7)||7||||1|
+risky-approved|7|Add x (#7)|7||7|||0|
+risky-approval-for-old-head|7|Add x (#7)|7||7|1||1|
+safe-control|7|Add x (#7)||||||0|
+group-ahead-unapproved|8|a (#7);b (#8)|7|||||1|
+group-ahead-approved|8|a (#7);b (#8)|7||7|||0|
+group-unmappable-commit|8|a;b (#8)||||||1|
+bad-ref|badref|Add x (#7)||||||1|
+pr-read-fails|7|Add x (#7)|||||pulls/7$|1|
+files-read-fails|7|Add x (#7)|||||/files\?|1|
+statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1|
+comments-read-fails|7|Add x (#7)|7||7||/comments\?|1|
+compare-read-fails|7|Add x (#7)|||||/compare/|1|
+veto-safe-pr|7|Add x (#7)||||||1|7
+veto-risky-approved-pr|7|Add x (#7)|7||7|||1|7
+veto-group-ahead|8|a (#7);b (#8)||||||1|7
+reviews-read-fails|7|Add x (#7)|||||/reviews\?|1|
+timeline-read-fails|7|Add x (#7)|||||/timeline\?|1|

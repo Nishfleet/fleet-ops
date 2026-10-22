@@ -1,13 +1,8 @@
-# merge-gate: a workflow the org ruleset "Require workflows to pass before
-# merging" runs from main on every pull request and merge-queue entry, so a PR
-# cannot change what judges it.
-#   gate-files   (pull_request) flags a PR that edits one of the gate files
-#                below.
-#   veto-window  (pull_request) holds a gate-file PR behind the environment's
-#                wait timer, counted from its last push, so it cannot be queued
-#                until that wait has passed.
-#   merge-gate   (merge_group) runs the coordinator-approval check that ci.yml
-#                also runs, plus the owner veto check for every PR in the entry.
+# Run from main by the org ruleset "Require workflows to pass before merging",
+# so a PR cannot change what judges it. A PR that edits a gate file waits out
+# the veto-window environment's timer (24 h from its last push); the merge-queue
+# job checks approval and the owner's veto for every PR in the entry, reading its
+# programs from the base commit.
 name: merge-gate
 on:
   pull_request:
@@ -22,68 +17,45 @@ concurrency:
 
 jobs:
   gate-files:
-    name: gate-files
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
       pull-requests: read
     outputs:
       touched: ${{ steps.touched.outputs.touched }}
     env:
-      # The files this gate holds behind the veto window. They live in this
-      # pinned workflow, so a PR cannot shorten the list it is judged by.
-      # agent-dispatch.yml holds the approval programs the merge-gate job reads.
-      GATE: |
-        .github/workflows/merge-gate.yml
-        .github/CODEOWNERS
-        config/risky-paths.json
-        .github/workflows/agent-dispatch.yml
+      # Hard-coded: this file is pinned, so a PR cannot shorten the list.
+      GATE: .github/workflows/merge-gate.yml .github/CODEOWNERS config/risky-paths.json .github/workflows/agent-dispatch.yml config/merge-gate/veto.jq
     steps:
-      - name: List the PR's changed files and match them against the gate files
-        id: touched
+      - id: touched
         env:
           GH_TOKEN: ${{ github.token }}
           R: ${{ github.repository }}
           N: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          # Every failed read fails the job.
-          gh api --paginate "repos/$R/pulls/$N/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt" ||
-            { echo "::error::gate-files: changed-files read failed for #$N"; exit 1; }
-          total=$(gh api "repos/$R/pulls/$N" --jq '.changed_files') ||
-            { echo "::error::gate-files: PR read failed for #$N"; exit 1; }
-          printf '%s\n' "$GATE" | sed '/^$/d' > "$RUNNER_TEMP/gate.txt"
-          [ -s "$RUNNER_TEMP/gate.txt" ] || { echo "::error::gate-files: gate list is empty"; exit 1; }
+          # A failed read fails the job. The files list is cut at 3000, so a larger PR counts as touched.
+          gh api --paginate "repos/$R/pulls/$N/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt"
+          total=$(gh api "repos/$R/pulls/$N" --jq '.changed_files')
+          tr ' ' '\n' <<<"$GATE" > "$RUNNER_TEMP/gate.txt"
           touched=false
-          # The files list is cut at 3000, so a larger PR counts as touched.
-          if [ "$total" -ge 3000 ]; then
-            touched=true
-          elif grep -Fixq -f "$RUNNER_TEMP/gate.txt" "$RUNNER_TEMP/changed.txt"; then
-            touched=true
-          fi
-          echo "gate-files: #$N touched=$touched"
-          echo "touched=$touched" >> "$GITHUB_OUTPUT"
+          if [ "$total" -ge 3000 ] || grep -Fixq -f "$RUNNER_TEMP/gate.txt" "$RUNNER_TEMP/changed.txt"; then touched=true; fi
+          echo "touched=$touched" | tee -a "$GITHUB_OUTPUT"
 
   veto-window:
-    name: veto-window
     needs: gate-files
     if: github.event_name == 'pull_request' && needs.gate-files.outputs.touched == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # The wait itself is this environment's wait timer.
-    environment: gate-veto-window
-    permissions:
-      contents: read
+    environment: gate-veto-window  # its wait timer is the window
+    permissions: {}
     steps:
-      - name: Veto window
-        env:
+      - env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: echo "24 h veto window passed for $HEAD_SHA"
 
   merge-gate:
-    name: merge-gate
     if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -92,8 +64,7 @@ jobs:
       pull-requests: read
       statuses: read
     steps:
-      - name: Checkout the base commit (programs and path list)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.merge_group.base_sha }}
           path: base
@@ -101,6 +72,7 @@ jobs:
           sparse-checkout: |
             .github/workflows/agent-dispatch.yml
             config/risky-paths.json
+            config/merge-gate/veto.jq
           sparse-checkout-cone-mode: false
       - name: Fail a PR in the queue with no coordinator approval or an active owner veto
         env:
@@ -109,40 +81,11 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           GROUP_SHA: ${{ github.event.merge_group.head_sha }}
           BASE_DIR: base
-          # The owner whose request for changes holds a PR. A constant in this
-          # pinned file.
           VETO_OWNER: nish3451
-          # stdin: {owner, reviews, timeline}. reviews is the PR's reviews API
-          # list; timeline is its issue timeline. Prints true when the owner's
-          # veto is active. The owner's latest review that is an approval, a
-          # request for changes or a dismissal decides. A request for changes
-          # holds. A dismissal lifts it only when the owner made it, or when
-          # the dismissed review was an approval (a push dismisses a stale
-          # approval; that is not a request for changes). A dismissal whose
-          # event is missing holds, and so does one by anyone else.
-          VETO: |
-            . as $in
-            | ($in.owner | ascii_downcase) as $o
-            | [$in.timeline[] | select(.event == "review_dismissed")] as $dis
-            | [$in.reviews[]
-                | select(((.user.login // "") | ascii_downcase) == $o)
-                | . as $r
-                | (if .state == "APPROVED" then "lifted"
-                   elif .state == "CHANGES_REQUESTED" then "held"
-                   elif .state == "DISMISSED" then
-                     ([$dis[] | select(.dismissed_review.review_id == $r.id)] | last) as $e
-                     | if $e == null then "held"
-                       elif (($e.dismissed_review.state // "") | ascii_downcase) == "approved" then "lifted"
-                       elif ((($e.actor.login // "") | ascii_downcase) == $o) then "lifted"
-                       else "held" end
-                   else empty end) as $eff
-                | {at: .submitted_at, id: .id, eff: $eff}]
-            | sort_by([.at, .id])
-            | last
-            | . != null and .eff == "held"
         run: |
           set -euo pipefail
-          # Programs, approvers and path list: the base commit's, not the PR's.
+          # Programs, approvers, veto program and path list: the base commit's, not the PR's.
+          VETO=$(cat "$BASE_DIR/config/merge-gate/veto.jq") && [ -n "$VETO" ] || { echo "::error::merge-gate: veto program unreadable"; exit 1; }
           for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
             val=$(yq ".jobs.hold-risky.env.$v" "$BASE_DIR/.github/workflows/agent-dispatch.yml")
             [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: hold-risky env $v unreadable"; exit 1; }

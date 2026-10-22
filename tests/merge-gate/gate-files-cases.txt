@@ -1,0 +1,7 @@
+gate-file|README.md;.github/workflows/merge-gate.yml|2||0|true
+renamed-from-gate-file|docs/old.md;.github/CODEOWNERS|1||0|true
+veto-program|config/merge-gate/veto.jq|1||0|true
+other-files|app/a.ts;docs/b.md|2||0|false
+cut-at-3000|app/a.ts|3000||0|true
+files-read-fails|app/a.ts|1|/files\?|1|
+pr-read-fails|app/a.ts|1|pulls/7 --jq|1|
