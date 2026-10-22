@@ -263,9 +263,9 @@ so nothing can drift, and the
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
 `deploy-box.yml` starts `fleet-sync.service` on every push to main, which
-keeps the clone current. It is the only deploy machinery on the box. Its security
-probe runs in the deploy job with `continue-on-error` and a last-step verdict: a
-red probe still fails the run, and it never skips the deploy steps (a separate job
+keeps the clone current. It is the only deploy machinery on the box. Its two
+deploy steps come first, and its security probe runs last in that same job: a red
+probe still fails the run, and it can never skip the deploy steps (a separate job
 could probe one box and deploy on another); `fleet-clone-lag.timer` then pages when
 the clone is 35 min behind
 `origin/main` (fleet-ops#10046):

@@ -28,9 +28,9 @@ It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
 `fatal: Cannot fast-forward to multiple branches` and silently stops every
 deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
 asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone. Two things keep that true: the workflow's security
-probe runs in the deploy job with `continue-on-error` and a last-step verdict,
-so a red probe still fails the run but never skips the deploy steps, and
+than a lagging clone. Two things keep that true: the workflow's two deploy steps
+come first and its security probe runs last in the same job, so a red probe still
+fails the run and can never skip a deploy step, and
 `fleet-clone-lag.timer` (every 5 min) fails the unit when the oldest commit on
 `origin/main` the clone lacks is 35 min old, printing the fix
 in its message (fleet-ops#10046).

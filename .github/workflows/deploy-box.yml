@@ -1,23 +1,10 @@
-# deploy-box: push-triggered. The apply job probes the runner's jail, then starts
-# the fleet-sync.service user oneshot (the user-scope deploy steps), then the
-# fleet-host-config.service system oneshot (Ansible applies rootfs/ as root); each
-# exit code is a verdict. polkit lets this runner's user start that one system
-# unit, so no step uses sudo. The unit's own guards still gate every step.
-# fleet-ops#8519
-#
-# The probe step carries continue-on-error and a last-step verdict instead of
-# gating the deploy with its own exit code (fleet-ops#10046). As apply's first
-# step its verdict marked both deploy steps skipped: on 2026-10-22 ebf1d4e7 and
-# dbee9335 landed at 14:14Z, their runs 39796797875 and 39796924650 went red on the
-# probe at 14:34Z and 14:35Z, both systemctl steps are `skipped` in those runs, and
-# the clone kept serving the unit files, prompts/ and config/ from before the merge
-# until a manual replay at 14:54:25Z (run 39799814591) — 40 min. It stays in apply
-# rather than
-# moving to a job of its own because runs-on [self-hosted, fleet-ci] does not pin
-# a host: a separate job can probe one box and deploy on another, and then a green
-# probe says nothing about the box that deploys. Both verdicts still land on the
-# run; a red probe never stops the box from receiving main.
-# tests/test_deploy_box_trigger.py fails if the deploy is gated again.
+# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
+# user-scope deploy steps), then the fleet-host-config.service system oneshot
+# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
+# this runner's user start that one system unit, so no step uses sudo.
+# The unit's own guards still gate every step. fleet-ops#8519
+# The probe runs last, so its verdict cannot skip a deploy step and a red probe
+# still fails the run (fleet-ops#10046; tests/test_deploy_box_trigger.py).
 name: deploy-box
 
 on:
@@ -34,28 +21,14 @@ permissions:
 
 jobs:
   apply:
-    name: apply
     runs-on: [self-hosted, fleet-ci]
-    # The unit allows TimeoutStartSec=300 for the steps alone, and the probe adds
-    # a few seconds; 15 min leaves headroom without letting a hung step park a
-    # runner.
-    timeout-minutes: 15
+    timeout-minutes: 15  # fleet-sync allows 300s and fleet-host-config 600s
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
-      - id: probe
-        name: Probe the runner's jail for readable credential paths
-        # continue-on-error: the deploy steps below must run whatever the probe
-        # says. The verdict step at the end still fails this run.
-        continue-on-error: true
-        uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
-      - name: "Verdict: fail the run when the probe was red"
-        if: always()
-        # The outcome goes through env, never into the run text as an expression.
-        env:
-          PROBE_OUTCOME: ${{ steps.probe.outcome }}
-        run: test "$PROBE_OUTCOME" = success || { echo "runner-probe was $PROBE_OUTCOME; the deploy steps above still ran and the clone is on main"; exit 1; }
+      - name: Probe the runner's jail for readable credential paths
+        uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main

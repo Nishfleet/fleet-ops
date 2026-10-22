@@ -238,11 +238,8 @@ jobs:
       - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, the deploy lag check, unknown keys (fleet-ops#9967, #10046)
         # Runs fleet-sync.service's own agent installs, the real
         # systemd-tmpfiles --user --create and the link check against a temp
-        # home: both lanes read through ~/.claude-max/agents, and a hand-made
-        # dir in the link's place fails the sync. fleet-clone-lag.service's
-        # own ExecStart runs against a temp clone, and deploy-box.yml is read
-        # back through yq: no job, step or condition may sit between a merge on
-        # main and the deploy steps.
+        # home (a hand-made dir in the link's place fails the sync), then
+        # fleet-clone-lag's ExecStart and deploy-box's trigger through yq.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_fleet_clone_lag.py tests/test_deploy_box_trigger.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
