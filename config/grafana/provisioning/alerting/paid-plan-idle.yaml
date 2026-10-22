@@ -1,7 +1,7 @@
 # Paid-plan idle detector (fleet-ops#9221).
 # The paid-plan list lives in this file. A plan Nish cancels is removed here
 # in the same PR that removes its router rows.
-# Contact point: existing Hermes Telegram bot + TELEGRAM_HOME_CHANNEL, reached through the policy tree by severity critical.
+# Contact point: existing Hermes Telegram bot + the Telegram home channel, reached through the policy tree by severity critical.
 # Grafana file provisioning has no shared/foreach rule form (docs: groups[].rules
 # is a list of full rules). One rule per plan so absent_over_time matches that
 # api_base. disableResolveMessage is true: Hermes urgent is firing-only.
@@ -15,9 +15,9 @@ contactPoints:
         type: telegram
         disableResolveMessage: true
         settings:
-          bottoken: $TELEGRAM_BOT_TOKEN
+          bottoken: $__file{/run/secrets/grafana/telegram-bot-token}
           chatid: |
-            $TELEGRAM_HOME_CHANNEL
+            $__file{/run/secrets/grafana/telegram-home-channel}
           message: |
             {{ range .Alerts.Firing }}
             {{ .Annotations.summary }} {{ .Annotations.description }}

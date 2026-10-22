@@ -1628,10 +1628,11 @@ jobs:
           echo dummy-admin-password > "$RUNNER_TEMP/secrets/grafana-admin-password"
           # The contact points read $__file{/run/secrets/github-token/token}; the
           # host mounts the runtime dir fleet-grafana-github-token.service fills.
-          mkdir -p "$RUNNER_TEMP/secrets/github-token"
+          mkdir -p "$RUNNER_TEMP/secrets/github-token" "$RUNNER_TEMP/secrets/grafana"
           echo dummy-github-token > "$RUNNER_TEMP/secrets/github-token/token"
-          chmod 0644 "$RUNNER_TEMP/secrets/"*.pem "$RUNNER_TEMP/secrets/grafana-admin-password" "$RUNNER_TEMP/secrets/github-token/token"
-          chmod 0755 "$RUNNER_TEMP/secrets/github-token"
+          for n in telegram-bot-token telegram-home-channel cloudflare-api-token; do echo dummy > "$RUNNER_TEMP/secrets/grafana/$n"; done
+          chmod 0644 "$RUNNER_TEMP/secrets/"*.pem "$RUNNER_TEMP/secrets/grafana-admin-password" "$RUNNER_TEMP/secrets/github-token/token" "$RUNNER_TEMP/secrets/grafana/"*
+          chmod 0755 "$RUNNER_TEMP/secrets/github-token" "$RUNNER_TEMP/secrets/grafana"
           # Every Environment=GF_* line and every Volume= under config/grafana,
           # taken from the quadlet itself so the two cannot drift.
           args=()
@@ -1644,8 +1645,7 @@ jobs:
             "${args[@]}" \
             -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
             -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
-            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
-            --env CLOUDFLARE_API_TOKEN=dummy \
+            -v "$RUNNER_TEMP/secrets/grafana:/run/secrets/grafana:ro" \
             -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")

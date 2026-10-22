@@ -130,6 +130,17 @@
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    # Grafana reads one raw value per file ($__file{} in config/grafana/provisioning).
+    # The sources hold KEY=value lines, so each value is copied out of its source on
+    # every run (a rotation at the source reaches the files on the next run; a running
+    # Grafana picks it up at its next provisioning load or restart). The copies
+    # sit under ~/.config/cloudflare, a directory the worker jails already hide
+    # (InaccessiblePaths in 20-lockdown.conf).
+    grafana_secrets_dir: "{{ nish_config }}/cloudflare/grafana-secrets"
+    grafana_credentials:
+      - {file: telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
+      - {file: telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
+      - {file: cloudflare-api-token, src: "{{ nish_config }}/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -1634,6 +1645,50 @@
         msg: "tether v{{ tether_version }} was not installed: {{ tether_install_failure }}. {{ tether_release_root }}/current was not changed and the rest of this run completed."
       when: tether_install_failure is defined and not ansible_check_mode
 
+
+    # Last in the play, so a missing source or key fails the run only after everything
+    # else applied. The loop items name files and keys, never values. Why a copy and not
+    # the env route or Podman secrets: the sources are shared KEY=value files (the whole
+    # Hermes env, the deploy-ci env), and Grafana's $VAR expansion would need them loaded
+    # whole into its environment; Podman secrets need a create step that reads the same
+    # sources and keeps a second copy in the secret store. A Grafana that is already
+    # running re-reads the files at its next provisioning load or restart.
+    - name: Create the Grafana credential directory
+      ansible.builtin.file:
+        path: "{{ grafana_secrets_dir }}"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0700"
+
+    - name: Copy each Grafana credential out of its source (one raw value per file)
+      ansible.builtin.copy:
+        content: "{{ value }}"
+        dest: "{{ grafana_secrets_dir }}/{{ item.file }}"
+        owner: nish
+        group: nish
+        mode: "0600"
+      loop: "{{ grafana_credentials }}"
+      loop_control:
+        label: "{{ item.file }}"
+      vars:
+        value: >-
+          {{ lookup('ansible.builtin.file', item.src, errors='ignore') | default('', true)
+             | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
+             | last | default('') | trim }}
+      when: value != ''
+      register: grafana_credential_copies
+      no_log: true
+      diff: false
+
+    - name: Fail when a Grafana credential source or key is missing or empty
+      ansible.builtin.assert:
+        that: not (item.skipped | default(false))
+        fail_msg: "Grafana credential {{ item.item.file }} was not refreshed: {{ item.item.src }} is missing, or has no non-empty {{ item.item.key }}= line."
+        quiet: true
+      loop: "{{ grafana_credential_copies.results }}"
+      loop_control:
+        label: "{{ item.item.file }}"
 
   handlers:
     - name: Reload systemd

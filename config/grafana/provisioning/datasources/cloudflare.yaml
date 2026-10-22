@@ -3,10 +3,9 @@
 # GF_PLUGINS_PREINSTALL_SYNC in fleet-grafana.container) POSTs GraphQL to
 # https://api.cloudflare.com/client/v4 with the analytics-read token. The
 # token is the existing deploy-ci one (Workers scripts, D1, KV, Zone read,
-# GraphQL analytics) and never sits in this file: Grafana expands
-# $CLOUDFLARE_API_TOKEN from the container environment at provisioning load
-# (EnvironmentFile=%h/.config/cloudflare/deploy-ci.env in the quadlet) and
-# stores it encrypted in the Grafana database.
+# GraphQL analytics) and never sits in this file: Grafana reads it with
+# $__file{} from the grafana-secrets mount in the quadlet at provisioning load
+# and stores it encrypted in the Grafana database.
 #
 # parser 'backend' is required for alerting (the frontend JSON parser cannot
 # run inside Grafana's rule evaluation), and auth requires allowedHosts.
@@ -25,4 +24,4 @@ datasources:
         - https://api.cloudflare.com
       timeoutInSeconds: 60
     secureJsonData:
-      bearerToken: $CLOUDFLARE_API_TOKEN
+      bearerToken: $__file{/run/secrets/grafana/cloudflare-api-token}
