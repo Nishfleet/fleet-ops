@@ -62,5 +62,7 @@ def test_every_new_step_is_checked_in_the_final_assert():
         assert var in that
 
 
-def test_yt_dlp_is_in_the_tool_updates():
-    assert ["yt-dlp", "--update"] in [u["argv"] for u in PLAY["vars"]["tool_updates"]]
+def test_yt_dlp_never_self_updates():
+    argvs = [u["argv"] for u in PLAY["vars"]["tool_updates"]]
+    assert ["uv", "tool", "upgrade", "--all"] in argvs
+    assert not any(a[:1] == ["yt-dlp"] or "yt-dlp" in a for a in argvs)

@@ -159,6 +159,49 @@
         mode: preserve
       notify: Reload systemd
 
+    # fleet-update.service reads two root-only env files: tincan's relay
+    # config path and the healthchecks.io success-ping URL. Neither value is
+    # named in the repo (fleet-ops#9965), so both are discovered from the
+    # box. The relay config path comes from the tincan configs already in
+    # nish's home directory: any joined agent's config carries the same
+    # relay, so the first one found names it. No tincan config on the box
+    # leaves the file absent, and the play skips tincan by name instead of
+    # failing.
+    - name: Name the update unit's tincan relay config in a root-only env file
+      vars:
+        tincan_configs: "{{ query('ansible.builtin.fileglob', nish_config ~ '/tincan/*.json') }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-tincan.env
+        content: "TINCAN_CONFIG={{ (tincan_configs | sort | first) }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: tincan_configs | length > 0
+
+    # The update's own healthchecks ping URL lives with the box's other ping
+    # URLs in the keystone env file, so one paste covers it once the check
+    # exists (creating the check needs the healthchecks.io account; no API key
+    # is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+    # the update unit cannot ping the other checks. A missing line leaves the
+    # mirror absent, the unit pings SKIP, and its check simply goes stale,
+    # which is the alert.
+    - name: Read the healthchecks ping URLs nish keeps for the box
+      ansible.builtin.slurp:
+        src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+      register: hc_env_source
+      failed_when: false
+
+    - name: Hand the update unit its own healthchecks URL, root-only
+      vars:
+        hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-hc.env
+        content: "{{ hc_update_lines | join('\n') }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: hc_update_lines | length > 0
+
     - name: Install systemd user-manager drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/systemd/user/"
