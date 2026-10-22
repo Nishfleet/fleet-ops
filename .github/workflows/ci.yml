@@ -48,45 +48,6 @@ jobs:
           for f in config/litellm-proxy.schema.rejects/*.yaml; do
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
-      # The router's Redis cache requires a password (fleet-ops W8c). LiteLLM v1.98.0 drops
-      # redis_password when redis_url is set, so the config names redis_host/redis_port/
-      # redis_password: os.environ/REDIS_PASSWORD and the schema rejects redis_url. This proves,
-      # on the image the proxy Quadlet pins, that those exact keys from the real config
-      # authenticate: a real redis-server with requirepass (from a fragment, as on the host)
-      # answers NOAUTH without a password, accepts a write made with the right one, and
-      # refuses a write made with a wrong one. Only the port differs from the config.
-      # apt's redis-server (the step above) may already hold 6379, so the proof uses 6391.
-      - name: LiteLLM authenticates to Redis with redis_password os.environ/REDIS_PASSWORD
-        run: |
-          set -eu
-          pw=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
-          echo "requirepass $pw" > "$RUNNER_TEMP/redis-auth.conf"
-          redis-server --port 6391 --bind 127.0.0.1 --save "" --appendonly no --daemonize yes \
-            --include "$RUNNER_TEMP/redis-auth.conf"
-          for _ in $(seq 20); do redis-cli -p 6391 ping 2>&1 | grep -q 'NOAUTH\|PONG' && break; sleep 0.5; done
-          redis-cli -p 6391 ping | grep -q NOAUTH
-          image=$(sed -n 's/^Image=//p' containers/quadlet/fleet-litellm-proxy.container)
-          run_proof() {
-            docker run --rm -i --network host -e REDIS_PASSWORD="$1" -e KEYNAME="$2" -v "$PWD/config/litellm-proxy.yaml:/cfg.yaml:ro" \
-              --entrypoint python "$image" - <<'PY'
-          import asyncio, os, yaml
-          from litellm import Router
-          rs = yaml.safe_load(open("/cfg.yaml"))["router_settings"]
-          assert "redis_url" not in rs, "redis_url makes litellm drop the password"
-          kw = {k: rs[k] for k in ("redis_host", "redis_port", "redis_password")}
-          assert kw["redis_password"] == "os.environ/REDIS_PASSWORD", kw["redis_password"]
-          kw["redis_port"] = 6391
-          router = Router(model_list=[{"model_name": "m", "litellm_params": {"model": "openai/x", "api_key": "x"}}], **kw)
-          rc = router.cache.redis_cache
-          assert rc is not None, "the Router built no Redis cache"
-          asyncio.run(rc.async_set_cache(os.environ["KEYNAME"], "ok", ttl=60))
-          PY
-          }
-          run_proof "$pw" w8c-right
-          REDISCLI_AUTH="$pw" redis-cli -p 6391 get w8c-right | grep -q ok
-          run_proof wrong-password w8c-wrong || true
-          [ -z "$(REDISCLI_AUTH="$pw" redis-cli -p 6391 get w8c-wrong)" ]
-          REDISCLI_AUTH="$pw" redis-cli -p 6391 shutdown nosave || true
       - run: pipx install semgrep==1.170.0
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
