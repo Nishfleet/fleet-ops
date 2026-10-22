@@ -1644,12 +1644,11 @@ jobs:
             l=${l//%h\/workspaces\/tooling\/fleet-ops-deploy-clone/$PWD}
             args+=(-v "$l")
           done < <(sed -n 's/^Volume=//p' "$q" | grep 'config/grafana')
+          while IFS= read -r n; do echo dummy > "$RUNNER_TEMP/secrets/$n"; chmod 0644 "$RUNNER_TEMP/secrets/$n"; args+=(-v "$RUNNER_TEMP/secrets/$n:/run/secrets/$n:ro"); done < <(sed -n 's/^Secret=\([^,]*\),.*/\1/p' "$q")
           docker run -d --name grafana --network host \
             "${args[@]}" \
             -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
             -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
-            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
-            --env CLOUDFLARE_API_TOKEN=dummy \
             -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
