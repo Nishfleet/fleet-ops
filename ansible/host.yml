@@ -247,6 +247,14 @@
     # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
     # config instead of the host's /etc/docker/daemon.json, which sets the runsc
     # runtime. rootlesskit comes from apt: the unit runs dockerd under it.
+    - name: Create the fleet-ops config directory
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Install the rootless Docker engine's config
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
@@ -1181,7 +1189,10 @@
         enabled: true
         state: started
         daemon_reload: true
-      ignore_errors: "{{ ansible_check_mode }}"
+      register: dockerd_eval_up
+      # A unit that fails to start must not stop the rest of the host config; it
+      # stays visible as a failed unit, and the eval's own run fails until fixed.
+      ignore_errors: true
 
     # The retired podman engine: stopped and disabled, and its unit file is in
     # `retired` below. A host where the unit is already gone is not an error.
