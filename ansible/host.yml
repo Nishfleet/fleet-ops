@@ -248,12 +248,13 @@
         database: passwd
         key: postgres
         fail_key: false
+      register: postgres_passwd
 
     - name: Set the postgres account shell to nologin
       ansible.builtin.user:
         name: postgres
         shell: /usr/sbin/nologin
-      when: getent_passwd.postgres is not none
+      when: postgres_passwd.ansible_facts.getent_passwd.postgres is not none
 
     - name: Install the htpdate options
       ansible.builtin.copy:
