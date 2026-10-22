@@ -127,6 +127,20 @@
       changed_when: false
       check_mode: false  # read-only; runs under --check too
 
+    # GitHub's public commit-signing keys (https://github.com/web-flow.gpg), so
+    # root can run `git verify-commit` on what ansible-pull fetches. Two keys,
+    # both matching keys.openpgp.org. Current, signs squash and merge commits:
+    # 9684 79A1 AFF9 27E3 7D1A  566B B569 0EEE BB95 2194. Expired 2024-01-16,
+    # kept for older history: 5DE3 E050 9C47 EA3C F04A  42D3 4AEE 18F8 3AFD EB23.
+    # The import into root's keyring is idempotent: gpg reports "imported" only
+    # the first time.
+    - name: Import GitHub's commit-signing keys into root's keyring
+      ansible.builtin.command: /usr/bin/gpg --batch --import {{ playbook_dir }}/files/github-web-flow.gpg
+      environment:
+        LC_ALL: C
+      register: github_signing_keys
+      changed_when: "'imported:' in github_signing_keys.stderr"
+
     # Per-role Claude Code allow lists (fleet-ops#9502). tincan-listen-claude-vps
     # passes --settings at /etc/claude-code/roles/tincan-listener.json, so this
     # copy must exist on the box before that user unit is restarted after merge.
