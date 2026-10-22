@@ -88,6 +88,49 @@ def test_tether_cannot_reach_loopback_or_rewrite_its_code() -> None:
     assert not keys["WorkingDirectory"][0].startswith("/opt/")
 
 
+CLAUDE_VPS_LISTENER = INSTALLED / "tincan-listen-claude-vps.service"
+WORKSPACES = "/home/nish/workspaces"
+
+
+def _listener_keys() -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in CLAUDE_VPS_LISTENER.read_text().splitlines():
+        if "=" in line and not line.startswith(("#", "[")):
+            key, value = line.split("=", 1)
+            keys.setdefault(key, []).append(value)
+    return keys
+
+
+def test_claude_vps_listener_restart_is_capped_and_pages() -> None:
+    keys = _listener_keys()
+    assert keys["Restart"] == ["always"]
+    interval = keys["StartLimitIntervalSec"][0]
+    assert interval.endswith("min") and int(interval.removesuffix("min")) > 0, "a zero interval disables the start limit"
+    burst = int(keys["StartLimitBurst"][0])
+    restart = int(keys["RestartSec"][0])
+    assert burst > 0
+    assert burst * restart < int(interval.removesuffix("min")) * 60, "the limit must be reachable inside its interval"
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+
+
+def test_claude_vps_listener_config_paths_are_read_only() -> None:
+    keys = _listener_keys()
+    writable = " ".join(keys["BindPaths"]).split()
+    read_only = " ".join(keys["BindReadOnlyPaths"]).split()
+    assert "ReadWritePaths" not in keys
+    # The MCP config and the WorkingDirectory must sit under a read-only bind with no writable bind inside.
+    mcp = re.search(r"--mcp-config (\S+)", keys["ExecStart"][0]).group(1)
+    workdir = keys["WorkingDirectory"][0]
+    for loaded in (mcp, workdir):
+        assert any(loaded == ro or loaded.startswith(ro + "/") for ro in read_only), loaded
+        assert not any(loaded == rw or loaded.startswith(rw + "/") for rw in writable), loaded
+    assert WORKSPACES not in writable, "workspaces is read-only; only named sub-folders are writable"
+    for rw in writable:
+        if rw.startswith(WORKSPACES + "/"):
+            assert not mcp.startswith(rw + "/") and not workdir.startswith(rw + "/")
+    assert WORKSPACES in read_only
+
+
 def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
     # Every path the tether tasks look at is pointed at a temp root next to the
     # marker, so the result never depends on what this host already has under
