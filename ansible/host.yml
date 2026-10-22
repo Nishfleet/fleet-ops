@@ -820,6 +820,13 @@
         daemon_reload: true
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # Make /run/podman-eval now, before the unit starts: the handler that runs
+    # `systemd-tmpfiles --create` only fires after this play's tasks (fleet-ops#9983).
+    - name: Create the podman-eval runtime directory
+      ansible.builtin.command: /usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/podman-eval.conf
+      changed_when: false
+      when: not ansible_check_mode
+
     # The rootless podman socket for drive's agent eval (fleet-ops#9983); the
     # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
     # once; a later edit to the unit file is staged until the next restart.

@@ -9,10 +9,15 @@
 # No NoNewPrivileges here: rootless podman needs the setuid newuidmap/newgidmap.
 # The fleet's own store (containers/storage) is hidden; containers/cache stays visible, because podman fails every pull without it.
 # A `-` before a path means a missing path never stops the unit from starting.
+# /run/podman-eval comes from tmpfiles.d/podman-eval.conf, not RuntimeDirectory=: the
+# runners hide it with InaccessiblePaths=-/run/podman-eval, which skips a missing path, so
+# it must exist before any runner starts and survive a restart of this unit. Podman makes
+# runroot and the socket itself, as nish, inside it.
 [Unit]
 Description=Rootless podman API socket for the drive agent eval
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
-After=network-online.target
+After=network-online.target systemd-tmpfiles-setup.service
+RequiresMountsFor=/run/podman-eval
 Wants=network-online.target
 StartLimitIntervalSec=10min
 StartLimitBurst=5
@@ -20,7 +25,6 @@ StartLimitBurst=5
 [Service]
 User=nish
 Group=nish
-RuntimeDirectory=podman-eval
 Environment=XDG_RUNTIME_DIR=/run/podman-eval
 Environment=HOME=/home/nish
 Delegate=yes
