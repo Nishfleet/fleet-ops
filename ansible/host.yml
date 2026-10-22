@@ -130,6 +130,13 @@
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
+    # when it is missing; the Redis requirepass fragment and the proxy env file are rendered
+    # from it on every run, so the two cannot differ. Deleting the file mints a new password,
+    # the renders change, and the handler restarts Redis and then the proxy.
+    redis_password_file: /etc/fleet-ops/litellm-redis-password
+    redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
+    redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -1618,6 +1625,47 @@
         state: link
         force: true
 
+    # The lookup writes the file (mode 0600) only when it is absent and reads it back
+    # otherwise. no_log and diff: false keep the value out of the ansible-pull log.
+    # Fail closed: fleet-litellm-redis.container bind-mounts redis-auth.conf and
+    # fleet-litellm-proxy.container reads redis.env without a `-` prefix, so if a render
+    # below failed or the file was removed, Redis and the proxy do not start (the unit fails,
+    # OnFailure= pings) instead of running with an unauthenticated or mismatched cache.
+    - name: Read the Redis password (the password lookup creates the file once)
+      ansible.builtin.set_fact:
+        redis_password: "{{ lookup('ansible.builtin.password', redis_password_file ~ ' length=40 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Make sure the directory for the Redis files exists
+      ansible.builtin.file:
+        path: "{{ nish_config }}/fleet-ops/litellm-keys"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0700"
+
+    - name: Render the Redis requirepass fragment from that file
+      ansible.builtin.copy:
+        content: "requirepass {{ redis_password }}\n"
+        dest: "{{ redis_auth_conf }}"
+        owner: nish
+        group: nish
+        mode: "0600"
+      no_log: true
+      diff: false
+      notify: Restart litellm redis then proxy
+
+    - name: Render the proxy's Redis environment file from that file
+      ansible.builtin.copy:
+        content: "REDIS_PASSWORD={{ redis_password }}\n"
+        dest: "{{ redis_proxy_env }}"
+        owner: nish
+        group: nish
+        mode: "0600"
+      no_log: true
+      diff: false
+      notify: Restart litellm redis then proxy
+
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
@@ -1667,6 +1715,13 @@
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
+
+    # One systemctl call, so one transaction: Redis first (the proxy is After= and Requires= it),
+    # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
+    # creation, or the password file was deleted and re-minted), never in steady state.
+    # The proxy needs up to ~10 minutes to be healthy again after this.
+    - name: Restart litellm redis then proxy
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 
     - name: Restart systemd-oomd
       ansible.builtin.systemd_service:
