@@ -1662,6 +1662,20 @@
         state: link
         force: true
 
+    # A missing source or key fails the run here, after nearly everything else applied (the
+    # copies themselves run first, near the top of the play). The tether failure check stays
+    # the last task of the play.
+    - name: Work out which Grafana credentials were not refreshed
+      ansible.builtin.set_fact:
+        grafana_credentials_skipped: "{{ grafana_credential_copies.results | selectattr('skipped', 'defined') | selectattr('skipped') | map(attribute='item.item.file') | list }}"
+      no_log: true
+
+    - name: Fail when a Grafana credential source or key is missing or empty
+      ansible.builtin.assert:
+        that: grafana_credentials_skipped | length == 0
+        fail_msg: "Grafana credentials not refreshed: {{ grafana_credentials_skipped | join(', ') }}. Each source ({{ grafana_credentials | map(attribute='src') | unique | join(', ') }}) must exist and hold a non-empty line for its key ({{ grafana_credentials | map(attribute='key') | join(', ') }}). The rest of this run completed."
+        quiet: true
+
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials.results | map(attribute='stat.exists') | min
@@ -1701,20 +1715,6 @@
       ansible.builtin.fail:
         msg: "tether v{{ tether_version }} was not installed: {{ tether_install_failure }}. {{ tether_release_root }}/current was not changed and the rest of this run completed."
       when: tether_install_failure is defined and not ansible_check_mode
-
-
-    # Last in the play, so a missing source or key fails the run only after everything
-    # else applied (the copies themselves run first, near the top of the play).
-    - name: Work out which Grafana credentials were not refreshed
-      ansible.builtin.set_fact:
-        grafana_credentials_skipped: "{{ grafana_credential_copies.results | selectattr('skipped', 'defined') | selectattr('skipped') | map(attribute='item.item.file') | list }}"
-      no_log: true
-
-    - name: Fail when a Grafana credential source or key is missing or empty
-      ansible.builtin.assert:
-        that: grafana_credentials_skipped | length == 0
-        fail_msg: "Grafana credentials not refreshed: {{ grafana_credentials_skipped | join(', ') }}. Each source ({{ grafana_credentials | map(attribute='src') | unique | join(', ') }}) must exist and hold a non-empty line for its key ({{ grafana_credentials | map(attribute='key') | join(', ') }}). The rest of this run completed."
-        quiet: true
 
   handlers:
     - name: Reload systemd
