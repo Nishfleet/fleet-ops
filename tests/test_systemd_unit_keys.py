@@ -83,8 +83,8 @@ def test_tether_cannot_reach_loopback_or_rewrite_its_code() -> None:
     assert keys["IPAddressDeny"] == ["localhost"]
     assert keys["IPAddressAllow"] == ["127.0.0.1/32 127.0.0.53/32"]
     assert "ReadWritePaths" not in keys
-    assert keys["ConditionPathExists"][0].startswith("/opt/tether/")
-    assert keys["ExecStart"][0].split()[-1].startswith("/opt/tether/")
+    assert keys["ConditionPathExists"] == ["/opt/tether/current/dist/index.js"]
+    assert keys["ExecStart"][0].split()[-1] == "/opt/tether/current/dist/index.js"
     assert not keys["WorkingDirectory"][0].startswith("/opt/")
 
 
@@ -120,10 +120,21 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
         "Download the pinned Node tarball for tether",
         "Create the versioned Node directory, root-owned",
         "Unpack the pinned Node for tether",
+        "Create the tether release cache, root-owned",
+        "Create the nish download directory for tether releases",
+        "Download the pinned tether release as nish",
+        "Verify the tether release against the pinned sha256",
+        "Create the versioned tether release directory, root-owned",
+        "Unpack the verified tether release",
+        "Look for the tether entry point in the unpacked release",
+        "Require the tether entry point before the release is used",
+        "Mark the tether release unpacked",
+        "Point tether current at the verified release",
         "Let the tether group read the Photon credentials file",
     ):
-        assert not on[name].get("skipped"), name
-        assert off[name].get("skipped"), name
+        # A task may also skip itself on `creates:` when this host already has the file.
+        assert on[name].get("skip_reason") != "Conditional result was False", name
+        assert off[name].get("skip_reason") == "Conditional result was False", name
     assert not off["Keep tether disabled and stopped while the marker exists"].get("skipped")
     assert not off["Remove the tether egress rule while the marker exists"].get("skipped")
     assert on["Remove the tether egress rule while the marker exists"].get("skipped")
@@ -160,11 +171,11 @@ def test_tether_has_no_apt_nodejs_pin() -> None:
 def test_tether_node_download_is_pinned_by_sha256() -> None:
     assert re.fullmatch(r"22\.\d+\.\d+", _host_var("tether_node_version"))
     assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_node_sha256"))
-    downloads = _tether_module_blocks("get_url")
+    downloads = [block for block in _tether_module_blocks("get_url") if "tether_node_sha256" in block]
     assert len(downloads) == 1
     assert re.search(r'^        url: "https://nodejs\.org/dist/v\{\{ tether_node_version \}\}/[^"]+-linux-x64\.tar\.xz"$', downloads[0], re.M)
     assert re.search(r'^        checksum: "sha256:\{\{ tether_node_sha256 \}\}"$', downloads[0], re.M)
-    unpack = _tether_module_blocks("unarchive")
+    unpack = [block for block in _tether_module_blocks("unarchive") if "tether_node_dir" in block]
     assert len(unpack) == 1
     assert re.search(r'^        dest: "\{\{ tether_node_dir \}\}"$', unpack[0], re.M)
     assert re.fullmatch(r"/opt/node-v\d+\.\d+\.\d+", _node_dir())
@@ -174,6 +185,62 @@ def test_tether_execstart_uses_the_pinned_node() -> None:
     command = _tether_keys()["ExecStart"][0].split()
     assert command[0] == f"{_node_dir()}/bin/node"
     assert command[-1].startswith("/opt/tether/")
+
+
+def _task_index(blocks: list[str], name: str) -> int:
+    matches = [i for i, block in enumerate(blocks) if block.startswith(name + "\n")]
+    assert len(matches) == 1, name
+    return matches[0]
+
+
+def test_tether_release_is_pinned_and_verified_before_it_is_used() -> None:
+    assert re.fullmatch(r"\d+\.\d+\.\d+", _host_var("tether_version"))
+    assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_sha256"))
+    text = HOST_YML.read_text()
+    assert text.count("tether_sha256:") == 1 and text.count("tether_version:") == 1, "pin the release in one place"
+    assert _host_var("tether_sha256") not in text.replace(f"tether_sha256: {_host_var('tether_sha256')}", "")
+    blocks = _tether_blocks()
+    download = _task_index(blocks, "Download the pinned tether release as nish")
+    verify = _task_index(blocks, "Verify the tether release against the pinned sha256")
+    unpack = _task_index(blocks, "Unpack the verified tether release")
+    entry = _task_index(blocks, "Require the tether entry point before the release is used")
+    marker = _task_index(blocks, "Mark the tether release unpacked")
+    link = _task_index(blocks, "Point tether current at the verified release")
+    assert download < verify < unpack < entry < marker < link, "the symlink must come last, after the verify, the unpack and the layout check"
+    verify_block = blocks[verify]
+    assert "ansible.builtin.get_url:" in verify_block
+    assert re.search(r'^        checksum: "sha256:\{\{ tether_sha256 \}\}"$', verify_block, re.M)
+    assert re.search(r'^        url: "file://[^"]*tether-v\{\{ tether_version \}\}\.tar\.gz"$', verify_block, re.M)
+    assert re.search(r"^        dest: \"\{\{ tether_release_cache \}\}/tether-v\{\{ tether_version \}\}\.tar\.gz\"$", verify_block, re.M)
+    assert "        owner: root\n        group: root\n" in verify_block
+    for index in (verify, unpack, entry, marker, link):
+        ignore = re.findall(r"^      ignore_errors: (.*)$", blocks[index], re.M)
+        assert ignore == ['"{{ ansible_check_mode }}"'], "a failed task must fail the run, except under --check"
+    unpack_block = blocks[unpack]
+    assert re.search(r'^        src: "\{\{ tether_release_cache \}\}/tether-v\{\{ tether_version \}\}\.tar\.gz"$', unpack_block, re.M), "unpack the verified file, not the download"
+    assert "--strip-components" not in unpack_block, "the tarball root holds dist/ directly"
+    assert re.search(r'^        mode: "u=rwX,go=rX"$', unpack_block, re.M), "no group or other write on unpacked code"
+    assert re.search(r'^        creates: "/opt/tether/\{\{ tether_version \}\}/\.unpacked-\{\{ tether_sha256 \}\}"$', unpack_block, re.M), "a partial unpack must be retried"
+    assert "/dist/index.js" in blocks[_task_index(blocks, "Look for the tether entry point in the unpacked release")]
+    assert "tether_entry.stat.isreg" in blocks[entry] and "ansible.builtin.assert:" in blocks[entry]
+    assert re.search(r'^        dest: "/opt/tether/\{\{ tether_version \}\}/\.unpacked-\{\{ tether_sha256 \}\}"$', blocks[marker], re.M)
+    assert re.search(r'^        src: "/opt/tether/\{\{ tether_version \}\}"$', blocks[link], re.M)
+    assert re.search(r"^        dest: /opt/tether/current$", blocks[link], re.M)
+    assert "state: link" in blocks[link]
+    command = blocks[download]
+    assert "become_user: nish" in command and "ansible.builtin.command:" in command
+    assert "/home/" not in command, "no literal home path: it comes from nish_home"
+    assert re.search(r'cmd: "\{\{ nish_home \}\}/\.local/bin/gh release download v\{\{ tether_version \}\} -R Nishfleet/tether ', command)
+    assert re.search(r'^        creates: "\{\{ tether_release_cache \}\}/tether-v\{\{ tether_version \}\}\.tar\.gz"$', command, re.M), "a bad file in the nish directory must not block a fresh download"
+
+
+def test_tether_release_has_no_token_in_any_url() -> None:
+    text = "\n".join(_tether_blocks())
+    for url in re.findall(r"\b[a-z][a-z0-9+.-]*://[^\s\"']+", text):
+        assert "@" not in url, url
+        assert not re.search(r"(token|secret|password|key)=", url, re.I), url
+    assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", HOST_YML.read_text())
+    assert not re.search(r"(GH_TOKEN|GITHUB_TOKEN|Authorization)", text)
 
 
 def test_tether_loads_both_environment_files() -> None:

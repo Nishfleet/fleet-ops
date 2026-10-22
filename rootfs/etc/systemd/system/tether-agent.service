@@ -7,11 +7,11 @@ After=network-online.target
 # narrows its 127.0.0.1 access to the router port.
 Requires=nftables.service
 After=nftables.service
-# The app ships from Nishfleet/tether and is installed under /opt/tether, owned
-# by root, so the service user cannot rewrite its own code. Until that binary
-# exists a start is skipped, not failed, so this unit is safe to enable at boot
-# from the day it lands.
-ConditionPathExists=/opt/tether/dist/index.js
+# The app ships from Nishfleet/tether as a pinned, checksummed release that
+# ansible/host.yml unpacks into /opt/tether/<version>, owned by root, so the
+# service user cannot rewrite its own code. /opt/tether/current names the
+# release in use. Until that binary exists a start is skipped, not failed.
+ConditionPathExists=/opt/tether/current/dist/index.js
 # Finite start limit: 5 starts in an hour, then the unit is failed and
 # OnFailure= pages. A fast crash loop (RestartSec=5) reaches it in about 25 s,
 # and a slow one that crashes minutes after each start still does within the
@@ -34,7 +34,7 @@ EnvironmentFile=-/etc/tether/tether.env
 EnvironmentFile=-/etc/tether/photon.env
 # The Node binary is the pinned release that ansible/host.yml unpacks
 # (tether_node_version), named by absolute path, not the distro /usr/bin/node.
-ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/dist/index.js
+ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/current/dist/index.js
 SyslogIdentifier=tether
 # Crash-proofing: on-failure, not always, so the clean STOP exit does not come
 # back five seconds later. A killed process resumes on the durable runtime's

@@ -26,6 +26,17 @@
     tether_node_version: 22.23.3
     tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
     tether_node_dir: "/opt/node-v{{ tether_node_version }}"
+    # The tether release: one exact version of the private repo Nishfleet/tether,
+    # built by its CI and checked against the sha256 pinned here (the value in the
+    # release's .sha256 asset). An upgrade is one reviewed PR that changes both
+    # values; a rollback is the revert of that PR. This is the only place the
+    # version and the hash are written.
+    tether_version: 0.1.1
+    tether_sha256: fc02d1ccdfe6a79673ab125f0052151347b658a5fc596b547c65eee136d826ea
+    # Root-owned staging directory for verified releases. The "nish" directory
+    # inside it is where gh downloads (nish holds the repo credential); nothing
+    # there is trusted until the checksum task copies it out.
+    tether_release_cache: /var/cache/tether-releases
     # Placed by hand, never created here. A var so the test can point it at a file.
     tether_photon_env: /etc/tether/photon.env
     # Directories this repo owns. A regular file in one of them that rootfs/
@@ -628,7 +639,7 @@
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
     # run never enables or starts tether-agent.service: it stays disabled until
-    # a reviewed installer puts a pinned, checksummed release at /opt/tether
+    # the tasks below put a pinned, checksummed release at /opt/tether/current
     # (root-owned, so the service user cannot rewrite its own code). The marker
     # file is the lasting off-switch: while it exists this run creates nothing
     # for tether, removes its firewall rule and keeps the unit disabled and
@@ -718,6 +729,128 @@
         creates: "{{ tether_node_dir }}/bin/node"
       when: not tether_off.stat.exists
       # Under --check the download above did not really happen.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The tether release, in this order: download as nish (the only user with a
+    # GitHub credential; the token stays in gh's own config, never in a URL or
+    # in this file), verify by copying into a root-owned file under the pinned
+    # sha256 (a mismatch fails the run here, before anything is unpacked), unpack
+    # into a root-owned versioned directory, and only then point `current` at it.
+    # A failure at any step leaves `current` on the previous release.
+    - name: Create the tether release cache, root-owned
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_release_cache }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+      # A --check run by a user that cannot write /var/cache (the test) fails here.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the nish download directory for tether releases
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_release_cache }}/nish"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0755"
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Download the pinned tether release as nish
+      tags: [tether]
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        cmd: "{{ nish_home }}/.local/bin/gh release download v{{ tether_version }} -R Nishfleet/tether -p tether-v{{ tether_version }}.tar.gz -D {{ tether_release_cache }}/nish --clobber"
+        chdir: "{{ tether_release_cache }}/nish"
+        # Skipped once the verified, root-owned copy exists. A bad or partial file
+        # in nish's directory is therefore replaced (--clobber) on the next run
+        # and cannot wedge the play.
+        creates: "{{ tether_release_cache }}/tether-v{{ tether_version }}.tar.gz"
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Verify the tether release against the pinned sha256
+      tags: [tether]
+      ansible.builtin.get_url:
+        url: "file://{{ tether_release_cache }}/nish/tether-v{{ tether_version }}.tar.gz"
+        dest: "{{ tether_release_cache }}/tether-v{{ tether_version }}.tar.gz"
+        checksum: "sha256:{{ tether_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not tether_off.stat.exists
+      # Fails the run on a mismatch, except under --check where nothing was downloaded.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the versioned tether release directory, root-owned
+      tags: [tether]
+      ansible.builtin.file:
+        path: "/opt/tether/{{ tether_version }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+
+    # The tarball root holds dist/, package.json, package-lock.json and
+    # node_modules/ (no top folder), so it unpacks as is. `mode` removes group and
+    # other write from every extracted file, whatever the archive says. The
+    # `creates` marker is written only after the layout check below, so a run
+    # killed mid-unpack, or a tarball with another layout, is retried and never
+    # linked.
+    - name: Unpack the verified tether release
+      tags: [tether]
+      ansible.builtin.unarchive:
+        src: "{{ tether_release_cache }}/tether-v{{ tether_version }}.tar.gz"
+        dest: "/opt/tether/{{ tether_version }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+        creates: "/opt/tether/{{ tether_version }}/.unpacked-{{ tether_sha256 }}"
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the tether entry point in the unpacked release
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "/opt/tether/{{ tether_version }}/dist/index.js"
+      register: tether_entry
+      when: not tether_off.stat.exists
+
+    - name: Require the tether entry point before the release is used
+      tags: [tether]
+      ansible.builtin.assert:
+        that: tether_entry.stat.isreg is defined and tether_entry.stat.isreg
+        fail_msg: "/opt/tether/{{ tether_version }}/dist/index.js is missing after the unpack: the release tarball does not have the expected layout"
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Mark the tether release unpacked
+      tags: [tether]
+      ansible.builtin.copy:
+        content: "{{ tether_sha256 }}\n"
+        dest: "/opt/tether/{{ tether_version }}/.unpacked-{{ tether_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not tether_off.stat.exists
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Point tether current at the verified release
+      tags: [tether]
+      ansible.builtin.file:
+        src: "/opt/tether/{{ tether_version }}"
+        dest: /opt/tether/current
+        state: link
+        owner: root
+        group: root
+      when: not tether_off.stat.exists
       ignore_errors: "{{ ansible_check_mode }}"
 
     # The credentials file is placed by hand and never created or written here:
