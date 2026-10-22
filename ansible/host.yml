@@ -550,7 +550,7 @@
       loop: "{{ agent_state_dirs.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.stat.exists and item.stat.isdir
+      when: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish'
 
     - name: Find the agent session databases
       become: true
