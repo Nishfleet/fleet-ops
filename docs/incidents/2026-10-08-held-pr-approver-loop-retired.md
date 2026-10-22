@@ -57,4 +57,4 @@ same `review` job. The coordinator never posts `coordinator-approval` by hand
 for any PR. A PR that edits the guard itself (`guard` in
 `config/risky-paths.json`) or a workflow once waited for a person's typed
 approval; it now needs the judge plus a second reviewer of another model
-family, and the same run arms it.
+family. Since 2026-10-16 that review no longer arms or approves: only nish3451's comment does.

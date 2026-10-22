@@ -1148,7 +1148,7 @@ jobs:
   # and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
-    if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
+    if: ${{ !cancelled() && inputs.arm_pr != '' && inputs.arm_sha != '' }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
     permissions:

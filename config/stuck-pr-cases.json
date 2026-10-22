@@ -1,5 +1,5 @@
 {
- "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved by the reviewer at its head 5183950, CLEAN, never armed, because it was approved before the arm job existed.",
+ "_": "Cases for the STUCK program in agent-dispatch.yml's stuck-prs job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the class the program must return. The base is fleet-ops #9486 on 2026-10-11: approved by nish3451 at its head 5183950, CLEAN, never armed, because it was approved before the arm job existed.",
  "base": {
   "pr": {
    "number": 9486,
@@ -24,7 +24,7 @@
    },
    {
     "user": {
-     "login": "github-actions[bot]"
+     "login": "nish3451"
     },
     "body": "coordinator-approval: 5183950e39f0a8063720918870dd0f6ce448401e\n\nreviewer: 5183950e39f0a8063720918870dd0f6ce448401e approved. CI still has to pass before it merges.",
     "created_at": "2026-10-09T08:02:48Z",

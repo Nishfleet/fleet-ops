@@ -1136,7 +1136,7 @@ jobs:
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
-          yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
+          yq '.jobs.arm.if' "$f" | grep -q "inputs.arm_pr != ''" && ! yq '.jobs.arm.if' "$f" | grep -q 'approved_sha' || { echo "arm job must run only for an explicit arm_pr, never off the review's approval"; bad=1; }
           yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
           yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
@@ -1976,7 +1976,7 @@ jobs:
             else
               echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
               jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
-              echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
+              echo "This check passes once nish3451 comments coordinator-approval: $sha on this head. A bot review does not count." >> "$GITHUB_STEP_SUMMARY"
               bad=1
             fi
           done

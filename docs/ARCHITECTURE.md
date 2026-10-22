@@ -150,34 +150,16 @@ The rules still in force:
   status on it (0509#7092). A person's Approve review counts toward the
   ruleset's required review, not toward this gate, and there is no relay that
   re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
-  agent.yml's `review` job (called by
-  `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools Claude call for findings (on the runner's own login:
-  Opus 5.5 for all work, Claude-built or not; the worker App's
-  `builder-engine:` PR comment is still recorded, and no comment counts as
-  Claude-built) and Jev for
-  approve or block (p >= 0.9), and posts that approval as
-  `github-actions[bot]` (an approval comment written with GITHUB_TOKEN) and as a
-  GitHub `Approve` review on that exact head. The `main-merge-queue` ruleset
-  requires one approving review and dismisses it on a push, so GitHub itself
-  refuses a merge on any head the reviewer did not approve; `hold-risky` gives
-  the same review to a PR that is not risky.
-  "Claude never grades Claude" has one exception, approved by Nish on
-  2026-10-10: the review model may be Claude (Opus 5.5 reviews Claude-built
-  work), but the verdict is always Jev's, a non-Claude family, so a non-Claude
-  family always decides. With the runner's seat at its limit the review does not
-  finish and is re-run; it is never approved without it. A PR that edits the guard itself
-  (`guard` in risky-paths.json) or a workflow needs a second review as well, by
-  a model family other than the judge's and Claude's, and both must approve; if
-  either blocks, its blockers go to the agent as fix-it items. The same run then
-  arms the PR (agent.yml `arm`, App token, `--match-head-commit`), so no person
-  is asked at any step. Nish's typed comment or app review stays an optional
-  override. The gate and `hold-risky` read their programs and the path list from
-  the base branch, so a PR cannot loosen the rules that judge it in the same PR;
-  agent-authored PRs self-land green. The in-session held-PR approver loop (a
-  coordinator subagent polling every 20 minutes) is retired: the
-  `review-risky` event's review job decides it, and no session polls for it
-  (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+  Only nish3451's comment or status counts (`APPROVERS`, Nish 2026-10-16, after
+  0509#7657 merged on a bot approval). agent.yml's `review` job (called by
+  `review-risky`) still reads the held head's diff and posts its review and a
+  GitHub `Approve` review as advice for the approver, and never arms (the hourly `stuck-arm` sweep arms once nish3451's comment names the head); the `main-merge-queue`
+  ruleset requires one approving review and dismisses it on a push, but that
+  review does not clear the hold. The gate and `hold-risky` read their programs
+  and the path list from the base branch, so a PR cannot loosen the rules that
+  judge it in the same PR. Non-risky agent-authored PRs still self-land green.
+  A PR that edits the guard itself (`guard` in risky-paths.json) or a workflow
+  is held the same way.
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
