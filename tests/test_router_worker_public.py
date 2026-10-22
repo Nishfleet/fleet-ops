@@ -112,6 +112,11 @@ def test_both_rows_share_the_pick_evenly():
 class _Upstream(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if body["model"] == "capable":  # the strong group's only row is down
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         reply = {
             "id": "c1",
             "object": "chat.completion",
@@ -162,7 +167,7 @@ def _budget_router(suffix, upstream, drop=()):
     rows.append(
         {
             "model_name": "worker-capable",
-            "litellm_params": {"model": "openai/capable", "api_base": "http://127.0.0.1:1/v1", "api_key": "k"},
+            "litellm_params": {"model": "openai/capable", "api_base": upstream, "api_key": "k"},
             "model_info": {"id": f"{suffix}-capable"},
         }
     )
@@ -179,8 +184,11 @@ def _budget_router(suffix, upstream, drop=()):
 async def _answers(router, calls):
     seen = []
     for _ in range(calls):
-        reply = await router.acompletion(model="worker-public", messages=[{"role": "user", "content": "x"}])
-        seen.append(reply.choices[0].message.content)
+        try:
+            reply = await router.acompletion(model="worker-public", messages=[{"role": "user", "content": "x"}])
+            seen.append(reply.choices[0].message.content)
+        except Exception:
+            seen.append("error")
         await asyncio.sleep(0.4)
     return seen
 
@@ -196,14 +204,16 @@ def test_upstream_model_and_cost_follow_the_production_row(upstream):
     assert abs(cost - ONE_CALL_USD) < 1e-9
 
 
-def test_the_budget_trip_moves_the_job_down_the_fallback_chain(upstream):
+def test_the_budget_trip_moves_the_job_to_worker_capable_and_never_down_to_worker_cheap(upstream):
     async def run():
         return await _answers(_budget_router("trip", upstream), 10)
 
     seen = asyncio.run(run())
     assert seen[:4] == [STRAITLY_MODEL] * 4
     assert seen.count(STRAITLY_MODEL) == 4
-    assert seen[4:] == ["cheap"] * 6
+    # W10c: worker-capable has no fallback, so with its only row dead the call errors; the cheap group never answers.
+    assert seen[4:] == ["error"] * 6
+    assert "cheap" not in seen
 
 
 def test_a_row_without_budget_duration_is_never_capped(upstream):
