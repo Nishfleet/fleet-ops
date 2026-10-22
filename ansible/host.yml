@@ -211,6 +211,27 @@
         mode: preserve
       notify: Restart journald
 
+    # A plaintext git credential file at either path makes the tmpfiles `d` line
+    # fail and leaves the secrets in place. Nothing here deletes or moves a
+    # credential file: a person does that, then reruns.
+    - name: Look for a plaintext git credential file in nish's home
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - /home/nish/.git-credentials
+        - /home/nish/.config/git/credentials
+      register: git_credential_paths
+
+    - name: Fail the run when a plaintext git credential file is in the way
+      ansible.builtin.assert:
+        that: not (item.stat.exists and not item.stat.isdir)
+        fail_msg: "{{ item.item }} exists and is not a directory. Move it to /root/quarantine (for example mv {{ item.item }} /root/quarantine/), then rerun. Nothing deletes it for you; tmpfiles needs a directory there."
+        quiet: true
+      loop: "{{ git_credential_paths.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Install tmpfiles.d entries
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/tmpfiles.d/"

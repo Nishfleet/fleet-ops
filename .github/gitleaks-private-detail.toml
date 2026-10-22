@@ -66,9 +66,11 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/(actions\.runner\.[^/]*\.service\.d/(20-lockdown|25-no-eval|30-eval)\.conf|podman-eval\.service)$''']
 
 [[allowlists]]
-description = "The tmpfiles file for the blocked plaintext git credential store must name its path (a tmpfiles line has no inline comment to carry gitleaks:allow), and its test asserts those lines; fleet-ops#9983"
+description = "The tmpfiles file for the blocked plaintext git credential store must name its path (a tmpfiles line has no inline comment to carry gitleaks:allow), and its test and the host.yml pre-check name it too; fleet-ops#9983"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)(rootfs/etc/tmpfiles\.d/no-plaintext-git-credentials\.conf|tests/test_no_plaintext_git_credentials\.py)$''']
+paths = ['''(^|/)(ansible/host\.yml|rootfs/etc/tmpfiles\.d/no-plaintext-git-credentials\.conf|tests/test_no_plaintext_git_credentials\.py)$''']
+regexes = ['''home/nish/\.(git-credentials|config/git/credentials)''']
+condition = "AND"
 
 [[allowlists]]
 description = "The Tincan listener unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names the paths its BindPaths= and Environment= lines use; moved byte for byte from /etc/systemd/system, fleet-ops#9974 phase A"
