@@ -132,8 +132,8 @@
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     # Grafana reads one raw value per file ($__file{} in config/grafana/provisioning).
     # The sources hold KEY=value lines, so each value is copied out of its source on
-    # every run (a rotation at the source reaches the files on the next run; a running
-    # Grafana picks it up at its next provisioning load or restart). The copies
+    # every run (a rotation at the source reaches the files on the next run; Grafana is
+    # restarted by the host run when a value changed). The copies
     # sit under ~/.config/cloudflare, a directory the worker jails already hide
     # (InaccessiblePaths in 20-lockdown.conf).
     grafana_secrets_dir: "{{ nish_config }}/cloudflare/grafana-secrets"
@@ -150,8 +150,8 @@
     # the env route or Podman secrets: the sources are shared KEY=value files (the whole
     # Hermes env, the deploy-ci env), and Grafana's $VAR expansion would need them loaded
     # whole into its environment; Podman secrets need a create step that reads the same
-    # sources and keeps a second copy in the secret store. A Grafana that is already
-    # running re-reads the files at its next provisioning load or restart. The loop items
+    # sources and keeps a second copy in the secret store. A rewritten file is a
+    # new inode, so Grafana is restarted when a credential changed (see the handler). The loop items
     # name files and keys, never values; the assert that reports a missing source is the
     # last task of the play.
     - name: Create the Grafana credential directory
@@ -192,8 +192,15 @@
              | last | default('') | trim }}
       when: value != ''
       register: grafana_credential_copies
+      notify: Restart fleet-grafana
       no_log: true
       diff: false
+
+    # A rewritten file is a new inode, which a running single-file bind mount does not
+    # follow, so Grafana is restarted once when a credential changed (never on a run
+    # that changed nothing), before the check below can stop the play.
+    - name: Apply the Grafana restart now
+      ansible.builtin.meta: flush_handlers
 
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
@@ -1700,7 +1707,7 @@
     # else applied (the copies themselves run first, near the top of the play).
     - name: Work out which Grafana credentials were not refreshed
       ansible.builtin.set_fact:
-        grafana_credentials_skipped: "{{ grafana_credential_copies.results | selectattr('skipped', 'defined') | map(attribute='item.item.file') | list }}"
+        grafana_credentials_skipped: "{{ grafana_credential_copies.results | selectattr('skipped', 'defined') | selectattr('skipped') | map(attribute='item.item.file') | list }}"
       no_log: true
 
     - name: Fail when a Grafana credential source or key is missing or empty
@@ -1747,6 +1754,9 @@
       ansible.builtin.systemd_service:
         name: htpdate.service
         state: restarted
+
+    - name: Restart fleet-grafana
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-grafana.service
 
     - name: Reload prometheus
       ansible.builtin.systemd_service:

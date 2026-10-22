@@ -329,7 +329,7 @@ jobs:
           echo planted > "$HOME/.claude/.credentials.json"
           echo planted > "$HOME/.claude.json"
           echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
-          echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
+          mkdir -p "$HOME/.config/cloudflare/grafana-secrets"; echo 'CLOUDFLARE_API_TOKEN=planted' | tee "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/cloudflare/grafana-secrets/cloudflare-api-token" > /dev/null
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
@@ -351,7 +351,7 @@ jobs:
             test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null)" != planted
             test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null)" != planted
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
-            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env" -a ! -e "$HOME/.config/cloudflare/grafana-secrets/cloudflare-api-token"
             # A jail that hides the seat files must hide the App key too, and the
             # inish-daily line (the one that does) must keep doing both.
             # shellcheck disable=SC2016 # the line's literal text names $HOME, unexpanded
@@ -368,7 +368,7 @@ jobs:
             l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
-            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env" -a ! -e "$HOME/.config/cloudflare/grafana-secrets/cloudflare-api-token"
             got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
             got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
             got_j=$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null || true)
