@@ -74,5 +74,5 @@ paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$'''
 description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
-regexes = ['''-interface 100\.108\.184\.97''']
+regexes = ['''^100\.108\.184\.97$''']
 condition = "AND"
