@@ -37,6 +37,105 @@ def test_no_directive_starts_with_the_ignore_failure_dash(unit: Path) -> None:
     )
 
 
+DEPLOY_BOX = ROOT / ".github/workflows/deploy-box.yml"
+DEPLOY_DIR = "/var/lib/fleet-deploy"
+
+
+def _deploy_box_run_block() -> str:
+    """The apply job's shell, from the workflow's last (and only) run: block."""
+    text = DEPLOY_BOX.read_text()
+    marker = "        run: |\n"
+    assert text.count(marker) == 1, "one run block in deploy-box.yml"
+    return text.split(marker, 1)[1]
+
+
+def _run_deploy_box(tmp_path: Path, result: str, log: str, systemctl_exit: int) -> subprocess.CompletedProcess:
+    """Run deploy-box's step against a temp mailbox with a stub systemctl."""
+    mailbox = tmp_path / "fleet-deploy"
+    mailbox.mkdir(parents=True)
+    (mailbox / "result").write_text(result)
+    (mailbox / "log").write_text(log)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text(f"#!/bin/sh\nexit {systemctl_exit}\n")
+    (bin_dir / "systemctl").chmod(0o755)
+    body = _deploy_box_run_block().replace(DEPLOY_DIR, str(mailbox))
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+    }
+    script = tmp_path / "step.sh"
+    script.write_text(body)
+    return subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+
+
+def test_deploy_box_job_probes_the_runner_then_writes_the_request() -> None:
+    text = DEPLOY_BOX.read_text()
+    assert "runs-on: [self-hosted, fleet-ci]" in text
+    probe = text.index("runner-probe")
+    run_block = text.index("        run: |")
+    assert probe < run_block, "the runner-probe step must come first"
+    body = _deploy_box_run_block()
+    assert "systemctl is-active --quiet fleet-deploy.path" in body, "an inactive path unit must fail the job at once"
+    assert 'grep "^$stamp "' in body, "the poll must match only this run's own request line"
+    for gone in ("--user", "XDG_RUNTIME_DIR", "sudo", "polkit", "systemctl start", "journalctl"):
+        assert gone not in body, gone
+
+
+def test_deploy_box_exits_0_on_a_success_verdict(tmp_path: Path) -> None:
+    proc = _run_deploy_box(tmp_path, "run-12345-2 success 0 2026-10-22T10:00:00Z\n", "", 0)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "deploy request: run-12345-2" in proc.stdout
+    assert "deploy verdict: run-12345-2 success 0" in proc.stdout
+
+
+def test_deploy_box_fails_on_a_failed_verdict_and_prints_the_log(tmp_path: Path) -> None:
+    proc = _run_deploy_box(tmp_path, "run-12345-2 exit-code 3 2026-10-22T10:00:00Z\n", "PLAY RECAP failed=1\n", 0)
+    assert proc.returncode != 0
+    assert "PLAY RECAP failed=1" in proc.stdout, "the runner cannot read the journal, so the unit's log is the evidence"
+
+
+def test_deploy_box_ignores_another_runs_verdict_and_fails_when_the_path_unit_is_dead(tmp_path: Path) -> None:
+    mailbox = tmp_path / "fleet-deploy"
+    mailbox.mkdir()
+    (mailbox / "result").write_text("run-99999-1 success 0 2026-10-22T10:00:00Z\n")
+    (mailbox / "log").touch()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "systemctl").chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(_deploy_box_run_block().replace(DEPLOY_DIR, str(mailbox)))
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_RUN_ATTEMPT": "2",
+    }
+    proc = subprocess.run(["timeout", "5", "bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    assert proc.returncode == 124, "a verdict for another request must never satisfy this run (job timeout is the backstop)"
+    proc = _run_deploy_box(tmp_path / "dead", "", "", 3)
+    assert proc.returncode != 0
+    assert "fleet-deploy.path is not active" in proc.stdout
+
+
+def test_the_polkit_rule_is_retired_not_shipped() -> None:
+    host = (ROOT / "ansible/host.yml").read_text()
+    retired = host.split("    retired:", 1)[1].split("    box_only_file:", 1)[0]
+    assert f"- {DEPLOY_DIR}" not in host
+    assert "/etc/polkit-1/rules.d/50-fleet-host-config.rules" in retired
+    assert "Install polkit rules" not in host
+    assert not (ROOT / "rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules").exists()
+
+
+def test_the_fleet_ci_runners_hide_the_user_bus() -> None:
+    for runner in ("1", "2"):
+        conf = ROOT / f"rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-{runner}.service.d/40-no-bus.conf"
+        assert "InaccessiblePaths=-/run/user/1000" in conf.read_text(), conf
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
 def test_systemd_analyze_reports_no_unknown_directive() -> None:
     files = [str(path) for path in unit_files()]

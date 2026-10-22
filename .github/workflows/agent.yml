@@ -102,8 +102,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
       - name: Gate
-        # The dispatch policy that the old intake prompt used to carry, now in one
-        # step: skip parked or blocked work, cap runs, then claim.
+        # Dispatch policy: skip parked or blocked work, cap runs, then claim.
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -746,9 +745,7 @@ jobs:
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
           fi
-      # The strike used to be a separate `report` job on [self-hosted, agent] that queued
-      # behind busy runners for up to an hour with the issue claimed and nothing live
-      # (fleet-ops#9275, 0509 run 37258490012). It runs here now, on the runner this job holds.
+      # Runs here, on the runner this job holds, not a separate queued report job (fleet-ops#9275).
       # A run the concurrency group displaced never starts these steps, and the never-claimed
       # guard below covers one that starts anyway. A runner that dies runs no further steps, so
       # no strike or infra-failed comment is written: the sweep's stalled and orphans paths in

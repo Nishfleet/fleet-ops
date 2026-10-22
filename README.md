@@ -15,7 +15,7 @@ script, or prompt lands unseen.
   fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
   installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
-  `sysctl.d/`, `audit/rules.d/`, polkit rules and the prometheus config.
+  `sysctl.d/`, `audit/rules.d/` and the prometheus config.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
   and once a day, and fails on a hand-installed file.
@@ -252,8 +252,10 @@ so nothing can drift, and the
 (`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
-`deploy-box.yml` starts `fleet-sync.service` on every push to main, which
-keeps the clone current. It is the only deploy machinery on the box:
+`deploy-box.yml` writes a request to the deploy mailbox on every push to main;
+`fleet-deploy.path` starts `fleet-deploy.service`, which runs `fleet-sync.service`
+(user scope) and then `fleet-host-config.service` (root scope). It is the only
+deploy machinery on the box:
 
 ```
 systemctl --user status fleet-sync.service
@@ -329,8 +331,8 @@ the next sync overwrites it. The rest are refreshed by hand.
 | `~/.local/share/leviathan/` (`leviathan-index@.service`, `leviathan-index@.timer`, `claude.toml`, `pi.toml`) and `~/.config/user-tmpfiles.d/leviathan.conf` | `systemd/leviathan-index@.timer`, `config/leviathan/*.toml`, `config/user-tmpfiles.d/leviathan.conf` | **Handled automatically** by `fleet-sync.service` (install -C before the daemon-reload, fleet-ops#9313). The timer fires every 15 minutes, so the unit and config bytes must exist on the box before the PR that ships them merges — a git merge refuses a clone with untracked files in the way, so nothing may read these from the deploy clone. The live unit links are hand-set once (`systemctl --user link ~/.local/share/leviathan/...`); a `user-tmpfiles.d` symlink would dangle pre-merge and be read dead by `systemd-tmpfiles --create` on every sync. Each run rebuilds the index from the files on disk, so the index mirrors the logs and never holds more than the logs do. |
 
 ```
-# a changed /etc file: merge it under rootfs/etc/. deploy-box.yml then runs
-systemctl start fleet-host-config.service    # polkit allows user nish; no sudo
+# a changed /etc file: merge it under rootfs/etc/. push to main; the
+deploy mailbox (fleet-deploy.path) runs the deploy for it
 journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 ```
 

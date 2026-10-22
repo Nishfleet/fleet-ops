@@ -1,8 +1,7 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
-# user-scope deploy steps), then the fleet-host-config.service system oneshot
-# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
-# this runner's user start that one system unit, so no step uses sudo.
-# The unit's own guards still gate every step. fleet-ops#8519
+# deploy-box: push-triggered. Writes a request stamp to the deploy mailbox
+# (/var/lib/fleet-deploy/request) and waits for fleet-deploy.service's verdict:
+# root runs the deploy (fleet-sync, then fleet-host-config) from fleet-deploy.path,
+# so no step on this runner touches the user bus or polkit. fleet-ops#8519, #10043.
 name: deploy-box
 
 on:
@@ -21,14 +20,18 @@ jobs:
   apply:
     name: apply
     runs-on: [self-hosted, fleet-ci]
-    # The unit allows TimeoutStartSec=300 for the steps alone; 10 min leaves
-    # headroom without letting a hung step park a runner.
-    timeout-minutes: 10
-    env:
-      XDG_RUNTIME_DIR: /run/user/1000
+    # fleet-deploy.service allows itself 900s; 20 min covers a wait behind a queued request.
+    timeout-minutes: 20
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Start fleet-sync.service (user-scope deploy steps)
-        run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
-      - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
-        run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
+      - name: Write the deploy request and wait for the verdict
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet fleet-deploy.path || { echo "::error::fleet-deploy.path is not active"; exit 1; }
+          stamp="run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf '%s\n' "$stamp" > /var/lib/fleet-deploy/request
+          echo "deploy request: $stamp"
+          until line=$(grep "^$stamp " /var/lib/fleet-deploy/result 2>/dev/null); do sleep 10; done
+          echo "deploy verdict: $line"
+          read -r _ res status _ <<<"$line"
+          if [ "$res" != success ] || [ "$status" != 0 ]; then sed -n '1,100p' /var/lib/fleet-deploy/log; exit 1; fi
