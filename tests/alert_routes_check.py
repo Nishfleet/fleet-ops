@@ -167,6 +167,15 @@ def alertmanager_auth(repo):
             bad.append(f"{AM_ANSIBLE}: the stat of {dest} follows symlinks, so a link could steer the check")
         if any("ansible.builtin.copy" in code(t) and dest in code(t) for t in tasks):
             bad.append(f"{AM_ANSIBLE}: the play copies {dest}; it is hand-placed host state, root- and service-owned")
+    check = [t for t in tasks if "credential is shaped like one" in t]
+    if not check:
+        bad.append(f"{AM_ANSIBLE}: nothing checks that the two halves are shaped like a credential before auth is switched on")
+    else:
+        body = code(check[0])
+        if "basic_auth_users" not in body:
+            bad.append(f"{AM_ANSIBLE}: the credential check never looks for basic_auth_users")
+        if "{{ rootfs }}/etc/prometheus/prometheus.yml" not in body:
+            bad.append(f"{AM_ANSIBLE}: the credential check never reads the prometheus config, so a user the web config does not define passes")
     for name in ("Install prometheus and blackbox exporter config", "Install the alertmanager options"):
         task = [t for t in tasks if f"name: {name}" in t]
         if not task:
