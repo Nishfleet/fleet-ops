@@ -940,9 +940,8 @@ jobs:
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
     # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
     # so the PR cannot change the reviewer that judges it. A PR that adds its own
-    # workflow could post as the same bot; that is why a PR that edits the guard
-    # list or a workflow needs two independent reviews, not one (below). Arming is
-    # the arm job's, as the worker App.
+    # workflow could post as the same bot; so a PR that edits the guard list or a
+    # workflow needs three independent reviews, not one (below). Arming is the arm job's.
     permissions:
       pull-requests: write
     outputs:
@@ -969,47 +968,45 @@ jobs:
           # The first review is a no-tools Claude call on a Claude seat: Opus 5.5 for all work,
           # Claude-built or not (Nish 2026-10-10); Fable is never a reviewer (44% of a seat's weekly
           # limit in ~2 days). The verdict is always Jev's, and a PR that edits the merge guard or
-          # a workflow also needs a second review by a different family than Jev and Claude (a
-          # single GLM row). The comment names both families.
+          # a workflow also needs two more reviews, in parallel, each by a family other than
+          # Jev and Claude (GLM on senior; Qwen on judge, DeepSeek behind it), named in the comment.
           FIRST_MODEL_OTHER: claude-opus-5-5
           FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
+          THIRD_SEAT: judge
+          THIRD_FAMILY: Qwen/DeepSeek
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
-          # An infrastructure failure is retry-able: the comment avoids the
-          # "reviewer: <sha>" phrase the already-reviewed check looks for, and
-          # the job goes red so a re-run reviews the head again.
+          # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>"
+          # phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() {
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # Blocker lines of a review: the line starts with the word blocker or blockers
-          # (with or without markup) and its text after that is not a none-variant. blk_re
-          # finds a line that starts with the word (a slash after it, as in the echoed header
-          # "blocker/risk/nit", is not a finding). none_re is a line whose text after the word
-          # is only a none-variant (none, none found, no blockers, nothing, n/a, nil, a dash,
-          # optionally with markup or a sentence of explanation after a full stop or dash). Both
-          # are case-insensitive, the only copies (grep reads them here, jq in the
-          # already-reviewed check), and none_re is anchored at both ends, so "blocker: none of
-          # the callers check the token" still blocks. Dropping a none line never approves by
-          # itself: the judge must still be 90% sure and a guard PR's second reviewer must end on APPROVE.
+          # Blocker lines of a review: a line starting with the word blocker(s), with or without
+          # markup (a slash after it, as in the echoed header "blocker/risk/nit", is not a
+          # finding), unless its text after the word is only a none-variant (none, none found, no
+          # blockers, nothing, n/a, nil, a dash, then optional markup or a sentence after a full
+          # stop or dash). blk_re and none_re are case-insensitive, the only copies (grep reads
+          # them here, jq in the already-reviewed check), and none_re is anchored at both ends, so
+          # "blocker: none of the callers check the token" still blocks. Dropping a none line never
+          # approves by itself: the judge must be 90% sure and each guard-PR reviewer end on APPROVE.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed: approved, not approved or blocked. The older
-          # hold comment and the "could not be judged" comment carry none, so those heads are
-          # reviewed, and the verdict ends it: one review per head, not per event. Each phrase
-          # must START a line of a github-actions[bot] comment (the hold comment quotes the
-          # approval line inside a sentence). A blocked verdict whose only blocker lines say
-          # "none" was a misread (see blockers_of): the head is reviewed again, but only until
-          # five such verdicts stand on it. The pages are read as one list (jq -s).
+          # Only a real verdict counts as reviewed: approved, not approved or blocked (the older hold
+          # comment and "could not be judged" carry none), so one review per head, not per event.
+          # Each phrase must START a line of a github-actions[bot] comment (the hold comment quotes
+          # the approval line inside a sentence). A blocked verdict whose only blocker lines say
+          # "none" was a misread (see blockers_of): reviewed again, until five stand on the head.
+          # The pages are read as one list (jq -s).
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
@@ -1020,18 +1017,16 @@ jobs:
             | ($k | map(select(. == "verdict")) | length) + (if ($k | map(select(. == "none-only")) | length) >= 5 then 1 else 0 end)')
           [ "$seen" = 0 ] || { echo "$SHA already reviewed"; exit 0; }
           gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/files.txt"
-          # The guard list decides how much review the head needs. If it cannot
-          # be read the head is not reviewed at all (fail closed), and no person
-          # is asked: the job fails and a re-run reads it again.
+          # The guard list decides how much review the head needs. If it cannot be read the head is
+          # not reviewed (fail closed), no person is asked: the job fails and a re-run reads it again.
           cfg=$(curl -fsSL --retry 3 "$RISKY_PATHS_URL" | jq -c .) || cfg=null
           jq -e '(.guard | type) == "array" and (.guard | length) > 0' <<<"$cfg" >/dev/null 2>&1 || retry "the guard list could not be read"
           hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
           guard=false
           [ "$hits" = 0 ] || guard=true
-          # The diff is read with git from a checkout, never through the diff API: the API
-          # refuses a PR over 20,000 diff lines (406, Nishfleet/drive#949), so size became a failure
-          # mode. Both SHAs are fetched whole and the three-dot diff is the merge base
-          # against the head, the change the review judges. A failed read is said on the PR.
+          # The diff is read with git, never the diff API, which refuses a PR over 20,000 diff lines
+          # (406, Nishfleet/drive#949). Both SHAs are fetched whole; the three-dot diff (merge base to
+          # head) is the change the review judges. A failed read is said on the PR.
           base=$(jq -r .base.sha <<<"$pr")
           bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
@@ -1055,22 +1050,18 @@ jobs:
             done
           } | head -c 120000 > "$RUNNER_TEMP/context.txt" || true
           cat "$RUNNER_TEMP/context.txt" >> "$RUNNER_TEMP/diff.txt"
-          # Who built it: the worker App's "builder-engine: <list>" comments on the
-          # PR. Only the worker App's own comment counts (not any bot's); any claude in a list, or no such
-          # comment at all (the orchestrator, a person's session), is Claude-built.
+          # Who built it: the worker App's own "builder-engine: <list>" comments (no other bot's); any
+          # claude in a list, or none at all (the orchestrator, a person's session), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
-          # Unknown counts as Claude-built. Both names are Opus 5.5 today; the
-          # verdict is Jev's (non-Claude) either way.
+          # Both names are Opus 5.5 today; the verdict is Jev's (non-Claude) either way.
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
-          # The model gets the diff as text and no tools (--tools ""): a tool could open the
-          # runner's own key files and the review is posted publicly (the installed claude honors
-          # an empty --tools, checked 2026-10-10). The call runs on the runner's own login. A call
-          # that fails or answers nothing, a usage limit included, means the review did not finish:
-          # retry comments that and fails the job, and a re-run reviews the head again. There is
-          # no fallback to another family's model, and a head is never approved without this review.
-          review=
+          # The model gets the diff as text and no tools (--tools ""): a tool could open the runner's
+          # key files and the review is posted publicly (claude honors an empty --tools, checked
+          # 2026-10-10). It runs on the runner's own login. A call that fails or answers nothing, a
+          # usage limit included, did not finish: retry. No fallback to another family, and no
+          # approval without this review.
           review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local \
             --settings '{"disableAllHooks":true}' \
@@ -1082,10 +1073,7 @@ jobs:
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?",
               criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
           resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
-          if [ -z "${review//[[:space:]]/}" ] || ! jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; then
-            say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."
-            exit 0
-          fi
+          jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1 || { say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
           # A review text can be steered by the diff it reads, so a line that
@@ -1093,9 +1081,7 @@ jobs:
           shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
           text=$(printf '%s' "$shown" | head -c 3500)
           bytes=$(printf '%s' "$shown" | wc -c)
-          if [ "$bytes" -gt 3500 ]; then
-            text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$(blockers_of "$shown")" "$text")
-          fi
+          [ "$bytes" -le 3500 ] || text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$(blockers_of "$shown")" "$text")
           judge_ok=false
           if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then judge_ok=true; fi
           pct=$(jq -rn --argjson p "$p" '$p * 100 | floor')
@@ -1111,35 +1097,40 @@ jobs:
             fi
             exit 0
           fi
-          # This head edits the merge guard or a workflow. It is approved only
-          # when the judge is at least 90% sure with no blocker line AND an
-          # independent second reviewer of a different model family answers
-          # APPROVE with no blocker line. The second reviewer reads the same
-          # diff and context as the first; its instruction is appended after
-          # them by this workflow, so the diff cannot supply it.
+          # This head edits the merge guard or a workflow: approved only when the judge is 90% sure with
+          # no blocker line AND the second and third reviewers (other families, run in parallel on the
+          # same diff) each end on APPROVE with no blocker line. This workflow appends their
+          # instruction after the diff, so the diff cannot supply it. No answer from either: retry.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           {
             cat "$RUNNER_TEMP/diff.txt"
-            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are the second, independent reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
-          } > "$RUNNER_TEMP/second-in.txt"
-          second=$(pi --print --no-context-files --no-tools --no-session \
+            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
+          } > "$RUNNER_TEMP/extra-in.txt"
+          ask() { timeout 480 pi --print --no-context-files --no-tools --no-session \
             --append-system-prompt "$HOME/AGENTS.md" \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-            --provider litellm --model "$SECOND_SEAT" < "$RUNNER_TEMP/second-in.txt") || second=
-          [ -n "${second//[[:space:]]/}" ] || retry "the second reviewer gave no answer"
-          second_shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$second" || true)
-          second_text=$(printf '%s' "$second_shown" | head -c 3500)
-          last=$(grep -vE '^[[:space:]]*$' <<<"$second_shown" | tail -n 1 || true)
-          second_ok=false
-          if grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$second_shown")" ]; then second_ok=true; fi
+            --provider litellm --model "$1" < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || : > "$RUNNER_TEMP/$2.txt"; }
+          ask "$SECOND_SEAT" second & p2=$!; ask "$THIRD_SEAT" third & p3=$!
+          wait "$p2" "$p3"
+          all=; blk=; both=true
+          for r in second third; do
+            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT
+            out=$(cat "$RUNNER_TEMP/$r.txt")
+            [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
+            rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true)
+            last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true)
+            ok=approved
+            grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
+            h=$(printf '\n\n%s reviewer (%s family, %s seat): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$ok" "$(printf '%s' "$rs" | head -c 3500)")
+            all+=$h; [ "$ok" = approved ] || blk+=$h
+          done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
-          if [ "$judge_ok" = true ] && [ "$second_ok" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so two independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and a second reviewer from a different family (%s, %s seat) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s\n\nSecond review:\n%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$SECOND_SEAT" "$text" "$second_text")"
+          if [ "$judge_ok" = true ] && [ "$both" = true ]; then
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
-            if [ "$second_ok" = true ]; then s='approved'; else s='blocked'; fi
-            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs both reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s\n\nSecond reviewer (%s family, %s seat): %s\n%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$SECOND_FAMILY" "$SECOND_SEAT" "$s" "$([ "$second_ok" = true ] || printf '%s' "$second_text")")"
+            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
   # Arms an approved head: the review job's own approval in the same run, or
   # one the hourly sweep found (stuck-arm). This job only arms, as the worker
