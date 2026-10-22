@@ -1,0 +1,47 @@
+# Loads the runner egress table (inet runners) apart from nftables.service.
+# nft resolves a cgroup path to an id when it loads, and refuses the whole file
+# if the path does not exist. If that file were included from nftables.conf, a
+# missing slice would stop the main firewall loading (the tailnet guard and the
+# tether table with it). Here it can only fail this unit, and OnFailure= pages
+# it (fleet-unit-failed@, which the failed-units check also sees). While this
+# unit is failed the runners are NOT limited: the rule is absent, not stale.
+# The rules file is under /etc/nftables-runners/, outside the /etc/nftables.d/*.nft
+# include of nftables.conf, on purpose.
+#
+# Lifetime is bound to runners.slice. The rule matches the slice's cgroup id,
+# fixed when nft loads. A slice that is stopped and started again gets a new id,
+# and a rule loaded before that would match nothing: runners fail open with no
+# report. So:
+#   BindsTo=runners.slice + After=runners.slice: stopping the slice stops this
+#     unit, and ExecStop destroys the table (no stale rule is left behind).
+#   WantedBy=runners.slice (a runners.slice.wants/ symlink, made when host.yml
+#     enables this unit): starting the slice starts this unit, which loads the
+#     file again and resolves the new id. Runners that join the slice order
+#     themselves After= and Want= this unit (their Slice= drop-in).
+# A runner restart does not touch the slice, so its id holds across restarts.
+#
+# Requires= nftables.service: the table is loaded after the main firewall.
+# PartOf= nftables.service: a stop or restart of the firewall (its stop is
+# `flush ruleset`, which deletes this table) restarts this unit; a reload of the
+# firewall reloads it (ReloadPropagatedFrom=).
+# The file begins with `destroy table inet runners`, so a reload replaces the
+# table in one step. ExecStop removes it.
+# Rollback: `systemctl disable --now nftables-runners.service`, delete the file.
+[Unit]
+Description=Runner egress rules (nft table inet runners)
+Requires=nftables.service
+BindsTo=runners.slice
+After=nftables.service runners.slice
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables-runners/runners.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables-runners/runners.nft
+ExecStop=/usr/sbin/nft destroy table inet runners
+
+[Install]
+WantedBy=multi-user.target runners.slice

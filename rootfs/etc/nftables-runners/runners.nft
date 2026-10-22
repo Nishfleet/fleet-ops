@@ -1,0 +1,77 @@
+# Egress for the GitHub runner units (actions.runner.*.service). Loaded by
+# nftables-runners.service (not by nftables.conf: see that unit for why), so a
+# missing slice fails that unit and never the main firewall.
+#
+# A runner's processes keep their own traffic to the internet. They may open
+# loopback TCP only to the model router (127.0.0.1:4000) and the local DNS stub
+# (127.0.0.53:53, tcp and udp). They may not reach other loopback ports, the
+# tailnet, private ranges, or this host's own addresses.
+#
+# Scope: runners.slice only, the CI-only runners and the vault runner (deploy-box,
+# the eval, skills-library). They start no local test servers, so a strict
+# allow-list fits. The agent runners (agent.slice) do start local servers
+# (Playwright webServer, wrangler dev, pytest fixtures), so they are NOT matched
+# here; the agent pool gets a deny-list of the host's own service ports in a
+# later stage.
+#
+# Why cgroup and not uid: every runner runs as the same uid, so `meta skuid`
+# (as tether's table uses) cannot tell a runner from anything else that user
+# runs. The match is on the runner's slice at level 1.
+#
+# Why a slice and not each unit's own cgroup: nft turns the cgroup path into a
+# cgroup id when the rules load. A unit's cgroup is deleted and recreated on
+# every restart, so a rule naming one unit stops matching after the restart,
+# with no error. A slice stays active (StopWhenUnneeded=no) while its members
+# stop and start, so its id holds. If the slice itself is stopped and started
+# again it gets a new id: nftables-runners.service is bound to the slice
+# (BindsTo=, WantedBy=runners.slice), so that start reloads this file.
+#
+# A runner joins runners.slice only at its next restart (Slice= in a drop-in is
+# read when the unit starts); until then this rule does not cover it.
+#
+# `ct state established,related accept` comes first so replies from a socket in
+# the matched cgroup are never dropped. It also means a connection already open
+# when this file loads is not cut; only new ones are checked.
+#
+# Drops: the 172.16.0.0/12 drop holds the default container bridge. Members of
+# runners.slice have no docker socket (the lockdown drop-ins hide it), and the
+# eval's container traffic leaves from the dockerd-eval/podman-eval unit, a
+# different cgroup, not from the runner. So the drop is kept.
+#
+# Runners do not use tailnet DNS, so dropping the tailnet's own resolver
+# (inside the CGNAT range) is intended: name lookups go through the local stub 127.0.0.53.
+#
+# systemd's IPAddressDeny=/IPAddressAllow= on runners.slice is the second layer
+# (address-only, no ports, so this table does the port allow-list); it still
+# holds if this table is missing.
+#
+# `fib daddr type local` matches this host's own addresses, so no address list
+# to keep in sync. CGNAT 100.64/10 (the tailnet block) is written as a mask test
+# so the address does not appear in this public repo.
+#
+# This stops accidents and a job that wanders; it is not an isolation boundary
+# for untrusted code: a process the job starts outside the runner's cgroup
+# (through the user manager, or a container engine) is not matched.
+#
+# Rollout stages (see the PR): 1. fleet-ci-2 alone in runners.slice (canary).
+# 2. fleet-ci-1, fleet-ci-3 and the vault runner join it. The set below does not
+# change in either.
+#
+# Rollback: `systemctl disable --now nftables-runners.service` and delete the
+# file (the unit's ExecStop deletes the table).
+destroy table inet runners
+table inet runners {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    socket cgroupv2 level 1 != { "runners.slice" } return
+    ct state established,related accept
+    ip daddr 127.0.0.1 tcp dport 4000 accept
+    ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 accept
+    ip daddr 127.0.0.0/8 drop
+    ip6 daddr ::1 drop
+    fib daddr type local drop
+    ip daddr & 0xffc00000 == 0x64400000 drop
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } drop
+    ip6 daddr { fd7a:115c:a1e0::/48, fc00::/7, fe80::/10 } drop
+  }
+}

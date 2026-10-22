@@ -1,0 +1,45 @@
+# Home of the runners that are not in agent.slice, for the runner egress rule
+# (nftables-runners/runners.nft, loaded by nftables-runners.service). First
+# member: fleet-ci-2 (canary). Then fleet-ci-1, fleet-ci-3 and the vault runner.
+# Their units say Slice=runners.slice in a drop-in. The agent runners stay in
+# agent.slice, which keeps its memory caps.
+#
+# nft matches a cgroup by id, resolved when the rules load. A slice keeps its
+# cgroup (and id) while members stop and start, so the rule keeps matching
+# after a runner restart; a unit's own cgroup is recreated on every restart.
+#
+# Memory: these runners sit in system.slice today, which has MemoryLow=3G
+# (system.slice.d/50-memory-protect.conf, live value 3221225472). Leaving it
+# means leaving that protection, and under memory pressure the kernel and
+# systemd-oomd would treat these runners like the unprotected agent pool. This
+# slice is a sibling of system.slice, so it sets the same MemoryLow=3G to keep
+# their protection. Each runner keeps its own MemoryMax. MemoryLow only shields
+# memory in use (idle, the four runners hold about 270M together), so the 3G is
+# a ceiling that costs nothing until a CI job runs; system.slice keeps its own.
+#
+# A runner joins this slice only at its next restart.
+#
+# The slice stays active until it is stopped by hand or at shutdown. Stopping
+# it stops every runner in it, deletes its cgroup and (BindsTo=) stops
+# nftables-runners.service, which destroys the table. Starting it again makes a
+# new cgroup id and starts that unit (WantedBy=runners.slice), which loads the
+# table with the new id.
+# Second, fail-closed layer: systemd's own IP filter on the slice. IPAddressAllow=
+# and IPAddressDeny= are applied to every socket of the processes in the unit
+# (and of its member units, which are combined with their parent slice's lists),
+# and both directions are checked. An address matching Allow is granted first
+# (allow wins); otherwise a match in Deny is refused; otherwise granted. So
+# loopback is refused except 127.0.0.1 and the DNS stub 127.0.0.53, and the
+# link-local, multicast, private and tailnet ranges are refused outright
+# (tether-agent.service uses the same pair for loopback). The filter is
+# address-only, so it cannot do ports: nft (nftables-runners/runners.nft) does
+# the port allow-list, 4000 and 53. This layer holds in the cases nft does not:
+# if nftables-runners.service fails, or the table is stale or gone, members of
+# this slice still cannot reach other loopback addresses, the tailnet or the
+# private ranges. It is attached to the slice's cgroup, so it needs no id
+# reload after a slice restart. Runners do not use tailnet DNS, so refusing the
+# tailnet's own resolver (inside the CGNAT range) is intended.
+[Slice]
+MemoryLow=3G
+IPAddressDeny=localhost link-local multicast 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fd7a:115c:a1e0::/48 fc00::/7
+IPAddressAllow=127.0.0.1/32 127.0.0.53/32

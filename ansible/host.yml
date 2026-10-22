@@ -41,6 +41,7 @@
       - /etc/tmpfiles.d
       - /etc/audit/rules.d
       - /etc/polkit-1/rules.d
+      - /etc/nftables-runners
     # /etc/restic is deliberately NOT in owned_dirs: it also holds the
     # hand-installed R2 credentials (/etc/restic/netcup-r2.env) and the old
     # box-only exclude list, which the drift check would fail on. The tracked
@@ -816,6 +817,51 @@
       # Under --check the copy above did not really install the unit yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # Runner egress rule (rootfs/etc/nftables-runners/runners.nft): the processes
+    # of the actions.runner.*.service units may open loopback TCP only to the
+    # model router and the DNS stub. It names cgroups, which nft resolves at
+    # load, so it has its own unit (nftables-runners.service) and its own
+    # directory, outside the /etc/nftables.d/*.nft include: a missing slice
+    # fails that unit, never the main firewall. runners.slice is started first
+    # so the validate: below (check mode, loads nothing) can resolve it.
+    - name: Start runners.slice so the runner egress rule's cgroup path exists
+      ansible.builtin.systemd_service:
+        name: runners.slice
+        state: started
+        daemon_reload: true
+      # Under --check the copy above did not really install the unit yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the runner egress rule directory
+      ansible.builtin.file:
+        path: /etc/nftables-runners
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the runner egress rule
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables-runners/runners.nft"
+        dest: /etc/nftables-runners/runners.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      # Under --check the slice may not be active, so nft cannot resolve it.
+      ignore_errors: "{{ ansible_check_mode }}"
+      notify: Reload nftables-runners
+
+    # Enabling makes both of the unit's links: multi-user.target.wants (boot) and
+    # runners.slice.wants (a restart of the slice reloads the table).
+    - name: Enable and start the runner egress unit
+      ansible.builtin.systemd_service:
+        name: nftables-runners.service
+        enabled: true
+        state: started
+      # Under --check the unit may not be installed yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
     - name: Enable the daily drift run
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer
@@ -1341,6 +1387,13 @@
     - name: Reload nftables
       ansible.builtin.systemd_service:
         name: nftables.service
+        state: reloaded
+
+    # Re-reads /etc/nftables-runners/runners.nft; the file's first line replaces
+    # the table in one step.
+    - name: Reload nftables-runners
+      ansible.builtin.systemd_service:
+        name: nftables-runners.service
         state: reloaded
 
     # htpdate reads /etc/default/htpdate only at start.

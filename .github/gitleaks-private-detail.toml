@@ -76,3 +76,11 @@ targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
 regexes = ['''^100\.108\.184\.97$''']
 condition = "AND"
+
+[[allowlists]]
+description = "runners.slice's IPAddressDeny= must name the CGNAT block as an address (systemd has no mask form and its unit files take no inline comment to carry gitleaks:allow); the line is the block, not a host"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/runners\.slice$''']
+regexTarget = "line"
+regexes = ['''IPAddressDeny=.*100\.64\.0\.0/10''']
+condition = "AND"
