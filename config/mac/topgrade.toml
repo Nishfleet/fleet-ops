@@ -1,0 +1,37 @@
+# Daily Mac updater, run by the launch agent in com.nish.topgrade.plist.
+# Homebrew formulae and casks belong to `brew autoupdate`; do not enable them here.
+# Install: see README.md in this directory. Switch off: unload the launch agent.
+[misc]
+assume_yes = true
+no_retry = true
+notify_end = "never"
+no_self_update = true
+disable = [
+  "brew_formula", "brew_cask", "mas", "system", "gem", "ruby_gems",
+  "self_update", "remotes", "restarts",
+  "cursor_agent",          # `cursor-agent update` fails when not logged in on this Mac
+  "node",                  # the PATH npm is Hermes's own; explicit prefixes below instead
+  "skills", "github_cli_skills", "claude_code_plugins",
+]
+# hermes_agent is enabled: the "local commit" topgrade saw was the shallow
+# clone's root commit, not a change. Hermes's own updater runs below instead,
+# because the stable channel needs its flag.
+
+# One vendor command each. Custom commands run through the shell.
+[commands]
+"hermes (stable channel)" = "hermes update --channel stable --yes"
+"npm local (~/.local globals)" = "/opt/homebrew/bin/npm update -g --prefix ~/.local"
+"npm brew (Homebrew globals)" = "/opt/homebrew/bin/npm update -g --prefix /opt/homebrew"
+"grok" = "~/.local/bin/grok update"
+"herdr" = "~/.local/bin/herdr update"
+# Restarts a listener only when the version moved and the listener has no
+# child process (a child means an agent session is mid-job); busy ones are named.
+"tincan" = '''
+before=$(tincan version); tincan upgrade || exit 1; after=$(tincan version)
+[ "$before" = "$after" ] && exit 0
+for j in $(launchctl list | awk '/com\.agenttincan\.listen\./{print $3}'); do
+  pid=$(launchctl list "$j" | awk -F'= ' '/"PID"/{gsub(/;/,"",$2);print $2}')
+  if [ -n "$pid" ] && pgrep -P "$pid" >/dev/null; then echo "busy, not restarted: $j"; continue; fi
+  launchctl kickstart -k "gui/$(id -u)/$j"
+done
+'''
