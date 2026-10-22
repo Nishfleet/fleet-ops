@@ -106,11 +106,12 @@ script, or prompt lands unseen.
   enables the timer on every deploy. Off switch: remove that step and its enable
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 - `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
-  `fleet-unit-failed@`, when `origin/main`'s head commit is more than 30 min old and
-  the deploy clone is still short of it, so a merge that reached no deploy is loud
-  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box at
-  15:17Z, and the review job read the retired `prompts/risky-review.md` out of the
-  clone). It fetches `main` itself and only reads. Every 5 min; `fleet-sync.service`
+  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
+  does not have is more than 35 min old, so a merge that reached no deploy is loud
+  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
+  min later, and the review job read the retired `prompts/risky-review.md` out of
+  the clone). It fetches `main` itself into its own ref and only reads. Every 5 min;
+  `fleet-sync.service`
   step 2j links both and enables the timer on every deploy. Off switch: remove that
   step and its enable line, then
   `systemctl --user disable --now fleet-clone-lag.timer`.
@@ -263,8 +264,10 @@ so nothing can drift, and the
 
 `deploy-box.yml` starts `fleet-sync.service` on every push to main, which
 keeps the clone current. It is the only deploy machinery on the box. Its security
-probe is a **separate job**, so a red probe is its own verdict and never skips the
-deploy steps; `fleet-clone-lag.timer` then pages when the clone is 30 min behind
+probe runs in the deploy job with `continue-on-error` and a last-step verdict: a
+red probe still fails the run, and it never skips the deploy steps (a separate job
+could probe one box and deploy on another); `fleet-clone-lag.timer` then pages when
+the clone is 35 min behind
 `origin/main` (fleet-ops#10046):
 
 ```

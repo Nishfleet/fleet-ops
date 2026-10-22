@@ -1,38 +1,55 @@
 [Unit]
-Description=Fail loud when the deploy clone is more than 30 min behind origin/main
-# fleet-ops#10046, 2026-10-22: ebf1d4e7 and dbee9335 landed on main at 14:14Z and
-# the deploy clone was still on f8b86da7 (14:03Z) at 15:17Z, 63 min of stale unit
-# files, prompts/ and config/. deploy-box.yml ran for both pushes (dbee9335's run
-# 39796924650), but its security probe ran as the deploy job's first step, so a red
-# probe marked the two deploy steps skipped and fleet-sync never started; the
-# review job then read the retired prompts/risky-review.md out of the clone. It
-# happened again the same evening without a failed probe: 8f53c938 (merged 17:07Z)
-# and 930ba08e (17:10Z) created no push run for any workflow at all
-# (head_sha totals are 0), so nothing started a deploy.
+Description=Fail loud when the deploy clone is more than 35 min behind origin/main
+# fleet-ops#10046, 2026-10-22. ebf1d4e7 and dbee9335 landed on main at 14:14Z. Both
+# pushes started a deploy run (39796797875 at 14:34:14Z, 39796924650 at 14:35:04Z),
+# and both runs went red on the security probe, which ran as the deploy job's first
+# step: the two systemctl steps are `skipped` in both, fleet-sync never started, and
+# the clone sat on f8b86da7 until a manual replay at 14:54:25Z (run 39799814591).
+# 40 min of stale unit files, prompts/ and config/. That gate is fixed in deploy-box.yml
+# (the probe keeps its verdict and loses the gate).
 #
-# Nothing compared the clone to origin/main on a clock: fleet-sync's own probes
-# (DEPLOY-BLOCKED, and the merge-base pair) only run when a deploy starts, and a
-# merge that starts no deploy moves neither HEAD nor any watched file.
+# Nothing compared the clone to origin/main on a clock, so nothing would have said
+# a word: fleet-sync's own probes (DEPLOY-BLOCKED, and the merge-base pair) run only
+# when a deploy starts, and a merge that starts no deploy moves neither HEAD nor any
+# watched file. A push run is always created, but it can wait a long time for a free
+# runner (the commit-to-run gap was 27.2 min at its worst on 2026-10-14, and 25.9
+# min for 8f53c938 on 2026-10-22), and a queued run is cancelled outright by the
+# next push under `cancel-in-progress: false` (930ba08e's run 39821881394). That is
+# safe only while some later run does start.
 #
-# This oneshot fetches main itself, so a merge that never started a deploy is
-# visible, and fails when origin/main's head commit is LAG_MIN minutes old with the
-# clone still short of it. LAG_MIN=30 because the merge queue stamps a commit
-# before it pushes and the deploy follows within a minute: over 56 pushes on
-# 2026-10-22 that stamp-to-push gap was 8.7 min at the median and 20.8 min at the
-# worst, so a healthy deploy always lands inside 22 min and 30 never fires on one.
-# A stale clone therefore pages (OnFailure=, route fleet-unit-failed@) at about 30
-# min, and the failed unit also shows in the live-state check's `list-units
-# --state=failed`. The 14:14Z stall above would have fired at 14:44Z.
-# Trigger: fleet-clone-lag.timer (every 5 min). It only reads: the fetch updates
-# refs/remotes/origin/main, the same ref fleet-sync fetches, and nothing here
-# merges, checks out or writes a tracked file.
+# This oneshot fetches main itself, so a clone that no deploy ever reached is
+# visible, and fails when the oldest commit on origin/main the clone does not have
+# is LAG_MIN minutes old. Oldest, not newest: a clone behind by several merges must
+# not go quiet because the last merge is young, which is exactly the state a broken
+# deploy leaves behind (each new merge reset the clock under the newest-commit
+# version of this check).
+# LAG_MIN=35 from the last 91 push runs (measured 2026-10-22): the commit-to-run gap
+# was 8.8 min at the median, 13.5 at p90 and 27.2 at the worst, so a healthy deploy
+# always reaches the clone inside 28 min and 35 leaves 8 min of headroom for a
+# slower runner queue, while the 2026-10-22 stall lasted 40 min, so 35 still fires
+# while the clone is stale (at 14:49Z there, five minutes before the manual fix).
+# The page is OnFailure= (route fleet-unit-failed@), and the failed unit also shows
+# in the live-state check's `list-units --state=failed`, so a false page costs a
+# look: 35 keeps the observed healthy tail clear of it.
+# The age is a commit date, not a landing time: a commit stamped long ago (a
+# fast-forward of an old branch, a direct push) pages on the first check, and a
+# future-dated commit would count as age 0 rather than negative.
+# Trigger: fleet-clone-lag.timer (every 5 min). It never merges, checks out or
+# writes a tracked file, and it writes no shared git state: --no-write-fetch-head
+# keeps FETCH_HEAD out of the clone (a polluted FETCH_HEAD silently stopped every
+# deploy, fleet-ops#8893), the fetch lands in this unit's own ref
+# refs/fleet-clone-lag/main, and --refmap= stops the opportunistic update of
+# refs/remotes/origin/main, so this fetch never takes the ref lock that
+# fleet-sync's own fetch uses.
 # Switch off: systemctl --user disable --now fleet-clone-lag.timer, then drop step
 # 2j and its enable line from fleet-sync.service and delete both files.
 OnFailure=fleet-unit-failed@%N.service
 # Three tries 20 s apart, so one failed fetch does not page: RestartMode=direct
 # (systemd 254+) restarts without the failed state, so OnFailure= fires once, when
-# the start limit is spent.
-StartLimitIntervalSec=2min
+# the start limit is spent. fleet-unit-failed@ sends a healthchecks.io fail ping
+# per invocation, so the 30 min interval keeps a clone that stays behind to three
+# pings per half hour; the failed state itself is what Prometheus alerts on.
+StartLimitIntervalSec=30min
 StartLimitBurst=3
 
 [Service]
@@ -43,14 +60,19 @@ RestartSec=20
 # CLONE and LAG_MIN exist so CI can run this very ExecStart against a temp clone
 # (tests/test_fleet_clone_lag.py); the host never overrides them.
 Environment=CLONE=%h/workspaces/tooling/fleet-ops-deploy-clone
-Environment=LAG_MIN=30
+Environment=LAG_MIN=35
 ExecStart=/bin/sh -c 'cd "$$CLONE" || { echo "CLONE-LAG: no deploy clone at $$CLONE, so origin/main was not compared"; exit 1; }; \
-git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main || { echo "CLONE-LAG: cannot fetch origin main into $$CLONE"; exit 1; }; \
-head=$$(git rev-parse --short HEAD); want=$$(git rev-parse --short refs/remotes/origin/main); \
-if git merge-base --is-ancestor HEAD refs/remotes/origin/main && git merge-base --is-ancestor refs/remotes/origin/main HEAD; then echo "deploy clone is at origin/main ($$head)"; exit 0; fi; \
-if git merge-base --is-ancestor HEAD refs/remotes/origin/main; then behind="behind origin/main by $$(git rev-list --count HEAD..refs/remotes/origin/main) commit(s)"; else behind="not an ancestor of HEAD (a work branch is checked out, or main was rewritten)"; fi; \
-age=$$(( ($$(date +%%s) - $$(git log -1 --format=%%ct refs/remotes/origin/main)) / 60 )); \
-[ "$$age" -ge "$$LAG_MIN" ] || { echo "deploy pending: origin/main $$want landed $${age} min ago, clone head $$head is $$behind"; exit 0; }; \
-echo "CLONE-LAG: origin/main $$want landed $${age} min ago and the deploy clone head is $$head, $$behind."; \
+git fetch --no-tags --no-write-fetch-head --refmap= origin +refs/heads/main:refs/fleet-clone-lag/main || { echo "CLONE-LAG: cannot fetch origin main into $$CLONE, so the clone was not compared"; exit 1; }; \
+head=$$(git rev-parse --short HEAD); want=$$(git rev-parse --short refs/fleet-clone-lag/main); \
+if git merge-base --is-ancestor HEAD refs/fleet-clone-lag/main && git merge-base --is-ancestor refs/fleet-clone-lag/main HEAD; then echo "deploy clone is at origin/main ($$head)"; exit 0; fi; \
+git merge-base --is-ancestor HEAD refs/fleet-clone-lag/main || { echo "CLONE-LAG: the deploy clone head $$head is not an ancestor of origin/main $$want (a branch with its own commits is checked out, or main was rewritten)."; echo "  fleet-sync cannot fast-forward that. fix: git -C $$CLONE checkout main, then systemctl --user start fleet-sync.service"; exit 1; }; \
+behind=$$(git rev-list --count HEAD..refs/fleet-clone-lag/main); \
+old=$$(git rev-list --reverse HEAD..refs/fleet-clone-lag/main | head -n1); \
+age=$$(git log -1 --format=%%ct "$$old"); \
+case "$$age" in ''|*[!0-9]*) echo "CLONE-LAG: cannot read the commit date of $$old (git log said \"$$age\"), so the lag is unknown"; exit 1;; esac; \
+old=$$(git rev-parse --short "$$old"); \
+age=$$(( ($$(date +%%s) - age) / 60 )); [ "$$age" -ge 0 ] || age=0; \
+[ "$$age" -ge "$$LAG_MIN" ] || { echo "deploy pending: oldest unshipped commit $$old landed $${age} min ago, clone head $$head is behind origin/main ($$want) by $$behind commit(s)"; exit 0; }; \
+echo "CLONE-LAG: origin/main $$want has been unshipped for $${age} min (since $$old): the deploy clone head is $$head, behind by $$behind commit(s)."; \
 echo "  the box serves unit files, prompts/ and config/ from before $$want. fix: systemctl --user start fleet-sync.service"; exit 1'
 TimeoutStartSec=120

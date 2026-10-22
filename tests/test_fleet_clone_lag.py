@@ -6,7 +6,6 @@ message and the exit code are the code that ships, not a copy of it.
 
 import os
 import re
-import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -30,7 +29,9 @@ GIT_ENV = {
 def _exec_start():
     text = UNIT.read_text().replace("\\\n", "")
     line = next(ln for ln in text.splitlines() if ln.startswith("ExecStart="))
-    return shlex.split(line[len("ExecStart="):].replace("$$", "$").replace("%%", "%"))
+    match = re.fullmatch(r"/bin/sh -c '(.*)'", line[len("ExecStart="):])
+    assert match, line
+    return ["/bin/sh", "-c", match.group(1).replace("$$", "$").replace("%%", "%")]
 
 
 def _git(cwd, *args, env=None):
@@ -38,7 +39,16 @@ def _git(cwd, *args, env=None):
     return subprocess.run(["git", *args], cwd=str(cwd), env=full, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _repo(tmp_path, landed_min_ago):
+def _land(seed, min_ago, text):
+    (seed / "prompts" / "worker.md").write_text(text)
+    _git(seed, "add", "-A")
+    stamp = "@%d +0000" % (time.time() - min_ago * 60)
+    _git(seed, "commit", "-q", "-m", text, env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
+    _git(seed, "push", "-q", "origin", "main")
+    return _git(seed, "rev-parse", "HEAD")
+
+
+def _repo(tmp_path, landed_min_ago=(45,)):
     origin = tmp_path / "origin.git"
     origin.mkdir()
     _git(origin, "init", "-q", "--bare", "-b", "main")
@@ -55,12 +65,8 @@ def _repo(tmp_path, landed_min_ago):
     clone = tmp_path / "home" / CLONE
     clone.parent.mkdir(parents=True)
     _git(tmp_path, "clone", "-q", str(origin), str(clone))
-    (seed / "prompts" / "worker.md").write_text("the prompts that landed on main\n")
-    _git(seed, "add", "-A")
-    stamp = "@%d +0000" % (time.time() - landed_min_ago * 60)
-    _git(seed, "commit", "-q", "-m", "a merge that landed on main", env={"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp})
-    _git(seed, "push", "-q", "origin", "main")
-    return clone, deployed, _git(seed, "rev-parse", "HEAD")
+    landed = [_land(seed, minutes, "a merge that landed on main %d min ago\n" % minutes) for minutes in landed_min_ago]
+    return clone, deployed, landed
 
 
 def _run(clone, lag_min):
@@ -68,42 +74,59 @@ def _run(clone, lag_min):
     return subprocess.run(_exec_start(), env=env, capture_output=True, text=True, timeout=60)
 
 
+def _reported_age(stdout):
+    match = re.search(r"unshipped for (\d+) min", stdout) or re.search(r"landed (\d+) min ago", stdout)
+    assert match, stdout
+    return int(match.group(1))
+
+
 def test_quiet_when_the_clone_is_at_origin_main(tmp_path):
-    clone, _, landed = _repo(tmp_path, 45)
+    clone, _, landed = _repo(tmp_path)
     _git(clone, "fetch", "-q", "origin")
     _git(clone, "merge", "-q", "--ff-only", "refs/remotes/origin/main")
     done = _run(clone, 30)
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "deploy clone is at origin/main (%s)" % landed[:7] in done.stdout
+    assert "deploy clone is at origin/main (%s)" % landed[-1][:7] in done.stdout
 
 
-def test_fires_when_main_landed_longer_ago_than_the_window(tmp_path):
-    clone, deployed, landed = _repo(tmp_path, 45)
+def test_fires_when_the_oldest_unshipped_commit_is_past_the_window(tmp_path):
+    clone, deployed, landed = _repo(tmp_path, (45,))
     done = _run(clone, 30)
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "CLONE-LAG: origin/main %s landed 45 min ago" % landed[:7] in done.stdout
-    assert "deploy clone head is %s, behind origin/main by 1 commit(s)" % deployed[:7] in done.stdout
+    assert 45 <= _reported_age(done.stdout) <= 47
+    assert "CLONE-LAG: origin/main %s has been unshipped" % landed[-1][:7] in done.stdout
+    assert "the deploy clone head is %s, behind by 1 commit(s)" % deployed[:7] in done.stdout
     assert "fix: systemctl --user start fleet-sync.service" in done.stdout
 
 
-def test_quiet_while_the_landing_is_inside_the_window(tmp_path):
-    clone, _, landed = _repo(tmp_path, 45)
-    done = _run(clone, 60)
+def test_fires_when_only_the_oldest_of_several_unshipped_commits_is_old(tmp_path):
+    clone, deployed, landed = _repo(tmp_path, (45, 20, 2))
+    done = _run(clone, 30)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert 45 <= _reported_age(done.stdout) <= 47
+    assert landed[0][:7] in done.stdout
+    assert "the deploy clone head is %s, behind by 3 commit(s)" % deployed[:7] in done.stdout
+
+
+def test_quiet_while_the_oldest_unshipped_commit_is_inside_the_window(tmp_path):
+    clone, _, landed = _repo(tmp_path, (12, 2))
+    done = _run(clone, 30)
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "deploy pending: origin/main %s landed 45 min ago" % landed[:7] in done.stdout
+    assert "deploy pending: oldest unshipped commit %s landed 12 min ago" % landed[0][:7] in done.stdout
 
 
 def test_fires_when_a_work_branch_is_checked_out_in_the_clone(tmp_path):
-    clone, _, landed = _repo(tmp_path, 45)
+    clone, _, landed = _repo(tmp_path)
     _git(clone, "checkout", "-q", "-b", "work")
     (clone / "untracked-by-main.md").write_text("a session's work\n")
     _git(clone, "add", "-A")
     _git(clone, "commit", "-q", "-m", "a work branch in the deploy clone")
     done = _run(clone, 30)
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "not an ancestor of HEAD" in done.stdout
-    assert "origin/main %s" % landed[:7] in done.stdout
-    assert "deploy clone head is %s" % _git(clone, "rev-parse", "--short", "HEAD") in done.stdout
+    assert "not an ancestor of origin/main" in done.stdout
+    assert "origin/main %s" % landed[-1][:7] in done.stdout
+    assert "git -C %s checkout main" % clone in done.stdout
+    assert "fix: systemctl --user start fleet-sync.service" not in done.stdout
 
 
 def test_fires_when_the_clone_is_missing(tmp_path):
@@ -112,11 +135,34 @@ def test_fires_when_the_clone_is_missing(tmp_path):
     assert "CLONE-LAG: no deploy clone at" in done.stdout
 
 
+def test_fires_when_origin_main_cannot_be_fetched(tmp_path):
+    clone, _, _ = _repo(tmp_path)
+    _git(clone, "remote", "set-url", "origin", str(tmp_path / "no-such-origin.git"))
+    done = _run(clone, 30)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "CLONE-LAG: cannot fetch origin main into %s" % clone in done.stdout
+
+
+def test_the_fetch_leaves_the_clone_alone(tmp_path):
+    clone, deployed, _ = _repo(tmp_path)
+    fetch_head = clone / ".git" / "FETCH_HEAD"
+    before = fetch_head.read_text() if fetch_head.exists() else None
+    done = _run(clone, 30)
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert _git(clone, "rev-parse", "refs/remotes/origin/main") == deployed
+    assert (fetch_head.read_text() if fetch_head.exists() else None) == before
+
+
 def test_unit_wiring_and_defaults_match_the_test():
     text = UNIT.read_text()
     assert "Environment=CLONE=%h/" + CLONE in text
-    assert "Environment=LAG_MIN=30" in text
+    assert "Environment=LAG_MIN=35" in text
     assert "OnFailure=fleet-unit-failed@%N.service" in text
+    assert "--no-write-fetch-head" in text
+    assert "+refs/heads/main:refs/fleet-clone-lag/main" in text
+    assert "Restart=on-failure" in text
+    assert "RestartMode=direct" in text
+    assert "StartLimitIntervalSec=30min" in text
     timer = TIMER.read_text()
     assert "OnUnitActiveSec=5min" in timer
     assert "OnBootSec=" in timer

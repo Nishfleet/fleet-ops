@@ -11,9 +11,10 @@ One VPS (netcup), one `nish` user. Everything the fleet runs is a
 `systemctl --user` unit whose file lives in `systemd/` and is linked into
 `~/.config/systemd/user/` by hand once; a push to `main` is the deploy:
 `deploy-box.yml` runs `fleet-sync.service`, a fetch plus `--ff-only` merge,
-never `git pull` (RUNBOOK, fleet-ops#8893), and the workflow's security probe is a
-job of its own so a red probe is never a gate on those steps;
-`fleet-clone-lag.timer` fails the unit and pages when the clone is 30 min behind
+never `git pull` (RUNBOOK, fleet-ops#8893), and the workflow's security probe runs
+in that same job with `continue-on-error` and a last-step verdict, so a red probe
+still fails the run but never gates those steps;
+`fleet-clone-lag.timer` fails the unit and pages when the clone is 35 min behind
 `origin/main` (fleet-ops#10046). GitHub is the durable copy of
 code and config.
 
