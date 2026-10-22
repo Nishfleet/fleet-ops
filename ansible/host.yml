@@ -528,7 +528,10 @@
     # credential files are for nish alone. Mode only, never owner, and each task
     # does nothing when its files are absent. These run as nish, not root: the
     # directories are nish's to write, so a root chmod could be steered through
-    # a symlink onto a file nish does not own. SQLite gives a new -wal/-shm the
+    # a symlink onto a file nish does not own. Checked 2026-10-22: all 26
+    # actions.runner.* units have User=nish and every runner process is nish's,
+    # so owner-only modes keep the runners working; no other user or group
+    # reads these files. The leviathan directory is already 0700. SQLite gives a new -wal/-shm the
     # mode of the main database, so fixing the main file covers them.
     - name: Look for the agent state directories
       become: true
