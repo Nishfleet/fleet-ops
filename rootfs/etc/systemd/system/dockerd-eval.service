@@ -1,0 +1,113 @@
+# A rootless Docker engine for drive's weekly agent eval (fleet-ops#9983). It
+# replaces podman-eval.service: the eval's sandbox library needs Docker Engine
+# 24.0.6 or newer, and the rootless podman API reports its own version. The eval
+# runs on one dedicated runner (fleet-ci-3, the drive-eval runner group) and
+# reaches this engine through DOCKER_HOST, so no runner needs the host docker
+# socket. Own data root, own config, own socket: it shares nothing with the
+# host's Docker (which sets the runsc runtime in /etc/docker/daemon.json; this
+# daemon reads dockerd-eval.json instead, an empty object, so none of that
+# applies here) and nothing with the fleet's Quadlet containers.
+#
+# rootlesskit puts dockerd in its own user and mount namespace. slirp4netns gives
+# it a network; a container reaches the host's loopback at 10.0.2.2
+# (--host-gateway-ip), so the drive eval sets DRIVE_EVAL_SANDBOX_HOST=10.0.2.2
+# and its stand-in listens on one fixed loopback port (DRIVE_EVAL_STANDIN_PORT in
+# 30-eval.conf). --disable-host-loopback is not passed on purpose: that address is
+# the only way to the stand-in. What a container can reach through it is limited
+# on the host side, in two layers. slirp4netns opens the host-side sockets from
+# inside this unit's cgroup, so (1) /etc/nftables.d/evalnet.nft drops everything
+# this cgroup opens to host-local and private destinations except that one port,
+# matched on the cgroup through NFTSet= (systemd adds this unit's cgroup id to
+# the set when the unit starts and removes it when the unit stops, so the match
+# survives restarts), and (2) IPAddressDeny=/IPAddressAllow= is an address-only
+# layer that keeps working if the set is ever empty (an `nftables` restart
+# flushes it; `systemctl daemon-reload` refills it). The Allow lines are the
+# engine's own namespace (the slirp4netns network and the Docker bridge
+# networks, which are not host addresses) and the resolver stub slirp4netns
+# forwards DNS to. The internet stays open for image pulls.
+# cgroupfs is the cgroup driver because Delegate=yes gives this unit its own
+# subtree and there is no user systemd for the systemd driver.
+# The rootlesskit line is written out here, not wrapped in Docker's
+# dockerd-rootless.sh: Ubuntu ships no such script (`dpkg -S dockerd-rootless`
+# finds nothing, and neither docker.io nor any apt package here carries it).
+# Docker publishes it only in docker-ce-rootless-extras
+# (https://docs.docker.com/engine/security/rootless/), and it is a shell wrapper
+# around exactly the rootlesskit flags below (slirp4netns, --copy-up=/etc
+# --copy-up=/run, --propagation=rslave, builtin port driver, a state dir under
+# the runtime directory). Using it would mean adding Docker's apt repository
+# and its packages, which would replace the host's docker.io. It also passes
+# --disable-host-loopback by default, which this unit leaves out on purpose.
+# The /bin/sh -c line mounts a private tmpfs over /run/docker and /run/containerd
+# inside the namespace, so the host Docker's runtime state is not touched, and
+# then replaces the shell with dockerd.
+#
+# Runtime directory: tmpfiles.d creates /run/dockerd-eval (0700 nish) at boot, so
+# the runners can hide it by inode from the start. RuntimeDirectory= makes the
+# rt subdirectory fresh at each start and removes it at each stop, so the
+# socket, exec root, rootlesskit state and pid file begin clean.
+#
+# No NoNewPrivileges here: rootlesskit needs the setuid newuidmap/newgidmap, as
+# podman-eval did. What the engine can see decides what a container started
+# through it can bind-mount, so /home/nish is an empty tmpfs here and only two
+# things are bound back in: the data root, and /home/nish/.local/bin/rclone
+# (read-only; the eval's compose file bind-mounts it). The compose file mounts
+# nothing else from the host, so the runner's _work directory needs no access
+# from here, and no other runner's directory, session store or workspace is
+# visible. The InaccessiblePaths below also hide credentials, the host docker
+# sockets, the user bus directory, the fleet's container store and the old podman
+# store (the /home/nish entries are redundant under the tmpfs and stay as a
+# second layer).
+# A `-` before a path means a missing path never stops the unit from starting.
+# Rollback: stop and disable this unit, delete this file, dockerd-eval.json and
+# the tmpfiles entry, delete 30-eval.conf, `systemctl daemon-reload`, restart the runner.
+[Unit]
+Description=Rootless Docker engine for the drive agent eval
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
+After=network-online.target systemd-tmpfiles-setup.service nftables.service
+Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=nish
+Group=nish
+RuntimeDirectory=dockerd-eval/rt
+RuntimeDirectoryMode=0700
+Delegate=yes
+Environment=XDG_RUNTIME_DIR=/run/dockerd-eval/rt
+Environment=HOME=/home/nish
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/rootlesskit --state-dir=/run/dockerd-eval/rt/rk --net=slirp4netns --mtu=1500 --slirp4netns-sandbox=auto --slirp4netns-seccomp=auto --port-driver=builtin --copy-up=/etc --copy-up=/run --propagation=rslave /bin/sh -c 'mount -t tmpfs tmpfs /run/docker && mount -t tmpfs tmpfs /run/containerd && exec /usr/bin/dockerd "$$@"' dockerd --exec-opt native.cgroupdriver=cgroupfs --host-gateway-ip=10.0.2.2 --config-file=/etc/fleet-ops/dockerd-eval.json --data-root=/home/nish/.local/share/dockerd-eval/data --exec-root=/run/dockerd-eval/rt/exec --host=unix:///run/dockerd-eval/rt/docker.sock --pidfile=/run/dockerd-eval/rt/dockerd.pid --userland-proxy-path=/usr/bin/rootlesskit-docker-proxy
+Restart=on-failure
+RestartSec=10s
+# Eval containers run in this unit's cgroup, so these cap the whole eval.
+MemoryMax=6G
+TasksMax=4096
+# Egress limit, layer 1: this cgroup's id goes into the evalnet table's set
+# (evalnet.nft matches it at cgroup level 2, /system.slice/dockerd-eval.service).
+NFTSet=cgroup:inet:evalnet:engine_cgroups
+# Layer 2, address-only and kept if the set is empty: nothing in this cgroup
+# reaches host-local or private addresses, except the engine's own namespace
+# (10.0.2.0/24: slirp4netns' gateway, DNS and tap) and the resolver stub and
+# loopback address the eval uses. nft (layer 1) restricts the loopback port.
+IPAddressDeny=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fd7a:115c:a1e0::/48 fc00::/7
+IPAddressAllow=127.0.0.1/32 127.0.0.53/32 10.0.2.0/24
+TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M
+BindPaths=/home/nish/.local/share/dockerd-eval
+BindReadOnlyPaths=-/home/nish/.local/bin/rclone
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/home/nish/.docker -/run/user/1000 -/home/nish/.local/share/containers/storage -/home/nish/.local/share/podman-eval
+InaccessiblePaths=-/home/nish/.ssh -/home/nish/.gnupg -/home/nish/.config/cloudflare -/home/nish/.cloudflare -/home/nish/.wrangler
+InaccessiblePaths=-/home/nish/.config/rclone -/home/nish/.codex -/home/nish/.netrc -/home/nish/.git-credentials -/home/nish/.aws
+InaccessiblePaths=-/home/nish/.oci -/home/nish/.minio -/home/nish/.juicefs -/home/nish/.config/tailscale -/home/nish/.config/glab-cli -/home/nish/.hermes
+InaccessiblePaths=-/etc/restic
+InaccessiblePaths=-/home/nish/.config/gh -/home/nish/.config/fleet-worker
+InaccessiblePaths=-/home/nish/.claude/.credentials.json -/home/nish/.claude.json -/home/nish/.claude-vps -/home/nish/.claude-max
+InaccessiblePaths=-/home/nish/.claude-nish -/home/nish/.claude-team -/home/nish/.claude-telegram -/home/nish/.claude-auth-backup-max-2026-10-10
+InaccessiblePaths=-/home/nish/.local/share/claude-seat-backup
+InaccessiblePaths=-/home/nish/.claude/.credentials.json.bak-alert-repair-20260909T055545Z -/home/nish/.claude/.credentials.json.bak-issue-4670-20260909T122627 -/home/nish/.claude/.credentials.json.blanked.20260821T233543
+InaccessiblePaths=-/home/nish/.pi/agent/auth.json -/home/nish/.pi/agent/mcp-adapter.json -/home/nish/.pi/agent/mcp-adapter.json.bak-executor -/home/nish/.pi/agent/models-store.json -/home/nish/.pi/agent/mcp-oauth-encrypted
+InaccessiblePaths=-/home/nish/workspaces/tooling/nish-vault -/home/nish/nish-vault
+InaccessiblePaths=-/home/nish/.config/fleet-ops -/home/nish/.local/share/drive
+
+[Install]
+WantedBy=multi-user.target
