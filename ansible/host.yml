@@ -116,7 +116,8 @@
     redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
     # Grafana reads one raw value per file ($__file{} in config/grafana/provisioning).
     # The sources hold KEY=value lines, so each value is copied out of its source on
-    # every run (a rotation at the source reaches Grafana on the next run). The copies
+    # every run (a rotation at the source reaches the files on the next run; a running
+    # Grafana picks it up at its next provisioning load or restart). The copies
     # and the Redis files sit under paths the worker jails already hide
     # (~/.config/cloudflare and ~/.config/fleet-ops/litellm-keys in 20-lockdown.conf).
     grafana_secrets_dir: "{{ nish_config }}/cloudflare/grafana-secrets"
@@ -1195,6 +1196,14 @@
         redis_password: "{{ lookup('ansible.builtin.password', redis_password_file ~ ' length=40 chars=ascii_letters,digits') }}"
       no_log: true
 
+    - name: Make sure the directory for the Redis files exists
+      ansible.builtin.file:
+        path: "{{ nish_config }}/fleet-ops/litellm-keys"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0700"
+
     - name: Render the Redis requirepass fragment from that file
       ansible.builtin.copy:
         content: "requirepass {{ redis_password }}\n"
@@ -1243,7 +1252,12 @@
 
 
     # Last in the play, so a missing source or key fails the run only after everything
-    # else applied. The loop items name files and keys, never values.
+    # else applied. The loop items name files and keys, never values. Why a copy and not
+    # the env route or Podman secrets: the sources are shared KEY=value files (the whole
+    # Hermes env, the deploy-ci env), and Grafana's $VAR expansion would need them loaded
+    # whole into its environment; Podman secrets need a create step that reads the same
+    # sources and keeps a second copy in the secret store. A Grafana that is already
+    # running re-reads the files at its next provisioning load or restart.
     - name: Create the Grafana credential directory
       ansible.builtin.file:
         path: "{{ grafana_secrets_dir }}"
@@ -1268,20 +1282,18 @@
              | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
              | last | default('') | trim }}
       when: value != ''
+      register: grafana_credential_copies
       no_log: true
       diff: false
 
     - name: Fail when a Grafana credential source or key is missing or empty
       ansible.builtin.assert:
-        that: >-
-          (lookup('ansible.builtin.file', item.src, errors='ignore') | default('', true)
-           | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
-           | last | default('') | trim) != ''
-        fail_msg: "Grafana credential {{ item.file }} was not refreshed: {{ item.src }} is missing, or has no non-empty {{ item.key }}= line."
+        that: not (item.skipped | default(false))
+        fail_msg: "Grafana credential {{ item.item.file }} was not refreshed: {{ item.item.src }} is missing, or has no non-empty {{ item.item.key }}= line."
         quiet: true
-      loop: "{{ grafana_credentials }}"
+      loop: "{{ grafana_credential_copies.results }}"
       loop_control:
-        label: "{{ item.file }}"
+        label: "{{ item.item.file }}"
 
   handlers:
     - name: Reload systemd
