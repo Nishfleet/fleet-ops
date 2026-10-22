@@ -19,11 +19,14 @@ OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
-# fleet-sync.service allows 300s and fleet-host-config.service 600s; deploy-box's
-# job gives up after 10 minutes, so the chain is cut at the same point.
-TimeoutStartSec=600
+# The chain is fleet-sync.service (up to 300s) then fleet-host-config.service
+# (up to 600s), so the whole unit is allowed 900s. The deploy-box job waits longer.
+TimeoutStartSec=900
+# The request this run serves is copied at the start, so the verdict below names
+# it even when a newer request lands while the run is going.
+ExecStartPre=/bin/cp /var/lib/fleet-deploy/request /var/lib/fleet-deploy/running
 ExecStart=/usr/bin/systemctl --user --machine=nish@.host start fleet-sync.service
 ExecStart=/usr/bin/systemctl start fleet-host-config.service
 ExecStopPost=/usr/bin/journalctl --sync
 ExecStopPost=/bin/sh -c 'journalctl --no-pager -n 100 -u fleet-deploy.service -u fleet-host-config.service --user-unit=fleet-sync.service >/var/lib/fleet-deploy/log'
-ExecStopPost=/bin/sh -c 'r=$$(head -c 80 /var/lib/fleet-deploy/request | tr -cd "A-Za-z0-9 ._-"); printf "%%s %%s %%s %%s\n" "$$r" "$$SERVICE_RESULT" "$$EXIT_STATUS" "$$(date -u +%%FT%%TZ)" >/var/lib/fleet-deploy/result'
+ExecStopPost=/bin/sh -c 'r=$$(head -c 80 /var/lib/fleet-deploy/running | tr -cd "A-Za-z0-9 ._-"); printf "%%s %%s %%s %%s\n" "$$r" "$$SERVICE_RESULT" "$$EXIT_STATUS" "$$(date -u +%%FT%%TZ)" >/var/lib/fleet-deploy/result'

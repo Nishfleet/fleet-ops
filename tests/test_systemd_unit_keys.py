@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -52,6 +53,18 @@ def test_systemd_analyze_reports_no_unknown_directive() -> None:
         if "Unknown key" in line or "Unknown section" in line
     ]
     assert unknown == [], "\n".join(unknown)
+
+
+def test_fleet_deploy_verdict_line_names_the_request_the_run_started_with(tmp_path: Path) -> None:
+    lines = (INSTALLED / "fleet-deploy.service").read_text().splitlines()
+    post = [line.removeprefix("ExecStopPost=") for line in lines if line.startswith("ExecStopPost=/bin/sh -c 'r=")]
+    assert len(post) == 1
+    (tmp_path / "running").write_text("abc123 77-1\n")
+    (tmp_path / "request").write_text("def456 78-1\n")
+    command = post[0].replace("/var/lib/fleet-deploy", str(tmp_path)).replace("%%", "%").replace("$$", "$")
+    env = {**os.environ, "SERVICE_RESULT": "exit-code", "EXIT_STATUS": "3"}
+    subprocess.run(shlex.split(command), env=env, check=True)
+    assert re.fullmatch(r"abc123 77-1 exit-code 3 \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n", (tmp_path / "result").read_text())
 
 
 TETHER = INSTALLED / "tether-agent.service"
