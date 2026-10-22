@@ -598,9 +598,9 @@ number after the restart is the real test.
 Phase 1 of our own agent: iMessage chat, its own memory, and crash-proofing,
 with no live-site, database, GitHub or Cloudflare access. The app lives in the
 private repo `Nishfleet/tether`; this repo owns the unit that runs it, because
-sandbox settings are silently ignored in a per-user unit on this box (Ubuntu
-sets `kernel.apparmor_restrict_unprivileged_userns=1`), so it must be a system
-unit with its own service user.
+a per-user unit's unprivileged manager cannot apply namespaced sandbox options
+(proven on this box, vault note `claude-vps-listener-locked`), so it must be a
+system unit with its own service user.
 
 | Piece | Where |
 | --- | --- |
@@ -616,13 +616,20 @@ skip until the app is installed. `Restart=always` with `StartLimitIntervalSec=0`
 means a killed process comes back with the durable runtime's last checkpoint,
 which is what the mid-reply proof in #9980 needs.
 
-Switch off, about two minutes, as root:
+Switch off, about two minutes, as root. Warning: the last command
+removes its memory and its credentials, and cannot be undone:
 
 ```
 systemctl disable --now tether-agent.service
 deluser tether                     # optional: also drop the service user
-rm -rf /var/lib/tether /etc/tether # WARNING: removes its memory and its credentials, and cannot be undone
+rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and cannot be undone
 ```
+
+`node` is the distro `nodejs` package at `/usr/bin/node`; the app is installed
+at `/var/lib/tether/app` owned by `tether`, mode 0755, by the tether release
+step. The unit allows `AF_INET`/`AF_INET6` because iMessage needs the internet:
+phase 1 has no GitHub, Cloudflare or database token to spend, so the absence of
+credentials is what keeps it off those services, not this unit.
 
 In-band, without root, Nish's own off-switch is the `STOP` text: the agent
 handles `STOP` and `RESUME` in code, before the model runs, so no reply and no

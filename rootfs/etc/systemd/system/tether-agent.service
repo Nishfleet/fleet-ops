@@ -1,6 +1,6 @@
 [Unit]
 Description=Tether, the always-on iMessage agent (fleet-ops#9980 phase 1)
-Documentation=https://github.com/Nishfleet/tether
+Documentation=https://github.com/Nishfleet/tether/blob/main/README.md
 Wants=network-online.target
 After=network-online.target
 # The app ships from Nishfleet/tether and is installed under /var/lib/tether/app.
@@ -21,7 +21,12 @@ Environment=NODE_ENV=production
 # token reaches this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
 ExecStart=/usr/bin/node --enable-source-maps /var/lib/tether/app/dist/index.js
-Restart=always
+# The distro nodejs package owns /usr/bin/node on this box.
+SyslogIdentifier=tether
+# Crash-proofing: on-failure, not always, so the clean STOP exit does not come
+# back five seconds later. StartLimitIntervalSec=0 (above) removes the burst
+# limit, so a crash loop keeps retrying on the durable runtime's checkpoint.
+Restart=on-failure
 RestartSec=5
 # Crash-proofing: the durable runtime holds the thread and its memory in the
 # state directory, so a kill mid-reply resumes where it stopped (fleet-ops#9980).
@@ -38,7 +43,6 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/tether
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
