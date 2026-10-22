@@ -66,9 +66,11 @@
   `~/workspaces/agent-state/`, `/tmp/` or any checkout a session can delete
   or re-clone (fleet-ops#7743: hand-linked `standing-rules-render` units
   pointed into a churning checkout and dangled, taking the render down).
-  `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a dangling
-  or throwaway-target live link — wiring set this way is caught on the next
-  deploy push or boot.
+  `fleet-sync.service`'s LINK-GUARD ExecStart fails the unit on a
+  throwaway-target live link, and on a dangling one anywhere except the
+  `~/.pi/agent/skills` mirror, which logs it instead because the synced
+  skill source deletes those targets routinely (fleet-ops#9967) — wiring set
+  this way is caught on the next deploy push or boot.
 - Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with leviathan first — `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message) — before re-deriving; `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
 
 ## Live state

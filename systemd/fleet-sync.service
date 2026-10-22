@@ -42,8 +42,13 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    those are true only when HEAD == origin/main; either false exits non-zero and
 #    the unit fails loud, so OnFailure=fleet-unit-failed@ pages instead of the clone
 #    quietly lagging.
-ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor refs/remotes/origin/main HEAD
-ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge-base --is-ancestor HEAD refs/remotes/origin/main
+#    fleet-ops#9967: "fail loud" shipped as a bare git exit code, so the six red
+#    deploy-box runs printed only `exit code 1`. The cause — a session had checked a
+#    work branch out in the deploy clone, so the clone was a commit ahead of main —
+#    lived in the journal alone, and each run took a manual read to explain. One sh
+#    line now prints DEPLOY-BLOCKED, the branch and head it found, the commits that
+#    are not on main, and the fix.
+ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at %h/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; if git merge-base --is-ancestor refs/remotes/origin/main HEAD && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then exit 0; fi; echo "DEPLOY-BLOCKED: the deploy clone is not at origin/main, so no unit or config was updated."; echo "  branch $$(git rev-parse --abbrev-ref HEAD), head $$(git rev-parse --short HEAD), origin/main $$(git rev-parse --short refs/remotes/origin/main)"; git log --oneline -n 20 refs/remotes/origin/main..HEAD | sed "s/^/  not-on-main: /"; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then work from a worktree, not the deploy clone"; exit 1'
 # 2. Link the OnFailure handler, drop the retired prometheus-reload live
 #    links, then re-read unit files. Link first so daemon-reload loads
 #    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
@@ -140,13 +145,16 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     prefixed with `-` so a broken capture watcher cannot stop the deploy steps after it (the
 #     pr-sweep timers below); the unit's OnFailure= pages when it fails. Off switch: delete this
 #     step and the enable line below, then `systemctl --user disable --now beacon-hermes-poll.service`.
--ExecStart=/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
--ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+#     The prefix goes AFTER the `=` (`ExecStart=-`): `-ExecStart=` is an unknown key, which systemd
+#     skips with a warning and exit 0, so those four lines silently never ran and
+#     beacon-hermes-poll.service was never linked (fleet-ops#9967).
+ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
--ExecStart=/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
--ExecStart=/usr/bin/systemctl --user restart beacon-hermes-poll.service
+ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
+ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
@@ -183,12 +191,22 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 #    2026-09-18 incident linked standing-rules-render into a churning clone
 #    and it dangled when the files vanished. After every pull, fail LOUD on
 #    any symlink in the live wiring roots (README "Allowlist" set + the
-#    vault) that is broken (`-xtype l`: target missing or unreadable) or
-#    whose link text names a throwaway root — *worktrees/, agent-state
-#    (worktrees live there too), */tmp/. A failed unit is the page. find
-#    prints each bad link and -exec /bin/false {} + makes find exit non-zero
-#    when there is at least one.
-ExecStart=/usr/bin/find /home/nish/.config/systemd/user /home/nish/.local/bin /home/nish/.pi/agent /home/nish/workspaces/tooling/nish-vault ( -xtype l -o -type l ( -lname *worktrees/* -o -lname */agent-state/* -o -lname */tmp/* ) ) -printf "[fleet-sync] LINK-GUARD live symlink -> dead/throwaway target: %%p\n" -exec /bin/false {} +
+#    vault) whose link text names a throwaway root — *worktrees/, agent-state
+#    (worktrees live there too), */tmp/ — and on any BROKEN link (`-xtype l`:
+#    target missing or unreadable) outside the skill mirror below. A failed
+#    unit is the page. find prints each bad link and -exec /bin/false {} +
+#    makes find exit non-zero when there is at least one.
+#    It is two lines, not one, because a broken link means two different
+#    things. Under ~/.pi/agent/skills the target is a skill that the synced
+#    ~/.claude/skills folder (or the vault) owns, so the other machine
+#    deleting it leaves the link dead as a matter of course — nine of them
+#    held every push to main red for 23 h across six runs (fleet-ops#9967).
+#    That class logs and does not fail, so the deploy converges and a skill
+#    that comes back needs no relink. A throwaway target stays fatal in every
+#    root, the skill mirror included.
+ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -type l ( -lname *worktrees/* -o -lname */agent-state/* -o -lname */tmp/* ) -printf "[fleet-sync] LINK-GUARD live symlink -> throwaway target: %%p -> %%l\n" -exec /bin/false {} +
+ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -path %h/.pi/agent/skills -prune -o -xtype l -printf "[fleet-sync] LINK-GUARD live symlink -> dead target: %%p -> %%l\n" -exec /bin/false {} +
+ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill link dead (skill gone from its source, link left in place): %%p -> %%l\n"
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).
