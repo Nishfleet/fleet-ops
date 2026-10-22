@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED = ROOT / "rootfs/etc/systemd/system"
@@ -88,12 +87,12 @@ def test_tether_cannot_reach_loopback_or_rewrite_its_code() -> None:
     assert not keys["WorkingDirectory"][0].startswith("/opt/")
 
 
-def _tether_tasks(marker: Path) -> dict[str, dict]:
+def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
     env = {**os.environ, "ANSIBLE_STDOUT_CALLBACK": "json", "ANSIBLE_LOCALHOST_WARNING": "False"}
     proc = subprocess.run(
         [
             "ansible-playbook", "--check", "-c", "local", "-i", "localhost,", "--tags", "tether",
-            "-e", f"tether_off_marker={marker}", "ansible/host.yml",
+            "-e", f"tether_off_marker={marker}", *extra, "ansible/host.yml",
         ],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
     )
@@ -106,9 +105,12 @@ def _tether_tasks(marker: Path) -> dict[str, dict]:
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
 def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"
-    on = _tether_tasks(marker)
+    photon = tmp_path / "photon.env"
+    photon.touch()
+    extra = ("-e", f"tether_photon_env={photon}")
+    on = _tether_tasks(marker, extra)
     marker.touch()
-    off = _tether_tasks(marker)
+    off = _tether_tasks(marker, extra)
     for name in (
         "Create the tether group",
         "Create the tether service user",
@@ -127,43 +129,43 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     assert on["Keep tether disabled and stopped while the marker exists"].get("skipped"), "no marker: the run never touches the unit"
 
 
-def _host_play() -> dict:
-    return yaml.safe_load((ROOT / "ansible/host.yml").read_text())[0]
+HOST_YML = ROOT / "ansible/host.yml"
 
 
-def _tether_module_tasks(module: str) -> list[dict]:
-    return [
-        task
-        for task in _host_play()["tasks"]
-        if "tether" in (task.get("tags") or []) and f"ansible.builtin.{module}" in task
-    ]
+def _tether_blocks() -> list[str]:
+    blocks = re.split(r"\n    - name: ", HOST_YML.read_text())
+    return [block for block in blocks if "tags: [tether]" in block]
+
+
+def _tether_module_blocks(module: str) -> list[str]:
+    return [block for block in _tether_blocks() if f"ansible.builtin.{module}:" in block]
+
+
+def _host_var(name: str) -> str:
+    match = re.search(rf"^    {name}: \"?([^\"\n]+)\"?$", HOST_YML.read_text(), re.MULTILINE)
+    assert match, name
+    return match.group(1)
 
 
 def _node_dir() -> str:
-    variables = _host_play()["vars"]
-    version = variables["tether_node_version"]
-    return variables["tether_node_dir"].replace("{{ tether_node_version }}", version)
+    return _host_var("tether_node_dir").replace("{{ tether_node_version }}", _host_var("tether_node_version"))
 
 
 def test_tether_has_no_apt_nodejs_pin() -> None:
-    for task in _tether_module_tasks("apt"):
-        assert "nodejs" not in str(task["ansible.builtin.apt"].get("name")), task["name"]
-    assert "nodejs=" not in (ROOT / "ansible/host.yml").read_text()
+    assert not [block for block in _tether_module_blocks("apt") if "nodejs" in block]
+    assert "nodejs=" not in HOST_YML.read_text()
 
 
 def test_tether_node_download_is_pinned_by_sha256() -> None:
-    variables = _host_play()["vars"]
-    assert re.fullmatch(r"22\.\d+\.\d+", str(variables["tether_node_version"]))
-    assert re.fullmatch(r"[0-9a-f]{64}", variables["tether_node_sha256"])
-    downloads = _tether_module_tasks("get_url")
+    assert re.fullmatch(r"22\.\d+\.\d+", _host_var("tether_node_version"))
+    assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_node_sha256"))
+    downloads = _tether_module_blocks("get_url")
     assert len(downloads) == 1
-    args = downloads[0]["ansible.builtin.get_url"]
-    assert args["url"].startswith("https://nodejs.org/dist/v{{ tether_node_version }}/")
-    assert args["url"].endswith("-linux-x64.tar.xz")
-    assert args["checksum"] == "sha256:{{ tether_node_sha256 }}"
-    unpack = _tether_module_tasks("unarchive")
+    assert re.search(r'^        url: "https://nodejs\.org/dist/v\{\{ tether_node_version \}\}/[^"]+-linux-x64\.tar\.xz"$', downloads[0], re.M)
+    assert re.search(r'^        checksum: "sha256:\{\{ tether_node_sha256 \}\}"$', downloads[0], re.M)
+    unpack = _tether_module_blocks("unarchive")
     assert len(unpack) == 1
-    assert unpack[0]["ansible.builtin.unarchive"]["dest"] == "{{ tether_node_dir }}"
+    assert re.search(r'^        dest: "\{\{ tether_node_dir \}\}"$', unpack[0], re.M)
     assert re.fullmatch(r"/opt/node-v\d+\.\d+\.\d+", _node_dir())
 
 
@@ -178,17 +180,24 @@ def test_tether_loads_both_environment_files() -> None:
 
 
 def test_tether_photon_env_is_only_chowned_never_created() -> None:
-    tasks = [
-        task
-        for task in _tether_module_tasks("file")
-        if task["ansible.builtin.file"]["path"] == "/etc/tether/photon.env"
-    ]
-    assert len(tasks) == 1
-    args = tasks[0]["ansible.builtin.file"]
-    assert args["state"] == "file"
-    assert (args["owner"], args["group"], args["mode"]) == ("root", "tether", "0640")
-    text = (ROOT / "ansible/host.yml").read_text()
-    assert text.count("photon.env") == 1, "no copy or template task may name it"
+    assert _host_var("tether_photon_env") == "/etc/tether/photon.env"
+    users = [block for block in _tether_blocks() if "tether_photon_env }}" in block and "ansible.builtin.stat:" not in block]
+    assert len(users) == 1
+    block = users[0]
+    assert "ansible.builtin.file:" in block and "        state: file\n" in block
+    assert "        owner: root\n        group: tether\n        mode: \"0640\"\n" in block
+    assert "tether_photon.stat.exists" in block, "a missing file must skip the task, not fail the run"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_photon_env_task_waits_for_the_file(tmp_path: Path) -> None:
+    name = "Let the tether group read the Photon credentials file"
+    photon = tmp_path / "photon.env"
+    missing = _tether_tasks(tmp_path / "no-marker", extra=("-e", f"tether_photon_env={photon}"))
+    assert missing[name].get("skipped"), "no file: nothing to do and nothing to fail"
+    photon.touch()
+    present = _tether_tasks(tmp_path / "no-marker", extra=("-e", f"tether_photon_env={photon}"))
+    assert not present[name].get("skipped")
 
 
 def test_host_run_never_enables_or_starts_tether() -> None:
