@@ -423,7 +423,7 @@
         name: prometheus-alertmanager.service
         enabled: true
         state: started
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -1589,7 +1589,7 @@
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
-        that: alertmanager_credentials.results | map(attribute='stat.exists') | min
+        that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
         quiet: true
 
@@ -1676,14 +1676,14 @@
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: reloaded
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     # The options file is read only at start.
     - name: Restart alertmanager
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: restarted
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:
