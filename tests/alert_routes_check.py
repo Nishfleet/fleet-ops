@@ -14,17 +14,21 @@ means adding it to URGENT here, with its reason, and labelling it critical.
 It also holds the other end of the alert path: Alertmanager's API answers only
 with basic auth, and every Prometheus client of it carries the credential
 (fleet-ops#10058). Three files have to agree for that to hold and nothing else
-in CI compares them: the options file that names the web config, the web config's
-destination in ansible (its bcrypt hash is hand-placed host state, never in git),
-and Prometheus's client config, which needs the matching plaintext for both the
+in CI compares them: the options file that names the web config, ansible, which
+has to see both hand-placed files in place before it installs either side, and
+Prometheus's client config, which needs the matching plaintext for both the
 alerting target and the scrape job. A drift in the first two stops the service
-from starting. A drift in the third is silent until the outside dead-man notices
-that the alert set stopped arriving.
+from starting, or stops the play that would install it. A drift in the third is
+silent until the outside dead-man notices that the alert set stopped arriving.
+The two credential files are hand-placed host state, root- and service-owned:
+any process that can reach the loopback listener already runs as nish, so a
+credential nish could read would protect nothing.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -84,6 +88,23 @@ def matches(matchers, labels):
     return True
 
 
+def task_blocks(text):
+    """The play's tasks and handlers, one string each, comments kept for context."""
+    blocks, current = [], None
+    for line in text.splitlines():
+        if line.startswith("    - name: "):
+            current = [line]
+            blocks.append(current)
+        elif current is not None:
+            current.append(line)
+    return ["\n".join(b) for b in blocks]
+
+
+def code(task):
+    """The task's lines that run, so a comment cannot stand in for a setting."""
+    return "\n".join(l for l in task.splitlines() if not l.lstrip().startswith("#"))
+
+
 def route(node, labels, repeat=None):
     """(receiver, repeat seconds) pairs reached by an alert with these labels
     (Alertmanager tree walk): a matching child contributes its own receivers and
@@ -135,11 +156,23 @@ def alertmanager_auth(repo):
         if auth.get("password") or auth.get("password_file") != AM_AUTH_FILE:
             bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_AUTH_FILE}, not an inline password")
     ansible = (repo / AM_ANSIBLE).read_text()
-    for dest, source in ((AM_WEB_CONFIG, "alertmanager-web.yml"), (AM_AUTH_FILE, "alertmanager-password")):
-        if f"dest: {dest}" not in ansible:
-            bad.append(f"{AM_ANSIBLE}: nothing installs {dest}")
-        if f".config/fleet-ops/{source}" not in ansible:
-            bad.append(f"{AM_ANSIBLE}: {dest} does not come from ~/.config/fleet-ops/{source}, so the credential would live in the repo")
+    tasks = task_blocks(ansible)
+    if ".config/fleet-ops/alertmanager" in ansible:
+        bad.append(f"{AM_ANSIBLE}: an alertmanager credential is read from nish's home, where any process on the box can read it")
+    for dest in (AM_WEB_CONFIG, AM_AUTH_FILE):
+        looked = [t for t in tasks if dest in code(t) and "ansible.builtin.stat" in code(t)]
+        if not looked:
+            bad.append(f"{AM_ANSIBLE}: nothing stats {dest}, so the play cannot tell whether the auth pair is in place")
+        elif not all("follow: false" in code(t) for t in looked):
+            bad.append(f"{AM_ANSIBLE}: the stat of {dest} follows symlinks, so a link could steer the check")
+        if any("ansible.builtin.copy" in code(t) and dest in code(t) for t in tasks):
+            bad.append(f"{AM_ANSIBLE}: the play copies {dest}; it is hand-placed host state, root- and service-owned")
+    for name in ("Install prometheus and blackbox exporter config", "Install the alertmanager options"):
+        task = [t for t in tasks if f"name: {name}" in t]
+        if not task:
+            bad.append(f"{AM_ANSIBLE}: no task named {name}")
+        elif "alertmanager_auth_ready" not in code(task[0]):
+            bad.append(f"{AM_ANSIBLE}: {name} installs a config that names the credential without waiting for both halves of the pair")
     return bad
 
 
@@ -158,6 +191,26 @@ def selftest():
     assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    repo = Path(__file__).resolve().parents[1]
+    assert alertmanager_auth(repo) == [], alertmanager_auth(repo)
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp)
+        for rel in (AM_OPTIONS, AM_PROMETHEUS, AM_ANSIBLE):
+            (fixture / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fixture / rel).write_text((repo / rel).read_text())
+        doc = yaml.safe_load((fixture / AM_PROMETHEUS).read_text())
+        for entry in (doc.get("alerting") or {}).get("alertmanagers") or []:
+            entry.pop("basic_auth", None)
+        for job in doc.get("scrape_configs") or []:
+            if job.get("job_name") == "alertmanager":
+                job.pop("basic_auth", None)
+        (fixture / AM_PROMETHEUS).write_text(yaml.safe_dump(doc))
+        assert sum("has no basic_auth" in f for f in alertmanager_auth(fixture)) == 2, alertmanager_auth(fixture)
+        (fixture / AM_PROMETHEUS).write_text((repo / AM_PROMETHEUS).read_text())
+        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text().replace(
+            "      when: alertmanager_auth_ready | default(false) | bool\n      notify:\n        - Reload prometheus",
+            "      notify:\n        - Reload prometheus", 1))
+        assert any("without waiting for both halves" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
 
 
 def main(root):

@@ -383,6 +383,78 @@
         mode: preserve
       notify: Restart htpdate
 
+    # Alertmanager requires basic auth on its whole API, and the two files that
+    # make that work are hand-placed host state, like deadman_url and the bot
+    # token: never in the repo, and never readable by nish. A credential nish
+    # could read would close nothing, because the only processes that reach a
+    # loopback listener already run as nish. The web config holds the bcrypt hash
+    # (root-owned, group prometheus, because the service runs as that user); the
+    # password file holds the matching plaintext and belongs to the prometheus
+    # user, which reads it on every alert push and scrape. This runs before the
+    # Prometheus config below, because that config names the password file: a
+    # prometheus.yml that pointed at a file the box does not have would stop
+    # every alert push and the alertmanager scrape, and the run already fails
+    # without the pair, so the old config stays until both halves are in place.
+    - name: Look for the alertmanager web config
+      ansible.builtin.stat:
+        path: /etc/alertmanager/web.yml
+        follow: false
+      register: alertmanager_web_config
+
+    - name: Look for the password Prometheus authenticates to alertmanager with
+      ansible.builtin.stat:
+        path: /etc/prometheus/alertmanager_password
+        follow: false
+      register: alertmanager_password
+
+    # A symlink fails isreg, so a link cannot steer the restart or the checks below.
+    - name: Note whether both halves of the alertmanager credential are in place
+      ansible.builtin.set_fact:
+        alertmanager_auth_ready: "{{ alertmanager_web_config.stat.isreg | default(false) and alertmanager_password.stat.isreg | default(false) }}"
+
+    - name: Keep the alertmanager web config root-owned and readable by the service group
+      ansible.builtin.file:
+        path: /etc/alertmanager/web.yml
+        owner: root
+        group: prometheus
+        mode: "0640"
+      when: alertmanager_auth_ready | default(false) | bool
+
+    - name: Keep the alertmanager password owned by the prometheus user
+      ansible.builtin.file:
+        path: /etc/prometheus/alertmanager_password
+        owner: prometheus
+        group: prometheus
+        mode: "0600"
+      when: alertmanager_auth_ready | default(false) | bool
+
+    # A web config without basic_auth_users leaves the API open, and a hash that
+    # is not bcrypt makes Alertmanager refuse it at start, so the pair is checked
+    # before the options that switch auth on are installed. Whether the hash
+    # matches the plaintext is not knowable here: that shows up as a 401 the next
+    # time Prometheus pushes an alert, which is what the outside dead-man sees.
+    - name: Check that the alertmanager credential is shaped like one
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import re, sys, yaml
+            web = yaml.safe_load(open(sys.argv[1])) or {}
+            users = web.get("basic_auth_users") or {}
+            if not users:
+                sys.exit("no basic_auth_users in the web config")
+            for name, hashed in users.items():
+                if not re.match(r"^\$2[aby]\$[0-9]{2}\$", str(hashed)):
+                    sys.exit("%s is not a bcrypt hash" % name)
+            lines = [line for line in open(sys.argv[2]).read().splitlines() if line]
+            if len(lines) != 1 or any(c.isspace() for c in lines[0]):
+                sys.exit("the password file must hold one line and no whitespace")
+          - /etc/alertmanager/web.yml
+          - /etc/prometheus/alertmanager_password
+      changed_when: false
+      when: alertmanager_auth_ready | default(false) | bool
+
     - name: Install prometheus and blackbox exporter config
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/prometheus/"
@@ -390,6 +462,7 @@
         owner: root
         group: root
         mode: preserve
+      when: alertmanager_auth_ready | default(false) | bool
       notify:
         - Reload prometheus
         - Reload alertmanager
@@ -460,51 +533,6 @@
       when: telegram_chat_id.content is defined
       notify: Reload alertmanager
 
-    # Alertmanager requires basic auth on its whole API. The web config holds
-    # the bcrypt hash and the password file holds the matching plaintext; both
-    # are hand-placed 0600 files under nish's home, never in the repo. The web
-    # config is group-readable because the service runs as the prometheus user,
-    # and the password file is owned by that user because Prometheus reads it on
-    # every alert push and scrape. Auth is all-or-nothing: with a half of the
-    # pair on disk, a restart would either leave the API open or answer
-    # Prometheus 401 and stop the alerts silently, so nothing is installed
-    # unless both halves are there.
-    - name: Look for the alertmanager web config
-      ansible.builtin.stat:
-        path: "{{ nish_home }}/.config/fleet-ops/alertmanager-web.yml"
-      register: alertmanager_web_config
-
-    - name: Look for the alertmanager password
-      ansible.builtin.stat:
-        path: "{{ nish_home }}/.config/fleet-ops/alertmanager-password"
-      register: alertmanager_password
-
-    - name: Note whether both web-auth sources are in place
-      ansible.builtin.set_fact:
-        alertmanager_auth_ready: "{{ alertmanager_web_config.stat.exists and alertmanager_password.stat.exists }}"
-
-    - name: Install the alertmanager web config
-      ansible.builtin.copy:
-        src: "{{ nish_home }}/.config/fleet-ops/alertmanager-web.yml"
-        dest: /etc/alertmanager/web.yml
-        owner: root
-        group: prometheus
-        mode: "0640"
-        remote_src: true
-      when: alertmanager_auth_ready | default(false) | bool
-      notify: Restart alertmanager
-
-    - name: Install the alertmanager password Prometheus authenticates with
-      ansible.builtin.copy:
-        src: "{{ nish_home }}/.config/fleet-ops/alertmanager-password"
-        dest: /etc/prometheus/alertmanager_password
-        owner: prometheus
-        group: prometheus
-        mode: "0600"
-        remote_src: true
-      when: alertmanager_auth_ready | default(false) | bool
-      notify: Reload prometheus
-
     # The options pin the listener to loopback and name the web config, so they
     # are installed only when the config they point at exists.
     - name: Install the alertmanager options
@@ -551,9 +579,7 @@
         name: prometheus-alertmanager.service
         enabled: true
         state: started
-      when:
-        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
-        - alertmanager_auth_ready | default(false) | bool
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -1857,7 +1883,7 @@
         that:
           - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
           - alertmanager_auth_ready | default(false) | bool
-        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing. Looked for deadman_url, telegram_bot_token and telegram_chat_id in /etc/prometheus, and alertmanager-web.yml and alertmanager-password in ~/.config/fleet-ops. The dead-man heartbeat, the hermes-gateway page and the authenticated API are off until they are placed."
+        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing. Looked for deadman_url, telegram_bot_token and telegram_chat_id in /etc/prometheus, and for the API auth pair /etc/alertmanager/web.yml (root:prometheus 0640, holding a bcrypt hash under basic_auth_users) and /etc/prometheus/alertmanager_password (prometheus:prometheus 0600, the matching plaintext). The dead-man heartbeat, the hermes-gateway page and the authenticated API are off until they are placed."
         quiet: true
 
     - name: Fail when the Command Code login could not be set up
@@ -1965,7 +1991,6 @@
         state: reloaded
       when:
         - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
-        - alertmanager_auth_ready | default(false) | bool
 
     # The options file and the web config are read only at start.
     - name: Restart alertmanager
