@@ -16,7 +16,9 @@ permission group name against the live API. Which jobs have run on the new
 tokens is in the PR body. A weekly timer renews them (see "Renewal").
 `inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
 apply` after that merge creates its token and writes its secret, so the state
-holds it before any run has used it.
+holds it before any run has used it. `fleet_console` (fleet-console-worker) was
+applied by hand on 2026-10-20 and is now in `main.tf`, so the weekly apply no
+longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 
 ## What it creates
 
@@ -33,6 +35,12 @@ holds it before any run has used it.
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
 | `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
 | `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
+| `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+
+The `mailbox` repo is the former `0509-support-inbox` repo (same repo id): the
+`0509-support-inbox` entry above writes its secret through the GitHub rename
+redirect, so it needs no entry of its own.
 
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
