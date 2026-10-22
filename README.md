@@ -184,7 +184,11 @@ script, or prompt lands unseen.
   has run once with the configs merged (the 15-minute tick pages on a missing
   config). Each run rebuilds the index from the files on disk, so it mirrors
   the logs and keeps the same retention; the index never holds more than the
-  logs do.
+  logs do. The drop-in `systemd/leviathan-index@.service.d/20-umask.conf` sets
+  `UMask=0077` so `pi.db` and `claude.db` are owner-only (the user-manager
+  default is 0002). Link it once after the merge with the drop-in `ln -sfn`
+  idiom under "Install" (before the merge it would dangle), then
+  `systemctl --user daemon-reload`; it applies at the next index run.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
