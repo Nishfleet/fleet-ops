@@ -656,6 +656,9 @@
       loop:
         - "{{ agent_share }}/devin"
         - "{{ agent_share }}/devin/cli"
+        # Pi worker session logs live under here (directory mode only; the
+        # files inside are nish's and stay as the tool writes them).
+        - "{{ nish_home }}/.pi"
       register: agent_state_dirs
 
     - name: Keep the agent state directories private
