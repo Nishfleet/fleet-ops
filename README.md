@@ -617,9 +617,13 @@ pinned, checksummed, CI-built release of `Nishfleet/tether` into `/opt/tether`.
 Until then nothing runs it, and `ConditionPathExists=/opt/tether/dist/index.js`
 turns any start into a skip. The app is at a root-owned path on purpose: the
 service user can write only `/var/lib/tether`, so it cannot rewrite its own
-code. `host.yml` also installs the distro `nodejs` (the `18.19.*` series, not an
-apt hold) for the unit's `/usr/bin/node`; that runtime is old, so the installer
-that replaces this step should pick the runtime.
+code. `host.yml` also installs Node 22 LTS for the unit: the official linux-x64
+tarball for one exact version (`tether_node_version`), checked against a sha256
+pinned in `host.yml`, unpacked into the root-owned `/opt/node-v<version>`. The
+unit's `ExecStart` names that `node` by absolute path. A new Node version is a
+PR that changes the version, the hash and that path together. `host.yml` also
+sets `/etc/tether/photon.env` (placed by hand, never created here) to
+`root:tether 0640`, and the unit loads it after `tether.env`.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart

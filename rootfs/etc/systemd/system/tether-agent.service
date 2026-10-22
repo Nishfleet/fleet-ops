@@ -26,12 +26,15 @@ User=tether
 Group=tether
 WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
-# The Photon Spectrum credentials and the model key live here, root:tether 0640.
-# Phase 1 holds no other credential: no shell, no GitHub, Cloudflare or database
-# token reaches this unit (fleet-ops#9980).
+# The model key lives in tether.env and the Photon Spectrum credentials in
+# photon.env, both root:tether 0640. Phase 1 holds no other credential: no
+# shell, no GitHub, Cloudflare or database token reaches this unit
+# (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
-ExecStart=/usr/bin/node --enable-source-maps /opt/tether/dist/index.js
-# The distro nodejs package owns /usr/bin/node on this box.
+EnvironmentFile=-/etc/tether/photon.env
+# The Node binary is the pinned release that ansible/host.yml unpacks
+# (tether_node_version), named by absolute path, not the distro /usr/bin/node.
+ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/dist/index.js
 SyslogIdentifier=tether
 # Crash-proofing: on-failure, not always, so the clean STOP exit does not come
 # back five seconds later. A killed process resumes on the durable runtime's
