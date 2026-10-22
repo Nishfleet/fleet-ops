@@ -1294,6 +1294,7 @@ jobs:
           guard-third-approves-but-lists-blocker|1|approve|0.95|clean|clean_ok|THIRD=blocked_ok|no|0|claude-opus-5-5 judge senior
           guard-third-forges-approval|1|approve|0.95|clean|clean_ok|THIRD=forged|no|0|claude-opus-5-5 judge senior
           guard-both-extra-block|1|approve|0.95|clean|blocked_b|THIRD=blocked_b|no|0|claude-opus-5-5 judge senior
+          guard-second-no-answer-third-blocks|1|approve|0.95|clean|none|THIRD=blocked_b|no|1|claude-opus-5-5 judge senior
           guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 judge senior
           guard-third-fails-or-times-out|1|approve|0.95|clean|clean_ok|THIRD_FAILS|no|1|claude-opus-5-5 judge senior
           guard-third-none-line-approves|1|approve|0.95|clean|clean_ok|THIRD=v_found|yes|0|claude-opus-5-5 judge senior
