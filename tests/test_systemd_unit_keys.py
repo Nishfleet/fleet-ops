@@ -19,6 +19,7 @@ def unit_files() -> list[Path]:
     for pattern in ("systemd/*.service", "systemd/*.timer", "systemd/*.path", "systemd/*.slice"):
         found += sorted(ROOT.glob(pattern))
     found += sorted(INSTALLED.glob("*.slice"))
+    found += sorted(INSTALLED.glob("fleet-deploy.*"))
     found += sorted(INSTALLED.glob("fleet-host-config.*"))
     found += sorted(INSTALLED.glob("fleet-update.*"))
     found += sorted(INSTALLED.glob("tether-*"))
