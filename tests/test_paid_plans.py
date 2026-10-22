@@ -41,6 +41,7 @@ SAME_TIER = {"senior-backup": "senior"}
 
 
 def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
+    assert YQ, "yq must be on PATH to read the router config"
     cfg_out = subprocess.run([YQ, "-o=json", ".router_settings.fallbacks", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
     tiers = {}
     for row in _model_list():
