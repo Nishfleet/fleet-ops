@@ -15,6 +15,8 @@ Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:r
 # Auth: a 0600 one-line `requirepass` fragment pulled in with --include, so the value never sits
 # on the command line. The host user maps to the image's redis uid 999 (as fleet-grafana does for
 # 472), so the 0600 file reads inside the container.
+# The file and litellm-redis.env (read by the proxy) carry the same password and are
+# written together; a missing or mismatched one fails closed (NOAUTH), never open.
 UserNS=keep-id:uid=999,gid=999
 Volume=%h/.config/fleet-ops/litellm-redis-auth.conf:/run/secrets/redis-auth.conf:ro
 Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf --include /run/secrets/redis-auth.conf

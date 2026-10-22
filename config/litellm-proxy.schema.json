@@ -315,6 +315,7 @@
     "benched": false,
     "router_settings": {
       "type": "object",
+      "not": { "required": ["redis_url"] },
       "required": ["redis_host", "redis_port", "redis_password", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
