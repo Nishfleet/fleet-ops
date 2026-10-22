@@ -1,0 +1,30 @@
+[Unit]
+Description=Agent Tincan wake for claude-vps, locked: no keys except Jev (Nish 2026-10-22)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=nish
+Group=nish
+SupplementaryGroups=
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json
+Environment=FLEET_TASK_ID=tincan-claude-vps
+Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps
+WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode dontAsk --settings /etc/claude-code/roles/tincan-listener.json --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
+Restart=always
+RestartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=tmpfs
+BindPaths=/home/nish/.claude-vps /home/nish/.local/state/tincan-listen-claude-vps /home/nish/workspaces /home/nish/.config/tincan/attachments /home/nish/.config/tincan/mcp-launches
+BindReadOnlyPaths=/home/nish/.local/bin /home/nish/.local/share/claude /home/nish/.config/tincan/claude-vps.json /home/nish/.config/fleet-ops/seats/typesafe-jev.env /home/nish/.gitconfig
+InaccessiblePaths=/run/docker.sock /var/run/docker.sock /run/user
+
+[Install]
+WantedBy=multi-user.target
