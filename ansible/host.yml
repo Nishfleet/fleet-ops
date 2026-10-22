@@ -435,10 +435,12 @@
     # scrape get a 401 and only the outside dead-man notices. Whether the hash
     # matches the plaintext is not knowable here: that shows up as a 401 the next
     # time Prometheus pushes an alert, which is what the outside dead-man sees.
+    # It runs on the same /usr/bin/python3 the validation task above uses, and the
+    # play is connection: local, so the repo path below is on this box too.
     - name: Check that the alertmanager credential is shaped like one
       ansible.builtin.command:
         argv:
-          - python3
+          - /usr/bin/python3
           - -c
           - |
             import re, sys, yaml
@@ -449,19 +451,18 @@
             for name, hashed in users.items():
                 if not re.match(r"^\$2[aby]\$[0-9]{2}\$", str(hashed)):
                     sys.exit("%s is not a bcrypt hash" % name)
-            lines = [line for line in open(sys.argv[2]).read().splitlines() if line]
-            if len(lines) != 1 or any(c.isspace() for c in lines[0]):
+            body = open(sys.argv[2]).read().strip()
+            if not body or any(c.isspace() for c in body):
                 sys.exit("the password file must hold one line and no whitespace")
             prom = yaml.safe_load(open(sys.argv[3])) or {}
-            named = set()
-            for group in (prom.get("alerting") or {}).get("alertmanagers") or []:
-                named.add((group.get("basic_auth") or {}).get("username"))
-            for job in prom.get("scrape_configs") or []:
-                if job.get("job_name") == "alertmanager":
-                    named.add((job.get("basic_auth") or {}).get("username"))
-            unknown = sorted(str(u) for u in named if u not in users)
-            if unknown:
-                sys.exit("prometheus.yml authenticates as %s, which the web config does not define" % ", ".join(unknown))
+            clients = list((prom.get("alerting") or {}).get("alertmanagers") or [])
+            clients += [j for j in prom.get("scrape_configs") or [] if j.get("job_name") == "alertmanager"]
+            for client in clients:
+                name = (client.get("basic_auth") or {}).get("username")
+                if not name:
+                    sys.exit("prometheus.yml has an alertmanager client with no basic_auth username")
+                if name not in users:
+                    sys.exit("prometheus.yml authenticates as %s, which the web config does not define" % name)
           - /etc/alertmanager/web.yml
           - /etc/prometheus/alertmanager_password
           - "{{ rootfs }}/etc/prometheus/prometheus.yml"

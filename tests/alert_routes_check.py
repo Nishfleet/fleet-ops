@@ -201,7 +201,8 @@ def selftest():
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
     repo = Path(__file__).resolve().parents[1]
-    assert alertmanager_auth(repo) == [], alertmanager_auth(repo)
+    findings = alertmanager_auth(repo)
+    assert findings == [], findings
     with tempfile.TemporaryDirectory() as tmp:
         fixture = Path(tmp)
         for rel in (AM_OPTIONS, AM_PROMETHEUS, AM_ANSIBLE):

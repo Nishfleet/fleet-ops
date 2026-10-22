@@ -7,6 +7,8 @@
 # reach it even with the credential. HA gossip is off (empty
 # --cluster.listen-address). fleet-host-config.service installs this file and
 # restarts prometheus-alertmanager.service when it changes (ansible/host.yml).
+# --web.config.file needs alertmanager 0.24 or later; this box runs the distro
+# package 0.26.0 (alertmanager --version), and an older binary refuses to start.
 # Silences and the notification log live in the package's state directory,
 # which the service user owns.
 ARGS="--config.file=/etc/alertmanager/alertmanager.yml --storage.path=/var/lib/prometheus/alertmanager --web.listen-address=127.0.0.1:9093 --cluster.listen-address= --web.config.file=/etc/alertmanager/web.yml"
