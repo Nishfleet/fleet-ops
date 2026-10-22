@@ -527,7 +527,7 @@ def test_production_config_keeps_the_fallthrough_shape():
     worker-cheap each need rows on at least two distinct api_key values (two
     rows that share one key share one quota wall, so a wall on that key parks
     both and leaves no peer; order filtering is applied after the cooldown
-    filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
+    filter in v1.98.0 router.py) and
     router_settings.fallbacks must carry the worker net both ways so a parked
     lane is left, not retried. No order-2 worker row remains: the order-2
     overflow rows this test used to require were the xkiro free rows, removed
