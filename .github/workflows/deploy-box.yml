@@ -1,8 +1,16 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
-# user-scope deploy steps), then the fleet-host-config.service system oneshot
-# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
-# this runner's user start that one system unit, so no step uses sudo.
+# deploy-box: push-triggered. The apply job starts the fleet-sync.service user
+# oneshot (the user-scope deploy steps), then the fleet-host-config.service system
+# oneshot (Ansible applies rootfs/ as root); each exit code is a verdict. polkit
+# lets this runner's user start that one system unit, so no step uses sudo.
 # The unit's own guards still gate every step. fleet-ops#8519
+#
+# probe is a job of its own, not apply's first step (fleet-ops#10046). As apply's
+# first step its verdict gated the deploy: a red probe marked both deploy steps
+# skipped, so the deploy clone kept serving the prompts and config from before the
+# merge (2026-10-22 14:14Z to 15:17Z: ebf1d4e7 and dbee9335 never reached the
+# clone, and the review job read the retired prompts/risky-review.md from it).
+# Both verdicts stay on the run; a red probe never stops the box from receiving
+# main. tests/test_deploy_box_trigger.py fails if the deploy is gated again.
 name: deploy-box
 
 on:
@@ -18,6 +26,14 @@ permissions:
   contents: read
 
 jobs:
+  probe:
+    name: probe
+    runs-on: [self-hosted, fleet-ci]
+    # Fails the job when a job box on this runner can read a credential path
+    # (rootfs/etc/systemd/system/actions.runner.*.d/). Nothing here writes.
+    timeout-minutes: 5
+    steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
   apply:
     name: apply
     runs-on: [self-hosted, fleet-ci]
@@ -27,7 +43,6 @@ jobs:
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
-      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)

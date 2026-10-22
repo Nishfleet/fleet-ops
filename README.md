@@ -105,6 +105,15 @@ script, or prompt lands unseen.
   with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
   enables the timer on every deploy. Off switch: remove that step and its enable
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
+- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when `origin/main`'s head commit is more than 30 min old and
+  the deploy clone is still short of it, so a merge that reached no deploy is loud
+  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box at
+  15:17Z, and the review job read the retired `prompts/risky-review.md` out of the
+  clone). It fetches `main` itself and only reads. Every 5 min; `fleet-sync.service`
+  step 2j links both and enables the timer on every deploy. Off switch: remove that
+  step and its enable line, then
+  `systemctl --user disable --now fleet-clone-lag.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
@@ -253,7 +262,10 @@ so nothing can drift, and the
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
 `deploy-box.yml` starts `fleet-sync.service` on every push to main, which
-keeps the clone current. It is the only deploy machinery on the box:
+keeps the clone current. It is the only deploy machinery on the box. Its security
+probe is a **separate job**, so a red probe is its own verdict and never skips the
+deploy steps; `fleet-clone-lag.timer` then pages when the clone is 30 min behind
+`origin/main` (fleet-ops#10046):
 
 ```
 systemctl --user status fleet-sync.service

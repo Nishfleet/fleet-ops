@@ -150,9 +150,18 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     beacon-hermes-poll.service was never linked (fleet-ops#9967).
 ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2j. The clone lag check (fleet-clone-lag.timer, fleet-ops#10046): link the unit pair
+#     and enable the timer on every deploy, the same way as step 2h, because it is the
+#     only thing that compares the clone to origin/main on a clock and a check that is
+#     silently off is the failure it ships to fix (a merge that starts no deploy left the
+#     box on stale prompts for 63 min on 2026-10-22). Off switch: delete this step and the
+#     enable line below, then `systemctl --user disable --now fleet-clone-lag.timer`.
+ExecStart=/bin/sh -c 'for f in fleet-clone-lag.service fleet-clone-lag.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-clone-lag.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
+ExecStart=/usr/bin/systemctl --user enable --now fleet-clone-lag.timer
 ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
 ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer

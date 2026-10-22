@@ -28,7 +28,11 @@ It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
 `fatal: Cannot fast-forward to multiple branches` and silently stops every
 deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
 asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone.
+than a lagging clone. Two things keep that true: the workflow's security
+probe is a job of its own, so a red probe never skips the deploy steps, and
+`fleet-clone-lag.timer` (every 5 min) fails the unit when `origin/main`'s
+head commit is 30 min old with the clone still short of it, printing the fix
+in its message (fleet-ops#10046).
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
