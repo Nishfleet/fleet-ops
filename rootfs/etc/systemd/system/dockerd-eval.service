@@ -24,11 +24,16 @@
 # socket, exec root, rootlesskit state and pid file begin clean.
 #
 # No NoNewPrivileges here: rootlesskit needs the setuid newuidmap/newgidmap, as
-# podman-eval did. The InaccessiblePaths below hide credentials, the host docker
+# podman-eval did. What the engine can see decides what a container started
+# through it can bind-mount, so /home/nish is an empty tmpfs here and only two
+# things are bound back in: the data root, and /home/nish/.local/bin/rclone
+# (read-only; the eval's compose file bind-mounts it). The compose file mounts
+# nothing else from the host, so the runner's _work directory needs no access
+# from here, and no other runner's directory, session store or workspace is
+# visible. The InaccessiblePaths below also hide credentials, the host docker
 # sockets, the user bus directory, the fleet's container store and the old podman
-# store. Kept visible: the data root, and /home/nish/.local/bin/rclone (the eval's
-# compose file bind-mounts it). The compose file mounts nothing else from the
-# host, so the runner's _work directory needs no access from here.
+# store (the /home/nish entries are redundant under the tmpfs and stay as a
+# second layer).
 # A `-` before a path means a missing path never stops the unit from starting.
 # Rollback: stop and disable this unit, delete this file, dockerd-eval.json and
 # the tmpfiles entry, delete 30-eval.conf, `systemctl daemon-reload`, restart the runner.
@@ -55,6 +60,9 @@ RestartSec=10s
 # Eval containers run in this unit's cgroup, so these cap the whole eval.
 MemoryMax=6G
 TasksMax=4096
+TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M
+BindPaths=/home/nish/.local/share/dockerd-eval
+BindReadOnlyPaths=-/home/nish/.local/bin/rclone
 InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/home/nish/.docker -/run/user/1000 -/home/nish/.local/share/containers/storage -/home/nish/.local/share/podman-eval
 InaccessiblePaths=-/home/nish/.ssh -/home/nish/.gnupg -/home/nish/.config/cloudflare -/home/nish/.cloudflare -/home/nish/.wrangler
 InaccessiblePaths=-/home/nish/.config/rclone -/home/nish/.codex -/home/nish/.netrc -/home/nish/.git-credentials -/home/nish/.aws

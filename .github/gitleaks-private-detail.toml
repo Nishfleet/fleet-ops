@@ -63,7 +63,7 @@ condition = "AND"
 [[allowlists]]
 description = "The runner lockdown, no-eval and eval drop-ins, dockerd-eval.service, and its test, must name the paths their InaccessiblePaths= hides (a system unit has no %h, and a unit line has no inline comment to carry gitleaks:allow); fleet-ops#9983"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
-paths = ['''(^|/)rootfs/etc/systemd/system/(actions\.runner\.[^/]*\.service\.d/(20-lockdown|25-no-eval|30-eval)\.conf|dockerd-eval\.service)$|^tests/test_dockerd_eval\.py$''']
+paths = ['''(^|/)rootfs/etc/systemd/system/(actions\.runner\.[^/]*\.service\.d/(20-lockdown|25-no-eval|30-eval)\.conf|dockerd-eval\.service)$|^tests/test_dockerd_eval\.py$|^rootfs/etc/tmpfiles\.d/dockerd-eval\.conf$''']
 
 [[allowlists]]
 description = "The Tincan listener unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names the paths its BindPaths= and Environment= lines use; moved byte for byte from /etc/systemd/system, fleet-ops#9974 phase A"

@@ -110,9 +110,20 @@ def test_the_unit_hides_credentials_sockets_and_the_old_stores() -> None:
     assert not [p for p in paths if any(v in p for v in visible)]
 
 
+def test_the_engine_sees_only_its_data_root_and_rclone_under_home() -> None:
+    unit = keys(UNIT)
+    (tmpfs,) = unit["TemporaryFileSystem"]
+    assert tmpfs.startswith("/home/nish:mode=0700,")
+    assert unit["BindPaths"] == ["/home/nish/.local/share/dockerd-eval"]
+    assert unit["BindReadOnlyPaths"] == ["-/home/nish/.local/bin/rclone"]
+
+
 def test_tmpfiles_creates_the_runtime_parent_private_to_nish() -> None:
     lines = [line for line in TMPFILES.read_text().splitlines() if line and not line.startswith("#")]
-    assert lines == ["d /run/dockerd-eval 0700 nish nish -"]
+    assert lines == [
+        "d /run/dockerd-eval 0700 nish nish -",
+        "d /home/nish/.local/share/dockerd-eval 0700 nish nish -",
+    ]
 
 
 def test_the_engine_config_is_an_empty_object() -> None:
@@ -120,8 +131,16 @@ def test_the_engine_config_is_an_empty_object() -> None:
 
 
 @pytest.mark.parametrize("path", OTHER_POOLS, ids=lambda p: p.parent.name)
-def test_other_pools_do_not_add_the_new_directory_in_this_change(path: Path) -> None:
-    assert "dockerd-eval" not in path.read_text().replace("dockerd-eval.service", "")
+def test_every_other_pool_hides_the_engine_directory(path: Path) -> None:
+    assert "-/run/dockerd-eval" in hidden(path)
+    assert "-/run/podman-eval" not in hidden(path)
+
+
+def test_the_eval_runner_does_not_hide_the_engine_directory() -> None:
+    base = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d/20-lockdown.conf"
+    for path in (base, CI3):
+        assert "-/run/dockerd-eval" not in hidden(path)
+        assert "-/run/dockerd-eval/rt" not in hidden(path)
 
 
 def test_podman_eval_is_retired() -> None:
