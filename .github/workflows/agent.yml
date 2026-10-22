@@ -1103,14 +1103,14 @@ jobs:
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           {
             cat "$RUNNER_TEMP/diff.txt"
-            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. Your last line must be exactly APPROVE (you found no blocker) or BLOCK (you found at least one).\n'
+            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n'
           } > "$RUNNER_TEMP/extra-in.txt"
           ask() { timeout 480 pi --print --no-context-files --no-tools --no-session \
             --append-system-prompt "$HOME/AGENTS.md" \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
             --provider litellm --model "$1" < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || : > "$RUNNER_TEMP/$2.txt"; }
           ask "$SECOND_SEAT" second & p2=$!; ask "$THIRD_SEAT" third & p3=$!
-          { wait "$p2" && wait "$p3"; } || retry "a reviewer was killed before it answered"
+          { wait "$p2" && wait "$p3"; } || retry "a reviewer process died before it answered"
           all=; blk=; both=true
           for r in second third; do
             R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT
