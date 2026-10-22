@@ -1,0 +1,216 @@
+# merge-gate: a workflow the org ruleset "Require workflows to pass before
+# merging" runs from main on every pull request and merge-queue entry, so a PR
+# cannot change what judges it.
+#   gate-files   (pull_request) flags a PR that edits one of the gate files
+#                below.
+#   veto-window  (pull_request) holds a gate-file PR behind the environment's
+#                wait timer, counted from its last push, so it cannot be queued
+#                until that wait has passed.
+#   merge-gate   (merge_group) runs the coordinator-approval check that ci.yml
+#                also runs, plus the owner veto check for every PR in the entry.
+name: merge-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-files:
+    name: gate-files
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      touched: ${{ steps.touched.outputs.touched }}
+    env:
+      # The files this gate holds behind the veto window. They live in this
+      # pinned workflow, so a PR cannot shorten the list it is judged by.
+      # agent-dispatch.yml holds the approval programs the merge-gate job reads.
+      GATE: |
+        .github/workflows/merge-gate.yml
+        .github/CODEOWNERS
+        config/risky-paths.json
+        .github/workflows/agent-dispatch.yml
+    steps:
+      - name: List the PR's changed files and match them against the gate files
+        id: touched
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          N: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Every failed read fails the job.
+          gh api --paginate "repos/$R/pulls/$N/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt" ||
+            { echo "::error::gate-files: changed-files read failed for #$N"; exit 1; }
+          total=$(gh api "repos/$R/pulls/$N" --jq '.changed_files') ||
+            { echo "::error::gate-files: PR read failed for #$N"; exit 1; }
+          printf '%s\n' "$GATE" | sed '/^$/d' > "$RUNNER_TEMP/gate.txt"
+          [ -s "$RUNNER_TEMP/gate.txt" ] || { echo "::error::gate-files: gate list is empty"; exit 1; }
+          touched=false
+          # The files list is cut at 3000, so a larger PR counts as touched.
+          if [ "$total" -ge 3000 ]; then
+            touched=true
+          elif grep -Fixq -f "$RUNNER_TEMP/gate.txt" "$RUNNER_TEMP/changed.txt"; then
+            touched=true
+          fi
+          echo "gate-files: #$N touched=$touched"
+          echo "touched=$touched" >> "$GITHUB_OUTPUT"
+
+  veto-window:
+    name: veto-window
+    needs: gate-files
+    if: github.event_name == 'pull_request' && needs.gate-files.outputs.touched == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The wait itself is this environment's wait timer.
+    environment: gate-veto-window
+    permissions:
+      contents: read
+    steps:
+      - name: Veto window
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: echo "24 h veto window passed for $HEAD_SHA"
+
+  merge-gate:
+    name: merge-gate
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Checkout the base commit (programs and path list)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/agent-dispatch.yml
+            config/risky-paths.json
+          sparse-checkout-cone-mode: false
+      - name: Fail a PR in the queue with no coordinator approval or an active owner veto
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_DIR: base
+          # The owner whose request for changes holds a PR. A constant in this
+          # pinned file.
+          VETO_OWNER: nish3451
+          # stdin: {owner, reviews, timeline}. reviews is the PR's reviews API
+          # list; timeline is its issue timeline. Prints true when the owner's
+          # veto is active. The owner's latest review that is an approval, a
+          # request for changes or a dismissal decides. A request for changes
+          # holds. A dismissal lifts it only when the owner made it, or when
+          # the dismissed review was an approval (a push dismisses a stale
+          # approval; that is not a request for changes). A dismissal whose
+          # event is missing holds, and so does one by anyone else.
+          VETO: |
+            . as $in
+            | ($in.owner | ascii_downcase) as $o
+            | [$in.timeline[] | select(.event == "review_dismissed")] as $dis
+            | [$in.reviews[]
+                | select(((.user.login // "") | ascii_downcase) == $o)
+                | . as $r
+                | (if .state == "APPROVED" then "lifted"
+                   elif .state == "CHANGES_REQUESTED" then "held"
+                   elif .state == "DISMISSED" then
+                     ([$dis[] | select(.dismissed_review.review_id == $r.id)] | last) as $e
+                     | if $e == null then "held"
+                       elif (($e.dismissed_review.state // "") | ascii_downcase) == "approved" then "lifted"
+                       elif ((($e.actor.login // "") | ascii_downcase) == $o) then "lifted"
+                       else "held" end
+                   else empty end) as $eff
+                | {at: .submitted_at, id: .id, eff: $eff}]
+            | sort_by([.at, .id])
+            | last
+            | . != null and .eff == "held"
+        run: |
+          set -euo pipefail
+          # Programs, approvers and path list: the base commit's, not the PR's.
+          for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
+            val=$(yq ".jobs.hold-risky.env.$v" "$BASE_DIR/.github/workflows/agent-dispatch.yml")
+            [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: hold-risky env $v unreadable"; exit 1; }
+            export "$v=$val"
+          done
+          cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
+          # The queue branch is gh-readonly-queue/<base>/pr-<N>-<sha>; <N> is
+          # the entry's own PR. Entries ahead of it in the same group are
+          # commits below the tip, each titled "... (#<M>)" by the squash.
+          [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] ||
+            { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
+          nums=${BASH_REMATCH[1]}
+          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" \
+            --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" ||
+            { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
+          total=$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)
+          # One commit is the entry's own PR (named by the ref). More than one:
+          # every commit must map to a PR, or the check fails.
+          if [ "$total" -gt 1 ]; then
+            while IFS= read -r subject; do
+              if [[ "$subject" =~ \(#([0-9]+)\)$ ]] || [[ "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]]; then
+                nums="$nums ${BASH_REMATCH[1]}"
+              else
+                echo "::error::coordinator-approval: cannot map commit \"$subject\" to a PR in a group of $total"; exit 1
+              fi
+            done < "$RUNNER_TEMP/subjects.txt"
+          fi
+          bad=0
+          for n in $(tr ' ' '\n' <<<"$nums" | sort -un); do
+            # The live PR: a head moved after approval has no approval.
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
+            sha=$(jq -r .head.sha <<<"$pr")
+            # Owner veto, for every PR in the group (risky or not).
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/reviews?per_page=100" --jq '.[] | {id, state, submitted_at, user: {login: .user.login}}' > "$RUNNER_TEMP/reviews.txt" ||
+              { echo "::error::merge-gate: reviews read failed for #$n"; bad=1; continue; }
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/timeline?per_page=100" --jq '.[] | select(.event == "review_dismissed") | {event, actor: {login: .actor.login}, dismissed_review: {review_id: .dismissed_review.review_id, state: .dismissed_review.state}}' > "$RUNNER_TEMP/timeline.txt" ||
+              { echo "::error::merge-gate: timeline read failed for #$n"; bad=1; continue; }
+            veto=$(jq -n --arg owner "$VETO_OWNER" --slurpfile r "$RUNNER_TEMP/reviews.txt" --slurpfile t "$RUNNER_TEMP/timeline.txt" \
+              '{owner: $owner, reviews: $r, timeline: $t}' | jq -r "$VETO") ||
+              { echo "::error::merge-gate: veto check failed for #$n"; bad=1; continue; }
+            if [ "$veto" = true ]; then
+              echo "::error::merge-gate: #$n has an active veto from the owner"
+              bad=1
+            fi
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
+              { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
+            jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
+            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
+              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+            verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
+              { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
+            echo "coordinator-approval: #$n at $sha: $verdict"
+            jq -e .risky <<<"$verdict" >/dev/null || continue
+            gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt" ||
+              { echo "::error::coordinator-approval: statuses read failed for $sha"; bad=1; continue; }
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
+              --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
+              { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
+              '{sha: $sha, statuses: $s, comments: $m}' |
+              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            if [ "$approved" = true ]; then
+              echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
+            else
+              echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
+              jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
+              echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
+              bad=1
+            fi
+          done
+          test "$bad" -eq 0
