@@ -130,16 +130,9 @@ jobs:
             install -D -m0755 /bin/true "$HOME/.local/bin/$b"
           done
       - name: systemd-analyze verify over unit files
-        # nullglob: #8474 deleted the last systemd/*.path unit, and an unmatched
-        # glob reaches systemd-analyze as a literal filename -> rc 1. With
-        # nullglob an empty set expands to nothing and a future .path unit is
-        # verified again by this same line.
-        # systemd/system/*.slice too (fleet-ops#8638): the root glob never
-        # matched systemd/system/, so agent.slice and claude.slice shipped
-        # unverified. Slices carry no Exec line, so they need none of the
-        # binary stubs above. Root-owned units moved to rootfs/etc/systemd/system/
-        # (fleet-host-config, thread "fix everything like pro devs"); the
-        # host-config service and timer are verified with the slices.
+        # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
+        # Root-owned units live in rootfs/etc/systemd/system/; the slices and the host-config
+        # and update units are verified here (slices carry no Exec line, so no stubs).
         if: always()
         run: |
           shopt -s nullglob

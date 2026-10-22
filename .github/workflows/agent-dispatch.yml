@@ -14,11 +14,9 @@ on:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
-        required: false
         type: string
       task:
         description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
-        required: false
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -26,23 +24,16 @@ on:
   workflow_call:
     inputs:
       issue:
-        required: false
         type: string
-        default: ''
       agent_mode:
-        required: false
         type: string
-        default: ''
       task:
-        required: false
         type: string
-        default: ''
       # JSON runs-on for the two GitHub-side jobs. A private caller whose
       # hosted minutes ran out passes its own runners, e.g.
       # '["self-hosted","Linux","X64"]' (drive, 2026-10-04: hosted jobs
       # refused for billing, so the sweep never ran).
       runner:
-        required: false
         type: string
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR
@@ -1205,6 +1196,7 @@ jobs:
     # The App token does every write; the job's own token is not used.
     permissions: {}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       # The same two steps as agent.yml's (App key read and App token), unchanged
       # in behaviour: the key stays on the runner, is masked, and goes only to
       # create-github-app-token. The token it mints is scoped to the calling repo
@@ -1440,6 +1432,7 @@ jobs:
       # this file for a label-only trigger passes '' and the event number is read.
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Check the issue is still parked
         id: issue
         env:

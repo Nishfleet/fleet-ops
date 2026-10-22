@@ -27,6 +27,7 @@ jobs:
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)

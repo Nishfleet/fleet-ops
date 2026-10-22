@@ -9,48 +9,30 @@ on:
       ref:
         description: claim/issue-<N> branch the worker owns until merge
         type: string
-        required: false
-        default: ''
       review_pr:
         description: risky PR number for the independent review job (agent-dispatch review-risky)
         type: string
-        required: false
-        default: ''
       review_sha:
         description: head sha hold-risky held; the review approves or blocks exactly this sha
         type: string
-        required: false
-        default: ''
       arm_pr:
         description: PR number whose head carries an approval and is not armed (agent-dispatch stuck-arm)
         type: string
-        required: false
-        default: ''
       arm_sha:
         description: head sha the sweep saw approved; the arm uses --match-head-commit with exactly this sha
         type: string
-        required: false
-        default: ''
       stuck_pr:
         description: PR the sweep found waiting over an hour that no worker owns (agent-dispatch stuck-file)
         type: string
-        required: false
-        default: ''
       stuck_sha:
         description: head sha the sweep judged stuck; the filed issue names it so a new head is a new report
         type: string
-        required: false
-        default: ''
       stuck_reason:
         description: why the PR cannot move on its own (conflict, red checks, reviewer block)
         type: string
-        required: false
-        default: ''
       stuck_url:
         description: link to the comment that blocks it, empty when none
         type: string
-        required: false
-        default: ''
 
   # The Daily (nish.sh/daily). Only fires on fleet-ops main; the job below
   # tells a cron run from a workflow_call by the empty inputs.ref.
@@ -89,6 +71,7 @@ jobs:
       GIT_COMMITTER_NAME: nishfleet-worker[bot]
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Read App private key
         id: app-key
         run: |
@@ -976,6 +959,7 @@ jobs:
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Review the held head
         id: review
         env:
@@ -1179,6 +1163,7 @@ jobs:
       # The head this run's own review job approved; empty on an arm_pr dispatch.
       REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Read App private key
         id: app-key
         run: |
@@ -1245,6 +1230,7 @@ jobs:
       REASON: ${{ inputs.stuck_reason }}
       URL: ${{ inputs.stuck_url }}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Read App private key
         id: app-key
         run: |
@@ -1316,6 +1302,7 @@ jobs:
       GIT_COMMITTER_NAME: nishfleet-worker[bot]
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Is today's edition already live
         id: live
         run: |
