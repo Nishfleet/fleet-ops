@@ -255,9 +255,12 @@
         group: root
         mode: "0644"
 
-    - name: Install rootlesskit for the rootless Docker engine
+    - name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
       ansible.builtin.apt:
-        name: rootlesskit
+        name:
+          - rootlesskit
+          - slirp4netns
+          - uidmap
         state: present
         update_cache: true
         cache_valid_time: 3600

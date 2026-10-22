@@ -133,7 +133,7 @@ def test_the_engine_config_is_an_empty_object() -> None:
 @pytest.mark.parametrize("path", OTHER_POOLS, ids=lambda p: p.parent.name)
 def test_every_other_pool_hides_the_engine_directory(path: Path) -> None:
     assert "-/run/dockerd-eval" in hidden(path)
-    assert "-/run/podman-eval" not in hidden(path)
+    assert "-/run/podman-eval" in hidden(path)
 
 
 def test_the_eval_runner_does_not_hide_the_engine_directory() -> None:
@@ -152,7 +152,8 @@ def test_podman_eval_is_retired() -> None:
     assert "enabled: false" in off.group(1)
     assert "state: stopped" in off.group(1)
     assert "name: dockerd-eval.service" in host
-    assert "name: rootlesskit" in host
+    assert "- rootlesskit\n" in host
+    assert "- slirp4netns\n" in host
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")

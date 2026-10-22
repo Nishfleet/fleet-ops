@@ -12,6 +12,10 @@
 # it a network; a container reaches a service on the host's loopback at 10.0.2.2
 # (--host-gateway-ip), so the drive eval sets DRIVE_EVAL_SANDBOX_HOST=10.0.2.2.
 # --disable-host-loopback is not passed on purpose: that address is the way in.
+# It also reaches every other service on the host's loopback, the same set the
+# podman engine's containers reached; the PR lists each listener. Narrowing it
+# to one port needs an egress rule scoped to the engine, which needs a uid of its
+# own (the planned runner uid split): a cgroup match stops matching at a restart.
 # cgroupfs is the cgroup driver because Delegate=yes gives this unit its own
 # subtree and there is no user systemd for the systemd driver.
 # The /bin/sh -c line mounts a private tmpfs over /run/docker and /run/containerd
