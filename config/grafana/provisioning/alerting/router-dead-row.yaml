@@ -14,6 +14,12 @@
 # status and model_id is the router row id. 429 is never counted: a quota wall is a
 # resting row, not a dead one (Nish 2026-10-02).
 #
+# Proxy-level failures (the LiteLLM health check, a caller with no router row id) carry
+# requested_model and no model_id, and the old sum by (model_id) folded them into one
+# unnamed series that the dispatch filed as an empty title twice (fleet-ops#9938,
+# fleet-ops#10069). The or-branch fires them per requested_model, so such a page names
+# the model it probed; tests/alert_routes_check.py holds the naming shape.
+#
 # Route: severity warning, so it does not page; label signal=router-dead-row, and the
 # series label model_id names the row, files a fleet-ops issue (agent-ready + priority-now) through
 # the policy tree in cloudflare-spend-contact.yaml.
@@ -37,7 +43,9 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[1h]))
+              expr: >-
+                sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))
+                or sum by (requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -55,8 +63,8 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}unknown row{{ end }} answered 402, 403 or 404 {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times in the last hour'
-          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
+          summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}{{ end }} answered 402, 403 or 404 {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times in the last hour'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}{{ end }}). {{ if $labels.model_id }}Do NOT remove or bench the row without Nish''s explicit yes (2026-10-02 rule).{{ else }}This series is proxy-level: no router row id is attached, so the remove-or-bench rule does not apply.{{ end }} Open or update a needs-nish-decision issue with the evidence.'
           value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} failures in the last hour'
           threshold: 'more than 5 in 1 hour'
         labels: {severity: warning, signal: router-dead-row}
