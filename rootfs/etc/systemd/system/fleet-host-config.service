@@ -7,7 +7,11 @@
 # anonymously from GitHub main (the repo is public), so nothing a user-level
 # process writes on this box reaches root: not the deploy clone, not its refs.
 # Only reviewed, merged main gets applied. --clean throws away any local edit
-# in that clone before each run.
+# in that clone before each run. --verify-commit makes ansible-pull refuse a
+# commit GitHub did not sign (ansible/host.yml imports GitHub's keys into root's
+# keyring). If a bad flag ever stops this unit from delivering a fix, undo it by
+# hand: sudo sed -i 's/ --verify-commit//' /etc/systemd/system/fleet-{host-config,update}.service
+# then sudo systemctl daemon-reload, and revert the change.
 #
 # Started by:
 #   - .github/workflows/deploy-box.yml on every push to main, via
@@ -44,5 +48,5 @@ Environment=ANSIBLE_NOCOLOR=1
 # and write no log, not fail. This is in addition to stdout, so the journal
 # keeps its own record too.
 Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-host-config.log
-ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/repo --clean --inventory localhost, --diff ansible/host.yml
+ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/repo --clean --verify-commit --inventory localhost, --diff ansible/host.yml
 TimeoutStartSec=600
