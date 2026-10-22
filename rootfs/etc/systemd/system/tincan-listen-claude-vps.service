@@ -22,8 +22,22 @@ RestartSec=30
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=tmpfs
-BindPaths=/home/nish/.claude-vps /home/nish/.local/state/tincan-listen-claude-vps /home/nish/workspaces /home/nish/.config/tincan/attachments /home/nish/.config/tincan/mcp-launches
-BindReadOnlyPaths=/home/nish/.local/bin /home/nish/.local/share/claude /home/nish/.config/tincan/claude-vps.json /home/nish/.config/fleet-ops/seats/typesafe-jev.env /home/nish/.gitconfig
+# Writable: only what the listener writes (fleet-ops#9974 phase B). Its config and the working
+# directory are read-only; only agent-worktrees and the vault agent-memory folder (plain notes)
+# are writable inside workspaces. Systemd mounts the shorter path first, so the writable
+# sub-binds sit on top of the read-only parent.
+BindPaths=/home/nish/.claude-vps /home/nish/.config/tincan/attachments /home/nish/.config/tincan/mcp-launches /home/nish/workspaces/agent-worktrees /home/nish/workspaces/tooling/nish-vault/_system/agent-memory
+BindReadOnlyPaths=/home/nish/workspaces /home/nish/.local/state/tincan-listen-claude-vps /home/nish/.local/bin /home/nish/.local/share/claude /home/nish/.config/tincan/claude-vps.json /home/nish/.config/fleet-ops/seats/typesafe-jev.env /home/nish/.gitconfig
+# Stock sandbox switches that cost the listener nothing (kernel, clock, hostname, cgroups, realtime, setuid).
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 InaccessiblePaths=/run/docker.sock /var/run/docker.sock /run/user
 
 [Install]
