@@ -18,7 +18,7 @@
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater (Hermes on its stable channel with its
 #              services restarted, tincan with its idle listeners restarted,
-#              yt-dlp, the npm and uv tools) and the redis container through
+#              the npm and uv tools (yt-dlp is a uv tool)) and the redis container through
 #              `podman auto-update`. Stale npm staging dirs go first, so
 #              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
@@ -80,6 +80,9 @@
       HOME: /home/nish
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # tincan has no default relay: it reads one from a config file named by
+    # this variable. Any joined agent's config carries the same relay.
+    tincan_env_config: /home/nish/.config/tincan/claude-vps.json
     # Each runs as nish with its own stdin; a failure is reported at the end,
     # never skipped quietly. devin is updated by its official installer, the
     # same script that installed it (the version dir's `distribution` file
@@ -109,8 +112,6 @@
       - argv: [rclone, selfupdate]
         stdin: ""
       - argv: [amp, update]
-        stdin: ""
-      - argv: [yt-dlp, --update]
         stdin: ""
     cua_cli: /opt/Cua Spaces/resources/native/cua
     cua_release_prefix: cua-spaces-v
@@ -484,7 +485,7 @@
         - name: Update tincan
           become: true
           become_user: nish
-          environment: "{{ nish_env }}"
+          environment: "{{ nish_env | combine({'TINCAN_CONFIG': tincan_env_config}) }}"
           ansible.builtin.command:
             argv: [tincan, upgrade]
             stdin: ""
