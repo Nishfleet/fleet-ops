@@ -19,6 +19,15 @@
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
+    # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
+    # checked against the hash pinned here. The hash is the tar.xz line of that
+    # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
+    # A new version is a reviewed PR that changes both values.
+    tether_node_version: 22.23.3
+    tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+    tether_node_dir: "/opt/node-v{{ tether_node_version }}"
+    # Placed by hand, never created here. A var so the test can point it at a file.
+    tether_photon_env: /etc/tether/photon.env
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -568,17 +577,67 @@
         mode: "0755"
       when: not tether_off.stat.exists
 
-    # The distro nodejs for the unit's /usr/bin/node, pinned to the 18.19 series
-    # (not an apt hold).
-    - name: Install the distro nodejs for tether
+    # Node for the unit: the official linux-x64 tarball, pinned by version and
+    # sha256, unpacked into a root-owned versioned directory. The unit's
+    # ExecStart names that binary by absolute path. The distro nodejs package
+    # is not used and is not touched.
+    - name: Download the pinned Node tarball for tether
       tags: [tether]
-      ansible.builtin.apt:
-        name: nodejs=18.19.*
-        state: present
-        update_cache: true
-        cache_valid_time: 3600
-        lock_timeout: 300
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        dest: "/var/cache/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        checksum: "sha256:{{ tether_node_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
       when: not tether_off.stat.exists
+      # A --check run by a user that cannot write /var/cache (the test) fails here.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the versioned Node directory, root-owned
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_node_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+
+    - name: Unpack the pinned Node for tether
+      tags: [tether]
+      ansible.builtin.unarchive:
+        src: "/var/cache/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        dest: "{{ tether_node_dir }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+        creates: "{{ tether_node_dir }}/bin/node"
+      when: not tether_off.stat.exists
+      # Under --check the download above did not really happen.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The credentials file is placed by hand and never created or written here:
+    # this only sets owner, group and mode, and only once the file exists. The
+    # unit's EnvironmentFile=- treats it as optional, so its absence must not
+    # fail the run and hold back every task after it.
+    - name: Look for the tether Photon credentials file
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_photon_env }}"
+      register: tether_photon
+
+    - name: Let the tether group read the Photon credentials file
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_photon_env }}"
+        state: file
+        owner: root
+        group: tether
+        mode: "0640"
+      when: not tether_off.stat.exists and tether_photon.stat.exists
+      # Under --check the group above was not really created yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
     # tether's egress firewall: its own table, loaded by the host's existing
