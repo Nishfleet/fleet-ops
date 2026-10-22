@@ -26,6 +26,28 @@
     tether_node_version: 22.23.3
     tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
     tether_node_dir: "/opt/node-v{{ tether_node_version }}"
+    tether_node_cache: /var/cache
+    # The tether release: one exact version of the private repo Nishfleet/tether,
+    # built by its CI and checked against the sha256 pinned here (the value in the
+    # release's .sha256 asset). An upgrade is one reviewed PR that changes both
+    # values; a rollback is the revert of that PR. These two lines are the only
+    # place the version and the hash are written.
+    tether_version: 0.1.1
+    tether_sha256: fc02d1ccdfe6a79673ab125f0052151347b658a5fc596b547c65eee136d826ea
+    # Everything below derives from the two pins. The directory and the cached
+    # file carry the version AND the first 12 hex of the hash, so a new hash at
+    # the same version is a new name and never reuses old content. The root and
+    # cache paths are vars so the test can point them at a temp dir.
+    tether_release_root: /opt/tether
+    tether_release_cache: /var/cache/tether-releases
+    tether_release_key: "{{ tether_version }}-{{ tether_sha256[:12] }}"
+    tether_release_dir: "{{ tether_release_root }}/{{ tether_release_key }}"
+    tether_release_stage: "{{ tether_release_root }}/.tmp-{{ tether_release_key }}"
+    tether_release_tarball: "{{ tether_release_cache }}/tether-v{{ tether_release_key }}.tar.gz"
+    tether_release_download: "{{ tether_release_cache }}/nish/tether-v{{ tether_version }}.tar.gz"
+    # The packaged gh, which stores nish's login in ~/.config/gh/hosts.yml (a
+    # file, not the keyring), so it also works as nish under sudo.
+    tether_gh: /usr/bin/gh
     # Placed by hand, never created here. A var so the test can point it at a file.
     tether_photon_env: /etc/tether/photon.env
     # Directories this repo owns. A regular file in one of them that rootfs/
@@ -642,14 +664,14 @@
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
     # run never enables or starts tether-agent.service: it stays disabled until
-    # a reviewed installer puts a pinned, checksummed release at /opt/tether
+    # the tasks below put a pinned, checksummed release at /opt/tether/current
     # (root-owned, so the service user cannot rewrite its own code). The marker
     # file is the lasting off-switch: while it exists this run creates nothing
     # for tether, removes its firewall rule and keeps the unit disabled and
     # stopped. The marker path is a var so the test in
     # tests/test_systemd_unit_keys.py can run these tasks under --check.
     - name: Look for the tether off marker
-      tags: [tether]
+      tags: [tether, tether-release]
       ansible.builtin.stat:
         path: "{{ tether_off_marker }}"
       register: tether_off
@@ -686,7 +708,7 @@
     - name: Create the tether app directory, root-owned
       tags: [tether]
       ansible.builtin.file:
-        path: /opt/tether
+        path: "{{ tether_release_root }}"
         state: directory
         owner: root
         group: root
@@ -701,7 +723,7 @@
       tags: [tether]
       ansible.builtin.get_url:
         url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
-        dest: "/var/cache/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
         checksum: "sha256:{{ tether_node_sha256 }}"
         owner: root
         group: root
@@ -723,7 +745,7 @@
     - name: Unpack the pinned Node for tether
       tags: [tether]
       ansible.builtin.unarchive:
-        src: "/var/cache/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
         dest: "{{ tether_node_dir }}"
         remote_src: true
         extra_opts: [--strip-components=1]
@@ -733,6 +755,288 @@
       when: not tether_off.stat.exists
       # Under --check the download above did not really happen.
       ignore_errors: "{{ ansible_check_mode }}"
+
+    # The tether release. Download, verify, unpack and link share one block, so a
+    # GitHub or download failure cannot abort the host-config tasks after it: the
+    # rescue leaves `current` where it was and records the failure, and the last
+    # task of the play fails the run loudly once everything else is done.
+    # Order inside the block: download as nish (the only user with a GitHub login;
+    # the token stays in gh's own config), verify by copying into a root-owned
+    # file under the pinned sha256, unpack into a root-owned staging directory,
+    # check its layout and modes, rename it into place (atomic), and only then
+    # point `current` at it. A directory named <version>-<sha12> therefore only
+    # ever appears whole and verified; one that fails the check is removed and
+    # unpacked fresh. Under --check a task that cannot work without the real
+    # download is ignored, as for the Node tarball above.
+    - name: Install the pinned tether release, or record why it failed
+      tags: [tether, tether-release]
+      when: not tether_off.stat.exists
+      block:
+        - name: Create the tether release cache, root-owned
+          ansible.builtin.file:
+            path: "{{ tether_release_cache }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Create the nish download directory for tether releases
+          ansible.builtin.file:
+            path: "{{ tether_release_cache }}/nish"
+            state: directory
+            owner: nish
+            group: nish
+            mode: "0755"
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look for this tether release directory
+          ansible.builtin.stat:
+            path: "{{ tether_release_dir }}"
+          register: tether_rel_dir
+
+        # Every file, directory and hidden entry below the release, symlinks not
+        # followed. The result is filtered below for group- or other-writable
+        # entries and for owners other than root (uid 0); links are skipped,
+        # their mode is not theirs to set.
+        - name: Scan this tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_dir }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_rel_scan
+          check_mode: false  # read-only; runs under --check too
+          when: tether_rel_dir.stat.isdir | default(false)
+
+        - name: Record the writable or non-root files in this tether release
+          ansible.builtin.set_fact:
+            tether_rel_unsafe: "{{ ((tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+
+        - name: Look for the entry point of this tether release
+          ansible.builtin.stat:
+            path: "{{ tether_release_dir }}/dist/index.js"
+          register: tether_rel_entry
+
+        # Complete means: a real directory, a regular dist/index.js, and nothing
+        # in it that is group or other writable or not owned by root.
+        - name: Record whether this tether release is already installed whole
+          ansible.builtin.set_fact:
+            tether_rel_ok: "{{ (tether_rel_dir.stat.isdir | default(false)) and (tether_rel_entry.stat.isreg | default(false)) and (tether_rel_dir.stat.uid | default(1) == 0) and not (tether_rel_dir.stat.wgrp | default(true)) and not (tether_rel_dir.stat.woth | default(true)) and (tether_rel_unsafe | default(['x']) | length == 0) }}"
+
+        - name: Look for the verified tether tarball
+          ansible.builtin.stat:
+            path: "{{ tether_release_tarball }}"
+            checksum_algorithm: sha256
+          register: tether_rel_tar
+
+        - name: Record whether the tether release must be downloaded
+          ansible.builtin.set_fact:
+            tether_rel_fetch: "{{ not tether_rel_ok and not (tether_rel_tar.stat.exists and tether_rel_tar.stat.checksum == tether_sha256) }}"
+
+        # gh keeps nish's login in a file, so it works under become_user. When the
+        # login has lapsed `gh auth token` prints nothing, and this says so.
+        - name: Read whether gh is logged in for nish
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ tether_gh }}", auth, token]
+          register: tether_gh_token
+          changed_when: false
+          failed_when: false
+          no_log: true
+          check_mode: false  # read-only; runs under --check too
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Require nish's gh login before the download
+          ansible.builtin.assert:
+            that: tether_gh_token.rc == 0 and (tether_gh_token.stdout | length) > 0
+            fail_msg: "gh not authenticated for nish: run `gh auth login` as nish, then the next host-config run installs tether v{{ tether_version }}"
+            quiet: true
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Download the pinned tether release as nish
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ tether_gh }}", release, download, "v{{ tether_version }}", -R, Nishfleet/tether, -p, "tether-v{{ tether_version }}.tar.gz", -D, "{{ tether_release_cache }}/nish", --clobber]
+            chdir: "{{ tether_release_cache }}/nish"
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # nish writes this directory (gh cannot write into a root-owned one), so
+        # root reads only a plain file there: a link to another file is refused
+        # before get_url follows it.
+        - name: Look at the unverified tether download
+          ansible.builtin.stat:
+            path: "{{ tether_release_download }}"
+          register: tether_rel_dl
+          when: tether_rel_fetch | bool
+
+        - name: Require the tether download to be a plain file
+          ansible.builtin.assert:
+            that: tether_rel_dl.stat.isreg | default(false)
+            fail_msg: "{{ tether_release_download }} is missing or is not a plain file; it is not read"
+            quiet: true
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Verify the tether release against the pinned sha256
+          ansible.builtin.get_url:
+            url: "file://{{ tether_release_download }}"
+            dest: "{{ tether_release_tarball }}"
+            checksum: "sha256:{{ tether_sha256 }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Remove the unverified tether download
+          ansible.builtin.file:
+            path: "{{ tether_release_download }}"
+            state: absent
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Clear the tether staging directory
+          ansible.builtin.file:
+            path: "{{ tether_release_stage }}"
+            state: absent
+          when: not tether_rel_ok
+
+        - name: Create the tether staging directory, root-owned
+          ansible.builtin.file:
+            path: "{{ tether_release_stage }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # The tarball root holds dist/, package.json, package-lock.json and
+        # node_modules/ (no top folder). `mode` removes group and other write from
+        # every extracted file, whatever the archive says.
+        - name: Unpack the verified tether release into staging
+          ansible.builtin.unarchive:
+            src: "{{ tether_release_tarball }}"
+            dest: "{{ tether_release_stage }}"
+            remote_src: true
+            owner: root
+            group: root
+            mode: "u=rwX,go=rX"
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look for the entry point in the staged tether release
+          ansible.builtin.stat:
+            path: "{{ tether_release_stage }}/dist/index.js"
+          register: tether_stage_entry
+          when: not tether_rel_ok
+
+        - name: Scan the staged tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_stage }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_stage_scan
+          check_mode: false  # read-only; runs under --check too
+          when: not tether_rel_ok
+
+        - name: Record the writable or non-root files in the staged tether release
+          ansible.builtin.set_fact:
+            tether_stage_unsafe: "{{ ((tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+          when: not tether_rel_ok
+
+        - name: Require the expected layout and modes before the release is moved into place
+          ansible.builtin.assert:
+            that:
+              - tether_stage_entry.stat.isreg | default(false)
+              - tether_stage_unsafe | length == 0
+            fail_msg: "The staged tether release has no dist/index.js, or has a group- or other-writable or non-root file ({{ tether_stage_unsafe | default([]) | join(', ') | truncate(200) }}): the tarball does not have the expected layout"
+            quiet: true
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # Only now, with a verified, checked replacement staged: a failure earlier
+        # in the block leaves whatever `current` points at in place.
+        - name: Remove a tether release directory that is incomplete or unsafe
+          ansible.builtin.file:
+            path: "{{ tether_release_dir }}"
+            state: absent
+          when: tether_rel_dir.stat.exists and not tether_rel_ok
+
+        - name: Move the staged tether release into place
+          ansible.builtin.command:
+            argv: [/usr/bin/mv, -T, "{{ tether_release_stage }}", "{{ tether_release_dir }}"]
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look at where tether current points now
+          ansible.builtin.stat:
+            path: "{{ tether_release_root }}/current"
+          register: tether_cur
+
+        - name: Point tether current at the verified release
+          ansible.builtin.file:
+            src: "{{ tether_release_dir }}"
+            dest: "{{ tether_release_root }}/current"
+            state: link
+            owner: root
+            group: root
+          register: tether_link
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # Keep the new release and the one `current` pointed at before: one
+        # rollback step. Only when `current` moved, so a repeat run never trims
+        # the previous release away.
+        - name: List the tether releases and staging leftovers
+          ansible.builtin.find:
+            paths: "{{ tether_release_root }}"
+            file_type: directory
+            hidden: true
+            use_regex: true
+            patterns: ['^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$', '^\.tmp-.*$']
+          register: tether_old_dirs
+          when: tether_link.changed | default(false)
+
+        - name: Remove tether releases older than the previous one
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ tether_old_dirs.files | default([]) | map(attribute='path') | difference([tether_release_dir, tether_cur.stat.lnk_source | default('')]) }}"
+          when: tether_link.changed | default(false)
+
+        - name: List the cached tether tarballs
+          ansible.builtin.find:
+            paths: "{{ tether_release_cache }}"
+            patterns: ['tether-v*.tar.gz']
+          register: tether_old_tars
+          when: tether_link.changed | default(false)
+
+        - name: Remove cached tether tarballs of releases that were removed
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ tether_old_tars.files | default([]) | map(attribute='path') | difference([tether_release_tarball, tether_release_cache ~ '/tether-v' ~ (tether_cur.stat.lnk_source | default('') | basename) ~ '.tar.gz']) }}"
+          when: tether_link.changed | default(false)
+
+      rescue:
+        - name: Record that the tether release did not install
+          ansible.builtin.set_fact:
+            tether_install_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}"
+
+        - name: Say that tether current was left alone
+          ansible.builtin.debug:
+            msg: "tether v{{ tether_version }} did not install ({{ tether_install_failure }}). {{ tether_release_root }}/current was not changed; the run goes on and fails at its last task."
 
     # The credentials file is placed by hand and never created or written here:
     # this only sets owner, group and mode, and only once the file exists. The
@@ -1308,6 +1612,20 @@
       vars:
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+
+    # Last task of the play: a tether release that could not be installed (see the
+    # block above) fails the run here, after every other task and handler has
+    # run, so the deploy goes red and pages while the rest of the host config
+    # still applied.
+    - name: Apply pending handlers before the tether failure check
+      tags: [tether, tether-release]
+      ansible.builtin.meta: flush_handlers
+
+    - name: Fail when the tether release could not be installed
+      tags: [tether, tether-release]
+      ansible.builtin.fail:
+        msg: "tether v{{ tether_version }} was not installed: {{ tether_install_failure }}. {{ tether_release_root }}/current was not changed and the rest of this run completed."
+      when: tether_install_failure is defined and not ansible_check_mode
 
 
   handlers:

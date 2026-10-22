@@ -612,16 +612,16 @@ system unit with its own service user.
 | Service user and config directory | `ansible/host.yml` creates the `tether` system user and `/etc/tether` (root:tether 0750) |
 | Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700, the unit's working directory) |
 | Credentials | `/etc/tether/tether.env`, root:tether 0640, live-only and never in git |
-| App | `/opt/tether`, root:root 0755, read-only to the `tether` user |
+| App | `/opt/tether/<version>-<sha12>` unpacked from the pinned release, `/opt/tether/current` pointing at it; all root:root, read-only to the `tether` user |
 | Egress rule | `ansible/templates/tether.nft.j2`, installed as `/etc/nftables.d/tether.nft`, table `inet tether` |
 
 The unit is staged and stays disabled. `host.yml` never enables or starts
-`tether-agent.service`: that waits for a reviewed installer that puts a
-pinned, checksummed, CI-built release of `Nishfleet/tether` into `/opt/tether`.
-Until then nothing runs it, and `ConditionPathExists=/opt/tether/dist/index.js`
-turns any start into a skip. The app is at a root-owned path on purpose: the
-service user can write only `/var/lib/tether`, so it cannot rewrite its own
-code. `host.yml` also installs Node 22 LTS for the unit: the official linux-x64
+`tether-agent.service`. It does install the app: a pinned, checksummed,
+CI-built release of `Nishfleet/tether` (see "Tether release installs" below).
+If someone starts the unit before `/opt/tether/current` exists,
+`ConditionPathExists=/opt/tether/current/dist/index.js` turns that start into
+a skip. The app is at a root-owned path on purpose: the service user can
+write only `/var/lib/tether`, so it cannot rewrite its own code. `host.yml` also installs Node 22 LTS for the unit: the official linux-x64
 tarball for one exact version (`tether_node_version`), checked against a sha256
 pinned in `host.yml`, unpacked into the root-owned `/opt/node-v<version>`. The
 unit's `ExecStart` names that `node` by absolute path. A new Node version is a
@@ -682,6 +682,62 @@ in `ansible/host.yml`, and adds the unit path to `retired`.
 In-band, without root, Nish's own off-switch is the `STOP` text. The app that
 handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is
 proved there, not by this repo.
+
+### Tether release installs
+
+`ansible/host.yml` holds the release in two vars, the only place they are
+written: `tether_version` and `tether_sha256`. Unless
+`/etc/fleet-ops/tether-off` exists, one `block:` does the following. The
+directory and the cached file are named `<version>-<first 12 hex of the hash>`,
+so a new hash at the same version is a new name and never reuses old content.
+
+1. If `/opt/tether/<key>` is already whole (a real directory, a regular
+   `dist/index.js`, nothing group- or other-writable or not owned by root,
+   checked with the `find` module) the block only checks the link. A directory
+   that fails that check is replaced, but only once its replacement is staged
+   and checked, so a failed download never removes what `current` points at.
+2. Otherwise it checks that nish's `gh` login works (`gh auth token` is not
+   empty; the login is in `~/.config/gh/hosts.yml`, a file, so it also works
+   under `become_user: nish`) and fails with "gh not authenticated for nish"
+   when it is not.
+3. `gh release download` of `tether-v<version>.tar.gz` from `Nishfleet/tether`
+   as nish into `/var/cache/tether-releases/nish` (nish-writable, because `gh`
+   cannot write into a root-owned directory; root reads only a plain file
+   there, and a link is refused). The repo is private; the credential stays in
+   `gh`'s own config and is never in a URL or in this repo.
+4. `get_url` copies it to the root-owned
+   `/var/cache/tether-releases/tether-v<key>.tar.gz` and checks it against
+   `tether_sha256`. The unverified download is then removed.
+5. `unarchive` unpacks into the root-owned staging directory
+   `/opt/tether/.tmp-<key>` (tarball root: `dist/`, `package.json`,
+   `package-lock.json`, `node_modules/`; no group or other write on any file).
+   A task requires `dist/index.js` and no group- or other-writable or non-root
+   file, then `mv -T` renames staging to `/opt/tether/<key>` (atomic, so a
+   killed run leaves only a staging directory that the next run clears).
+6. `/opt/tether/current` is pointed at `/opt/tether/<key>`.
+7. When `current` moved, the release directories and cached tarballs other than
+   the new one and the one `current` pointed at before are removed: one
+   rollback step stays.
+
+The unit runs `/opt/tether/current/dist/index.js`. It is still never enabled or
+started by this run.
+
+- **A failure does not stop the host config.** Any failure in the block (no
+  GitHub login, no release asset, a checksum mismatch, a bad layout) goes to
+  its `rescue:`: `current` is left where it was and the failure is recorded.
+  Every other task runs and pending handlers are flushed. The last task of the
+  play then fails the run with that message, so the deploy is red and pages.
+- **Upgrade:** build and publish the new release in `Nishfleet/tether`, then open
+  one PR that changes `tether_version` and `tether_sha256` in `ansible/host.yml`.
+  After the merge the next host-config run installs it beside the old one and
+  moves `current`. Restart the unit by hand to run it.
+- **Rollback:** revert that PR. The previous release directory is still in
+  `/opt/tether`, so the next run points `current` back at it.
+- **Hash mismatch:** the verify task fails, nothing is unpacked and `current`
+  stays. Check the pinned hash against the release's `.sha256` asset. The next
+  run downloads `tether-v<version>.tar.gz` again; nothing needs deleting by hand.
+- **No GitHub login:** run `gh auth login` as nish. A version that is already
+  installed needs no download and no login.
 
 ## Remote Control stays on (OOM storm 2026-10-09)
 
