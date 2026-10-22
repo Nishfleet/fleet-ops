@@ -1,6 +1,5 @@
 # Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494).
-# The image is pinned by tag and digest (1.105.0, cosign-verified with LiteLLM's published
-# key). Bump the tag in its own PR, and take a pg_dump -Fc of the router database first: the
+# The image is pinned by tag and digest (1.105.0). Bump the tag in its own PR, and take a pg_dump -Fc of the router database first: the
 # schema change between releases is not additive, so the dump is the rollback.
 
 [Unit]
@@ -10,7 +9,7 @@ After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # Keep restarting for a few minutes, then enter failed and page
 # (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
 # dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
-# in ~75s. Burst 20 × (RestartSec 10s + 75s) = 1700s, so the window
+# in ~75s (about 5 min before OLLAMA_API_BASE below was set). Burst 20 × (RestartSec 10s + 75s) = 1700s, so the window
 # must be 1h or the burst never fills and OnFailure never fires.
 StartLimitIntervalSec=1h
 StartLimitBurst=20
@@ -18,16 +17,17 @@ OnFailure=fleet-unit-failed@%N.service
 
 [Container]
 Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
-# general_settings.disable_prisma_schema_update is true in config/litellm-proxy.yaml, and with it
-# true the proxy starts WITHOUT migrating (it only logs "prisma schema out of sync"), so a new
-# image would run on the old schema. The stock migration job is the image's own
-# `litellm --skip_server_startup` with no --config (so the key is not in play), run once before
-# every proxy start by ExecStartPre= below. It is idempotent: on an up-to-date database it
-# applies nothing.
-# LiteLLM v1.105 asks the default Ollama address (localhost:11434) for model info while it builds
-# the router for each ollama_chat row, and on this host that connect hangs, which stretched
-# startup from about 75 s to about 5 min. OLLAMA_API_BASE is the stock variable for that default;
-# every row sets its own api_base, so no request changes.
+# general_settings.disable_prisma_schema_update stays true (an automatic migrate on every start
+# stalled restarts), and with it true the proxy starts WITHOUT migrating: it only logs "prisma
+# schema out of sync". A release bump therefore runs the image's own migration job once, by hand,
+# with the proxy stopped, after the pg_dump -Fc (docs/RUNBOOK.md, LiteLLM stack). It is
+# deliberately not an ExecStartPre=: that would repeat on every crash restart and config-save
+# restart, and would name the image a second time.
+# LiteLLM asks the default Ollama address (localhost:11434) for model info while it builds the
+# router for each ollama_chat row, and on this host that connect hangs: startup measured about
+# 5 min on both v1.98.0 and v1.105.0, and about 30 s with OLLAMA_API_BASE set (the stock variable
+# for that default). Every ollama_chat row in config/litellm-proxy.yaml sets its own api_base
+# (https://ollama.com), so no request changes.
 Environment=OLLAMA_API_BASE=https://ollama.com
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
@@ -108,9 +108,6 @@ PodmanArgs=--env=ZAI_API_KEY
 Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 
 [Service]
-# Schema migration job (see the comment above Image=). Same image, same DATABASE_URL file.
-ExecStartPre=/usr/bin/podman run --rm --network host --env-file %h/.config/fleet-ops/litellm-db.env --env LITELLM_LOG=INFO ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2 --skip_server_startup
-TimeoutStartSec=300
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env

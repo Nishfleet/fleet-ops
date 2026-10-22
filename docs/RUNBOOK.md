@@ -176,10 +176,19 @@ three times. Host data directories stay at
 
 The proxy version is the image tag in `fleet-litellm-proxy.container`,
 bumped in its own PR. Because `disable_prisma_schema_update` is true, the proxy
-does not migrate by itself: the unit's `ExecStartPre=` runs the image's own
-`litellm --skip_server_startup` migration job before each start. Take a
-`pg_dump -Fc` of the router database before a bump; the schema change is not
-additive, so the dump plus the old image is the rollback.
+does not migrate by itself, and a new release must have its schema applied once
+before it serves. The schema change between releases is not additive, so the
+rollback is a dump plus the old image. Bump procedure: `pg_dump -Fc` of the router
+database to a 0600 file and check `pg_restore --list | grep -c 'TABLE DATA'` is
+above 0; `systemctl --user stop fleet-litellm-proxy.service`; merge the image PR
+and let fleet-sync apply the Quadlet; run the image's own migration job
+(`podman run --rm --network host --env-file ~/.config/fleet-ops/litellm-db.env
+<the Image= of fleet-litellm-proxy.container> --skip_server_startup`, no
+`--config`, so the key is not in play; about 25 s on the 1.98 to 1.105 jump);
+`systemctl --user start fleet-litellm-proxy.service`. Rollback: stop the proxy,
+`pg_restore --clean --if-exists` the dump, revert the image PR, start the proxy.
+The env file is read by podman, which does not strip quotes, so keep
+`DATABASE_URL` unquoted in it.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
