@@ -8,10 +8,13 @@
 # process writes on this box reaches root: not the deploy clone, not its refs.
 # Only reviewed, merged main gets applied. --clean throws away any local edit
 # in that clone before each run. --verify-commit makes ansible-pull refuse a
-# commit GitHub did not sign (ansible/host.yml imports GitHub's keys into root's
-# keyring). If a bad flag ever stops this unit from delivering a fix, undo it by
-# hand: sudo sed -i 's/ --verify-commit//' /etc/systemd/system/fleet-{host-config,update}.service
-# then sudo systemctl daemon-reload, and revert the change.
+# commit GitHub did not sign. The keys come from ansible/host.yml, which imports
+# them into root's default keyring (/root/.gnupg, the same one git uses for these
+# units). If a bad flag ever stops this unit from delivering a fix, revert the
+# change on main AND undo the flag by hand, because the next run would otherwise
+# put it back from rootfs/: sudo sed -i 's/ --verify-commit//'
+# /etc/systemd/system/fleet-{host-config,update}.service, then
+# sudo systemctl daemon-reload.
 #
 # Started by:
 #   - .github/workflows/deploy-box.yml on every push to main, via

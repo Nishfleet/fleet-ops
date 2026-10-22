@@ -1,6 +1,8 @@
 # Daily safe full update: ansible-pull of ansible/update.yml as root, from its
 # own clone (same trust model as fleet-host-config.service). See the playbook
 # header for the steps. Run now: sudo systemctl start --no-block fleet-update.service
+# --verify-commit needs GitHub's keys in root's keyring, which fleet-host-config.service
+# puts there (ansible/host.yml); on a rebuilt box run that unit first.
 [Unit]
 Description=Daily safe full update of the fleet box (ansible-pull of ansible/update.yml)
 Wants=network-online.target
