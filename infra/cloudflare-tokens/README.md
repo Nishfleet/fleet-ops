@@ -51,8 +51,11 @@ token whose jobs all run on the VPS self-hosted runners. No Cloudflare job does
 today.
 
 `CLOUDFLARE_ACCOUNT_ID` is an identifier, not a credential, and stays as it is
-(org secret, plus repo secrets in drive and 0509-support-inbox and the 0509
-`production` environment).
+(org secret, plus repo secrets in drive, 0509-support-inbox and the 0509
+`production` environment). The one in fleet-console-worker is managed by
+`github_actions_secret.account_id_fleet_console`; the state already holds it
+under that address, so the next plan shows no destroy for it, and `tofu destroy`
+would delete it.
 
 Permission groups are looked up by name from the
 `cloudflare_api_token_permission_groups_list` data source (one lookup for the
