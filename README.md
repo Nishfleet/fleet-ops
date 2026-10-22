@@ -779,22 +779,37 @@ Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
 next run installs it again. The running `ExecStopPost=` and `-500` stay until
 Remote Control is next restarted.
 
-### Remote Control keeps the Max login (2026-10-10)
+### Remote Control runs on the default login (2026-10-22)
 
-`claude-remote-control.service.d/10-max-config.conf` sets
-`CLAUDE_CONFIG_DIR=/home/nish/.claude-max`. The default login in `~/.claude`
-is now a Team seat whose organization policy disables Remote Control, and on
-that login the server exits at once and `Restart=always` loops on it (the
-link was down from 10:52 to 10:56 UTC on 2026-10-10). The drop-in keeps the
-link on the separate Max config dir whatever the default login is. A new
-config dir registers a new Remote Control environment on claude.ai; the old
-one stays listed as offline.
+`claude-remote-control.service.d/10-max-config.conf` (the filename is kept so
+`ansible/host.yml` needs no change) holds `UnsetEnvironment=CLAUDE_CONFIG_DIR`,
+so Remote Control and every session it spawns use the default Team-seat login
+in `~/.claude`. From 2026-10-10 the drop-in pointed it at the personal Max
+config dir `~/.claude-max`; on 2026-10-22 that login lost Remote Control
+("Remote Control isn't enabled for this account") and the unit crash-looped on
+the next restart. Setting `CLAUDE_CONFIG_DIR` to `~/.claude` (as an absolute
+path) instead fails with "Workspace not trusted", because it reads a different
+`.claude.json`.
 
-Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
-`systemctl daemon-reload`, and restart Remote Control, only once the default
-login allows Remote Control again.
+Checked 2026-10-22: the unit has run on this login since 21:06 IST with
+`NRestarts=0` (set by a runtime drop-in until this file landed), so the Team
+seat does allow Remote Control. Usage and sessions now sit on that Team seat
+and its organization, not on the personal Max login. `~/.claude/settings.json`
+and `~/.claude-max/settings.json` have identical `permissions`, `hooks` and
+`enabledPlugins`; only `env` differs. The Max config dir's Remote Control
+environment stays listed on claude.ai as offline. A running server keeps its
+environment; the change applies at the next restart of Remote Control, which
+only Nish does, or when the unit's own restart loop next fires.
+
+Switch off: put the old `Environment=CLAUDE_CONFIG_DIR=` line (the Max config
+dir `~/.claude-max`, as an absolute path) back in place of the
+`UnsetEnvironment=` line, `systemctl daemon-reload`, and restart Remote
+Control, only once the Max login has Remote Control again.
 
 ### Subagents on the Max config dir (2026-10-11)
+
+Historical since 2026-10-22: Remote Control no longer sets `CLAUDE_CONFIG_DIR`
+and reads `~/.claude/agents` directly; the link below stays harmless.
 
 Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
 drop-in above every Remote Control thread got "helper not found", and the
