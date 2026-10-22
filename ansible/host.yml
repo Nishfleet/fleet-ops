@@ -513,6 +513,37 @@
         name: claude-remote-control.service
         enabled: true
 
+    # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
+    # because per-user units silently ignore sandbox settings on this box. The
+    # unit is enabled at boot only; nothing starts it until the app from
+    # Nishfleet/tether is installed at /var/lib/tether/app, and the unit's
+    # ConditionPathExists makes a start a no-op before that.
+    - name: Create the tether group
+      ansible.builtin.group:
+        name: tether
+        system: true
+
+    - name: Create the tether service user
+      ansible.builtin.user:
+        name: tether
+        group: tether
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create the tether config directory
+      ansible.builtin.file:
+        path: /etc/tether
+        state: directory
+        owner: root
+        group: tether
+        mode: "0750"
+
+    - name: Enable tether at boot
+      ansible.builtin.systemd_service:
+        name: tether-agent.service
+        enabled: true
+
     - name: Enable the daily drift run
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer

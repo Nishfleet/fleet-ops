@@ -593,6 +593,41 @@ number after the restart is the real test.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
 
+## Tether: our own always-on agent (fleet-ops#9980)
+
+Phase 1 of our own agent: iMessage chat, its own memory, and crash-proofing,
+with no live-site, database, GitHub or Cloudflare access. The app lives in the
+private repo `Nishfleet/tether`; this repo owns the unit that runs it, because
+sandbox settings are silently ignored in a per-user unit on this box (Ubuntu
+sets `kernel.apparmor_restrict_unprivileged_userns=1`), so it must be a system
+unit with its own service user.
+
+| Piece | Where |
+| --- | --- |
+| Unit | `rootfs/etc/systemd/system/tether-agent.service` (`User=tether`, `ProtectSystem=strict`, `ProtectHome=true`, `CapabilityBoundingSet=` empty, `SystemCallFilter=@system-service`) |
+| Service user and config directory | `ansible/host.yml` creates the `tether` system user and `/etc/tether` (root:tether 0750) |
+| Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700) |
+| Credentials | `/etc/tether/tether.env`, root:tether 0640, live-only and never in git |
+| App | `/var/lib/tether/app`, installed from `Nishfleet/tether` |
+
+The unit is staged: `host.yml` enables it at boot but never starts it, and
+`ConditionPathExists=/var/lib/tether/app/dist/index.js` turns a start into a
+skip until the app is installed. `Restart=always` with `StartLimitIntervalSec=0`
+means a killed process comes back with the durable runtime's last checkpoint,
+which is what the mid-reply proof in #9980 needs.
+
+Switch off, about two minutes, as root:
+
+```
+systemctl disable --now tether-agent.service
+deluser tether                     # optional: also drop the service user
+rm -rf /var/lib/tether /etc/tether # WARNING: removes its memory and its credentials, and cannot be undone
+```
+
+In-band, without root, Nish's own off-switch is the `STOP` text: the agent
+handles `STOP` and `RESUME` in code, before the model runs, so no reply and no
+tool call happens while it is stopped.
+
 ## Remote Control stays on (OOM storm 2026-10-09)
 
 The phone link must not drop, and when it does someone must hear within

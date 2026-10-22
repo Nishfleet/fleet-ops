@@ -1,0 +1,66 @@
+[Unit]
+Description=Tether, the always-on iMessage agent (fleet-ops#9980 phase 1)
+Documentation=https://github.com/Nishfleet/tether
+Wants=network-online.target
+After=network-online.target
+# The app ships from Nishfleet/tether and is installed under /var/lib/tether/app.
+# Until that binary exists a start is skipped, not failed, so this unit is safe
+# to enable at boot from the day it lands.
+ConditionPathExists=/var/lib/tether/app/dist/index.js
+# No start-limit: every exit restarts, and the durable runtime resumes the thread.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=tether
+Group=tether
+WorkingDirectory=/var/lib/tether/app
+Environment=NODE_ENV=production
+# The Photon Spectrum credentials and the model key live here, root:tether 0640.
+# Phase 1 holds no other credential: no shell, no GitHub, Cloudflare or database
+# token reaches this unit (fleet-ops#9980).
+EnvironmentFile=-/etc/tether/tether.env
+ExecStart=/usr/bin/node --enable-source-maps /var/lib/tether/app/dist/index.js
+Restart=always
+RestartSec=5
+# Crash-proofing: the durable runtime holds the thread and its memory in the
+# state directory, so a kill mid-reply resumes where it stopped (fleet-ops#9980).
+StateDirectory=tether
+StateDirectoryMode=0700
+RuntimeDirectory=tether
+RuntimeDirectoryMode=0700
+# Per-user units silently ignore sandbox settings on this box (Ubuntu sets
+# kernel.apparmor_restrict_unprivileged_userns=1), so this is a system unit with
+# a service user, per the vault note claude-vps-listener-locked.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tether
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# V8 JIT needs writable executable pages; do not add MemoryDenyWriteExecute.
+MemoryDenyWriteExecute=false
+MemoryHigh=512M
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
