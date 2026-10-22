@@ -428,63 +428,6 @@ groups:
           plan: opencode-go
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-      - uid: ppi-pareto
-        title: Pareto idle
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])) == bool 0)
-                or
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h])) or vector(0)
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: B
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: {params: [0], type: gt}
-                  operator: {type: and}
-                  query: {params: [C]}
-                  reducer: {params: [], type: last}
-                  type: query
-              datasource: {type: __expr__, uid: __expr__}
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
-              type: threshold
-        noDataState: OK
-        execErrState: Error
-        for: 0s
-        annotations:
-          summary: Pareto served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
-        labels:
-          severity: critical
-          plan: pareto
-          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
-        isPaused: false
       # The one judge-seat row in this family: its traffic is the occasional
       # one-shot judge call (0-3/day bursty, 626 calls in 7 days with 600+ from
       # the one-off eval campaign), not the hundreds/day of a worker row, so a

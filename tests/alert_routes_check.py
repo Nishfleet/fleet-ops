@@ -32,7 +32,7 @@ URGENT = {
     # money: a paid plan sits unused, and cancelling it is Nish's call
     "Cline idle": "money", "CommandCode idle": "money", "MiniMax idle": "money",
     "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
-    "OpenCode Go idle": "money", "Pareto idle": "money",
+    "OpenCode Go idle": "money",
     "Alibaba token-plan SG idle": "money",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
