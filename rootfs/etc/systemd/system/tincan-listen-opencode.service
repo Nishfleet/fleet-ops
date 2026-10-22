@@ -1,0 +1,27 @@
+# The opencode relay listener, as a system unit (fleet-ops#9977). See
+# tincan-listen-pi.service for why this is not a user unit. Its one service
+# key comes from EnvironmentFile=, which systemd reads as root, so the seats
+# directory itself stays hidden from the agent.
+[Unit]
+Description=Agent Tincan wake for opencode (tincan listen -> headless agent drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nish
+Group=nish
+SupplementaryGroups=
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/opencode.json
+Environment=FLEET_TASK_ID=tincan-opencode
+EnvironmentFile=/home/nish/.config/fleet-ops/seats/opencode.env
+WorkingDirectory=/home/nish/.local/state/tincan-listen-opencode
+Restart=always
+RestartSec=10
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/opencode run "$$(cat /home/nish/.config/tincan/prompts/opencode.txt)"'
+
+[Install]
+WantedBy=multi-user.target

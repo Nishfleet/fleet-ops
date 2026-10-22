@@ -1,0 +1,321 @@
+{
+  "description": "The agent lock contract (fleet-ops#9977). One entry per agent that runs on this host and reads text from outside the fleet. 'needs' is everything the agent must still be able to read after the lock; 'must_hide' is everything it must not read, in particular the other agents' logins and keys. tests/test_agent_locks.py resolves each unit's real settings (the unit plus every drop-in, following the symlinked shared file) and fails when a unit is not a system unit with User=, when a must_hide path is still readable, or when a need is hidden. A lock in a user unit does not count: systemd silently ignores sandbox settings there because kernel.apparmor_restrict_unprivileged_userns=1 on this box. Add an agent here before you install its unit, or the coverage check in the test fails.",
+  "user": "nish",
+  "agents": {
+    "tincan-listen-pi": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-pi.service",
+      "relay_identity": "/home/nish/.config/tincan/pi.json",
+      "needs": [
+        "/home/nish/.pi",
+        "/home/nish/.config/tincan/prompts",
+        "/home/nish/.local/state/tincan-listen-pi"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-fleet-worker": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+      "relay_identity": "/home/nish/.config/tincan/fleet-worker.json",
+      "needs": [
+        "/home/nish/.pi",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/tincan/prompts",
+        "/home/nish/.local/state/tincan-listen-fleet-worker"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-amp": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-amp.service",
+      "relay_identity": "/home/nish/.config/tincan/amp.json",
+      "needs": [
+        "/home/nish/.claude-vps",
+        "/home/nish/.amp",
+        "/home/nish/.local/state/tincan-listen-amp"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.pi",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-command-code": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-command-code.service",
+      "relay_identity": "/home/nish/.config/tincan/command-code.json",
+      "needs": [
+        "/home/nish/.commandcode",
+        "/home/nish/.config/tincan/prompts",
+        "/home/nish/.local/state/tincan-listen-command-code"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.pi",
+        "/home/nish/.amp",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-cursor-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-cursor-vps.service",
+      "relay_identity": "/home/nish/.config/tincan/cursor-vps.json",
+      "service_key": "/home/nish/.config/fleet-ops/seats/cursor.env",
+      "needs": [
+        "/home/nish/.cursor",
+        "/home/nish/.local/state/tincan-listen-cursor-vps"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.pi",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-devin-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-devin-vps.service",
+      "relay_identity": "/home/nish/.config/tincan/devin-vps.json",
+      "needs": [
+        "/home/nish/.devin",
+        "/home/nish/.config/tincan/prompts",
+        "/home/nish/.local/state/tincan-listen-devin-vps"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.pi",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/opencode.json",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-opencode": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-opencode.service",
+      "relay_identity": "/home/nish/.config/tincan/opencode.json",
+      "service_key": "/home/nish/.config/fleet-ops/seats/opencode.env",
+      "needs": [
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/prompts",
+        "/home/nish/.local/state/tincan-listen-opencode"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.git-credentials",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/share/claude-seat-backup",
+        "/home/nish/.pi",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/tincan/amp.json",
+        "/home/nish/.config/tincan/command-code.json",
+        "/home/nish/.config/tincan/cursor-vps.json",
+        "/home/nish/.config/tincan/devin-vps.json",
+        "/home/nish/.config/tincan/fleet-worker.json",
+        "/home/nish/.config/tincan/hermes.json",
+        "/home/nish/.config/tincan/hermes-webhook.secret",
+        "/home/nish/.config/tincan/pi.json",
+        "/home/nish/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-claude-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-claude-vps.service",
+      "relay_identity": "/home/nish/.config/tincan/claude-vps.json",
+      "needs": [
+        "/home/nish/.claude-vps",
+        "/home/nish/.local/state/tincan-listen-claude-vps",
+        "/home/nish/workspaces",
+        "/home/nish/.config/tincan/attachments",
+        "/home/nish/.config/tincan/mcp-launches",
+        "/home/nish/.local/bin",
+        "/home/nish/.local/share/claude",
+        "/home/nish/.gitconfig",
+        "/home/nish/.config/fleet-ops/seats/typesafe-jev.env"
+      ],
+      "must_hide": [
+        "/home/nish/.config/fleet-ops/seats",
+        "/home/nish/.config/cloudflare",
+        "/home/nish/.config/gh",
+        "/home/nish/.config/systemd",
+        "/home/nish/.ssh",
+        "/home/nish/.hermes",
+        "/home/nish/.claude",
+        "/home/nish/.pi",
+        "/home/nish/.amp",
+        "/home/nish/.commandcode",
+        "/home/nish/.cursor",
+        "/home/nish/.devin",
+        "/home/nish/.config/opencode",
+        "/home/nish/.config/tincan/pi.json",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    }
+  },
+  "stale_user_units": {
+    "systemd/tincan-listen-claude-vps.service": "The unlocked user form of a listener that now runs as a system unit. The required ci check still reads this file for its StateDirectory and WorkingDirectory, so removing it is #9984, not this PR."
+  },
+  "gaps": [
+    {
+      "agent": "amp-runner-nish and amp-runner-rajeev",
+      "unit": null,
+      "reason": "Still user units under ~/.config/systemd/user, so their settings are ignored on this box. They need the same move to system units with a service user, and their own live probe, before they can be switched.",
+      "issue": "#9982"
+    },
+    {
+      "agent": "hermes-gateway and hermes-serve",
+      "unit": "rootfs/etc/systemd/system/hermes-gateway.service",
+      "reason": "System units with a drop-in already, but the drop-in hides nothing: the chat agent can read the fleet's seats, Cloudflare tokens and the other agents' logins. Closing that needs its own probe, because the gateway also drives Claude Code and the vault.",
+      "issue": "#9981"
+    },
+    {
+      "agent": "GitHub self-hosted agent runners",
+      "unit": "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf",
+      "reason": "The runner unit has NoNewPrivileges and a memory cap, and agent.yml empties ~/.config/gh and ~/.config/cloudflare inside the job, but nothing stops a job from reading the other seat logins, ~/.ssh, or the host's restic files. Closing it needs a probe that runs inside a real runner job, because the claude lane reads one seat login and the default login by design.",
+      "issue": "#9983"
+    }
+  ]
+}
