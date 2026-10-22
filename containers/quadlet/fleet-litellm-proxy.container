@@ -52,6 +52,8 @@ PodmanArgs=--env=OLLAMA_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY_2
 PodmanArgs=--env=PARETO_API_KEY
+# Redis cache auth (router_settings): filled from litellm-redis.env below.
+PodmanArgs=--env=REDIS_PASSWORD
 PodmanArgs=--env=STEPFUN_API_KEY
 PodmanArgs=--env=STRAITLY_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
@@ -91,6 +93,7 @@ Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-redis.env
 Slice=app-litellm.slice
 ManagedOOMPreference=avoid
 Restart=on-failure

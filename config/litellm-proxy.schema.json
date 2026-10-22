@@ -315,7 +315,8 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "not": { "required": ["redis_url"] },
+      "required": ["redis_host", "redis_port", "redis_password", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -345,7 +346,9 @@
           },
           "not": { "contains": { "type": "object", "required": ["senior-backup"] } }
         },
-        "redis_url": { "type": "string", "pattern": "^redis://" },
+        "redis_host": { "const": "127.0.0.1" },
+        "redis_port": { "const": 6379 },
+        "redis_password": { "const": "os.environ/REDIS_PASSWORD" },
         "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },
         "optional_pre_call_checks": {
           "type": "array",

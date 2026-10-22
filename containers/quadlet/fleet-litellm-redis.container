@@ -12,7 +12,15 @@ Image=docker.io/library/redis:7
 AutoUpdate=registry
 Network=host
 Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:ro
-Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf
+# Auth: a 0600 one-line `requirepass` fragment pulled in with --include, so the value never sits
+# on the command line. The host user maps to the image's redis uid 999 (as fleet-grafana does for
+# 472), so the 0600 file reads inside the container.
+# ansible/host.yml renders this file and litellm-redis.env (read by the proxy) on every run
+# from one root-only password file (/etc/fleet-ops/litellm-redis-password, created by the
+# stock password lookup), so the two cannot differ; a missing one fails closed (NOAUTH).
+UserNS=keep-id:uid=999,gid=999
+Volume=%h/.config/fleet-ops/litellm-redis-auth.conf:/run/secrets/redis-auth.conf:ro
+Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf --include /run/secrets/redis-auth.conf
 
 [Service]
 Slice=app-litellm-redis.slice
