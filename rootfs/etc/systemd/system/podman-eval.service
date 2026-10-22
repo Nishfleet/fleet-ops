@@ -10,10 +10,11 @@
 # No NoNewPrivileges here: rootless podman needs the setuid newuidmap/newgidmap.
 # The fleet's own store (containers/storage) is hidden; containers/cache stays visible, because podman fails every pull without it.
 # A `-` before a path means a missing path never stops the unit from starting.
-# /run/podman-eval comes from tmpfiles.d/podman-eval.conf, not RuntimeDirectory=: the
-# runners hide it with InaccessiblePaths=-/run/podman-eval, which skips a missing path, so
-# it must exist before any runner starts and survive a restart of this unit. Podman makes
-# runroot and the socket itself, as nish, inside it.
+# /run/podman-eval comes from tmpfiles.d/podman-eval.conf and is never removed: the
+# runners hide it with InaccessiblePaths=-/run/podman-eval, which skips a missing path and
+# follows the inode, so it must exist before any runner starts and keep its inode.
+# RuntimeDirectory=podman-eval/rt makes and removes only the inner dir, so the runroot,
+# socket, auth and netns state are wiped on every stop, as before.
 [Unit]
 Description=Rootless podman API socket for the drive agent eval
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
@@ -25,13 +26,11 @@ StartLimitBurst=5
 [Service]
 User=nish
 Group=nish
-# Podman's runroot and socket now outlive a restart, so each start begins clean; the dir
-# itself stays (the runners hide it by inode).
-ExecStartPre=-/bin/rm -rf /run/podman-eval/runroot /run/podman-eval/podman.sock
-Environment=XDG_RUNTIME_DIR=/run/podman-eval
+RuntimeDirectory=podman-eval/rt
+Environment=XDG_RUNTIME_DIR=/run/podman-eval/rt
 Environment=HOME=/home/nish
 Delegate=yes
-ExecStart=/usr/bin/podman --root /home/nish/.local/share/podman-eval/storage --runroot /run/podman-eval/runroot --cgroup-manager=cgroupfs --events-backend=file system service --time=0 unix:///run/podman-eval/podman.sock
+ExecStart=/usr/bin/podman --root /home/nish/.local/share/podman-eval/storage --runroot /run/podman-eval/rt/runroot --cgroup-manager=cgroupfs --events-backend=file system service --time=0 unix:///run/podman-eval/rt/podman.sock
 Restart=on-failure
 RestartSec=10s
 # Eval containers run in this unit's cgroup, so these cap the whole eval.
