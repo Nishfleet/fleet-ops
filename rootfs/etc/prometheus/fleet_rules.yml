@@ -176,3 +176,63 @@ groups:
         annotations:
           summary: "AI spend metric has been missing for over a day"
           description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
+
+  - name: fleet_router
+    rules:
+      # The strong worker group answers nothing. litellm_deployment_state is 0 for a row the
+      # router cannot cool (an Ollama connection error is ignored by v1.98.0's cooldown logic), so a
+      # state-only rule stayed silent while every pick failed. A row counts as healthy here only if it
+      # reads state 0 AND answered a call in the last 15 minutes; the rule fires when no row does while the
+      # group is being called (more than 5 chat calls in 15 minutes), so an idle night does not page.
+      # The state series whose litellm_model_name is the group name is left out: it can sit at 2 after the
+      # row recovered. up{job="litellm"} gates it, since a failed scrape is unobserved, not down.
+      # Label model_id: every worker-capable row id ends in -worker-capable (there is no group label).
+      - alert: RouterStrongGroupNoHealthyRow
+        expr: |
+          (count(
+              count by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable", litellm_model_name!="worker-capable"} == 0)
+              and on (model_id)
+              (sum by (model_id) (increase(litellm_deployment_success_responses_total{model_id=~".+-worker-capable"}[15m])) > 0)
+            ) or vector(0)) == 0
+          and on() (sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m])) > 5)
+          and on() (up{job="litellm"} == 1)
+        for: 5m
+        labels:
+          severity: nish
+          group: worker-capable
+        annotations:
+          summary: "worker-capable has no row that answers"
+          description: "No worker-capable row is at litellm_deployment_state 0 and answering calls, for 5 minutes while the group is being called."
+
+      # Caller-facing failures on the strong group: more than 5% of its chat calls fail for 10 minutes.
+      # litellm_proxy_failed_requests_metric_total counts only calls that reached the caller, so a
+      # fallback that answered the call does not count (0 in the 24 h to 2026-10-22). Both halves carry
+      # the same route filter.
+      - alert: RouterStrongGroupFailing
+        expr: |
+          sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m])) > 0.05
+          and sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m])) > 20
+        for: 10m
+        labels:
+          severity: nish
+          group: worker-capable
+        annotations:
+          summary: "More than 5% of worker-capable calls are failing"
+          description: "worker-capable chat calls are reaching the caller as errors. Compare litellm_deployment_failure_responses_total by model_id for the row that keeps failing."
+
+  - name: fleet_router_downgrade
+    interval: 5m
+    rules:
+      # Share of worker-capable chat calls answered by worker-cheap, for reading the downgrade rate in one
+      # query: router:capable_answered_by_cheap:ratio_1d for the day, and
+      # avg_over_time(router:capable_answered_by_cheap:ratio_1d[7d]) or
+      # sum(router:capable_answered_by_cheap:increase1d)/sum(router:capable_requests:increase1d) over the same
+      # window for 7 days. Counters: litellm_deployment_successful_fallbacks_total (requested_model,
+      # fallback_model) and litellm_proxy_total_requests_metric_total.
+      - record: router:capable_requests:increase1d
+        expr: sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[1d]))
+      - record: router:capable_answered_by_cheap:increase1d
+        expr: sum(increase(litellm_deployment_successful_fallbacks_total{requested_model="worker-capable",fallback_model="worker-cheap"}[1d])) or vector(0)
+      - record: router:capable_answered_by_cheap:ratio_1d
+        expr: router:capable_answered_by_cheap:increase1d / router:capable_requests:increase1d
