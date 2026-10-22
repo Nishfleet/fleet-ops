@@ -165,7 +165,7 @@ that changed nothing running, because nothing read it (fleet-ops#9670).
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
 `containers/quadlet/fleet-litellm-{postgres,redis,proxy}.container` (images
-`postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.98.0`, all
+`postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.105.0`, all
 `Network=host`), run as `fleet-litellm-postgres.service`,
 `fleet-litellm-redis.service` and `fleet-litellm-proxy.service`. Healthy
 check: `systemctl --user is-active fleet-litellm-postgres.service
@@ -175,7 +175,11 @@ three times. Host data directories stay at
 `~/.local/share/fleet-litellm-redis`.
 
 The proxy version is the image tag in `fleet-litellm-proxy.container`,
-bumped in its own PR.
+bumped in its own PR. Because `disable_prisma_schema_update` is true, the proxy
+does not migrate by itself: the unit's `ExecStartPre=` runs the image's own
+`litellm --skip_server_startup` migration job before each start. Take a
+`pg_dump -Fc` of the router database before a bump; the schema change is not
+additive, so the dump plus the old image is the rollback.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
