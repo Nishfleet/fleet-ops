@@ -14,6 +14,8 @@ Description=Rootless podman API socket for the drive agent eval
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Service]
 User=nish
@@ -25,6 +27,9 @@ Delegate=yes
 ExecStart=/usr/bin/podman --root /home/nish/.local/share/podman-eval/storage --runroot /run/podman-eval/runroot --cgroup-manager=cgroupfs --events-backend=file system service --time=0 unix:///run/podman-eval/podman.sock
 Restart=on-failure
 RestartSec=10s
+# Eval containers run in this unit's cgroup, so these cap the whole eval.
+MemoryMax=6G
+TasksMax=4096
 InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/home/nish/.docker -/run/user/1000 -/home/nish/.local/share/containers/storage
 InaccessiblePaths=-/home/nish/.ssh -/home/nish/.gnupg -/home/nish/.config/cloudflare -/home/nish/.cloudflare -/home/nish/.wrangler
 InaccessiblePaths=-/home/nish/.config/rclone -/home/nish/.codex -/home/nish/.netrc -/home/nish/.git-credentials -/home/nish/.aws
