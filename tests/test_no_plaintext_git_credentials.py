@@ -18,12 +18,12 @@ def lines() -> list[list[str]]:
 
 @pytest.mark.parametrize("path", PATHS)
 def test_path_is_a_root_owned_unreadable_directory(path: str) -> None:
-    assert ["d", path, "0000", "root", "root", "-"] in lines()
+    assert ["d", path, "0000", "nish", "nish", "-"] in lines()
 
 
 @pytest.mark.parametrize("path", PATHS)
 def test_directory_is_non_empty(path: str) -> None:
-    readme = [row for row in lines() if row[:6] == ["f", f"{path}/README", "0444", "root", "root", "-"]]
+    readme = [row for row in lines() if row[:6] == ["f", f"{path}/README", "0444", "nish", "nish", "-"]]
     assert len(readme) == 1 and len(readme[0]) == 7 and readme[0][6].strip()
 
 
@@ -34,6 +34,7 @@ def test_nothing_else_is_configured() -> None:
 def test_header_states_the_rename_limit() -> None:
     header = CONF.read_text().split("\nd ")[0]
     assert "deliberate rename" in header and "R3" in header
+    assert "unsafe path transition" in header
 
 
 def test_host_yml_fails_before_tmpfiles_on_a_regular_file() -> None:
@@ -46,3 +47,10 @@ def test_host_yml_fails_before_tmpfiles_on_a_regular_file() -> None:
     assert re.search(r"item\.stat\.exists and not item\.stat\.isdir", block)
     assert all(path in host[host.index("Look for a plaintext git credential file"):check] for path in PATHS)
     assert "state: absent" not in block
+
+
+def test_host_yml_fails_when_the_xdg_parent_is_missing() -> None:
+    host = HOST.read_text()
+    install = host.index("- name: Install tmpfiles.d entries")
+    block = host[host.index("Look for the git config directory"):install]
+    assert "/home/nish/.config/git\n" in block and "ansible.builtin.assert" in block and "isdir" in block

@@ -69,7 +69,7 @@ paths = ['''(^|/)rootfs/etc/systemd/system/(actions\.runner\.[^/]*\.service\.d/(
 description = "The tmpfiles file for the blocked plaintext git credential store must name its path (a tmpfiles line has no inline comment to carry gitleaks:allow), and its test and the host.yml pre-check name it too; fleet-ops#9983"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|rootfs/etc/tmpfiles\.d/no-plaintext-git-credentials\.conf|tests/test_no_plaintext_git_credentials\.py)$''']
-regexes = ['''home/nish/\.(git-credentials|config/git)''']
+regexes = ['''^home/nish/\.(git-credentials|config/git(/credentials)?)(/README)?$''']
 condition = "AND"
 
 [[allowlists]]

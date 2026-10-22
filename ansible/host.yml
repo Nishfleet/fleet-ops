@@ -232,6 +232,20 @@
       loop_control:
         label: "{{ item.item }}"
 
+    # tmpfiles `d` creates a missing parent as root, which would hand nish's own
+    # git config directory to root.
+    - name: Look for the git config directory in nish's home
+      ansible.builtin.stat:
+        path: /home/nish/.config/git
+        follow: false
+      register: git_config_dir
+
+    - name: Fail the run when the git config directory is missing
+      ansible.builtin.assert:
+        that: git_config_dir.stat.exists and git_config_dir.stat.isdir
+        fail_msg: "/home/nish/.config/git is missing or not a directory. Create it as nish (mkdir -p), then rerun; tmpfiles would create it owned by root."
+        quiet: true
+
     - name: Install tmpfiles.d entries
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/tmpfiles.d/"
