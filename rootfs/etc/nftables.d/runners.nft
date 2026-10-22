@@ -22,7 +22,9 @@ flush chain inet runners runner_egress
 
 add rule inet runners output socket cgroupv2 level 2 @runner_cgroups jump runner_egress
 
-# Replies on connections that already exist, then the two allowed local destinations.
+# Replies on connections that already exist, then the two allowed local destinations:
+# the model router (fleet-ci-3's eval calls it with its own key; fleet-ci-2 does not
+# use it, but all runners share this chain) and the resolved stub.
 add rule inet runners runner_egress ct state established,related return
 add rule inet runners runner_egress ip daddr 127.0.0.1 tcp dport 4000 return
 add rule inet runners runner_egress ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 return

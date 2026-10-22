@@ -512,6 +512,8 @@ def test_canary_dropin_fills_the_set_and_denies_address_ranges() -> None:
     for item in ("localhost", "link-local", "multicast", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", cgnat, "fd7a:115c:a1e0::/48", "fc00::/7"):
         assert item in deny, item
     assert keys["IPAddressAllow"] == ["127.0.0.1/32 127.0.0.53/32"]
+    assert keys["After"] == ["nftables.service"] and keys["Wants"] == ["nftables.service"]
+    assert "Requires" not in keys
     assert re.fullmatch(r"actions\.runner\.[A-Za-z0-9.-]+\.service\.d", RUNNER_CANARY.parent.name)
 
 
