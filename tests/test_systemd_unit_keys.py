@@ -110,7 +110,7 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
     out = proc.stdout
     plays = json.loads(out[out.index("{"):])["plays"]
     assert plays, proc.stderr
-    return {task["task"]["name"]: task["hosts"]["localhost"] for task in plays[0]["tasks"]}
+    return {task["task"]["name"]: task["hosts"]["localhost"] for task in plays[0]["tasks"] if "localhost" in task["hosts"]}
 
 
 # Tasks that run with or without the marker: they only read, or they are the
@@ -123,6 +123,7 @@ TETHER_ALWAYS = {
     "Create the nftables drop-in directory",
     "Remove the tether egress rule while the marker exists",
     "Keep tether disabled and stopped while the marker exists",
+    "Apply pending handlers before the tether failure check",
 }
 # Tasks that a clean host (temp roots, nothing installed) must really reach with
 # no marker. The rest of the release tasks are skipped by design on a clean host,
@@ -151,7 +152,10 @@ TETHER_REACHED = (
     "Create the tether staging directory, root-owned",
     "Unpack the verified tether release into staging",
     "Look for the entry point in the staged tether release",
-    "Look for writable or non-root files in the staged tether release",
+    "Look at the unverified tether download",
+    "Require the tether download to be a plain file",
+    "Scan the staged tether release for writable or non-root files",
+    "Record the writable or non-root files in the staged tether release",
     "Require the expected layout and modes before the release is moved into place",
     "Look at where tether current points now",
     "Point tether current at the verified release",
@@ -268,8 +272,6 @@ def _release_tasks() -> dict[str, dict]:
 def test_tether_release_is_pinned_once_and_keyed_by_version_and_hash() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", _host_var("tether_version"))
     assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_sha256"))
-    assert _host_var("tether_version") == "0.1.1"
-    assert _host_var("tether_sha256") == "fc02d1ccdfe6a79673ab125f0052151347b658a5fc596b547c65eee136d826ea"
     text = HOST_YML.read_text()
     assert text.count("tether_sha256:") == 1 and text.count("tether_version:") == 1, "pin the release in one place"
     assert _host_var("tether_sha256") not in text.replace(f"tether_sha256: {_host_var('tether_sha256')}", "")
@@ -334,12 +336,35 @@ def test_tether_release_is_verified_staged_and_renamed_into_place() -> None:
     move = tasks["Move the staged tether release into place"]["ansible.builtin.command"]["argv"]
     assert move == ["/usr/bin/mv", "-T", "{{ tether_release_stage }}", "{{ tether_release_dir }}"]
     check = json.dumps(tasks["Require the expected layout and modes before the release is moved into place"])
-    assert "isreg" in check and "tether_stage_bad.stdout == ''" in check
+    assert "isreg" in check and "tether_stage_unsafe | length == 0" in check
     assert tasks["Clear the tether staging directory"]["ansible.builtin.file"]["state"] == "absent"
     stale = tasks["Remove a tether release directory that is incomplete or unsafe"]
     assert stale["ansible.builtin.file"]["state"] == "absent" and "not tether_rel_ok" in stale["when"]
     for name in ("Unpack the verified tether release into staging", "Move the staged tether release into place"):
         assert tasks[name]["when"] == "not tether_rel_ok", "a complete release directory is never unpacked over"
+
+
+def test_tether_release_modes_are_checked_with_the_find_module_and_a_bad_dir_goes_last() -> None:
+    text = HOST_YML.read_text()
+    assert "/usr/bin/find" not in text, "use ansible.builtin.find, not a command"
+    tasks = _release_tasks()
+    for name in ("Scan this tether release for writable or non-root files", "Scan the staged tether release for writable or non-root files"):
+        scan = tasks[name]["ansible.builtin.find"]
+        assert scan["recurse"] is True and scan["hidden"] is True and scan["follow"] is False and scan["file_type"] == "any"
+    names = list(tasks)
+    remove = "Remove a tether release directory that is incomplete or unsafe"
+    gate = "Require the expected layout and modes before the release is moved into place"
+    move = "Move the staged tether release into place"
+    verify = "Verify the tether release against the pinned sha256"
+    assert names.index(verify) < names.index(gate) < names.index(remove) < names.index(move), "keep the old directory until its replacement is staged and checked"
+    guard = tasks["Require the tether download to be a plain file"]["ansible.builtin.assert"]["that"]
+    assert "isreg" in guard and names.index("Require the tether download to be a plain file") < names.index(verify)
+
+
+def test_tether_failure_check_comes_after_a_handler_flush() -> None:
+    tasks = _play_tasks()
+    assert tasks[-1]["name"] == "Fail when the tether release could not be installed"
+    assert tasks[-2]["ansible.builtin.meta"] == "flush_handlers", "pending reloads run before the play fails"
 
 
 def test_tether_release_download_runs_as_nish_after_a_login_check() -> None:

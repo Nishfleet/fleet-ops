@@ -795,13 +795,24 @@
             path: "{{ tether_release_dir }}"
           register: tether_rel_dir
 
-        - name: Look for files in this tether release that are writable or not root-owned
-          ansible.builtin.command:
-            argv: [/usr/bin/find, "{{ tether_release_dir }}", "(", -perm, /022, -o, "!", -user, root, ")", "!", -type, l]
-          register: tether_rel_bad
-          changed_when: false
+        # Every file, directory and hidden entry below the release, symlinks not
+        # followed. The result is filtered below for group- or other-writable
+        # entries and for owners other than root (uid 0); links are skipped,
+        # their mode is not theirs to set.
+        - name: Scan this tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_dir }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_rel_scan
           check_mode: false  # read-only; runs under --check too
           when: tether_rel_dir.stat.isdir | default(false)
+
+        - name: Record the writable or non-root files in this tether release
+          ansible.builtin.set_fact:
+            tether_rel_unsafe: "{{ ((tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
 
         - name: Look for the entry point of this tether release
           ansible.builtin.stat:
@@ -812,13 +823,7 @@
         # in it that is group or other writable or not owned by root.
         - name: Record whether this tether release is already installed whole
           ansible.builtin.set_fact:
-            tether_rel_ok: "{{ (tether_rel_dir.stat.isdir | default(false)) and (tether_rel_entry.stat.isreg | default(false)) and (tether_rel_bad.stdout | default('x') == '') }}"
-
-        - name: Remove a tether release directory that is incomplete or unsafe
-          ansible.builtin.file:
-            path: "{{ tether_release_dir }}"
-            state: absent
-          when: tether_rel_dir.stat.exists and not tether_rel_ok
+            tether_rel_ok: "{{ (tether_rel_dir.stat.isdir | default(false)) and (tether_rel_entry.stat.isreg | default(false)) and (tether_rel_dir.stat.uid | default(1) == 0) and not (tether_rel_dir.stat.wgrp | default(true)) and not (tether_rel_dir.stat.woth | default(true)) and (tether_rel_unsafe | default(['x']) | length == 0) }}"
 
         - name: Look for the verified tether tarball
           ansible.builtin.stat:
@@ -861,6 +866,23 @@
           ansible.builtin.command:
             argv: ["{{ tether_gh }}", release, download, "v{{ tether_version }}", -R, Nishfleet/tether, -p, "tether-v{{ tether_version }}.tar.gz", -D, "{{ tether_release_cache }}/nish", --clobber]
             chdir: "{{ tether_release_cache }}/nish"
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # nish writes this directory (gh cannot write into a root-owned one), so
+        # root reads only a plain file there: a link to another file is refused
+        # before get_url follows it.
+        - name: Look at the unverified tether download
+          ansible.builtin.stat:
+            path: "{{ tether_release_download }}"
+          register: tether_rel_dl
+          when: tether_rel_fetch | bool
+
+        - name: Require the tether download to be a plain file
+          ansible.builtin.assert:
+            that: tether_rel_dl.stat.isreg | default(false)
+            fail_msg: "{{ tether_release_download }} is missing or is not a plain file; it is not read"
+            quiet: true
           when: tether_rel_fetch | bool
           ignore_errors: "{{ ansible_check_mode }}"
 
@@ -918,25 +940,39 @@
           register: tether_stage_entry
           when: not tether_rel_ok
 
-        - name: Look for writable or non-root files in the staged tether release
-          ansible.builtin.command:
-            argv: [/usr/bin/find, "{{ tether_release_stage }}", "(", -perm, /022, -o, "!", -user, root, ")", "!", -type, l]
-          register: tether_stage_bad
-          changed_when: false
-          failed_when: false
+        - name: Scan the staged tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_stage }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_stage_scan
           check_mode: false  # read-only; runs under --check too
+          when: not tether_rel_ok
+
+        - name: Record the writable or non-root files in the staged tether release
+          ansible.builtin.set_fact:
+            tether_stage_unsafe: "{{ ((tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
           when: not tether_rel_ok
 
         - name: Require the expected layout and modes before the release is moved into place
           ansible.builtin.assert:
             that:
               - tether_stage_entry.stat.isreg | default(false)
-              - tether_stage_bad.rc == 0
-              - tether_stage_bad.stdout == ''
-            fail_msg: "The staged tether release has no dist/index.js, or has a group- or other-writable or non-root file ({{ tether_stage_bad.stdout | default('') | truncate(200) }}): the tarball does not have the expected layout"
+              - tether_stage_unsafe | length == 0
+            fail_msg: "The staged tether release has no dist/index.js, or has a group- or other-writable or non-root file ({{ tether_stage_unsafe | default([]) | join(', ') | truncate(200) }}): the tarball does not have the expected layout"
             quiet: true
           when: not tether_rel_ok
           ignore_errors: "{{ ansible_check_mode }}"
+
+        # Only now, with a verified, checked replacement staged: a failure earlier
+        # in the block leaves whatever `current` points at in place.
+        - name: Remove a tether release directory that is incomplete or unsafe
+          ansible.builtin.file:
+            path: "{{ tether_release_dir }}"
+            state: absent
+          when: tether_rel_dir.stat.exists and not tether_rel_ok
 
         - name: Move the staged tether release into place
           ansible.builtin.command:
@@ -1581,6 +1617,10 @@
     # block above) fails the run here, after every other task and handler has
     # run, so the deploy goes red and pages while the rest of the host config
     # still applied.
+    - name: Apply pending handlers before the tether failure check
+      tags: [tether, tether-release]
+      ansible.builtin.meta: flush_handlers
+
     - name: Fail when the tether release could not be installed
       tags: [tether, tether-release]
       ansible.builtin.fail:
