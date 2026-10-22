@@ -2,9 +2,12 @@
 Description=TigerVNC desktop on :1 (IceWM)
 
 [Service]
-ExecStart=/usr/bin/tigervncserver :1 -fg -localhost no -SecurityTypes VncAuth -passwd %h/.config/tigervnc/passwd -geometry 1440x900
+# Tailnet address only (looked up at start; a failed lookup exits and Restart= retries). -interface must come before -localhost: the wrapper resets
+# -localhost when it parses -interface, so the other order binds loopback only.
+ExecStart=/bin/sh -c 'ip=$$(/usr/bin/tailscale ip -4) && [ -n "$$ip" ] && exec /usr/bin/tigervncserver :1 -fg -interface "$$ip" -localhost no -SecurityTypes VncAuth -passwd %h/.config/tigervnc/passwd -geometry 1440x900'
 ExecStop=/usr/bin/tigervncserver -kill :1
 Restart=on-failure
+RestartSec=15
 
 [Install]
 WantedBy=default.target
