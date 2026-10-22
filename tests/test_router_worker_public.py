@@ -63,11 +63,11 @@ def test_budgets_are_a_lifetime_cap_below_the_balance_and_the_account_limit():
     assert sum(r["litellm_params"]["max_parallel_requests"] for r in rows) * 2 <= 64
 
 
-def test_worker_public_falls_back_to_worker_capable_and_the_old_pair_is_intact():
+def test_worker_public_falls_back_to_worker_capable_and_the_strong_group_has_no_downward_fallback():
     fallbacks = _fallbacks()
     assert {"worker-public": ["worker-capable"]} in fallbacks
     assert [f for f in fallbacks if "worker-public" in f] == [{"worker-public": ["worker-capable"]}]
-    assert {"worker-capable": ["worker-cheap"]} in fallbacks
+    assert not any("worker-capable" in f for f in fallbacks)  # W10c: no downward fallback
     assert {"worker-cheap": ["worker-capable"]} in fallbacks
     assert not any("worker-public" in names for f in fallbacks for names in f.values())
 

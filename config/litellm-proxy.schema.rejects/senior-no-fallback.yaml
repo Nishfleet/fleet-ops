@@ -121,8 +121,6 @@ router_settings:
   fallbacks:
   - judge:
     - senior
-  - worker-capable:
-    - worker-cheap
   - worker-cheap:
     - worker-capable
   cooldown_time: 60

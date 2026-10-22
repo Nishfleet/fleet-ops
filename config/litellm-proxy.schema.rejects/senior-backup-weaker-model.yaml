@@ -122,8 +122,6 @@ router_settings:
     - senior
   - senior:
     - senior-backup
-  - worker-capable:
-    - worker-cheap
   - worker-cheap:
     - worker-capable
   cooldown_time: 60

@@ -176,3 +176,27 @@ groups:
         annotations:
           summary: "AI spend metric has been missing for over a day"
           description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
+
+  - name: fleet_router
+    rules:
+      # The strong worker group has no healthy row for 5 minutes. With the
+      # worker-capable -> worker-cheap fallback removed (W10c) such a call now
+      # fails at the caller instead of being answered by the cheap group, so this
+      # is the signal that callers are failing. litellm_deployment_state is 0
+      # healthy, 1 partial outage, 2 complete outage, one series per row and
+      # worker process (label model_id; every worker-capable row id ends in
+      # -worker-capable, there is no group label). The router also writes a
+      # second series per row whose litellm_model_name is the group name and
+      # that can sit at 2 after the row recovered, so those are left out.
+      # up{job="litellm"} gates it: a failed scrape is unobserved, not down.
+      - alert: RouterStrongGroupNoHealthyRow
+        expr: |
+          (count(count by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable", litellm_model_name!="worker-capable"} == 0)) or vector(0)) == 0
+          and on() (up{job="litellm"} == 1)
+        for: 5m
+        labels:
+          severity: nish
+          group: worker-capable
+        annotations:
+          summary: "worker-capable has no healthy deployment"
+          description: "No worker-capable row has litellm_deployment_state 0 for 5 minutes. Calls to worker-capable fail at the caller; they no longer fall back to worker-cheap."
