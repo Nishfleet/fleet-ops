@@ -47,7 +47,7 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     for row in _model_list():
         tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
     thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
-    assert not thin, f"router tiers with fewer than 2 deployments: {thin}. A tier needs a second row; only senior may hold one (fleet-ops#10040)"
+    assert not thin, f"router tiers below their floor (2 rows, senior 1): {thin}. Only senior may hold one row (fleet-ops#10040)"
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"

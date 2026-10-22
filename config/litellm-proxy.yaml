@@ -351,7 +351,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: senior
-  # W10c (Nish 2026-10-22 22:15 IST, "yes, also remove pareto", recorded in fleet-ops#10040): the Pareto rows are gone, and this row, GLM-5.3-Flash on Synthetic's own prepaid key, is the one senior row. It was senior-backup (fleet-ops#9596). senior has no fallback of its own: judge falls to senior and it ends there, so judge -> senior cannot cycle.
+  # W10c (Nish 2026-10-22 22:15 IST, "yes, also remove pareto", recorded in fleet-ops#10040): the Pareto rows are gone, and this row, GLM-5.3-Flash on Synthetic's own prepaid key, is the one senior row. It was senior-backup (fleet-ops#9596). While Synthetic stays a plan (config/paid-plans.json: cancelled 2026-10-01, rows leave when it lapses, fleet-ops#9048) this row is the senior seat; if the plan lapses the senior tier needs a new provider first. senior has no fallback of its own: judge falls to senior and it ends there, so judge -> senior cannot cycle.
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1

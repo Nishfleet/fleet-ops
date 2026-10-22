@@ -187,7 +187,10 @@ async def _answers(router, calls):
         try:
             reply = await router.acompletion(model="worker-public", messages=[{"role": "user", "content": "x"}])
             seen.append(reply.choices[0].message.content)
-        except (litellm.InternalServerError, ValueError):
+        except litellm.InternalServerError:
+            seen.append("error")
+        except ValueError as exc:
+            assert "crossed budget" in str(exc), exc
             seen.append("error")
         await asyncio.sleep(0.4)
     return seen
