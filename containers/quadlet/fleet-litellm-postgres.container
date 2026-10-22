@@ -14,6 +14,15 @@ Network=host
 UserNS=keep-id:uid=999,gid=999
 Volume=%h/.local/share/fleet-litellm-postgres:%h/.local/share/fleet-litellm-postgres
 Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
+# Password auth for every connection. The cluster already exists, so the image's
+# POSTGRES_HOST_AUTH_METHOD (initdb time only) would do nothing: the pg_hba.conf
+# comes from the repo through hba_file instead. The directory is mounted, not the
+# file, so a git checkout that replaces the file is seen by the next reload.
+# Clients: the proxy reads DATABASE_URL (with its password) from
+# ~/.config/fleet-ops/litellm-db.env; the restic dump (runuser -u nish -- pg_dump, which sets
+# HOME) reads libpq's default ~/.pgpass (0600, one line per role). Neither file is in the repo.
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/postgres:/etc/fleet-postgres:ro
+Exec=postgres -c hba_file=/etc/fleet-postgres/pg_hba.conf -c password_encryption=scram-sha-256
 
 [Service]
 Slice=app-litellm-postgres.slice

@@ -19,7 +19,10 @@ OnFailure=fleet-unit-failed@%N.service
 Image=ghcr.io/berriai/litellm:v1.98.0
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
-Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+# DATABASE_URL carries the database password, so it comes from a 0600 file, not this
+# repo (the database requires scram-sha-256). general_settings.database_url in the
+# proxy config names it as os.environ/DATABASE_URL: that key wins over the env var.
+PodmanArgs=--env=DATABASE_URL
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
 # Podman's default stop timeout is 10 s, so `podman rm -f` SIGKILLed the
@@ -91,6 +94,7 @@ Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
 Slice=app-litellm.slice
 ManagedOOMPreference=avoid
 Restart=on-failure
