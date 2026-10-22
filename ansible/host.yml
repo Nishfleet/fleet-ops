@@ -523,6 +523,71 @@
         name: claude-remote-control.service
         enabled: true
 
+    # Local agent state (audit follow-up): the session databases and the runner
+    # credential files are for nish alone. Mode only, never owner, and each task
+    # does nothing when its files are absent. SQLite gives a new -wal/-shm the
+    # mode of the main database, so fixing the main file covers them.
+    - name: Look for the agent state directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ nish_home }}/.local/share/devin"
+        - "{{ nish_home }}/.local/share/devin/cli"
+      register: agent_state_dirs
+
+    - name: Keep the agent state directories private
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ agent_state_dirs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists and item.stat.isdir
+
+    - name: Find the agent session databases
+      ansible.builtin.find:
+        paths:
+          - "{{ nish_home }}/.local/share/devin/cli"
+          - "{{ nish_home }}/.local/share/leviathan"
+        patterns:
+          - sessions.db*
+          - pi.db*
+          - claude.db*
+        file_type: file
+      register: agent_state_dbs
+
+    - name: Keep the agent session databases private
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ agent_state_dbs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Find the runner credential files
+      ansible.builtin.find:
+        paths:
+          - "{{ nish_home }}/.local/share/actions-runner"
+          - "{{ nish_home }}/.local/share/agent-runner"
+          - "{{ nish_home }}/.local/share/fleet-ci-runner"
+        patterns: ".credentials*"
+        hidden: true
+        recurse: true
+        depth: 2
+        file_type: file
+      register: runner_credentials
+
+    - name: Keep the runner credential files private
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ runner_credentials.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
     # run never enables or starts tether-agent.service: it stays disabled until
