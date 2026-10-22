@@ -1101,6 +1101,20 @@
       when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
       notify: Reload nftables
 
+    # Runner egress (fleet-ops canary: fleet-ci-2). A plain file: the table and an
+    # empty set need no cgroup to exist, so `nft -c` passes on any host. The runner
+    # unit's own NFTSet= line (rootfs/etc/systemd/system/*/40-egress.conf) fills
+    # the set. Nothing here starts a unit, so a failure here cannot stop the run.
+    - name: Install the runner egress rule
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables.d/runners.nft"
+        dest: /etc/nftables.d/runners.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      notify: Reload nftables
+
     - name: Remove the tether egress rule while the marker exists
       tags: [tether]
       ansible.builtin.file:

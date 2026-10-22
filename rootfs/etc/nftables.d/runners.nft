@@ -1,0 +1,36 @@
+# Egress for GitHub Actions runner units that carry NFTSet=cgroup:inet:runners:runner_cgroups
+# (rootfs/etc/systemd/system/*.service.d/40-egress.conf). systemd adds a unit's
+# cgroup id to the set when the unit's cgroup is realized and removes it when the
+# unit goes away, so there is no id to track here. An empty set needs no cgroup
+# to exist, so this file loads at boot and on a fresh host.
+#
+# Positive match only: a packet whose socket is not in the set (no full socket,
+# a kernel socket, any other service) never enters runner_egress and falls to the
+# accept policy. Level 2 is /<slice>/<unit>.service; processes the unit starts sit
+# deeper and still match through their ancestor at level 2.
+#
+# Reload: this file uses `add` and `flush chain`, never `destroy table` (unlike
+# nftables.conf's other tables), so `systemctl reload nftables` keeps the set's
+# elements. `add table`/`add set` on an existing object changes nothing, and the
+# flush plus the re-added rules are one atomic nft transaction.
+add table inet runners
+add set inet runners runner_cgroups { type cgroupsv2; }
+add chain inet runners output { type filter hook output priority filter; policy accept; }
+add chain inet runners runner_egress
+flush chain inet runners output
+flush chain inet runners runner_egress
+
+add rule inet runners output socket cgroupv2 level 2 @runner_cgroups jump runner_egress
+
+# Replies on connections that already exist, then the two allowed local destinations.
+add rule inet runners runner_egress ct state established,related return
+add rule inet runners runner_egress ip daddr 127.0.0.1 tcp dport 4000 return
+add rule inet runners runner_egress ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 return
+
+# Everything else that is local or private.
+add rule inet runners runner_egress ip daddr { 127.0.0.0/8, 10.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+add rule inet runners runner_egress ip daddr 100.64.0.0/10 drop # gitleaks:allow
+add rule inet runners runner_egress ip6 daddr { ::1, fc00::/7, fe80::/10 } drop
+add rule inet runners runner_egress ip6 daddr fd7a:115c:a1e0::/48 drop
+add rule inet runners runner_egress fib daddr type local drop
+add rule inet runners runner_egress return

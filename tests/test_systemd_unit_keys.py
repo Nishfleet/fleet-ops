@@ -456,3 +456,99 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     if shutil.which("sudo") and shutil.which("nft"):
         check = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(out)], capture_output=True, text=True, check=False)
         assert check.returncode == 0, check.stderr
+
+
+RUNNER_RULES = ROOT / "rootfs/etc/nftables.d/runners.nft"
+NFT_CONF = ROOT / "rootfs/etc/nftables.conf"
+RUNNER_CANARY = INSTALLED / "actions.runner.Nishfleet.netcup-fleet-ci-2.service.d/40-egress.conf"
+
+
+def runner_rules() -> list[str]:
+    return [line.strip() for line in RUNNER_RULES.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+
+
+def runner_dropin_keys(path: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in path.read_text().splitlines():
+        if line.strip() and not line.startswith(("#", "[")):
+            key, _, value = line.partition("=")
+            keys.setdefault(key, []).append(value)
+    return keys
+
+
+def test_runner_rule_matches_the_set_positively_and_never_destroys_it() -> None:
+    lines = runner_rules()
+    jump = "add rule inet runners output socket cgroupv2 level 2 @runner_cgroups jump runner_egress"
+    assert jump in lines
+    assert "add set inet runners runner_cgroups { type cgroupsv2; }" in lines
+    assert not any(line.startswith("destroy") or "delete" in line for line in lines), "a reload must keep the set's elements"
+    assert not any("!=" in line and "socket" in line for line in lines), "a negated cgroup match fails the wrong way"
+    flush = [i for i, line in enumerate(lines) if line.startswith("flush chain inet runners")]
+    first_rule = min(i for i, line in enumerate(lines) if line.startswith("add rule"))
+    assert len(flush) == 2 and max(flush) < first_rule
+    assert [line for line in lines if "hook" in line] == [
+        "add chain inet runners output { type filter hook output priority filter; policy accept; }"
+    ]
+
+
+def test_runner_egress_chain_order() -> None:
+    chain = [line.removeprefix("add rule inet runners runner_egress ") for line in runner_rules() if " runner_egress " in line and "jump" not in line]
+    assert chain[0] == "ct state established,related return"
+    assert chain.index("ip daddr 127.0.0.1 tcp dport 4000 return") < chain.index("fib daddr type local drop")
+    assert chain.index("ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 return") < chain.index("fib daddr type local drop")
+    first_drop = min(i for i, line in enumerate(chain) if line.endswith(" drop"))
+    assert all(line.endswith(" return") for line in chain[:first_drop]), "every allow comes before the first drop"
+    assert chain[-1] == "return"
+    text = " ".join(chain)
+    for dest in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1", "fc00::/7", "fe80::/10", "fd7a:115c:a1e0::/48"):
+        assert dest in text, dest
+
+
+def test_canary_dropin_fills_the_set_and_denies_address_ranges() -> None:
+    keys = runner_dropin_keys(RUNNER_CANARY)
+    assert keys["NFTSet"] == ["cgroup:inet:runners:runner_cgroups"]
+    deny = keys["IPAddressDeny"][0].split()
+    cgnat = "100.64.0.0/10"  # gitleaks:allow
+    for item in ("localhost", "link-local", "multicast", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", cgnat, "fd7a:115c:a1e0::/48", "fc00::/7"):
+        assert item in deny, item
+    assert keys["IPAddressAllow"] == ["127.0.0.1/32 127.0.0.53/32"]
+    assert re.fullmatch(r"actions\.runner\.[A-Za-z0-9.-]+\.service\.d", RUNNER_CANARY.parent.name)
+
+
+def test_stage_one_is_the_canary_only() -> None:
+    with_nftset = sorted(p.parent.name for p in INSTALLED.glob("*/*.conf") if "NFTSet=" in "\n".join(l for l in p.read_text().splitlines() if not l.startswith("#")))
+    assert with_nftset == [RUNNER_CANARY.parent.name]
+
+
+def test_host_yml_installs_the_rules_with_a_check_validate() -> None:
+    text = (ROOT / "ansible/host.yml").read_text()
+    block = text[text.index("- name: Install the runner egress rule"):]
+    block = block[: block.index("\n    - name:", 10)]
+    assert "dest: /etc/nftables.d/runners.nft" in block
+    assert "validate: /usr/sbin/nft -c -f %s" in block
+    assert "notify: Reload nftables" in block
+    assert "systemd_service" not in block, "no unit start in the host run"
+
+
+@pytest.mark.skipif(not (shutil.which("sudo") and shutil.which("nft")), reason="sudo and nft are needed")
+def test_nft_check_accepts_the_rules_and_the_full_conf(tmp_path: Path) -> None:
+    probe = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(RUNNER_RULES)], capture_output=True, text=True, check=False)
+    if probe.returncode != 0 and ("ermission" in probe.stderr or "sudo:" in probe.stderr):
+        pytest.skip("no CAP_NET_ADMIN or sudo here")
+    assert probe.returncode == 0, probe.stderr
+    full = tmp_path / "nftables.conf"
+    full.write_text(NFT_CONF.read_text().replace("/etc/nftables.d/", f"{RUNNER_RULES.parent}/"))
+    check = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(full)], capture_output=True, text=True, check=False)
+    assert check.returncode == 0, check.stderr
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_systemd_analyze_accepts_the_dropin_on_a_stand_in(tmp_path: Path) -> None:
+    (tmp_path / "standin.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
+    (tmp_path / "standin.service.d").mkdir()
+    (tmp_path / "standin.service.d/40-egress.conf").write_text(RUNNER_CANARY.read_text())
+    proc = subprocess.run(
+        ["systemd-analyze", "verify", "--man=no", "./standin.service"], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    out = proc.stdout + proc.stderr
+    assert "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
