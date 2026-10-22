@@ -1,0 +1,27 @@
+# The pi relay listener, as a system unit (fleet-ops#9977). This was a user
+# unit in ~/.config/systemd/user, where systemd ignores every sandbox setting
+# on this host (kernel.apparmor_restrict_unprivileged_userns=1), so the agent
+# could read every other agent's keys. `User=` plus the drop-ins next to this
+# file are what makes the lock real. Rollback: README, "Agent lock".
+[Unit]
+Description=Agent Tincan wake for pi (tincan listen -> headless pi drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nish
+Group=nish
+SupplementaryGroups=
+Environment=TINCAN_CONFIG=%h/.config/tincan/pi.json
+Environment=FLEET_TASK_ID=tincan-pi
+WorkingDirectory=%h/.local/state/tincan-listen-pi
+Restart=always
+RestartSec=10
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/pi --print --provider litellm --model worker-cheap < %h/.config/tincan/prompts/pi.txt'
+
+[Install]
+WantedBy=multi-user.target

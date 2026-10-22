@@ -502,6 +502,53 @@ The Claude PostToolUse hook `~/.claude/hooks/guard_pi_packet.py` classifies
 these from the redirected packet log. Launcher faults advise the transient-unit
 one-liner above; lane faults advise seat rotation.
 
+## Agent lock (fleet-ops#9977)
+
+Every agent on this box that reads text from outside the fleet runs as a
+**system** unit with `User=nish`, and its unit hides every other agent's keys.
+The reason is a host setting, not a preference: systemd silently ignores
+sandbox directives in a **user** unit here, because
+`kernel.apparmor_restrict_unprivileged_userns=1`. A user unit with
+`ProtectHome=tmpfs` on this box still reads `~/.config/cloudflare/deploy-ci.env`
+— measured on 2026-10-22, with `InaccessiblePaths=`, `PrivateUsers=` and
+`BindPaths=` in the same run. Only a system unit applies them.
+
+`config/agent-locks.json` is the contract: one entry per agent, with the paths
+it must keep (`needs`) and the paths it must lose (`must_hide`).
+`tests/test_agent_locks.py` resolves each unit's real settings, following the
+symlinked shared drop-in, and fails when a unit is not a system unit with a
+service user, when a hidden path is still readable, or when a need is hidden.
+`ansible/host.yml` runs the same lists on the box inside a transient unit with
+the same `User=` and `InaccessiblePaths=`, and only enables the listener when
+that probe passes, so a lock that cannot hold never replaces a working agent.
+
+Two shapes are in use. `tincan-listen-claude-vps.service` is deny-by-default:
+`ProtectHome=tmpfs` empties all of `/home` and `BindPaths=` /
+`BindReadOnlyPaths=` list back what the agent needs. It was proved live before
+this repo owned it (request `95eeb9cc666c91d7dbf0`: gh no, hetzner no, Jev key
+yes, Jev call yes, p=0.99). The other seven relay listeners use an explicit
+deny list, `InaccessiblePaths=` in
+`rootfs/etc/systemd/system/fleet-agent-lock.service.d/50-shared.conf` (the
+keys every agent loses) plus `60-own-keys.conf` in each unit's drop-in
+(every other agent's login and every other relay identity). Nothing else under
+`/home` is hidden, so a command a listener already runs still runs.
+
+To lock a new agent: write the system unit under
+`rootfs/etc/systemd/system/`, add its entry to `config/agent-locks.json`, and
+let the test and the playbook say whether the lock holds.
+
+**Rollback**, one command per agent, no data moves. The old user unit file is
+disabled but still on disk:
+
+    sudo systemctl disable --now tincan-listen-pi.service
+    systemctl --user --machine=nish@.host enable --now tincan-listen-pi.service
+
+**Off switch** for the playbook's switch-over: delete the
+"Read the agent lock contract", "Show one agent cannot read the other agents'
+keys", "Retire the unlocked user-scope listeners" and "Start the locked
+listeners" tasks from `ansible/host.yml`. The units stay installed and keep
+running; nothing restarts them.
+
 ## Claim shared files before editing (interactive sessions)
 
 Queued work has an atomic lock — the `claim/issue-N` branch. Interactive

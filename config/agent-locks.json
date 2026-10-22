@@ -1,0 +1,321 @@
+{
+  "description": "The agent lock contract (fleet-ops#9977). One entry per agent that runs on this host and reads text from outside the fleet. 'needs' is everything the agent must still be able to read after the lock; 'must_hide' is everything it must not read, in particular the other agents' logins and keys. tests/test_agent_locks.py resolves each unit's real settings (the unit plus every drop-in, following the symlinked shared file) and fails when a unit is not a system unit with User=, when a must_hide path is still readable, or when a need is hidden. A lock in a user unit does not count: systemd silently ignores sandbox settings there because kernel.apparmor_restrict_unprivileged_userns=1 on this box. Add an agent here before you install its unit, or the coverage check in the test fails.",
+  "user": "nish",
+  "agents": {
+    "tincan-listen-pi": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-pi.service",
+      "relay_identity": "~/.config/tincan/pi.json",
+      "needs": [
+        "~/.pi",
+        "~/.config/tincan/prompts",
+        "~/.local/state/tincan-listen-pi"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-fleet-worker": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-fleet-worker.service",
+      "relay_identity": "~/.config/tincan/fleet-worker.json",
+      "needs": [
+        "~/.pi",
+        "~/.config/gh",
+        "~/.config/tincan/prompts",
+        "~/.local/state/tincan-listen-fleet-worker"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-amp": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-amp.service",
+      "relay_identity": "~/.config/tincan/amp.json",
+      "needs": [
+        "~/.claude-vps",
+        "~/.amp",
+        "~/.local/state/tincan-listen-amp"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.local/share/claude-seat-backup",
+        "~/.pi",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-command-code": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-command-code.service",
+      "relay_identity": "~/.config/tincan/command-code.json",
+      "needs": [
+        "~/.commandcode",
+        "~/.config/tincan/prompts",
+        "~/.local/state/tincan-listen-command-code"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.pi",
+        "~/.amp",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-cursor-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-cursor-vps.service",
+      "relay_identity": "~/.config/tincan/cursor-vps.json",
+      "service_key": "~/.config/fleet-ops/seats/cursor.env",
+      "needs": [
+        "~/.cursor",
+        "~/.local/state/tincan-listen-cursor-vps"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.pi",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-devin-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-devin-vps.service",
+      "relay_identity": "~/.config/tincan/devin-vps.json",
+      "needs": [
+        "~/.devin",
+        "~/.config/tincan/prompts",
+        "~/.local/state/tincan-listen-devin-vps"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.pi",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.config/opencode",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/opencode.json",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-opencode": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-opencode.service",
+      "relay_identity": "~/.config/tincan/opencode.json",
+      "service_key": "~/.config/fleet-ops/seats/opencode.env",
+      "needs": [
+        "~/.config/opencode",
+        "~/.config/tincan/prompts",
+        "~/.local/state/tincan-listen-opencode"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.git-credentials",
+        "~/.hermes",
+        "~/.claude",
+        "~/.claude-vps",
+        "~/.local/share/claude-seat-backup",
+        "~/.pi",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/tincan/amp.json",
+        "~/.config/tincan/command-code.json",
+        "~/.config/tincan/cursor-vps.json",
+        "~/.config/tincan/devin-vps.json",
+        "~/.config/tincan/fleet-worker.json",
+        "~/.config/tincan/hermes.json",
+        "~/.config/tincan/hermes-webhook.secret",
+        "~/.config/tincan/pi.json",
+        "~/.config/tincan/agentmail.key",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    },
+    "tincan-listen-claude-vps": {
+      "unit": "rootfs/etc/systemd/system/tincan-listen-claude-vps.service",
+      "relay_identity": "~/.config/tincan/claude-vps.json",
+      "needs": [
+        "~/.claude-vps",
+        "~/.local/state/tincan-listen-claude-vps",
+        "~/workspaces",
+        "~/.config/tincan/attachments",
+        "~/.config/tincan/mcp-launches",
+        "~/.local/bin",
+        "~/.local/share/claude",
+        "~/.gitconfig",
+        "~/.config/fleet-ops/seats/typesafe-jev.env"
+      ],
+      "must_hide": [
+        "~/.config/fleet-ops/seats",
+        "~/.config/cloudflare",
+        "~/.config/gh",
+        "~/.config/systemd",
+        "~/.ssh",
+        "~/.hermes",
+        "~/.claude",
+        "~/.pi",
+        "~/.amp",
+        "~/.commandcode",
+        "~/.cursor",
+        "~/.devin",
+        "~/.config/opencode",
+        "~/.config/tincan/pi.json",
+        "/run/user/1000",
+        "/run/docker.sock"
+      ]
+    }
+  },
+  "stale_user_units": {
+    "systemd/tincan-listen-claude-vps.service": "The unlocked user form of a listener that now runs as a system unit. The required ci check still reads this file for its StateDirectory and WorkingDirectory, so removing it is #9984, not this PR."
+  },
+  "gaps": [
+    {
+      "agent": "amp-runner-nish and amp-runner-rajeev",
+      "unit": null,
+      "reason": "Still user units under ~/.config/systemd/user, so their settings are ignored on this box. They need the same move to system units with a service user, and their own live probe, before they can be switched.",
+      "issue": "#9982"
+    },
+    {
+      "agent": "hermes-gateway and hermes-serve",
+      "unit": "rootfs/etc/systemd/system/hermes-gateway.service",
+      "reason": "System units with a drop-in already, but the drop-in hides nothing: the chat agent can read the fleet's seats, Cloudflare tokens and the other agents' logins. Closing that needs its own probe, because the gateway also drives Claude Code and the vault.",
+      "issue": "#9981"
+    },
+    {
+      "agent": "GitHub self-hosted agent runners",
+      "unit": "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf",
+      "reason": "The runner unit has NoNewPrivileges and a memory cap, and agent.yml empties ~/.config/gh and ~/.config/cloudflare inside the job, but nothing stops a job from reading the other seat logins, ~/.ssh, or the host's restic files. Closing it needs a probe that runs inside a real runner job, because the claude lane reads one seat login and the default login by design.",
+      "issue": "#9983"
+    }
+  ]
+}

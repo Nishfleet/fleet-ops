@@ -1,0 +1,24 @@
+# The devin-vps relay listener, as a system unit (fleet-ops#9977). See
+# tincan-listen-pi.service for why this is not a user unit.
+[Unit]
+Description=Agent Tincan wake for devin-vps (tincan listen -> headless devin drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nish
+Group=nish
+SupplementaryGroups=
+Environment=TINCAN_CONFIG=%h/.config/tincan/devin-vps.json
+Environment=FLEET_TASK_ID=tincan-devin-vps
+WorkingDirectory=%h/.local/state/tincan-listen-devin-vps
+Restart=always
+RestartSec=10
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/devin -p --permission-mode dangerous -- "$$(cat %h/.config/tincan/prompts/devin-vps.txt)"'
+
+[Install]
+WantedBy=multi-user.target

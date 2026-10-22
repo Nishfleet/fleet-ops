@@ -571,6 +571,66 @@
       loop: "{{ retired }}"
       notify: Reload systemd
 
+    # Agent lock (fleet-ops#9977). Every relay listener runs as a system unit
+    # with User=nish, because systemd silently ignores sandbox settings in a
+    # user unit on this box (kernel.apparmor_restrict_unprivileged_userns=1).
+    # The probe runs the contract's hide list and need list inside a transient
+    # unit that carries the same User= and InaccessiblePaths=, so the switch
+    # below happens only after the machine itself has shown one agent cannot
+    # read the other agents' keys and can still read what it needs.
+    # tincan-listen-claude-vps is not in the probe: its unit hides all of /home
+    # with ProtectHome=tmpfs and lists back what it needs, and that shape was
+    # proved on the box with a live ask before this file shipped it unchanged.
+    - name: Read the agent lock contract
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../config/agent-locks.json"
+        name: agent_locks
+
+    - name: Show one agent cannot read the other agents' keys
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-run
+          - --quiet
+          - --wait
+          - --pipe
+          - --collect
+          - "--property=User={{ agent_locks.user }}"
+          - "--property=InaccessiblePaths={{ agent_locks.agents[item].must_hide | join(' ') }}"
+          - /bin/sh
+          - -c
+          - >-
+            for p in {{ agent_locks.agents[item].must_hide | join(' ') }}; do
+            test -r "$p" && { echo "READABLE $p"; exit 1; };
+            done;
+            for p in {{ agent_locks.agents[item].needs | join(' ') }}; do
+            test -r "$p" || { echo "MISSING $p"; exit 1; };
+            done
+      loop: "{{ agent_locks.agents | dict2items | map(attribute='key') | reject('equalto', 'tincan-listen-claude-vps') | list }}"
+      changed_when: false
+
+    - name: Retire the unlocked user-scope listeners
+      ansible.builtin.command:
+        argv: [/usr/bin/systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
+      loop:
+        - tincan-listen-amp.service
+        - tincan-listen-command-code.service
+        - tincan-listen-cursor-vps.service
+        - tincan-listen-devin-vps.service
+        - tincan-listen-fleet-worker.service
+        - tincan-listen-opencode.service
+        - tincan-listen-pi.service
+      changed_when: false
+
+    # The old user unit is disabled above and its file is left in place, so the
+    # rollback in the README is "enable that unit again", one command.
+    - name: Start the locked listeners
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: restarted
+        daemon_reload: true
+      loop: "{{ agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list }}"
+
     # Drift: the copy tasks above already put back any hand edit to a file the
     # repo ships. What is left is a file on the box that the repo does not
     # ship: a hand install. Fail on it, so it pages instead of living on

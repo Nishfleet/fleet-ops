@@ -1,0 +1,24 @@
+# The command-code relay listener, as a system unit (fleet-ops#9977). See
+# tincan-listen-pi.service for why this is not a user unit.
+[Unit]
+Description=Agent Tincan wake for command-code (tincan listen -> headless command-code drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nish
+Group=nish
+SupplementaryGroups=
+Environment=TINCAN_CONFIG=%h/.config/tincan/command-code.json
+Environment=FLEET_TASK_ID=tincan-command-code
+WorkingDirectory=%h/.local/state/tincan-listen-command-code
+Restart=always
+RestartSec=10
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/command-code -p "$$(cat %h/.config/tincan/prompts/command-code.txt)" --trust --yolo'
+
+[Install]
+WantedBy=multi-user.target
