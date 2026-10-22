@@ -49,13 +49,13 @@ Volume=%t/fleet-grafana-github-token:/run/secrets/github-token:ro
 # read-only file mount (telegram-bot-token, telegram-home-channel, cloudflare-api-token
 # for the cost alarm, fleet-ops#9355). No credential is passed as an environment
 # variable. ansible/host.yml copies each value out of its source (~/.hermes/.env,
-# ~/.config/cloudflare/deploy-ci.env) into ~/.config/fleet-ops/grafana-secrets on every
+# ~/.config/cloudflare/deploy-ci.env) into ~/.config/cloudflare/grafana-secrets (a path the worker jails hide) on every
 # host run (0700 dir, 0600 files; readable here through the keep-id mapping above) and
 # fails the run when a source or key is missing. One mount per file, so a missing file
 # fails the start instead of podman creating an empty directory.
-Volume=%h/.config/fleet-ops/grafana-secrets/telegram-bot-token:/run/secrets/grafana/telegram-bot-token:ro
-Volume=%h/.config/fleet-ops/grafana-secrets/telegram-home-channel:/run/secrets/grafana/telegram-home-channel:ro
-Volume=%h/.config/fleet-ops/grafana-secrets/cloudflare-api-token:/run/secrets/grafana/cloudflare-api-token:ro
+Volume=%h/.config/cloudflare/grafana-secrets/telegram-bot-token:/run/secrets/grafana/telegram-bot-token:ro
+Volume=%h/.config/cloudflare/grafana-secrets/telegram-home-channel:/run/secrets/grafana/telegram-home-channel:ro
+Volume=%h/.config/cloudflare/grafana-secrets/cloudflare-api-token:/run/secrets/grafana/cloudflare-api-token:ro
 Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://netcup-rs2000.tailc0f05f.ts.net:8443/

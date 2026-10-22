@@ -112,13 +112,14 @@
     # lookup creates when it is missing; the Redis requirepass fragment and the proxy
     # env file are rendered from it on every run, so they cannot drift apart.
     redis_password_file: /etc/fleet-ops/litellm-redis-password
-    redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-redis-auth.conf"
-    redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-redis.env"
+    redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
+    redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
     # Grafana reads one raw value per file ($__file{} in config/grafana/provisioning).
     # The sources hold KEY=value lines, so each value is copied out of its source on
-    # every run (a rotation at the source reaches Grafana on the next run); a source
-    # or key that is missing fails the run at the end, after everything else applied.
-    grafana_secrets_dir: "{{ nish_config }}/fleet-ops/grafana-secrets"
+    # every run (a rotation at the source reaches Grafana on the next run). The copies
+    # and the Redis files sit under paths the worker jails already hide
+    # (~/.config/cloudflare and ~/.config/fleet-ops/litellm-keys in 20-lockdown.conf).
+    grafana_secrets_dir: "{{ nish_config }}/cloudflare/grafana-secrets"
     grafana_credentials:
       - {file: telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
       - {file: telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
@@ -1187,14 +1188,6 @@
         state: link
         force: true
 
-    - name: Create the root-only directory for the Redis password file
-      ansible.builtin.file:
-        path: /etc/fleet-ops
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
     # The lookup writes the file (mode 0600) only when it is absent and reads it back
     # otherwise. no_log and diff: false keep the value out of the ansible-pull log.
     - name: Read the Redis password (the password lookup creates the file once)
@@ -1222,69 +1215,10 @@
       no_log: true
       diff: false
 
-    - name: Create the Grafana credential directory
-      ansible.builtin.file:
-        path: "{{ grafana_secrets_dir }}"
-        state: directory
-        owner: nish
-        group: nish
-        mode: "0700"
-
-    - name: Read the Grafana credential sources
-      become: true
-      become_user: nish
-      ansible.builtin.slurp:
-        src: "{{ item.src }}"
-      loop: "{{ grafana_credentials }}"
-      loop_control:
-        label: "{{ item.file }}"
-      register: grafana_credential_sources
-      failed_when: false
-      no_log: true
-      diff: false
-
-    - name: Copy each Grafana credential out of its source (one raw value per file)
-      ansible.builtin.copy:
-        content: "{{ value }}"
-        dest: "{{ grafana_secrets_dir }}/{{ item.item.file }}"
-        owner: nish
-        group: nish
-        mode: "0600"
-      loop: "{{ grafana_credential_sources.results }}"
-      loop_control:
-        label: "{{ item.item.file }}"
-      vars:
-        value: >-
-          {{ (item.content | default('') | b64decode)
-             | regex_findall('(?m)^(?:export +)?' ~ item.item.key ~ '=(.*)$')
-             | last | default('') | trim
-             | regex_replace('^["\\x27]|["\\x27]$', '') }}
-      when: item.content is defined and value != ''
-      no_log: true
-      diff: false
-
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials.results | map(attribute='stat.exists') | min
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
-        quiet: true
-
-    - name: Work out which Grafana credential sources lack their key
-      ansible.builtin.set_fact:
-        grafana_credential_problems: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for r in grafana_credential_sources.results -%}
-          {%- if r.content is not defined or (r.content | b64decode) is not search('(?m)^(?:export +)?' ~ r.item.key ~ '=.') -%}
-          {%- set ns.bad = ns.bad + [r.item.file ~ ' (' ~ r.item.key ~ ' in ' ~ r.item.src ~ ')'] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.bad }}
-      no_log: true
-
-    - name: Fail when a Grafana credential source or key is missing
-      ansible.builtin.assert:
-        that: grafana_credential_problems | length == 0
-        fail_msg: "Grafana credentials not refreshed, source or key missing: {{ grafana_credential_problems | join('; ') }}. The rest of this run completed."
         quiet: true
 
     - name: Fail when the Command Code login could not be set up
@@ -1307,6 +1241,47 @@
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
 
+
+    # Last in the play, so a missing source or key fails the run only after everything
+    # else applied. The loop items name files and keys, never values.
+    - name: Create the Grafana credential directory
+      ansible.builtin.file:
+        path: "{{ grafana_secrets_dir }}"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0700"
+
+    - name: Copy each Grafana credential out of its source (one raw value per file)
+      ansible.builtin.copy:
+        content: "{{ value }}"
+        dest: "{{ grafana_secrets_dir }}/{{ item.file }}"
+        owner: nish
+        group: nish
+        mode: "0600"
+      loop: "{{ grafana_credentials }}"
+      loop_control:
+        label: "{{ item.file }}"
+      vars:
+        value: >-
+          {{ lookup('ansible.builtin.file', item.src, errors='ignore') | default('', true)
+             | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
+             | last | default('') | trim }}
+      when: value != ''
+      no_log: true
+      diff: false
+
+    - name: Fail when a Grafana credential source or key is missing or empty
+      ansible.builtin.assert:
+        that: >-
+          (lookup('ansible.builtin.file', item.src, errors='ignore') | default('', true)
+           | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
+           | last | default('') | trim) != ''
+        fail_msg: "Grafana credential {{ item.file }} was not refreshed: {{ item.src }} is missing, or has no non-empty {{ item.key }}= line."
+        quiet: true
+      loop: "{{ grafana_credentials }}"
+      loop_control:
+        label: "{{ item.file }}"
 
   handlers:
     - name: Reload systemd
