@@ -14,6 +14,19 @@ Network=host
 UserNS=keep-id:uid=999,gid=999
 Volume=%h/.local/share/fleet-litellm-postgres:%h/.local/share/fleet-litellm-postgres
 Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
+# Password auth for every connection (scram-sha-256: unix socket, 127.0.0.1, ::1).
+# The cluster already exists, so the image's POSTGRES_HOST_AUTH_METHOD (initdb time only) does
+# nothing: pg_hba.conf comes from the repo through hba_file. The directory is mounted, not the
+# file. The source is the deploy clone, which fleet-sync refuses to deploy from unless it is on
+# origin/main; a missing clone makes the start fail, loudly.
+# Needed before the first restart: SCRAM verifiers for both login roles (litellm, nish; there is
+# no `postgres` role), ~/.pgpass (0600, host `*`) with both, and ~/.config/fleet-ops/litellm-db.env
+# (0600) with the proxy URL. The only clients are the proxy (DATABASE_URL from that env file) and
+# the restic dump (runuser -u nish -- pg_dump reads libpq's default ~/.pgpass).
+# Lockout recovery: delete the Volume= (config/postgres) and Exec= lines and restart; the data
+# dir's own pg_hba.conf (still `trust`) applies again.
+Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/postgres:/etc/fleet-postgres:ro
+Exec=postgres -c hba_file=/etc/fleet-postgres/pg_hba.conf
 
 [Service]
 Slice=app-litellm-postgres.slice
