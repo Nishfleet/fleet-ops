@@ -64,3 +64,8 @@ condition = "AND"
 description = "The runner lockdown drop-ins must name the paths their InaccessiblePaths= hides (a system unit has no %h, and a drop-in line has no inline comment to carry gitleaks:allow); fleet-ops#9983"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]*\.service\.d/20-lockdown\.conf$''']
+
+[[allowlists]]
+description = "The Tincan listener unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names the paths its BindPaths= and Environment= lines use; moved byte for byte from /etc/systemd/system, fleet-ops#9974 phase A"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$''']
