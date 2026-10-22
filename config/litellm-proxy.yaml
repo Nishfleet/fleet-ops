@@ -50,13 +50,13 @@
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. The cline :free rows (cline-lagunas21, 2 rows) park on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto now cools 21600 s too (fleet-ops#9876): its 429s are a depleted prepaid balance, not a transient - at or above max_tokens 40960 the provider returns budget_error/credit_insufficient ("Insufficient credits for this request. Reduce max_tokens.") while the affordable ceiling drifts down as the balance drains, and direct probes found no parallel-key cap (fleet-ops#8458's 3-parallel explanation did not reproduce: 4 parallel small requests all returned 200). It parks on the first 429 (RateLimitErrorAllowedFails: 0), so a drained lane costs callers nothing: 0 caller-facing 429s in the 24 h to 2026-10-17 while worker-capable fell back to worker-cheap. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
-# Selection share (weighted; the Command Code rows removed 2026-10-15 are listed in the record above): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". Command Code left DeepSeek on 2026-10-15 (#9744), so the 2 OpenCode Go ds41flash rows in each worker group (opencodego-, opencodego2-) carry a litellm_params weight and every other worker row carries weight 1, the Command Code GLM-5.3-Flash rows included. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=2, n=30, w=10 gives 20/48 = 41.7% (was 20/59 = 33.9% at n=41 before the 10 Ollama rows and the Pareto row left on 2026-10-22, and 40/79 = 50.6% with the 4 DS rows); worker-cheap k=2, n=13, w=3 gives 6/17 = 35.3% (was 12/23 = 52.2%). The weights are unchanged; the share moves only with n (it rose from 33.9% to 41.7% when the 11 rows left). Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 30-60%).
+# Selection share (weighted; the Command Code rows removed 2026-10-15 are listed in the record above): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". Command Code left DeepSeek on 2026-10-15 (#9744), so the 2 OpenCode Go ds41flash rows in each worker group (opencodego-, opencodego2-) carry a litellm_params weight and every other worker row carries weight 1, the Command Code GLM-5.3-Flash rows included. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=2, n=29, w=10 gives 20/47 = 42.6% (was 20/48 = 41.7% at n=30 before the 3 Cline Pass rows left on 2026-10-23, and 20/59 = 33.9% at n=41 before the 10 Ollama rows and the Pareto row left on 2026-10-22, and 40/79 = 50.6% with the 4 DS rows); worker-cheap k=2, n=12, w=3 gives 6/16 = 37.5% (was 6/17 = 35.3% at n=13, and 12/23 = 52.2%). The weights are unchanged; the share moves only with n (it rose from 33.9% to 41.7% when the 11 rows left). Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 30-60%).
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only (fleet-ops#9744). Every row has a 10 USD/day max_budget (unlimited is not confirmed for GLM).
 # To take the b lane out of the shuffle, remove its rows (ids commandcode-glm53flashb-worker-capable and
 # commandcode-glm53flashb-worker-cheap) in a one-line config change. fleet-sync copies the file and the proxy restarts to load it:
 # about 101 s end to end on this host, with a 30 s drain of in-flight calls. POST /model/block cannot do this: it answers
-# HTTP 400 "Model updates only supported for DB-stored models" for a config-file row. cline-ds41flash-worker-cheap keeps its own rollback note below.
+# HTTP 400 "Model updates only supported for DB-stored models" for a config-file row.
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -704,90 +704,6 @@ model_list:
     id: zai-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: worker-capable
-  litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    weight: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
-    id: cline-ds41flash-worker-capable
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
-      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
-      RateLimitErrorAllowedFails: 3
-# fleet-ops#9378 3-day A/B: the worker-cheap lane of the prepaid Cline seat (same
-# shape as its proven worker-capable lane, one seat one key one budget), so Cline
-# contributes both worker rungs. Additive only. Its daily quota wall remains
-# (#9075): this lane also parks on the 4th 429 in a 6h window, so the lane count
-# stays modest. cache_proof is the same seat's proven probe (same model+key+budget).
-# order: 1 on both DeepSeek V4.1 Flash rows of this seat, so the new row is a peer
-# of the proven lane in the shuffle, not a fallback.
-#
-# No max_budget on the new row. This head's budget decision, in one line: the
-# seat's allowance stays $10/day.
-#
-# Why. LiteLLM enforces max_budget per deployment, so a budget is per-lane
-# allowance, not a copy of the neighbouring lane's. Adding $10/day to this row
-# would have taken the seat from $10/day to $20/day against a single prepaid
-# wallet, and splitting $10 over the two lanes (each $5) lowers the existing
-# lane, which #9378 forbids. So the new row carries no wall, like the three
-# budget-less rows already on this key, and the wallet plus the ppi-cline 429
-# alert are the guard for it.
-#
-# Measured LiteLLM_SpendLogs, 2026-10-01..08:
-# openai/cline-pass/deepseek-v4.1-flash, 2,756 calls, $28.75 spend = $4.11/day,
-# which is 41% of the existing $10/day per-lane wall. If the seat goes fully
-# dark on one bad hour (three fail-counted rows on the wall's 6 h TTL), raising
-# this row's RateLimitErrorAllowedFails is a one-line change through the same
-# deploy loop, about 101 s to apply on this host.
-#
-# To take this lane out of the shuffle, remove this row (id
-# cline-ds41flash-worker-cheap) in a one-line config change and let the config sync
-# restart the proxy, about 101 s with a 30 s drain. POST /model/block answers
-# HTTP 400 for a config-file row.
-- model_name: worker-cheap
-  litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    weight: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_parallel_requests: 4
-    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
-    id: cline-ds41flash-worker-cheap
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
-      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
-      RateLimitErrorAllowedFails: 3
 # MiniMax Yearly Plus flat plan (Nish 2026-10-09, screenshot: 5-hour limit and weekly limit, no per-token bill):
 # the plan's quota is the cap, not dollars, so these rows carry no max_budget. The accounting prices below
 # (platform.minimax.io/docs/guides/pricing-paygo, M3 Standard as the proxy; M3.1-Flash-Preview has none of its
@@ -1261,34 +1177,6 @@ model_list:
     id: opencodego2-ds41flash-assistant
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: assistant
-  litellm_params:
-    model: openai/cline-pass/deepseek-v4.1-flash
-    api_base: https://api.cline.bot/api/v1
-    api_key: os.environ/CLINE_API_KEY
-    tags:
-    - prepaid
-    - cline
-    order: 1
-    weight: 1
-    input_cost_per_token: 3e-07
-    cache_read_input_token_cost: 6e-09
-    output_cost_per_token: 1.2e-06
-    max_budget: 10.0
-    budget_duration: 1d
-    max_parallel_requests: 4
-    # 6 h, sized to the daily free-model quota wall it also hits (fleet-ops#9075).
-    cooldown_time: 21600
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: "Caches: direct probe 2026-10-07 through cline, cached_tokens 0->5888 of 6025 (#9365). The router path drops the field: LiteLLM v1.98.0 stream bug."
-    id: cline-ds41flash-assistant
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-      # Fail counter TTL = this row's cooldown_time (6 h): parks on the 4th 429 in the window.
-      # A per-minute burst rarely totals 4 in 6 h; a quota wall 429s every call, so it does.
-      RateLimitErrorAllowedFails: 3
 - model_name: assistant
   litellm_params:
     model: ollama_chat/deepseek-v4.1-flash
