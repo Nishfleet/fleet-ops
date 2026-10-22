@@ -604,36 +604,57 @@ system unit with its own service user.
 
 | Piece | Where |
 | --- | --- |
-| Unit | `rootfs/etc/systemd/system/tether-agent.service` (`User=tether`, `ProtectSystem=strict`, `ProtectHome=true`, `CapabilityBoundingSet=` empty, `SystemCallFilter=@system-service`) |
+| Unit | `rootfs/etc/systemd/system/tether-agent.service` (`User=tether`, `ProtectSystem=strict`, `ProtectHome=true`, `CapabilityBoundingSet=` empty, `SystemCallFilter=@system-service`, `IPAddressDeny=localhost`) |
 | Service user and config directory | `ansible/host.yml` creates the `tether` system user and `/etc/tether` (root:tether 0750) |
-| Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700) |
+| Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700, the unit's working directory) |
 | Credentials | `/etc/tether/tether.env`, root:tether 0640, live-only and never in git |
-| App | `/var/lib/tether/app`, installed from `Nishfleet/tether` |
+| App | `/opt/tether`, root:root 0755, read-only to the `tether` user, installed by root from a `Nishfleet/tether` release |
 
 The unit is staged: `host.yml` enables it at boot but never starts it, and
-`ConditionPathExists=/var/lib/tether/app/dist/index.js` turns a start into a
-skip until the app is installed. `Restart=always` with `StartLimitIntervalSec=0`
-means a killed process comes back with the durable runtime's last checkpoint,
-which is what the mid-reply proof in #9980 needs.
+`ConditionPathExists=/opt/tether/dist/index.js` turns a start into a skip until
+the app is installed. The app is at a root-owned path on purpose: the service
+user can write only `/var/lib/tether`, so it cannot rewrite its own code. The
+install is a root step from a release of `Nishfleet/tether`; a reviewed
+installer with a pinned version and checksum is still to come.
 
-Switch off, about two minutes, as root. Warning: the last command
-removes its memory and its credentials, and cannot be undone:
+`Restart=on-failure` brings a killed process back with the durable runtime's
+last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
+is capped: `StartLimitBurst=5` in `StartLimitIntervalSec=600`, and with
+`RestartSec=5` a crash loop reaches that in about 25 seconds. The unit is then
+`failed`, and `OnFailure=fleet-unit-failed@%N.service` sends the healthchecks.io
+fail ping, the same page the other units use. So a poison checkpoint, or a
+missing `/etc/tether/tether.env`, ends in one page and a stopped unit, not
+thousands of restarts and paid model calls. After fixing the cause, run
+`systemctl reset-failed tether-agent.service` and start it.
+
+Warning: the last command of the first block removes its memory and its
+credentials, and cannot be undone. Switch off, about two minutes, as root:
 
 ```
+touch /etc/fleet-ops/tether-off    # lasting: the host-config run keeps the unit disabled and stopped
 systemctl disable --now tether-agent.service
 deluser tether                     # optional: also drop the service user
 rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and cannot be undone
 ```
 
-`node` is the distro `nodejs` package at `/usr/bin/node`; the app is installed
-at `/var/lib/tether/app` owned by `tether`, mode 0755, by the tether release
-step. The unit allows `AF_INET`/`AF_INET6` because iMessage needs the internet:
-phase 1 has no GitHub, Cloudflare or database token to spend, so the absence of
-credentials is what keeps it off those services, not this unit.
+The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
+the daily and on-merge `fleet-host-config.service` run enables the unit again
+and recreates the user and `/etc/tether`. While the marker exists that run
+creates nothing for tether, keeps the unit disabled and stops it. Remove the
+marker to allow it again. To delete tether for good, open a PR that removes
+`rootfs/etc/systemd/system/tether-agent.service` and the tether tasks in
+`ansible/host.yml`, and adds the unit path to `retired`.
 
-In-band, without root, Nish's own off-switch is the `STOP` text: the agent
-handles `STOP` and `RESUME` in code, before the model runs, so no reply and no
-tool call happens while it is stopped.
+`node` is the distro `nodejs` package at `/usr/bin/node`. The unit allows
+`AF_INET`/`AF_INET6` because iMessage needs the internet, and denies every
+loopback address except the DNS stub `127.0.0.53`, so the unauthenticated
+Alertmanager API, Prometheus and the model router on `127.0.0.1:4000` are not
+reachable from it. `IPAddressAllow=` takes no port, so reaching the router from
+the unit needs its own reviewed change; none is made here.
+
+In-band, without root, Nish's own off-switch is the `STOP` text. The app that
+handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is
+proved there, not by this repo.
 
 ## Remote Control stays on (OOM storm 2026-10-09)
 

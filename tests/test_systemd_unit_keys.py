@@ -48,3 +48,44 @@ def test_systemd_analyze_reports_no_unknown_directive() -> None:
         if "Unknown key" in line or "Unknown section" in line
     ]
     assert unknown == [], "\n".join(unknown)
+
+
+TETHER = INSTALLED / "tether-agent.service"
+
+
+def _tether_keys() -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in TETHER.read_text().splitlines():
+        if "=" in line and not line.startswith(("#", "[")):
+            key, value = line.split("=", 1)
+            keys.setdefault(key, []).append(value)
+    return keys
+
+
+def test_tether_restart_is_capped_and_pages() -> None:
+    keys = _tether_keys()
+    assert keys["Restart"] == ["on-failure"]
+    interval = int(keys["StartLimitIntervalSec"][0])
+    burst = int(keys["StartLimitBurst"][0])
+    restart = int(keys["RestartSec"][0])
+    assert interval > 0 and burst > 0, "a zero interval disables the start limit"
+    assert burst * restart < interval, "the limit must be reachable inside its interval"
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+
+
+def test_tether_cannot_reach_loopback_or_rewrite_its_code() -> None:
+    keys = _tether_keys()
+    assert keys["IPAddressDeny"] == ["localhost"]
+    assert keys["IPAddressAllow"] == ["127.0.0.53"]
+    assert "ReadWritePaths" not in keys
+    assert keys["ConditionPathExists"][0].startswith("/opt/tether/")
+    assert keys["ExecStart"][0].split()[-1].startswith("/opt/tether/")
+    assert not keys["WorkingDirectory"][0].startswith("/opt/")
+
+
+def test_tether_off_marker_survives_the_host_run() -> None:
+    host = (ROOT / "ansible/host.yml").read_text()
+    readme = (ROOT / "README.md").read_text()
+    assert "path: /etc/fleet-ops/tether-off" in host
+    assert 'enabled: "{{ not tether_off.stat.exists }}"' in host
+    assert "touch /etc/fleet-ops/tether-off" in readme

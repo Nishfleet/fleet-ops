@@ -3,29 +3,34 @@ Description=Tether, the always-on iMessage agent (fleet-ops#9980 phase 1)
 Documentation=https://github.com/Nishfleet/tether/blob/main/README.md
 Wants=network-online.target
 After=network-online.target
-# The app ships from Nishfleet/tether and is installed under /var/lib/tether/app.
-# Until that binary exists a start is skipped, not failed, so this unit is safe
-# to enable at boot from the day it lands.
-ConditionPathExists=/var/lib/tether/app/dist/index.js
-# No start-limit: every exit restarts, and the durable runtime resumes the thread.
-StartLimitIntervalSec=0
+# The app ships from Nishfleet/tether and is installed under /opt/tether, owned
+# by root, so the service user cannot rewrite its own code. Until that binary
+# exists a start is skipped, not failed, so this unit is safe to enable at boot
+# from the day it lands.
+ConditionPathExists=/opt/tether/dist/index.js
+# Finite start limit: 5 starts in 10 minutes (RestartSec=5 reaches it in about
+# 25 s), then the unit is failed and OnFailure= pages. A poison checkpoint or a
+# missing credential file stops looping instead of repeating paid model calls.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=simple
 User=tether
 Group=tether
-WorkingDirectory=/var/lib/tether/app
+WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
 # The Photon Spectrum credentials and the model key live here, root:tether 0640.
 # Phase 1 holds no other credential: no shell, no GitHub, Cloudflare or database
 # token reaches this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
-ExecStart=/usr/bin/node --enable-source-maps /var/lib/tether/app/dist/index.js
+ExecStart=/usr/bin/node --enable-source-maps /opt/tether/dist/index.js
 # The distro nodejs package owns /usr/bin/node on this box.
 SyslogIdentifier=tether
 # Crash-proofing: on-failure, not always, so the clean STOP exit does not come
-# back five seconds later. StartLimitIntervalSec=0 (above) removes the burst
-# limit, so a crash loop keeps retrying on the durable runtime's checkpoint.
+# back five seconds later. A killed process resumes on the durable runtime's
+# checkpoint; the start limit above caps a crash loop.
 Restart=on-failure
 RestartSec=5
 # Crash-proofing: the durable runtime holds the thread and its memory in the
@@ -54,6 +59,10 @@ ProcSubset=pid
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No loopback service (unauthenticated Alertmanager, the router, Prometheus) is
+# reachable. The one allow is the systemd-resolved stub, so DNS still works.
+IPAddressDeny=localhost
+IPAddressAllow=127.0.0.53
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RestrictRealtime=true

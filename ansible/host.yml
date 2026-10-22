@@ -516,12 +516,21 @@
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. The
     # unit is enabled at boot only; nothing starts it until the app from
-    # Nishfleet/tether is installed at /var/lib/tether/app, and the unit's
-    # ConditionPathExists makes a start a no-op before that.
+    # Nishfleet/tether is installed at /opt/tether (root-owned, so the service
+    # user cannot rewrite its own code), and the unit's ConditionPathExists
+    # makes a start a no-op before that. The marker file /etc/fleet-ops/tether-off
+    # is the lasting off-switch: while it exists this run leaves the user and
+    # /etc/tether alone and keeps the unit disabled and stopped.
+    - name: Look for the tether off marker
+      ansible.builtin.stat:
+        path: /etc/fleet-ops/tether-off
+      register: tether_off
+
     - name: Create the tether group
       ansible.builtin.group:
         name: tether
         system: true
+      when: not tether_off.stat.exists
 
     - name: Create the tether service user
       ansible.builtin.user:
@@ -530,6 +539,7 @@
         system: true
         create_home: false
         shell: /usr/sbin/nologin
+      when: not tether_off.stat.exists
 
     - name: Create the tether config directory
       ansible.builtin.file:
@@ -538,11 +548,25 @@
         owner: root
         group: tether
         mode: "0750"
+      when: not tether_off.stat.exists
 
-    - name: Enable tether at boot
+    - name: Create the tether app directory, root-owned
+      ansible.builtin.file:
+        path: /opt/tether
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+
+    - name: Enable tether at boot, or keep it off while the marker exists
       ansible.builtin.systemd_service:
         name: tether-agent.service
-        enabled: true
+        enabled: "{{ not tether_off.stat.exists }}"
+        state: "{{ 'stopped' if tether_off.stat.exists else omit }}"
+        daemon_reload: true
+      # Under --check the copy above did not really install the unit yet.
+      ignore_errors: "{{ ansible_check_mode }}"
 
     - name: Enable the daily drift run
       ansible.builtin.systemd_service:
