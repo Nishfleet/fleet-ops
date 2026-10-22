@@ -735,10 +735,20 @@ the next restart. Setting `CLAUDE_CONFIG_DIR` to `~/.claude` (as an absolute
 path) instead fails with "Workspace not trusted", because it reads a different
 `.claude.json`.
 
+Checked 2026-10-22: the unit has run on this login since 21:06 IST with
+`NRestarts=0` (set by a runtime drop-in until this file landed), so the Team
+seat does allow Remote Control. Usage and sessions now sit on that Team seat
+and its organization, not on the personal Max login. `~/.claude/settings.json`
+and `~/.claude-max/settings.json` have identical `permissions`, `hooks` and
+`enabledPlugins`; only `env` differs. The Max config dir's Remote Control
+environment stays listed on claude.ai as offline. A running server keeps its
+environment; the change applies at the next restart of Remote Control, which
+only Nish does, or when the unit's own restart loop next fires.
+
 Switch off: put the old `Environment=CLAUDE_CONFIG_DIR=` line (the Max config
 dir `~/.claude-max`, as an absolute path) back in place of the
-`UnsetEnvironment=` line, `systemctl daemon-reload`, and restart
-Remote Control, only once the Max login has Remote Control again.
+`UnsetEnvironment=` line, `systemctl daemon-reload`, and restart Remote
+Control, only once the Max login has Remote Control again.
 
 ### Subagents on the Max config dir (2026-10-11)
 
