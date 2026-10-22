@@ -460,7 +460,53 @@
       when: telegram_chat_id.content is defined
       notify: Reload alertmanager
 
-    # Alertmanager's API is unauthenticated, so the options pin it to loopback.
+    # Alertmanager requires basic auth on its whole API. The web config holds
+    # the bcrypt hash and the password file holds the matching plaintext; both
+    # are hand-placed 0600 files under nish's home, never in the repo. The web
+    # config is group-readable because the service runs as the prometheus user,
+    # and the password file is owned by that user because Prometheus reads it on
+    # every alert push and scrape. Auth is all-or-nothing: with a half of the
+    # pair on disk, a restart would either leave the API open or answer
+    # Prometheus 401 and stop the alerts silently, so nothing is installed
+    # unless both halves are there.
+    - name: Look for the alertmanager web config
+      ansible.builtin.stat:
+        path: "{{ nish_home }}/.config/fleet-ops/alertmanager-web.yml"
+      register: alertmanager_web_config
+
+    - name: Look for the alertmanager password
+      ansible.builtin.stat:
+        path: "{{ nish_home }}/.config/fleet-ops/alertmanager-password"
+      register: alertmanager_password
+
+    - name: Note whether both web-auth sources are in place
+      ansible.builtin.set_fact:
+        alertmanager_auth_ready: "{{ alertmanager_web_config.stat.exists and alertmanager_password.stat.exists }}"
+
+    - name: Install the alertmanager web config
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.config/fleet-ops/alertmanager-web.yml"
+        dest: /etc/alertmanager/web.yml
+        owner: root
+        group: prometheus
+        mode: "0640"
+        remote_src: true
+      when: alertmanager_auth_ready | default(false) | bool
+      notify: Restart alertmanager
+
+    - name: Install the alertmanager password Prometheus authenticates with
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.config/fleet-ops/alertmanager-password"
+        dest: /etc/prometheus/alertmanager_password
+        owner: prometheus
+        group: prometheus
+        mode: "0600"
+        remote_src: true
+      when: alertmanager_auth_ready | default(false) | bool
+      notify: Reload prometheus
+
+    # The options pin the listener to loopback and name the web config, so they
+    # are installed only when the config they point at exists.
     - name: Install the alertmanager options
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/default/prometheus-alertmanager"
@@ -468,6 +514,7 @@
         owner: root
         group: root
         mode: preserve
+      when: alertmanager_auth_ready | default(false) | bool
       notify: Restart alertmanager
 
     # The ping URL and the bot token are hand-placed credentials that stay out of
@@ -504,7 +551,9 @@
         name: prometheus-alertmanager.service
         enabled: true
         state: started
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+        - alertmanager_auth_ready | default(false) | bool
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -1805,8 +1854,10 @@
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
-        that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
-        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
+        that:
+          - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+          - alertmanager_auth_ready | default(false) | bool
+        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing. Looked for deadman_url, telegram_bot_token and telegram_chat_id in /etc/prometheus, and alertmanager-web.yml and alertmanager-password in ~/.config/fleet-ops. The dead-man heartbeat, the hermes-gateway page and the authenticated API are off until they are placed."
         quiet: true
 
     - name: Fail when the Command Code login could not be set up
@@ -1912,14 +1963,18 @@
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: reloaded
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+        - alertmanager_auth_ready | default(false) | bool
 
-    # The options file is read only at start.
+    # The options file and the web config are read only at start.
     - name: Restart alertmanager
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: restarted
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+        - alertmanager_auth_ready | default(false) | bool
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:

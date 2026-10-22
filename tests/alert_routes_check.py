@@ -11,6 +11,16 @@ for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
 
+It also holds the other end of the alert path: Alertmanager's API answers only
+with basic auth, and every Prometheus client of it carries the credential
+(fleet-ops#10058). Three files have to agree for that to hold and nothing else
+in CI compares them: the options file that names the web config, the web config's
+destination in ansible (its bcrypt hash is hand-placed host state, never in git),
+and Prometheus's client config, which needs the matching plaintext for both the
+alerting target and the scrape job. A drift in the first two stops the service
+from starting. A drift in the third is silent until the outside dead-man notices
+that the alert set stopped arriving.
+
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
 import re
@@ -93,6 +103,46 @@ def route(node, labels, repeat=None):
     return out if matched else {(node["receiver"], repeat)}
 
 
+AM_OPTIONS = "rootfs/etc/default/prometheus-alertmanager"
+AM_PROMETHEUS = "rootfs/etc/prometheus/prometheus.yml"
+AM_ANSIBLE = "ansible/host.yml"
+AM_WEB_CONFIG = "/etc/alertmanager/web.yml"
+AM_PASSWORD = "/etc/prometheus/alertmanager_password"
+
+
+def alertmanager_auth(repo):
+    bad = []
+    args = ""
+    for line in (repo / AM_OPTIONS).read_text().splitlines():
+        if line.startswith("ARGS="):
+            args = line
+    if f"--web.config.file={AM_WEB_CONFIG}" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS does not set --web.config.file={AM_WEB_CONFIG}")
+    if "--web.listen-address=127.0.0.1:9093" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS no longer pins the listener to loopback")
+    config = yaml.safe_load((repo / AM_PROMETHEUS).read_text())
+    clients = [("alerting.alertmanagers", e) for e in (config.get("alerting") or {}).get("alertmanagers") or []]
+    clients += [(f"scrape_configs[{j.get('job_name')}]", j) for j in config.get("scrape_configs") or [] if j.get("job_name") == "alertmanager"]
+    if len(clients) < 2:
+        bad.append(f"{AM_PROMETHEUS}: want an alerting target and an alertmanager scrape job, found {len(clients)}")
+    for name, entry in clients:
+        auth = entry.get("basic_auth")
+        if not auth:
+            bad.append(f"{AM_PROMETHEUS}: {name} has no basic_auth, so Alertmanager answers it 401")
+            continue
+        if not auth.get("username"):
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth has no username")
+        if auth.get("password") or auth.get("password_file") != AM_PASSWORD:
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_PASSWORD}, not an inline password")
+    ansible = (repo / AM_ANSIBLE).read_text()
+    for dest, source in ((AM_WEB_CONFIG, "alertmanager-web.yml"), (AM_PASSWORD, "alertmanager-password")):
+        if f"dest: {dest}" not in ansible:
+            bad.append(f"{AM_ANSIBLE}: nothing installs {dest}")
+        if f".config/fleet-ops/{source}" not in ansible:
+            bad.append(f"{AM_ANSIBLE}: {dest} does not come from ~/.config/fleet-ops/{source}, so the credential would live in the repo")
+    return bad
+
+
 def selftest():
     tree = {"receiver": "root", "repeat_interval": "24h", "routes": [
         {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True, "repeat_interval": "1h",
@@ -159,6 +209,7 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    bad += alertmanager_auth(Path(__file__).resolve().parents[1])
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
@@ -170,6 +221,7 @@ def main(root):
             print(f"::error::{b}")
         return 1
     print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
+    print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_PASSWORD} from a host-only file")
     return 0
 
 
