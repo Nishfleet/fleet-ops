@@ -733,6 +733,17 @@
         daemon_reload: true
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # The rootless podman socket for drive's agent eval (fleet-ops#9983); the
+    # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
+    # once; a later edit to the unit file is staged until the next restart.
+    - name: Enable the rootless podman socket for the drive eval
+      ansible.builtin.systemd_service:
+        name: podman-eval.service
+        enabled: true
+        state: started
+        daemon_reload: true
+      ignore_errors: "{{ ansible_check_mode }}"
+
     # gh comes from the vendor's apt repository, so the daily dist-upgrade in
     # update.yml keeps it current. The unit files that name nish's
     # ~/.local/bin/gh keep working through the link further down.
