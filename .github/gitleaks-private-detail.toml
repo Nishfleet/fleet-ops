@@ -47,6 +47,11 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
+description = "The agent lock must name real paths: the units use %h, and the contract and the shared drop-in name the seats directory and each agent's home paths, because the lock is a list of paths. fleet-ops#9985 wrote them absolute in its first commit and switched to %h and ~/ in its second; a PR scan reads every commit, so the absolute forms stay in the range."
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-.*\.service(\.d/.*)?$''', '''(^|/)rootfs/etc/systemd/system/fleet-agent-lock\.service\.d/''', '''(^|/)config/agent-locks\.json$''']
+
+[[allowlists]]
 description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)systemd/fleet-sync\.service$''']

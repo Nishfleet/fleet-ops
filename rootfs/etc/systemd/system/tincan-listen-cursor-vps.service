@@ -15,13 +15,13 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=/home/nish/.config/tincan/cursor-vps.json
+Environment=TINCAN_CONFIG=%h/.config/tincan/cursor-vps.json
 Environment=FLEET_TASK_ID=tincan-cursor-vps
-EnvironmentFile=/home/nish/.config/fleet-ops/seats/cursor.env
-WorkingDirectory=/home/nish/.local/state/tincan-listen-cursor-vps
+EnvironmentFile=%h/.config/fleet-ops/seats/cursor.env
+WorkingDirectory=%h/.local/state/tincan-listen-cursor-vps
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/cursor-agent -p --yolo --trust "$$(cat /home/nish/.config/tincan/prompts/cursor-vps.txt)"'
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/cursor-agent -p --yolo --trust "$$(cat %h/.config/tincan/prompts/cursor-vps.txt)"'
 
 [Install]
 WantedBy=multi-user.target

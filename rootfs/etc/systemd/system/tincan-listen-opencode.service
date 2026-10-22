@@ -15,13 +15,13 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=/home/nish/.config/tincan/opencode.json
+Environment=TINCAN_CONFIG=%h/.config/tincan/opencode.json
 Environment=FLEET_TASK_ID=tincan-opencode
-EnvironmentFile=/home/nish/.config/fleet-ops/seats/opencode.env
-WorkingDirectory=/home/nish/.local/state/tincan-listen-opencode
+EnvironmentFile=%h/.config/fleet-ops/seats/opencode.env
+WorkingDirectory=%h/.local/state/tincan-listen-opencode
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/opencode run "$$(cat /home/nish/.config/tincan/prompts/opencode.txt)"'
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/opencode run "$$(cat %h/.config/tincan/prompts/opencode.txt)"'
 
 [Install]
 WantedBy=multi-user.target

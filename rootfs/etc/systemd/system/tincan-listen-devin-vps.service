@@ -13,12 +13,12 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=/home/nish/.config/tincan/devin-vps.json
+Environment=TINCAN_CONFIG=%h/.config/tincan/devin-vps.json
 Environment=FLEET_TASK_ID=tincan-devin-vps
-WorkingDirectory=/home/nish/.local/state/tincan-listen-devin-vps
+WorkingDirectory=%h/.local/state/tincan-listen-devin-vps
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/devin -p --permission-mode dangerous -- "$$(cat /home/nish/.config/tincan/prompts/devin-vps.txt)"'
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/devin -p --permission-mode dangerous -- "$$(cat %h/.config/tincan/prompts/devin-vps.txt)"'
 
 [Install]
 WantedBy=multi-user.target

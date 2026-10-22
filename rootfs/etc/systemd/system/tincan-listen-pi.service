@@ -16,12 +16,12 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=/home/nish/.config/tincan/pi.json
+Environment=TINCAN_CONFIG=%h/.config/tincan/pi.json
 Environment=FLEET_TASK_ID=tincan-pi
-WorkingDirectory=/home/nish/.local/state/tincan-listen-pi
+WorkingDirectory=%h/.local/state/tincan-listen-pi
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/pi --print --provider litellm --model worker-cheap < /home/nish/.config/tincan/prompts/pi.txt'
+ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/pi --print --provider litellm --model worker-cheap < %h/.config/tincan/prompts/pi.txt'
 
 [Install]
 WantedBy=multi-user.target
