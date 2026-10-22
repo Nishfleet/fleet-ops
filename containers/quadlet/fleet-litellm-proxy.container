@@ -58,6 +58,8 @@ PodmanArgs=--env=OLLAMA_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY_2
 PodmanArgs=--env=PARETO_API_KEY
+# Redis cache password (router_settings.redis_password): filled from litellm-keys/redis.env below.
+PodmanArgs=--env=REDIS_PASSWORD
 PodmanArgs=--env=STEPFUN_API_KEY
 PodmanArgs=--env=STRAITLY_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
@@ -98,6 +100,9 @@ EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
+# No `-` prefix on purpose: without this file the proxy fails to start (loud, via OnFailure=)
+# instead of running with a cache it cannot authenticate to. ansible/host.yml renders it.
+EnvironmentFile=%h/.config/fleet-ops/litellm-keys/redis.env
 Slice=app-litellm.slice
 ManagedOOMPreference=avoid
 Restart=on-failure
