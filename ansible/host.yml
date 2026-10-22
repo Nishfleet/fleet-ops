@@ -98,6 +98,8 @@
       - /etc/systemd/system.control/github-tsin.slice.d
       - /etc/systemd/system.control/user-1000.slice.d
       - /usr/local/bin/gh
+      # Replaced by dockerd-eval.service (fleet-ops#9983).
+      - /etc/systemd/system/podman-eval.service
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -241,6 +243,25 @@
         group: root
         mode: preserve
       notify: Create tmpfiles
+
+    # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
+    # config instead of the host's /etc/docker/daemon.json, which sets the runsc
+    # runtime. rootlesskit comes from apt: the unit runs dockerd under it.
+    - name: Install the rootless Docker engine's config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
+        dest: /etc/fleet-ops/dockerd-eval.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install rootlesskit for the rootless Docker engine
+      ansible.builtin.apt:
+        name: rootlesskit
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
 
     - name: Install sysctl settings
       ansible.builtin.copy:
@@ -1145,15 +1166,31 @@
         daemon_reload: true
       ignore_errors: "{{ ansible_check_mode }}"
 
-    # The rootless podman socket for drive's agent eval (fleet-ops#9983); the
+    # The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
     # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
-    # once; a later edit to the unit file is staged until the next restart.
-    - name: Enable the rootless podman socket for the drive eval
+    # once; a later edit to the unit file is staged until the next restart. It
+    # replaces podman-eval, which cannot run the eval (Inspect needs Docker Engine
+    # 24.0.6 or newer). The tmpfiles entry and the unit were installed above, and
+    # the queued handlers ran, before this point.
+    - name: Enable the rootless Docker engine for the drive eval
       ansible.builtin.systemd_service:
-        name: podman-eval.service
+        name: dockerd-eval.service
         enabled: true
         state: started
         daemon_reload: true
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The retired podman engine: stopped and disabled, and its unit file is in
+    # `retired` below. A host where the unit is already gone is not an error.
+    - name: Stop and disable the retired rootless podman socket
+      ansible.builtin.systemd_service:
+        name: podman-eval.service
+        enabled: false
+        state: stopped
+      register: podman_eval_off
+      failed_when:
+        - podman_eval_off.failed | default(false)
+        - "'Could not find' not in (podman_eval_off.msg | default(''))"
       ignore_errors: "{{ ansible_check_mode }}"
 
     # gh comes from the vendor's apt repository, so the daily dist-upgrade in
