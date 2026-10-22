@@ -92,7 +92,7 @@ REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 # This constant is also the one home for the version: the CI job that will run
 # this file reads the pin from here (issue 9427), so the pin and the test cannot
 # drift apart.
-PINNED_LITELLM = "1.98.0"
+PINNED_LITELLM = "1.105.0"
 
 # fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
@@ -378,19 +378,19 @@ def test_the_mock_reads_the_request_body():
         server.close()
 
 
-def test_internal_server_error_is_inert_on_litellm_1_98_0():
-    # litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError
-    # branch (litellm.types.router.RetryPolicy ships the field but the lookup omits
-    # it), so InternalServerErrorRetries is dead config until litellm adds the handler:
-    # it resolves to None and the Router falls back to num_retries (0) -> exactly one
-    # attempt before the fallback group, never an in-group hop.
+def test_internal_server_error_retry_is_live_on_litellm_1_105_0():
+    # litellm 1.98.0's get_num_retries_from_retry_policy had no InternalServerError
+    # branch, so InternalServerErrorRetries was dead config there (one attempt, then the
+    # fallback group). litellm 1.105.0 reads it: the shipped value 1 now gives a 5xx one
+    # in-group retry before the fallback group answers. That is the forward value the
+    # config comment names, measured here on 1.105.0.
     #
     # This and the no-backoff test below read litellm internals, so both are the
     # litellm upgrade tripwires: a litellm bump that changes either shape fails CI
     # and the numbers in this file and in the config comment must be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
-    assert get_num_retries_from_retry_policy(exc, rp) is None
+    assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
 # --------------------------------------------------------------------------- #
