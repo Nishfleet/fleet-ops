@@ -200,3 +200,21 @@ groups:
         annotations:
           summary: "worker-capable has no healthy deployment"
           description: "No worker-capable row has litellm_deployment_state 0 for 5 minutes. Calls to worker-capable fail at the caller; they no longer fall back to worker-cheap."
+
+      # Caller-facing failures on the strong group. RouterStrongGroupNoHealthyRow only sees a
+      # group with no row at state 0; with no fallback to worker-cheap, a picked row that fails
+      # while its peers read healthy (a row the router cannot cool, or one over budget) also
+      # reaches the caller. Baseline before W10c: 0 failed worker-capable requests in 24 h,
+      # because the fallback answered them.
+      - alert: RouterStrongGroupFailing
+        expr: |
+          sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}[15m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m])) > 0.05
+          and sum(increase(litellm_proxy_total_requests_metric_total{requested_model="worker-capable",route=~".*chat/completions"}[15m])) > 20
+        for: 10m
+        labels:
+          severity: warning
+          group: worker-capable
+        annotations:
+          summary: "More than 5% of worker-capable calls are failing"
+          description: "worker-capable calls fail at the caller instead of falling back to worker-cheap. Check litellm_deployment_failure_responses_total by model_id for the row that keeps answering errors."

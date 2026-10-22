@@ -1871,9 +1871,11 @@ router_settings:
   # were answered from the worker-cheap group. A strong group with no healthy row now fails the call, and the
   # RouterStrongGroupNoHealthyRow rule in rootfs/etc/prometheus/fleet_rules.yml says so. Only same-tier or
   # upward fallbacks may be listed here; config/litellm-proxy.schema.json refuses a worker-capable entry.
-  # Accepted trade (W10c, owner decision): a call that fails on its picked row and has no peer left now reaches the caller
-  # (Pi retries), including a 402/403/404 row the router does not cool. The assistant and worker-public groups stop at
-  # worker-capable; they no longer reach worker-cheap by re-entry.
+  # Accepted trade (W10c, requested by the 2026-10-22 audit; no owner decision is recorded in an issue): a call whose picked row
+  # fails and has no peer left now reaches the caller (Pi retries), including a row answering 402/403, which the router never
+  # cools (a 404 does park on its first failure). Measured 2026-10-22: 427 of the last 24 h's worker-capable fallbacks were
+  # Ollama connection errors, 364 of them from ollama-ds41flashb-worker-capable alone, a row the router never cools. The assistant
+  # and worker-public groups stop at worker-capable; they no longer reach worker-cheap by re-entry.
   fallbacks:
     - judge: [senior]
     - senior: [senior-backup]

@@ -187,7 +187,7 @@ async def _answers(router, calls):
         try:
             reply = await router.acompletion(model="worker-public", messages=[{"role": "user", "content": "x"}])
             seen.append(reply.choices[0].message.content)
-        except Exception:
+        except (litellm.InternalServerError, ValueError):  # worker-capable's row answers 500; the router re-raises the budget ValueError
             seen.append("error")
         await asyncio.sleep(0.4)
     return seen

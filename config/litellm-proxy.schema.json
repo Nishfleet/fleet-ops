@@ -332,7 +332,7 @@
           }
         },
         "fallbacks": {
-          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior. Every entry that names senior is pinned to senior-backup: contains only asked that some senior entry existed, so a second senior entry naming judge passed the gate and turned senior -> judge -> senior into the cycle the issue names. judge is deliberately not pinned. judge: [senior] is the live layout and it reaches senior-backup only because LiteLLM 1.98.0 re-enters the senior group's fallbacks (fallback_depth + 1, cap 5); judge: [senior, senior-backup] spells both rungs out and needs no such re-entry. Which spelling is right is a separate call, so this gate takes neither. W10c: no entry may name worker-capable, so a call to the strong worker group that finds no healthy row fails at the caller instead of being answered from worker-cheap; worker-cheap -> worker-capable (upward) is left alone.",
+          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior. Every entry that names senior is pinned to senior-backup: contains only asked that some senior entry existed, so a second senior entry naming judge passed the gate and turned senior -> judge -> senior into the cycle the issue names. judge is deliberately not pinned. judge: [senior] is the live layout and it reaches senior-backup only because LiteLLM 1.98.0 re-enters the senior group's fallbacks (fallback_depth + 1, cap 5); judge: [senior, senior-backup] spells both rungs out and needs no such re-entry. Which spelling is right is a separate call, so this gate takes neither. W10c: no entry may send worker-capable to a weaker group (worker-cheap, worker-public, assistant), so a call to the strong worker group that finds no healthy row fails at the caller instead of being answered from worker-cheap; worker-cheap -> worker-capable (upward) is left alone.",
           "type": "array",
           "items": {
             "if": { "type": "object", "required": ["senior"] },
@@ -345,7 +345,7 @@
           },
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["senior-backup"] } },
-            { "contains": { "type": "object", "required": ["worker-capable"] } }
+            { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } }
           ] }
         },
         "redis_url": { "type": "string", "pattern": "^redis://" },
