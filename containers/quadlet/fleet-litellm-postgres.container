@@ -14,13 +14,20 @@ Network=host
 UserNS=keep-id:uid=999,gid=999
 Volume=%h/.local/share/fleet-litellm-postgres:%h/.local/share/fleet-litellm-postgres
 Environment=PGDATA=%h/.local/share/fleet-litellm-postgres
-# Password auth for every connection. The cluster already exists, so the image's
-# POSTGRES_HOST_AUTH_METHOD (initdb time only) would do nothing: the pg_hba.conf
-# comes from the repo through hba_file instead. The directory is mounted, not the
-# file, so a git checkout that replaces the file is seen by the next reload.
-# Clients: the proxy reads DATABASE_URL (with its password) from
-# ~/.config/fleet-ops/litellm-db.env; the restic dump (runuser -u nish -- pg_dump, which sets
-# HOME) reads libpq's default ~/.pgpass (0600, one line per role). Neither file is in the repo.
+# Password auth for every connection (scram-sha-256: unix socket, 127.0.0.1, ::1).
+# The cluster already exists, so the image's POSTGRES_HOST_AUTH_METHOD (initdb time only) would do
+# nothing: the pg_hba.conf comes from the repo through hba_file instead. The directory is mounted,
+# not the file, so a git checkout that replaces the file is seen by the next reload. The mount
+# source is the deploy clone, which fleet-sync keeps on origin/main (it refuses to deploy from any
+# other state, like the Grafana mounts below it); a missing clone makes the start fail, loudly.
+# Preconditions, all checked on the live host before this was merged (fleet-ops#10032): both login
+# roles (litellm, nish; there is no `postgres` role) hold SCRAM-SHA-256 verifiers, ~/.pgpass
+# (0600, host `*`, so it matches TCP and the socket directory) has both, and
+# ~/.config/fleet-ops/litellm-db.env (0600, hex password, so no URL escaping) holds the proxy URL.
+# Clients: the proxy reads DATABASE_URL from that env file; the restic dump (runuser -u nish --
+# pg_dump, which sets HOME) reads libpq's default ~/.pgpass. Neither file is in the repo.
+# Lockout recovery: delete the Exec= line below and restart; the data dir's own pg_hba.conf
+# (still `trust`) applies again.
 Volume=%h/workspaces/tooling/fleet-ops-deploy-clone/config/postgres:/etc/fleet-postgres:ro
 Exec=postgres -c hba_file=/etc/fleet-postgres/pg_hba.conf -c password_encryption=scram-sha-256
 
