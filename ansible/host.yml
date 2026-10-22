@@ -576,6 +576,8 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
 
     - name: Find the runner credential files
       become: true
@@ -602,6 +604,8 @@
       loop: "{{ runner_credentials.files }}"
       loop_control:
         label: "{{ item.path }}"
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
 
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
