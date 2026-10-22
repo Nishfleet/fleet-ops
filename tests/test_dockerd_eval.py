@@ -133,8 +133,6 @@ def test_the_engine_config_is_an_empty_object() -> None:
 
 @pytest.mark.parametrize("path", OTHER_POOLS, ids=lambda p: p.parent.name)
 def test_other_pools_add_no_hidden_path_in_this_change(path: Path) -> None:
-    # Hiding a new path makes every runner fail its probe until it restarts, so
-    # the socket directory stays covered by the runner uid split, not by this PR.
     assert "-/run/dockerd-eval" not in hidden(path)
     assert "-/run/podman-eval" in hidden(path)
 
@@ -159,7 +157,6 @@ def test_the_stand_in_port_is_the_same_in_the_drop_in_and_the_nft_rule() -> None
     number = port.split("=", 1)[1]
     assert number.isdigit() and 1024 <= int(number) <= 65535
     assert f"add rule inet evalnet engine_egress ip daddr 127.0.0.1 tcp dport {number} return" in nft_rules()
-    # One loopback port is let through; no other tcp/udp port rule exists besides DNS.
     assert [r for r in nft_rules() if "dport" in r and "th dport 53" not in r] == [
         f"add rule inet evalnet engine_egress ip daddr 127.0.0.1 tcp dport {number} return"
     ]
@@ -171,7 +168,6 @@ def test_the_nft_table_matches_the_engine_cgroup_and_drops_host_local_destinatio
     assert "add set inet evalnet engine_cgroups { type cgroupsv2; }" in text
     assert "socket cgroupv2 level 2 @engine_cgroups jump engine_egress" in text
     rules = nft_rules()
-    # Established traffic first, then the allows, then the drops, then return.
     assert rules[0].endswith("ct state established,related return")
     assert rules[-1].endswith("engine_egress return")
     assert rules.index(next(r for r in rules if "tcp dport" in r)) < rules.index(
@@ -200,7 +196,6 @@ def test_the_nft_file_is_idempotent_so_a_reload_keeps_the_set() -> None:
     assert not re.search(r"^table ", text, re.M)
     assert "flush chain inet evalnet output" in text
     assert "flush chain inet evalnet engine_egress" in text
-    # nftables.conf pulls the file in through the include, and does not destroy its table.
     conf = (ROOT / "rootfs/etc/nftables.conf").read_text()
     assert 'include "/etc/nftables.d/*.nft"' in conf
     assert "destroy table inet evalnet" not in conf
@@ -210,6 +205,7 @@ def test_the_unit_feeds_the_set_and_keeps_an_address_only_layer() -> None:
     unit = keys(UNIT)
     assert unit["NFTSet"] == ["cgroup:inet:evalnet:engine_cgroups"]
     assert "nftables.service" in unit["After"][0].split()
+    assert unit["PartOf"] == ["nftables.service"]
     deny = set(unit["IPAddressDeny"][0].split())
     assert {
         "localhost",
@@ -223,12 +219,23 @@ def test_the_unit_feeds_the_set_and_keeps_an_address_only_layer() -> None:
     } <= deny
     allow = set(unit["IPAddressAllow"][0].split())
     assert "127.0.0.1/32" in allow
-    # The engine's own namespace and the resolver stub, and nothing wider.
     assert allow == {"127.0.0.1/32", "127.0.0.53/32", "10.0.2.0/24"}
 
 
+def test_the_comment_does_not_claim_a_bridge_range_is_allowed() -> None:
+    text = UNIT.read_text()
+    assert "the Docker bridge networks, which are not host addresses" not in text
+    assert "network_mode: host" in text
+
+
+def test_the_nft_comment_matches_how_nftables_conf_loads_it() -> None:
+    conf = (ROOT / "rootfs/etc/nftables.conf").read_text()
+    assert not re.search(r"^flush ruleset", conf, re.M)
+    assert 'include "/etc/nftables.d/*.nft"' in conf
+    assert "fleet-ops#8258" in NFT.read_text()
+
+
 def test_the_engine_cgroup_is_level_two() -> None:
-    # /system.slice/dockerd-eval.service: the unit is a direct child of system.slice.
     unit = keys(UNIT)
     assert "Slice" not in unit
     assert "DynamicUser" not in unit
@@ -262,6 +269,28 @@ def test_podman_eval_is_retired() -> None:
     assert "name: dockerd-eval.service" in host
     assert "- rootlesskit\n" in host
     assert "- slirp4netns\n" in host
+
+
+def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
+    host = HOST_YML.read_text()
+    assert host.count("alertmanager_credentials is defined and (") == 4
+    watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.S)
+    assert watcher, "no deploy request watcher task"
+    assert "name: fleet-deploy.path" in watcher.group(1)
+    assert "enabled: true" in watcher.group(1)
+    assert "state: started" in watcher.group(1)
+
+
+def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
+    host = HOST_YML.read_text()
+    task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.S)
+    assert task, "no engine enable task"
+    assert "register: dockerd_eval_up" in task.group(1)
+    report = re.search(r"- name: Report a rootless Docker engine that did not start\n(.*?)\n\n", host, re.S)
+    assert report, "no report task"
+    assert "ansible.builtin.debug" in report.group(1)
+    assert "when: dockerd_eval_up is failed" in report.group(1)
+    assert "dockerd_eval_up.msg" in report.group(1)
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")

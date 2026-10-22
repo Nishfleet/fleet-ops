@@ -20,11 +20,16 @@
 # matched on the cgroup through NFTSet= (systemd adds this unit's cgroup id to
 # the set when the unit starts and removes it when the unit stops, so the match
 # survives restarts), and (2) IPAddressDeny=/IPAddressAllow= is an address-only
-# layer that keeps working if the set is ever empty (an `nftables` restart
-# flushes it; `systemctl daemon-reload` refills it). The Allow lines are the
-# engine's own namespace (the slirp4netns network and the Docker bridge
-# networks, which are not host addresses) and the resolver stub slirp4netns
-# forwards DNS to. The internet stays open for image pulls.
+# layer under it: it cannot name a port, so on 127.0.0.1 the port limit is nft's
+# alone, and what it holds on its own is the private, link-local, tailnet and
+# IPv6 local ranges closed. The Allow lines are the engine's own namespace
+# (10.0.2.0/24: slirp4netns' gateway, DNS and tap, which the cgroup filter sees
+# too) plus the resolver stub and the loopback address the eval uses; no Docker
+# bridge range is allowed, because the eval's compose file runs its sandbox with
+# network_mode: host. PartOf=nftables.service keeps the engine up only while the
+# unit that owns the set is up: nftables stopping or restarting takes this unit
+# with it, and systemd puts this unit's cgroup back in the set at every start.
+# The internet stays open for image pulls.
 # cgroupfs is the cgroup driver because Delegate=yes gives this unit its own
 # subtree and there is no user systemd for the systemd driver.
 # The rootlesskit line is written out here, not wrapped in Docker's
@@ -65,6 +70,10 @@ Description=Rootless Docker engine for the drive agent eval
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
 After=network-online.target systemd-tmpfiles-setup.service nftables.service
 Wants=network-online.target
+# The egress limit in layer 1 is an nft set this unit fills at start (NFTSet=
+# below), so the engine runs only while nftables.service is up: stopping or
+# restarting the firewall stops and restarts the engine with it.
+PartOf=nftables.service
 StartLimitIntervalSec=10min
 StartLimitBurst=5
 
@@ -86,10 +95,11 @@ TasksMax=4096
 # Egress limit, layer 1: this cgroup's id goes into the evalnet table's set
 # (evalnet.nft matches it at cgroup level 2, /system.slice/dockerd-eval.service).
 NFTSet=cgroup:inet:evalnet:engine_cgroups
-# Layer 2, address-only and kept if the set is empty: nothing in this cgroup
-# reaches host-local or private addresses, except the engine's own namespace
+# Layer 2, address-only and under layer 1: nothing in this cgroup reaches
+# host-local or private addresses, except the engine's own namespace
 # (10.0.2.0/24: slirp4netns' gateway, DNS and tap) and the resolver stub and
-# loopback address the eval uses. nft (layer 1) restricts the loopback port.
+# loopback address the eval uses. It cannot name a port, so on 127.0.0.1 the one
+# allowed port is nft's alone (layer 1).
 IPAddressDeny=localhost link-local 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fd7a:115c:a1e0::/48 fc00::/7
 IPAddressAllow=127.0.0.1/32 127.0.0.53/32 10.0.2.0/24
 TemporaryFileSystem=/home/nish:mode=0700,uid=1000,gid=1000,size=64M
