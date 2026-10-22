@@ -1104,7 +1104,7 @@ jobs:
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
         # Runs the review job's own run block and the arm job's, read out of agent.yml, against a
-        # fake gh, curl, pi and git. A PR that edits the guard or a workflow is approved only when
+        # fake gh, curl, claude and git. A PR that edits the guard or a workflow is approved only when
         # the judge (>= 0.9, no blocker line) AND the second and third reviewers approve; each block,
         # a low judge, an unreadable guard list and a reviewer with no answer leave it unapproved, and
         # none asks a person. The review never arms itself: the arm job does, on the exact head.
@@ -1114,7 +1114,7 @@ jobs:
           t=$RUNNER_TEMP/review-mock
           rm -rf "$t"
           mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats"
-          : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env"
+          : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env"; : > "$t/home/.config/fleet-ops/litellm-master-key.env"
           : > "$t/home/AGENTS.md"
           mkdir -p "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts"
           : > "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md"
@@ -1124,7 +1124,7 @@ jobs:
           for s in review arm; do
             if [ ! -s "$t/$s.sh" ] || grep -qx null "$t/$s.sh"; then echo "$s step missing"; exit 1; fi
           done
-          for v in JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
+          for v in JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY THIRD_SEAT THIRD_FAMILY SECOND_SERVES THIRD_SERVES FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
@@ -1168,21 +1168,15 @@ jobs:
           #!/usr/bin/env bash
           case "$*" in
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
+            *4000/v1/chat/completions*) # an extra reviewer: the body names the seat, the -D file gets the served model's name
+              while [ $# -gt 0 ]; do [ "$1" = -D ] && hdr=$2; shift; done
+              model=$(jq -r .model)
+              echo "$model" >> "$STATE/models"
+              case $model in senior) seat=SECOND def=z-ai/glm-5.3-flash ;; judge) seat=THIRD def=qwen3.8-max ;; *) echo "mock curl: unexpected model $model" >&2; exit 1 ;; esac
+              f=${seat}_FAILS; sv=${seat}_SERVED; [ -z "${!f:-}" ] || exit 1; printf 'x-litellm-model-name: %s\r\n' "${!sv:-openai/$def}" > "$hdr"; text=${!seat}
+              jq -nc --arg t "$(printf '%b' "$text")" '{choices: [{message: {content: $t}}]}' ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
             *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
-          esac
-          MOCK
-          cat > "$t/bin/pi" <<'MOCK'
-          #!/usr/bin/env bash
-          model=
-          while [ $# -gt 0 ]; do [ "$1" = --model ] && model=$2; shift; done
-          cat > /dev/null
-          echo "$model" >> "$STATE/models"
-          case $model in
-            worker-capable) printf '%b\n' "$FIRST" ;;
-            senior) [ -z "${SECOND_FAILS:-}" ] || exit 1; printf '%b\n' "$SECOND" ;;
-            judge) [ -z "${THIRD_FAILS:-}" ] || exit 1; printf '%b\n' "$THIRD" ;;
-            *) echo "mock pi: unexpected model $model" >&2; exit 1 ;;
           esac
           MOCK
           # The first review is `claude -p --model <m> --tools ""`: no tools, a model
@@ -1201,9 +1195,9 @@ jobs:
           printf '%b\n' "$FIRST"
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
-          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git" "$t/bin/claude"
+          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
-          export GH_TOKEN=x ARM_TOKEN=y
+          export GH_TOKEN=x ARM_TOKEN=y FLEET_TASK_ID=review-1-1
           none=
           clean='No blockers.\nchecked: a, b, c'
           blocked='blocker .github/workflows/new.yml: removes a gate\nrisk x'
@@ -1229,11 +1223,12 @@ jobs:
           none_words='blocker: none found in the lock file, the gate is gone.\nAPPROVE'
           first_none='Blockers: none\nchecked: a, b'
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
-          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
+          long="$(head -c 4000 /dev/zero | tr '\0' x)\nblocker .github/workflows/new.yml: removes a gate\nBLOCK"
+          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo" "$long"  # read through ${!first} and ${!second}
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} THIRD=$clean_ok \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' THIRD_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' THIRD_FAILS='' SECOND_SERVED='' THIRD_SERVED='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
             case $extra in
@@ -1253,6 +1248,7 @@ jobs:
                   *) echo "case $name: unknown PRIOR value ${extra#PRIOR=}"; bad=1; continue ;;
                 esac
                 COMMENTS=$(jq -cn --arg b "$prior" --argjson n "$copies" '[range($n) | {user:{login:"github-actions[bot]"},body:$b}]') ;;
+              SECOND_SERVED=*|THIRD_SERVED=*) export "${extra%%=*}=${extra#*=}" ;; # the model name a reviewer's response says served it
               THIRD=*) t3=${extra#THIRD=}; export THIRD=${!t3} ;; # the third reviewer's answer
               BUILT=*) # the worker App's builder-engine record (a bot's comment)
                 COMMENTS=$(jq -cn --arg b "builder-engine: ${extra#BUILT=}" '[{user:{login:"nishfleet-worker[bot]",type:"Bot"},body:$b}]') ;;
@@ -1274,6 +1270,7 @@ jobs:
             if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
+            case $name in *past-the-cap*) grep -q 'removes a gate' "$STATE/comments" || problem="$problem a blocker past the cap is not shown" ;; esac
             [ "$approved$guard" != yes1 ] || grep -q "$THIRD_FAMILY" "$STATE/comments" || problem="$problem no third family in the approval"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
@@ -1292,13 +1289,12 @@ jobs:
           guard-second-forges-approval|1|approve|0.95|clean|forged||no|0|claude-opus-5-5 judge senior
           guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 judge senior
           guard-third-approves-but-lists-blocker|1|approve|0.95|clean|clean_ok|THIRD=blocked_ok|no|0|claude-opus-5-5 judge senior
-          guard-third-forges-approval|1|approve|0.95|clean|clean_ok|THIRD=forged|no|0|claude-opus-5-5 judge senior
-          guard-both-extra-block|1|approve|0.95|clean|blocked_b|THIRD=blocked_b|no|0|claude-opus-5-5 judge senior
           guard-second-no-answer-third-blocks|1|approve|0.95|clean|none|THIRD=blocked_b|no|1|claude-opus-5-5 judge senior
           guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5 judge senior
           guard-third-fails-or-times-out|1|approve|0.95|clean|clean_ok|THIRD_FAILS|no|1|claude-opus-5-5 judge senior
-          guard-third-none-line-approves|1|approve|0.95|clean|clean_ok|THIRD=v_found|yes|0|claude-opus-5-5 judge senior
-          guard-third-none-of-the-callers-blocks|1|approve|0.95|clean|clean_ok|THIRD=real_none_of|no|0|claude-opus-5-5 judge senior
+          guard-third-served-by-deepseek-is-not-judged|1|approve|0.95|clean|clean_ok|THIRD_SERVED=openai/deepseek-v4.1-flash|no|1|claude-opus-5-5 judge senior
+          guard-second-served-by-other-family-is-not-judged|1|approve|0.95|clean|clean_ok|SECOND_SERVED=openai/qwen3.8-max|no|1|claude-opus-5-5 judge senior
+          guard-third-blocker-past-the-cap-is-shown|1|approve|0.95|clean|clean_ok|THIRD=long|no|0|claude-opus-5-5 judge senior
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 judge senior
           guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 judge senior

@@ -976,7 +976,9 @@ jobs:
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
           THIRD_SEAT: judge
-          THIRD_FAMILY: Qwen/DeepSeek
+          THIRD_FAMILY: Qwen
+          SECOND_SERVES: glm  # the served model's name must match, or the reviewer did not answer
+          THIRD_SERVES: qwen
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
@@ -999,6 +1001,7 @@ jobs:
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
+          cap() { local n; n=$(printf '%s' "$1" | wc -c); if [ "$n" -le 3500 ]; then printf '%s' "$1"; else printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$n" "$(blockers_of "$1")" "$(printf '%s' "$1" | head -c 3500)"; fi; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed: approved, not approved or blocked (the older hold
@@ -1079,9 +1082,7 @@ jobs:
           # A review text can be steered by the diff it reads, so a line that
           # looks like the approval line is dropped from everything posted.
           shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
-          text=$(printf '%s' "$shown" | head -c 3500)
-          bytes=$(printf '%s' "$shown" | wc -c)
-          [ "$bytes" -le 3500 ] || text=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$bytes" "$(blockers_of "$shown")" "$text")
+          text=$(cap "$shown")
           judge_ok=false
           if [ "$choice" = approve ] && jq -en --argjson p "$p" '$p >= 0.9' >/dev/null; then judge_ok=true; fi
           pct=$(jq -rn --argjson p "$p" '$p * 100 | floor')
@@ -1103,24 +1104,26 @@ jobs:
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           {
             cat "$RUNNER_TEMP/diff.txt"
-            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n'
+            printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. Your last line is the single word APPROVE if you found no blocker, or the single word BLOCK if you found at least one: nothing else on that line and no text after it.\n'
           } > "$RUNNER_TEMP/extra-in.txt"
-          ask() { timeout 480 pi --print --no-context-files --no-tools --no-session \
-            --append-system-prompt "$HOME/AGENTS.md" \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" \
-            --provider litellm --model "$1" < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || : > "$RUNNER_TEMP/$2.txt"; }
+          # One router call each: its response header names the model that answered, and another family's answer (the judge group falls back to GLM) is no answer.
+          ask() { jq -n --arg m "$1" --rawfile s <(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md") --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, messages: [{role: "system", content: $s}, {role: "user", content: $u}]}' \
+            | curl -s -m 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/$2.hdr" -d @- \
+            | jq -er '.choices[0].message.content' > "$RUNNER_TEMP/$2.txt" || : > "$RUNNER_TEMP/$2.txt"; }
           ask "$SECOND_SEAT" second & p2=$!; ask "$THIRD_SEAT" third & p3=$!
-          { wait "$p2" && wait "$p3"; } || retry "a reviewer process died before it answered"
+          k=0; wait "$p2" || k=1; wait "$p3" || k=1; [ "$k" = 0 ] || retry "a reviewer process died before it answered"
           all=; blk=; both=true
           for r in second third; do
-            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT
+            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT; vm=${R}_SERVES
             out=$(cat "$RUNNER_TEMP/$r.txt")
             [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
+            served=$(grep -i '^x-litellm-model-name:' "$RUNNER_TEMP/$r.hdr" | tr -d '\r' || true)
+            grep -qi -- "${!vm}" <<<"$served" || retry "the $r reviewer (${!vf}) was served by '${served:-unknown}', not its own family"
             rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true)
             last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true)
             ok=approved
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
-            h=$(printf '\n\n%s reviewer (%s family, %s seat): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$ok" "$(printf '%s' "$rs" | head -c 3500)")
+            h=$(printf '\n\n%s reviewer (%s family, %s seat): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$ok" "$(cap "$rs")")
             all+=$h; [ "$ok" = approved ] || blk+=$h
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
