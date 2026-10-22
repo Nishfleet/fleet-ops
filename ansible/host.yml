@@ -145,6 +145,56 @@
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
+    # Grafana credentials. Every step runs as nish, so a link planted in nish's tree can
+    # not steer a root chown/chmod or a root read of another file. Why a copy and not
+    # the env route or Podman secrets: the sources are shared KEY=value files (the whole
+    # Hermes env, the deploy-ci env), and Grafana's $VAR expansion would need them loaded
+    # whole into its environment; Podman secrets need a create step that reads the same
+    # sources and keeps a second copy in the secret store. A Grafana that is already
+    # running re-reads the files at its next provisioning load or restart. The loop items
+    # name files and keys, never values; the assert that reports a missing source is the
+    # last task of the play.
+    - name: Create the Grafana credential directory
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ grafana_secrets_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Read the Grafana credential sources
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ item.src }}"
+      loop: "{{ grafana_credentials }}"
+      loop_control:
+        label: "{{ item.file }}"
+      register: grafana_credential_sources
+      failed_when: false
+      no_log: true
+      diff: false
+
+    - name: Copy each Grafana credential out of its source (one raw value per file)
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "{{ value }}"
+        dest: "{{ grafana_secrets_dir }}/{{ item.item.file }}"
+        mode: "0600"
+      loop: "{{ grafana_credential_sources.results }}"
+      loop_control:
+        label: "{{ item.item.file }}"
+      vars:
+        value: >-
+          {{ (item.content | default('') | b64decode)
+             | regex_findall('(?m)^(?:export +)?' ~ item.item.key ~ '=["\x27]?([^"\x27\s#]*)')
+             | last | default('') | trim }}
+      when: value != ''
+      register: grafana_credential_copies
+      no_log: true
+      diff: false
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false
@@ -1647,48 +1697,17 @@
 
 
     # Last in the play, so a missing source or key fails the run only after everything
-    # else applied. The loop items name files and keys, never values. Why a copy and not
-    # the env route or Podman secrets: the sources are shared KEY=value files (the whole
-    # Hermes env, the deploy-ci env), and Grafana's $VAR expansion would need them loaded
-    # whole into its environment; Podman secrets need a create step that reads the same
-    # sources and keeps a second copy in the secret store. A Grafana that is already
-    # running re-reads the files at its next provisioning load or restart.
-    - name: Create the Grafana credential directory
-      ansible.builtin.file:
-        path: "{{ grafana_secrets_dir }}"
-        state: directory
-        owner: nish
-        group: nish
-        mode: "0700"
-
-    - name: Copy each Grafana credential out of its source (one raw value per file)
-      ansible.builtin.copy:
-        content: "{{ value }}"
-        dest: "{{ grafana_secrets_dir }}/{{ item.file }}"
-        owner: nish
-        group: nish
-        mode: "0600"
-      loop: "{{ grafana_credentials }}"
-      loop_control:
-        label: "{{ item.file }}"
-      vars:
-        value: >-
-          {{ lookup('ansible.builtin.file', item.src, errors='ignore') | default('', true)
-             | regex_findall('(?m)^(?:export +)?' ~ item.key ~ '=["\x27]?([^"\x27\r\n]*)')
-             | last | default('') | trim }}
-      when: value != ''
-      register: grafana_credential_copies
+    # else applied (the copies themselves run first, near the top of the play).
+    - name: Work out which Grafana credentials were not refreshed
+      ansible.builtin.set_fact:
+        grafana_credentials_skipped: "{{ grafana_credential_copies.results | selectattr('skipped', 'defined') | map(attribute='item.item.file') | list }}"
       no_log: true
-      diff: false
 
     - name: Fail when a Grafana credential source or key is missing or empty
       ansible.builtin.assert:
-        that: not (item.skipped | default(false))
-        fail_msg: "Grafana credential {{ item.item.file }} was not refreshed: {{ item.item.src }} is missing, or has no non-empty {{ item.item.key }}= line."
+        that: grafana_credentials_skipped | length == 0
+        fail_msg: "Grafana credentials not refreshed: {{ grafana_credentials_skipped | join(', ') }}. Each source ({{ grafana_credentials | map(attribute='src') | unique | join(', ') }}) must exist and hold a non-empty line for its key ({{ grafana_credentials | map(attribute='key') | join(', ') }}). The rest of this run completed."
         quiet: true
-      loop: "{{ grafana_credential_copies.results }}"
-      loop_control:
-        label: "{{ item.item.file }}"
 
   handlers:
     - name: Reload systemd

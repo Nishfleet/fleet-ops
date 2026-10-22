@@ -16,8 +16,7 @@ contactPoints:
         disableResolveMessage: true
         settings:
           bottoken: $__file{/run/secrets/grafana/telegram-bot-token}
-          chatid: |
-            $__file{/run/secrets/grafana/telegram-home-channel}
+          chatid: $__file{/run/secrets/grafana/telegram-home-channel}
           message: |
             {{ range .Alerts.Firing }}
             {{ .Annotations.summary }} {{ .Annotations.description }}
