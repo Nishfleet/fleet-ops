@@ -104,6 +104,7 @@
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     nish_config: "{{ nish_home }}/.config"
+    agent_share: "{{ nish_home }}/.local/share"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
@@ -537,6 +538,92 @@
       ansible.builtin.systemd_service:
         name: claude-remote-control.service
         enabled: true
+
+    # Local agent state (audit follow-up): the session databases and the runner
+    # credential files are for nish alone. Mode only, never owner, and each task
+    # does nothing when its files are absent. These run as nish, not root: the
+    # directories are nish's to write, so a root chmod could be steered through
+    # a symlink onto a file nish does not own. Checked 2026-10-22: all 26
+    # actions.runner.* units have User=nish and every runner process is nish's,
+    # so owner-only modes keep the runners working; no other user or group
+    # reads these files. The leviathan directory is already 0700. SQLite gives a new -wal/-shm the
+    # mode of the main database, so fixing the main file covers them.
+    - name: Look for the agent state directories
+      become: true
+      become_user: nish
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ agent_share }}/devin"
+        - "{{ agent_share }}/devin/cli"
+      register: agent_state_dirs
+
+    - name: Keep the agent state directories private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ agent_state_dirs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish'
+
+    - name: Find the agent session databases
+      become: true
+      become_user: nish
+      ansible.builtin.find:
+        paths:
+          - "{{ agent_share }}/devin/cli"
+          - "{{ agent_share }}/leviathan"
+        patterns:
+          - sessions.db*
+          - pi.db*
+          - claude.db*
+        file_type: file
+      register: agent_state_dbs
+
+    - name: Keep the agent session databases private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ agent_state_dbs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
+
+    - name: Find the runner credential files
+      become: true
+      become_user: nish
+      ansible.builtin.find:
+        paths:
+          - "{{ agent_share }}/actions-runner"
+          - "{{ agent_share }}/agent-runner"
+          - "{{ agent_share }}/fleet-ci-runner"
+        patterns: ".credentials*"
+        hidden: true
+        recurse: true
+        depth: 2
+        file_type: file
+      register: runner_credentials
+
+    - name: Keep the runner credential files private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ runner_credentials.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
 
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
