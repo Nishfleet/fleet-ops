@@ -584,6 +584,9 @@
     # so owner-only modes keep the runners working; no other user or group
     # reads these files. The leviathan directory is already 0700. SQLite gives a new -wal/-shm the
     # mode of the main database, so fixing the main file covers them.
+    # opencode.db (with -wal/-shm) and the Grafana database are covered too. The
+    # Grafana container runs UserNS=keep-id, so its process is nish (uid 1000) on
+    # the host and needs no group access; its data directory is already 0700.
     - name: Look for the agent state directories
       become: true
       become_user: nish
@@ -613,10 +616,14 @@
         paths:
           - "{{ agent_share }}/devin/cli"
           - "{{ agent_share }}/leviathan"
+          - "{{ agent_share }}/opencode"
+          - "{{ agent_share }}/fleet-grafana"
         patterns:
           - sessions.db*
           - pi.db*
           - claude.db*
+          - opencode.db*
+          - grafana.db*
         file_type: file
       register: agent_state_dbs
 
