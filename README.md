@@ -956,6 +956,19 @@ deletions, `git diff --numstat` against the merge base) under `.github/workflows
 as many, so removing glue earns room. There are no exceptions in this repo: a new
 mechanism is a component in its own repo, behind an official extension point. The job
 self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+
+When a value must rise rather than the code grow — a spend ceiling, a budget, a timeout — make
+it a repository variable read through `vars` with the reviewed default still in the file:
+`EVAL_MAX_NEURONS: ${{ vars.EVAL_MAX_NEURONS || '2000' }}`. Setting it is then a settings change
+(Settings → Secrets and variables → Actions → Variables), not a diff, and the reviewed default in
+the file is the record, because a variable is not versioned: the same commit can run under a
+different ceiling on two days, so the default and the daily ceiling behind it are what a reviewer
+reads. A `workflow_dispatch` input cannot do this job, because the `inputs:` block is workflow
+lines the ratchet counts. An `inputs:` exemption was proposed on fleet-ops#10054 and refused for
+two reasons: it is hand-rolled YAML parsing in the one program the fleet wants airtight, and it
+would make every added input default free, a money ceiling included. 0509's eval ceiling is the
+first user (fleet-ops#10054).
+
 A web or product repo adds a workflow with one job named `ratchet` that calls
 `uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
 and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is

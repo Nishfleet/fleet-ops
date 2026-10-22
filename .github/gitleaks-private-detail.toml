@@ -83,3 +83,10 @@ targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
 regexes = ['''^100\.108\.184\.97$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The runner egress drop-in must list the CGNAT block 100.64.0.0/10 in IPAddressDeny= (a unit line cannot carry gitleaks:allow); only the network address of the block itself, never a host address"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]+\.service\.d/40-egress\.conf$''']
+regexes = ['''^100\.64\.0\.0$''']
+condition = "AND"

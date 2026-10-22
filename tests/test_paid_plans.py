@@ -7,10 +7,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
 
 
-def _router_rows():
+def _model_list():
     assert YQ, "yq must be on PATH to read the router config"
     out = subprocess.run([YQ, "-o=json", ".model_list", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
-    return [row["litellm_params"] for row in json.loads(out)]
+    return json.loads(out)
+
+
+def _router_rows():
+    return [row["litellm_params"] for row in _model_list()]
 
 
 def _plans():
@@ -31,3 +35,19 @@ def test_every_prepaid_row_is_a_listed_plan():
     plans = [p["api_base"] for p in _plans()]
     unlisted = sorted({b for b in _bases(_router_rows(), prepaid_only=True) if not any(b.startswith(p) for p in plans)})
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
+
+
+SINGLE_ROW_TIERS = {"senior"}
+
+
+def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
+    assert YQ, "yq must be on PATH to read the router config"
+    cfg_out = subprocess.run([YQ, "-o=json", ".router_settings.fallbacks", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
+    tiers = {}
+    for row in _model_list():
+        tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
+    thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
+    assert not thin, f"router tiers below their floor (2 rows, senior 1): {thin}. Only senior may hold one row (fleet-ops#10040)"
+    groups = {row["model_name"] for row in _model_list()}
+    missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
+    assert not missing, f"fallbacks naming a group with no row: {missing}"
