@@ -1625,6 +1625,8 @@
         state: link
         force: true
 
+    # The three tasks below that touch the nish-writable litellm-keys directory run as nish, so a
+    # symlink planted there cannot steer a root chown or write; only the password lookup runs as root.
     # The lookup writes the file (mode 0600) only when it is absent and reads it back
     # otherwise. no_log and diff: false keep the value out of the ansible-pull log.
     # Fail closed: fleet-litellm-redis.container bind-mounts redis-auth.conf and
@@ -1637,30 +1639,30 @@
       no_log: true
 
     - name: Make sure the directory for the Redis files exists
+      become: true
+      become_user: nish
       ansible.builtin.file:
         path: "{{ nish_config }}/fleet-ops/litellm-keys"
         state: directory
-        owner: nish
-        group: nish
         mode: "0700"
 
     - name: Render the Redis requirepass fragment from that file
+      become: true
+      become_user: nish
       ansible.builtin.copy:
         content: "requirepass {{ redis_password }}\n"
         dest: "{{ redis_auth_conf }}"
-        owner: nish
-        group: nish
         mode: "0600"
       no_log: true
       diff: false
       notify: Restart litellm redis then proxy
 
     - name: Render the proxy's Redis environment file from that file
+      become: true
+      become_user: nish
       ansible.builtin.copy:
         content: "REDIS_PASSWORD={{ redis_password }}\n"
         dest: "{{ redis_proxy_env }}"
-        owner: nish
-        group: nish
         mode: "0600"
       no_log: true
       diff: false
