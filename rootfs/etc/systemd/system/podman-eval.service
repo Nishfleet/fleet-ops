@@ -4,7 +4,8 @@
 # runner needs the host docker socket. Own storage and own runroot: it shares
 # nothing with the fleet's Quadlet containers, which live in nish's own store
 # (~/.local/share/containers). Rollback: stop and disable this unit, delete this
-# file and 30-eval.conf, `systemctl daemon-reload`, restart the runner.
+# file, 30-eval.conf and /etc/tmpfiles.d/podman-eval.conf (add each to `retired` in
+# ansible/host.yml, because copy never deletes), `systemctl daemon-reload`, restart the runner.
 # Delegate=yes gives rootless podman a cgroup subtree it owns (cgroupfs manager).
 # No NoNewPrivileges here: rootless podman needs the setuid newuidmap/newgidmap.
 # The fleet's own store (containers/storage) is hidden; containers/cache stays visible, because podman fails every pull without it.
@@ -17,7 +18,6 @@
 Description=Rootless podman API socket for the drive agent eval
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/9983
 After=network-online.target systemd-tmpfiles-setup.service
-RequiresMountsFor=/run/podman-eval
 Wants=network-online.target
 StartLimitIntervalSec=10min
 StartLimitBurst=5
@@ -25,6 +25,9 @@ StartLimitBurst=5
 [Service]
 User=nish
 Group=nish
+# Podman's runroot and socket now outlive a restart, so each start begins clean; the dir
+# itself stays (the runners hide it by inode).
+ExecStartPre=-/bin/rm -rf /run/podman-eval/runroot /run/podman-eval/podman.sock
 Environment=XDG_RUNTIME_DIR=/run/podman-eval
 Environment=HOME=/home/nish
 Delegate=yes
