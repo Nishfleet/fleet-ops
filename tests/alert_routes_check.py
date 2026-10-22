@@ -107,7 +107,7 @@ AM_OPTIONS = "rootfs/etc/default/prometheus-alertmanager"
 AM_PROMETHEUS = "rootfs/etc/prometheus/prometheus.yml"
 AM_ANSIBLE = "ansible/host.yml"
 AM_WEB_CONFIG = "/etc/alertmanager/web.yml"
-AM_PASSWORD = "/etc/prometheus/alertmanager_password"
+AM_AUTH_FILE = "/etc/prometheus/alertmanager_password"
 
 
 def alertmanager_auth(repo):
@@ -132,10 +132,10 @@ def alertmanager_auth(repo):
             continue
         if not auth.get("username"):
             bad.append(f"{AM_PROMETHEUS}: {name} basic_auth has no username")
-        if auth.get("password") or auth.get("password_file") != AM_PASSWORD:
-            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_PASSWORD}, not an inline password")
+        if auth.get("password") or auth.get("password_file") != AM_AUTH_FILE:
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_AUTH_FILE}, not an inline password")
     ansible = (repo / AM_ANSIBLE).read_text()
-    for dest, source in ((AM_WEB_CONFIG, "alertmanager-web.yml"), (AM_PASSWORD, "alertmanager-password")):
+    for dest, source in ((AM_WEB_CONFIG, "alertmanager-web.yml"), (AM_AUTH_FILE, "alertmanager-password")):
         if f"dest: {dest}" not in ansible:
             bad.append(f"{AM_ANSIBLE}: nothing installs {dest}")
         if f".config/fleet-ops/{source}" not in ansible:
@@ -221,7 +221,7 @@ def main(root):
             print(f"::error::{b}")
         return 1
     print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
-    print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_PASSWORD} from a host-only file")
+    print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_AUTH_FILE} from a host-only file")
     return 0
 
 
