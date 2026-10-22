@@ -104,6 +104,7 @@
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     nish_config: "{{ nish_home }}/.config"
+    agent_share: "{{ nish_home }}/.local/share"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
@@ -525,17 +526,23 @@
 
     # Local agent state (audit follow-up): the session databases and the runner
     # credential files are for nish alone. Mode only, never owner, and each task
-    # does nothing when its files are absent. SQLite gives a new -wal/-shm the
+    # does nothing when its files are absent. These run as nish, not root: the
+    # directories are nish's to write, so a root chmod could be steered through
+    # a symlink onto a file nish does not own. SQLite gives a new -wal/-shm the
     # mode of the main database, so fixing the main file covers them.
     - name: Look for the agent state directories
+      become: true
+      become_user: nish
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        - "{{ nish_home }}/.local/share/devin"
-        - "{{ nish_home }}/.local/share/devin/cli"
+        - "{{ agent_share }}/devin"
+        - "{{ agent_share }}/devin/cli"
       register: agent_state_dirs
 
     - name: Keep the agent state directories private
+      become: true
+      become_user: nish
       ansible.builtin.file:
         path: "{{ item.item }}"
         state: directory
@@ -546,10 +553,12 @@
       when: item.stat.exists and item.stat.isdir
 
     - name: Find the agent session databases
+      become: true
+      become_user: nish
       ansible.builtin.find:
         paths:
-          - "{{ nish_home }}/.local/share/devin/cli"
-          - "{{ nish_home }}/.local/share/leviathan"
+          - "{{ agent_share }}/devin/cli"
+          - "{{ agent_share }}/leviathan"
         patterns:
           - sessions.db*
           - pi.db*
@@ -558,6 +567,8 @@
       register: agent_state_dbs
 
     - name: Keep the agent session databases private
+      become: true
+      become_user: nish
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: file
@@ -567,11 +578,13 @@
         label: "{{ item.path }}"
 
     - name: Find the runner credential files
+      become: true
+      become_user: nish
       ansible.builtin.find:
         paths:
-          - "{{ nish_home }}/.local/share/actions-runner"
-          - "{{ nish_home }}/.local/share/agent-runner"
-          - "{{ nish_home }}/.local/share/fleet-ci-runner"
+          - "{{ agent_share }}/actions-runner"
+          - "{{ agent_share }}/agent-runner"
+          - "{{ agent_share }}/fleet-ci-runner"
         patterns: ".credentials*"
         hidden: true
         recurse: true
@@ -580,6 +593,8 @@
       register: runner_credentials
 
     - name: Keep the runner credential files private
+      become: true
+      become_user: nish
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: file
