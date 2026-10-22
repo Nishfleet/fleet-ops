@@ -1830,7 +1830,12 @@ router_settings:
   # worker-row switches from 2026-10-02 19:30 to 2026-10-04 15:45 UTC followed a success). general_settings
   # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
   # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
-  redis_url: redis://127.0.0.1:6379
+  # The cache is authenticated. v1.98.0 (litellm/_redis.py) drops the password whenever redis_url is
+  # set, so host and port are named instead of the URL; the secret comes from the proxy environment
+  # (fleet-litellm-proxy.container loads it from a 0600 file under ~/.config/fleet-ops).
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
   # The pin survives only while its row keeps being picked: the claim script refreshes the TTL when
   # the stored row equals the row just chosen, and a row in cooldown makes async_filter_deployments
   # return the whole group unfiltered. So a pin that lands on a row then hits a quota wall (zai, cline
