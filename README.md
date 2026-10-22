@@ -219,9 +219,11 @@ script, or prompt lands unseen.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
-  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus two
-  `git merge-base --is-ancestor` probes that fail unless `HEAD` equals
-  `origin/main`, `systemctl --user link` of `fleet-unit-failed@.service` and
+  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus one
+  `sh` line that runs two `git merge-base --is-ancestor` probes and, unless
+  `HEAD` equals `origin/main`, prints `DEPLOY-BLOCKED` with the branch, the
+  commits that are not on main and the fix (fleet-ops#9967), `systemctl
+  --user link` of `fleet-unit-failed@.service` and
   `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`,
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
@@ -229,8 +231,9 @@ script, or prompt lands unseen.
   and the leviathan index units, their configs and the tmpfiles rule to
   `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
-  that fails the unit on a dangling or throwaway-target live symlink
-  (fleet-ops#7743). Root-owned files (`/etc/**`, `agent.slice`, everything under
+  that fails the unit on a throwaway-target live symlink, and on a dangling
+  one outside the `~/.pi/agent/skills` mirror, which logs instead
+  (fleet-ops#7743, #9967). Root-owned files (`/etc/**`, `agent.slice`, everything under
   `rootfs/`) are not this unit's job: `fleet-host-config.service` installs them
   as root from its own clone.
 
@@ -263,10 +266,16 @@ The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
 followed by a `git merge --ff-only` of that named ref — never
 `git pull`, which merges the multi-entry `FETCH_HEAD` and dies with
 `Cannot fast-forward to multiple branches` when anything else in the
-clone has written that file (fleet-ops#8893). Two `merge-base
---is-ancestor` lines then assert `HEAD == origin/main`, so a deploy
-window that ends a commit short fails the unit instead of leaving the
-live clone quietly behind.
+clone has written that file (fleet-ops#8893). One `sh` line then runs
+`git merge-base --is-ancestor` in both directions: together they are true
+only when `HEAD == origin/main`, so a deploy window that ends a commit
+short fails the unit instead of leaving the live clone quietly behind.
+The line prints `DEPLOY-BLOCKED`, the branch, `HEAD` and `origin/main`,
+the commits that are not on main, and `switch main` as the fix, because
+the bare exit code this replaced left six red deploy-box runs printing
+only `exit code 1` (fleet-ops#9967). A session that needs a work branch
+uses a worktree: a work branch checked out in the deploy clone blocks
+every deploy.
 
 ### Wiring a NEW unit (one-time, by hand)
 
@@ -374,11 +383,23 @@ churning checkout, and they dangled when the files vanished, taking the
 standing-rules render down (fleet-ops#7743). The guard for that is in
 `fleet-sync.service`: the LINK-GUARD step fails the unit — on every deploy
 push to main and at boot — while any symlink under `~/.config/systemd/user`,
-`~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` is broken
-or resolves into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`).
+`~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` resolves
+into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`), or is broken
+(`-xtype l`) anywhere except the one mirror directory described next.
 Live links belong to the canonical checkout and the stable install dirs
 (`~/.local/share`, `~/.local/lib`), never to a tree a session can delete or
 re-clone.
+
+`~/.pi/agent/skills` is the exception, and its own class: each entry is a link
+to a skill that `~/.claude/skills` (a Syncthing folder edited on another
+machine) or the vault owns, so deleting a skill at the source leaves the link
+dead as a matter of course. There a dead link is printed and does not fail the
+unit, so the deploy converges and a skill that comes back needs no relink; a
+throwaway target there is still fatal. Nine such links held every push red for
+23 h across six runs before this split (fleet-ops#9967). Off switch, if the
+skill wiring itself must never gate a deploy: delete the three LINK-GUARD
+`ExecStart=` lines in `systemd/fleet-sync.service`, then
+`systemctl --user daemon-reload`. Nothing else reads them.
 
 ## systemd by default
 
