@@ -69,3 +69,10 @@ paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]*\.service\.d/20
 description = "The Tincan listener unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names the paths its BindPaths= and Environment= lines use; moved byte for byte from /etc/systemd/system, fleet-ops#9974 phase A"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$''']
+
+[[allowlists]]
+description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)systemd/tigervnc\.service$''']
+regexes = ['''^100\.108\.184\.97$''']
+condition = "AND"

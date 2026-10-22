@@ -241,6 +241,21 @@
         mode: preserve
       notify: Reload nftables
 
+    # The postgres account is a package leftover with no login use: set its shell
+    # to nologin. Only when the account exists; this never creates it.
+    - name: Look up the postgres account
+      ansible.builtin.getent:
+        database: passwd
+        key: postgres
+        fail_key: false
+      register: postgres_passwd
+
+    - name: Set the postgres account shell to nologin
+      ansible.builtin.user:
+        name: postgres
+        shell: /usr/sbin/nologin
+      when: postgres_passwd.ansible_facts.getent_passwd.postgres is not none
+
     - name: Install the htpdate options
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/default/htpdate"
