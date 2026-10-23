@@ -51,3 +51,10 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"
+
+
+def test_no_row_serves_a_removed_provider_again():
+    # Cline and Ollama Cloud rows were removed with the owner's yes of 2026-10-23 (fleet-ops#10068). Re-adding one is the owner's call.
+    bases = _bases(_router_rows())
+    back = sorted({b for b in bases if b.startswith("https://api.cline.bot") or b.startswith("https://ollama.com")})
+    assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
