@@ -1243,16 +1243,19 @@ from its file, so the file in git is the one that runs.
 
 Step 3 of each prompt lists what is waiting on Nish. One command walks every
 repo that has issues enabled and is not archived, lists the open issues carrying
-the `needs-nish-decision` label, and prints the count itself: `WAITING_TOTAL`,
-`WAITING_MORE` for the remainder beyond the two items the reply names, or
-`COUNT FAILED` when a listing fails. The reply copies those printed numbers and
-never counts the lines itself. A count the model worked out from stored state
-drifted from the live backlog — a digest said 13 more waiting when 66 were
-unreported (fleet-ops#10072) — so the command owns the number now.
+the `needs-nish-decision` label, and prints the counts itself, ahead of the
+listing so that a listing cut short cannot hide them: `WAITING_TOTAL`, then
+`WAITING_MORE` for the labelled backlog beyond the two items the reply names, or
+`COUNT FAILED` when a listing fails or nothing can be listed. The reply copies
+those printed numbers and never counts the lines itself. A count the model worked
+out from stored state drifted from the live backlog — a digest said 13 more
+waiting when 66 were unreported (fleet-ops#10072) — so the command owns the
+number now.
 
-- Check the live copy still matches the file: `diff <(jq -r '.jobs[] |
+- Check a live copy still matches its file, once per job: `diff <(jq -r '.jobs[] |
   select(.name=="digest-evening") | .prompt' ~/.hermes/cron/jobs.json)
-  config/hermes/digest-evening.md` — no output means they match.
+  config/hermes/digest-evening.md`, then the same with `digest-morning` in both
+  places — no output means they match.
 - Switch the waiting lines off, with no prompt edit: remove the
   `needs-nish-decision` label from every issue. The command then lists nothing,
   the reply carries no waiting line and no overflow line, and relabelling one
@@ -1263,9 +1266,12 @@ unreported (fleet-ops#10072) — so the command owns the number now.
 - Switch the whole digest off: `hermes cron pause digest-morning` and
   `hermes cron pause digest-evening`; `hermes cron resume <job>` brings one back.
 - Tests: `tests/test_digest_checks.py` runs the step-3 command against a fake
-  `gh` and proves the printed total, the `COUNT FAILED` paths, the
-  issues-enabled filter and that the prompt stays inside the Hermes shell guard.
-  `tests/test_digest_reply_shape.py` holds the reply-shape checker.
+  `gh` and proves the printed total, the remainder, the empty backlog, the two
+  `COUNT FAILED` paths, the issues-enabled and not-archived filters, that the
+  counts come ahead of the listing, and that no command line matches the guard's
+  deny globs, uses a bracket test it cannot resolve, or carries a command
+  substitution inside a loop. `tests/test_digest_reply_shape.py` holds the
+  reply-shape checker.
 
 ## Provider watch
 
