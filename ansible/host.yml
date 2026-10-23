@@ -16,6 +16,10 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  # A change to tether.nft once failed a later task and dropped the pending
+  # "Reload nftables" handler; the next run saw no change and never reloaded.
+  # force_handlers runs notified handlers even when a later task fails.
+  force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
