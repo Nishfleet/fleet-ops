@@ -227,6 +227,14 @@ jobs:
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
+      - name: Check reads use the workflow token, not the runner's gh login
+        # A private repo's checks and statuses are unreadable to the runner user's fine-grained
+        # login (tether run 39926429413: "Resource not accessible by personal access token").
+        # Runs agent.yml's Arm and Deliverable steps against a fake gh that refuses any check
+        # read not made with the run's own token, and asserts every agent.yml caller grants
+        # checks and statuses read.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_checks_read_token.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
