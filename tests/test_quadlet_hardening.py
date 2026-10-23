@@ -69,10 +69,17 @@ def test_image_is_pinned_by_digest(path: Path) -> None:
     assert DIGEST.search(images[0]), f"{path.name}: Image={images[0]} must end in @sha256:<64 hex>"
 
 
+def size_bytes(value: str) -> int:
+    """A systemd size (5G, 5120M, 512) in bytes, so equal caps in different units compare equal."""
+    match = re.fullmatch(r"(\d+)([KMGT]?)", value)
+    assert match, f"not a systemd size: {value}"
+    return int(match[1]) * 1024 ** " KMGT".index(match[2])
+
+
 def test_proxy_cap_equals_its_slice() -> None:
     unit = values(parse(ROOT / "containers/quadlet/fleet-litellm-proxy.container"), "Service", "MemoryMax")
     slice_cap = values(parse(ROOT / "systemd/app-litellm.slice"), "Slice", "MemoryMax")
-    assert unit and unit == slice_cap, (
+    assert unit and slice_cap and size_bytes(unit[0]) == size_bytes(slice_cap[0]), (
         f"fleet-litellm-proxy [Service] MemoryMax={unit} must equal app-litellm.slice [Slice] MemoryMax={slice_cap}, "
         "because the unit cap is only made visible, not made tighter"
     )
