@@ -195,6 +195,17 @@ script, or prompt lands unseen.
   `~/.config/systemd/user/tincan-listen-devin-vps.service.d/`, then
   `systemctl --user daemon-reload` and restart that listener, which only
   wakes Devin).
+- `pi-extensions/token-redact/` — a Pi extension that rewrites token-shaped
+  strings out of the session file before Pi writes them, so a raw token never
+  reaches `~/.pi/agent/sessions` (fleet-ops#10157, audit item W1c). Stock Pi
+  extension point only: two `pi.on` handlers in `index.ts`, no wrapper, no
+  poller, no script. Load it with `pi -e <path>` or `pi install`, and turn it
+  off with `TOKEN_REDACT=off`. Its README has the six shapes, the tests and the
+  delete steps. `.semgrep/token-store-shapes.yml` holds the same six shapes for
+  the `ci` job, `config/token-store-scan.toml` is the gitleaks config for
+  scanning a store, and `tests/test_token_store_scan.py` fails when the three
+  lists drift. Claude Code and Devin write their own transcripts with no stock
+  redaction switch, so their stores keep the gap until the vendor ships one.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
