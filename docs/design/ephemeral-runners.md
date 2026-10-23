@@ -50,7 +50,7 @@ One cycle per runner unit, repeated forever:
    is de-registered after one job.
 4. The job ends and the runner process exits. The runner record is gone from
    GitHub.
-5. systemd stops the unit and discards the job's private file systems (see
+5. The unit goes inactive and systemd discards the job's private file systems (see
    "Where the reset happens").
 6. `Restart=always` starts the unit again, which is step 1. The replacement is
    a new registration, so it shares nothing with the previous job.
@@ -149,8 +149,8 @@ it.
   endpoint, which is org admin access (classic scope `admin:org`). A GitHub App
   with the "Self-hosted runners" organization permission set to write is
   preferred if the runner can take an App token, and that is part of Step 0.
-- Lifetime: the registration token GitHub returns is valid for one hour and
-  is used once. The long-lived credential that mints it is the one that
+- Lifetime: the registration token GitHub returns is valid for one hour, and
+  this design uses it once. The long-lived credential that mints it is the one that
   matters. It must be a credential for this purpose only, held outside the
   repo, and stored where job code does not read it. Where exactly it lives is
   decided together with the work that moves runners onto separate users. This
