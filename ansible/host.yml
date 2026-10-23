@@ -67,6 +67,8 @@
     cua_cli: /opt/Cua Spaces/resources/native/cua
     docker_cli: /usr/bin/docker
     nft_cli: /usr/sbin/nft
+    nsenter_cli: /usr/bin/nsenter
+    ip_cli: /usr/sbin/ip
     # The fence around tether's Cua Space. Its own file and tables, so the
     # tether off marker, which removes tether.nft, leaves it in place.
     tether_space_nft: /etc/nftables.d/tether-space.nft
@@ -1322,30 +1324,66 @@
               - "{{ docker_cli }}"
               - inspect
               - --format
-              - "{% raw %}{\"restart\":{{json .HostConfig.RestartPolicy.Name}},\"networks\":{{json .NetworkSettings.Networks}}}{% endraw %}"
+              - "{% raw %}{\"restart\":{{json .HostConfig.RestartPolicy.Name}},\"privileged\":{{json .HostConfig.Privileged}},\"pid\":{{.State.Pid}},\"networks\":{{json .NetworkSettings.Networks}}}{% endraw %}"
               - "{{ (tether_space_info.stdout | from_json).provider_details.container_id }}"
           register: tether_space_net
           until: >-
             tether_space_net.rc == 0 and
             (tether_space_net.stdout | trim | from_json).networks | length == 1 and
+            (tether_space_net.stdout | trim | from_json).pid | int > 1 and
             ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress | length > 0
           retries: 4
           delay: 3
           changed_when: false
 
-        - name: Require one IPv4 address, no IPv6 and restart policy no
+        - name: Require one IPv4 address, no IPv6, restart policy no and no privileged mode
           ansible.builtin.assert:
             that:
               - (tether_space_net.stdout | trim | from_json).restart == 'no'
+              - (tether_space_net.stdout | trim | from_json).privileged == false
               - (tether_space_net.stdout | trim | from_json).networks | length == 1
               - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
               - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).GlobalIPv6Address == ''
-            fail_msg: "tether's Cua Space container must have restart policy no, exactly one network, an IPv4 address and no IPv6 address."
+            fail_msg: "tether's Cua Space container must have restart policy no, no privileged mode, exactly one network, an IPv4 address and no IPv6 address."
             quiet: true
 
-        - name: Keep the address of tether's Cua Space container
+        # The host-side end of the container's veth, which a forged source
+        # address cannot change. Its eth0 in its own network namespace names the
+        # peer's index (link_index); the host interface with that index is the
+        # veth. Checked live with a runsc Space: the namespace layout is a plain
+        # veth pair on docker0. NET_RAW cannot be dropped through Cua (it sets no
+        # CapDrop), but a runsc container's root has no NET_RAW or NET_ADMIN, and
+        # the interface match holds either way.
+        - name: Read the peer interface index of tether's Cua Space container
+          become_user: root
+          ansible.builtin.command:
+            argv: ["{{ nsenter_cli }}", -t, "{{ (tether_space_net.stdout | trim | from_json).pid | int }}", -n, "{{ ip_cli }}", -j, link, show, eth0]
+          register: tether_space_peer
+          until: tether_space_peer.rc == 0 and (tether_space_peer.stdout | trim | from_json | first).link_index | default(0) | int > 0
+          retries: 2
+          delay: 3
+          changed_when: false
+
+        - name: Read the host interfaces
+          ansible.builtin.command:
+            argv: ["{{ ip_cli }}", -j, link, show]
+          register: tether_space_links
+          changed_when: false
+
+        - name: Require exactly one host veth for that index, enslaved to a bridge
+          ansible.builtin.assert:
+            that:
+              - tether_space_veths | length == 1
+              - (tether_space_veths | first).ifname is match('^veth[0-9a-f]{1,11}$')
+              - (tether_space_veths | first).master | default('') is match('^[A-Za-z0-9_-]{1,15}$')
+            quiet: true
+          vars:
+            tether_space_veths: "{{ tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | list }}"
+
+        - name: Keep the address and interface of tether's Cua Space container
           ansible.builtin.set_fact:
             tether_space_ip: "{{ ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress }}"
+            tether_space_veth: "{{ (tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | first).ifname }}"
 
         # Rendered and loaded here, right after the address is known and before
         # the token read and the env file, so a new address is fenced within
@@ -1366,6 +1404,10 @@
           ansible.builtin.command:
             argv: ["{{ nft_cli }}", -f, "{{ tether_space_nft }}"]
           changed_when: false
+
+        - name: Record that the fence is loaded for tether's Cua Space
+          ansible.builtin.set_fact:
+            tether_space_fenced: true
 
         - name: Read tether's Cua Space token, which also waits until the Space answers
           ansible.builtin.command:
@@ -1392,10 +1434,34 @@
             tether_space_port: "{{ (tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int }}"
             tether_space_token: "{{ tether_space_token_out.stdout | trim }}"
           no_log: true
+      # Only the failed task's name is recorded: the messages of the no_log
+      # tasks above must not reach the run log. A Space that is not fenced for
+      # its current address (the fence was not loaded this run) is stopped here,
+      # through Cua and, when the daemon is the failure, through Docker, so a
+      # failed step never leaves it running open. A failure after the fence was
+      # loaded leaves it running and fenced.
       rescue:
+        - name: Stop tether's Cua Space, which this run did not fence
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
+          register: tether_space_stop_cua
+          ignore_errors: true
+          when: tether_space_fenced is not defined
+
+        - name: Stop tether's Cua Space container through Docker when Cua could not
+          ansible.builtin.command:
+            argv: ["{{ docker_cli }}", stop, "{{ tether_space_name }}"]
+          register: tether_space_stop_docker
+          ignore_errors: true
+          when: tether_space_fenced is not defined and tether_space_stop_cua is failed
+
         - name: Record that tether's Cua Space did not come up
           ansible.builtin.set_fact:
-            tether_space_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') | truncate(200) }}"
+            tether_space_failure: >-
+              {{ ansible_failed_task.name }}{{ ' (the Space was stopped)' if tether_space_fenced is not defined and tether_space_stop_cua is not failed
+              else ' (the Space was stopped through Docker)' if tether_space_fenced is not defined and tether_space_stop_docker is not failed
+              else ' (the Space could NOT be stopped and is running unfenced)' if tether_space_fenced is not defined
+              else '' }}
 
     # Under the tether off marker the Space block above does not run, so the
     # fence file keeps the address of the last run, and the Space is stopped here:

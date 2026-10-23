@@ -770,27 +770,38 @@ def _nft_chains(text: str) -> dict[str, list[str]]:
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
 def test_space_fence_drops_private_ranges_from_the_space_and_allows_the_internet(tmp_path: Path) -> None:
-    text = _render_tether_nft(tmp_path, "fence.nft", {"tether_space_ip": "172.17.0.3"}, SPACE_NFT)
+    text = _render_tether_nft(tmp_path, "fence.nft", {"tether_space_ip": "172.17.0.3", "tether_space_veth": "veth36dec4a"}, SPACE_NFT)
     space = "ip saddr 172.17.0.3"
+    marked = "meta mark & 0x10000000 == 0x10000000"
     chains = _nft_chains(text)
     assert {"table inet tether_space", "table bridge tether_space"} <= set(chains)
     assert "hook input" in text and text.count("hook forward") == 2, "input, inet forward and bridge forward"
-    assert chains["chain space_input"][1:] == [f"{space} ct state established,related accept", f"{space} drop"], "replies pass, nothing else reaches the host"
+    # Bridge: the Space's own interface is marked, and nothing it sends to another bridge port passes.
+    assert chains["chain space_mark"][1:] == ['iifname "veth36dec4a" meta mark set meta mark | 0x10000000'], "frames from the veth are marked"
+    assert "hook prerouting" in text
+    assert chains["chain forward"][1:] == ['iifname "veth36dec4a" drop', f"{space} drop"], "every frame to a neighbour is dropped, no ct state"
+    assert "ct state" not in " ".join(chains["chain forward"])
+    # Inet: a forged source still carries the mark, so both selectors drop.
+    assert chains["chain space_input"][1:] == [
+        f"{marked} ct state established,related accept", f"{space} ct state established,related accept",
+        f"{marked} drop", f"{space} drop",
+    ], "replies pass, nothing else reaches the host"
     forward = chains["chain space_forward"]
-    assert forward[1] == f"{space} ct state established,related accept"
+    assert forward[1:3] == [f"{marked} ct state established,related accept", f"{space} ct state established,related accept"]
     drops = [line for line in forward if line.endswith("drop")]
-    assert all(line.startswith(space) for line in drops), "every drop is from the Space's source address"
-    joined = " ".join(drops)
-    for private in ("10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "0xffc00000 == 0x64400000"):
-        assert private in joined, private
+    assert all(line.startswith((space, marked)) for line in drops), "every drop is keyed on the Space's address or its interface mark"
+    for selector in (space, marked):
+        joined = " ".join(line for line in drops if line.startswith(selector))
+        for private in ("10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "0xffc00000 == 0x64400000"):
+            assert private in joined, (selector, private)
     assert not any(line.endswith("accept") and "daddr" in line for line in forward), "no destination is allowed: the internet is the default"
-    assert text.count("policy accept") == 3 and "policy drop" not in text, "everything not named stays open"
-    assert chains["chain forward"][1:] == [f"{space} ct state established,related accept", f"{space} drop"], "a neighbour container is out of reach"
+    assert text.count("policy accept") == 4 and "policy drop" not in text, "everything not named stays open"
     assert text.index("destroy table bridge tether_space") < text.index("table bridge tether_space {")
     assert text.index("destroy table inet tether_space") < text.index("table inet tether_space {")
     assert "tether_uid" not in text and "skuid" not in text, "the fence does not depend on tether's uid or marker"
-    other = _render_tether_nft(tmp_path, "fence-other.nft", {"tether_space_ip": "172.18.0.9"}, SPACE_NFT)
-    assert "172.17.0.3" not in other and "ip saddr 172.18.0.9 drop" in other, "the fence follows the address it is given"
+    other = _render_tether_nft(tmp_path, "fence-other.nft", {"tether_space_ip": "172.18.0.9", "tether_space_veth": "vethabc123"}, SPACE_NFT)
+    assert "172.17.0.3" not in other and "veth36dec4a" not in other, "the fence follows the address and interface it is given"
+    assert "ip saddr 172.18.0.9 drop" in other and 'iifname "vethabc123" drop' in other
     _nft_check(tmp_path / "fence.nft")
 
 
@@ -1163,7 +1174,8 @@ def _unprivileged(task: dict) -> dict:
 
 
 def _run_space_tasks(
-    tmp_path: Path, state: str | None, port: int = 32791, space_ip: str = "172.17.0.3", restart: str = "no", ip6: str = "", expect_ok: bool = True
+    tmp_path: Path, state: str | None, port: int = 32791, space_ip: str = "172.17.0.3", restart: str = "no", ip6: str = "", expect_ok: bool = True,
+    privileged: bool = False, token_fails: bool = False, rescue: bool = False, peer_index: int = 87,
 ) -> tuple[list[str], str]:
     log = tmp_path / "calls.log"
     log.write_text("")
@@ -1179,8 +1191,20 @@ def _run_space_tasks(
         f'[ "$1 $2" = "inspect --format" ] && [ "$4" = {CONTAINER_ID} ] && cat {shlex.quote(str(tmp_path / "inspect.json"))}\n'
     )
     (tmp_path / "inspect.json").write_text(
-        json.dumps({"restart": restart, "networks": {"bridge": {"IPAddress": space_ip, "GlobalIPv6Address": ip6}}})
+        json.dumps({"restart": restart, "privileged": privileged, "pid": 4242, "networks": {"bridge": {"IPAddress": space_ip, "GlobalIPv6Address": ip6}}})
     )
+    (tmp_path / "peer.json").write_text(json.dumps([{"ifindex": 2, "ifname": "eth0", "link_index": peer_index}]))
+    (tmp_path / "links.json").write_text(json.dumps([
+        {"ifindex": 5, "ifname": "docker0"},
+        {"ifindex": 72, "ifname": "vethee8a52e", "master": "docker0"},
+        {"ifindex": 87, "ifname": "veth36dec4a", "master": "docker0"},
+    ]))
+    nsenter = tmp_path / "nsenter"
+    nsenter.write_text("#!/bin/sh\n" f'echo "nsenter $*" >> {shlex.quote(str(log))}\n' f'cat {shlex.quote(str(tmp_path / "peer.json"))}\n')
+    nsenter.chmod(0o755)
+    ip = tmp_path / "ip"
+    ip.write_text("#!/bin/sh\n" f'echo "ip $*" >> {shlex.quote(str(log))}\n' f'cat {shlex.quote(str(tmp_path / "links.json"))}\n')
+    ip.chmod(0o755)
     nft = tmp_path / "nft"
     nft.write_text("#!/bin/sh\n" f'echo "nft $*" >> {shlex.quote(str(log))}\n')
     nft.chmod(0o755)
@@ -1188,24 +1212,32 @@ def _run_space_tasks(
     if not fence.exists():
         fence.write_text("# previous fence\n")
     docker.chmod(0o755)
+    token_line = '"--embedded sandbox exec local:tether cat /run/cua/env-token") exit 1;;\n' if token_fails else (
+        f'"--embedded sandbox exec local:tether cat /run/cua/env-token") cat {shlex.quote(str(tmp_path / "token"))};;\n'
+    )
     stub = tmp_path / "cua"
     stub.write_text(
         "#!/bin/sh\n"
         f'echo "$*" >> {shlex.quote(str(log))}\n'
         'case "$*" in\n'
         f'"sandbox ls --local --json --no-size") cat {shlex.quote(str(tmp_path / "ls.json"))};;\n'
-        '"spaces create "*|"spaces start "*) ;;\n'
-        f'"--embedded sandbox exec local:tether cat /run/cua/env-token") cat {shlex.quote(str(tmp_path / "token"))};;\n'
+        '"spaces create "*|"spaces start "*|"spaces stop "*) ;;\n'
+        + token_line +
         f'"--embedded sandbox info local:tether --json") cat {shlex.quote(str(tmp_path / "info.json"))};;\n'
         "*) exit 2;;\nesac\n"
     )
     stub.chmod(0o755)
     facts = tmp_path / "facts.txt"
-    tasks = [_unprivileged(dict(task, retries=0, delay=0) if "retries" in task else task) for task in _space_block()["block"]] + [
-        {"ansible.builtin.copy": {"content": "{{ tether_space_port }} {{ tether_space_ip }} {{ tether_space_token }}", "dest": str(facts)}}
-    ]
+    body = [_unprivileged(dict(task, retries=0, delay=0) if "retries" in task else task) for task in _space_block()["block"]]
+    probe = {"ansible.builtin.copy": {"content": "{{ tether_space_port }} {{ tether_space_ip }} {{ tether_space_token }}", "dest": str(facts)}}
+    if rescue:
+        probe = {"ansible.builtin.copy": {"content": "{{ tether_space_failure | default('none') }}", "dest": str(facts)}}
+        tasks = [{"block": body, "rescue": _space_block()["rescue"]}, probe]
+    else:
+        tasks = body + [probe]
     vars_ = {
         "cua_cli": str(stub), "docker_cli": str(docker), "nft_cli": str(nft), "tether_space_nft": str(fence),
+        "nsenter_cli": str(nsenter), "ip_cli": str(ip),
         "tether_space_nft_src": str(ROOT / "ansible/templates" / SPACE_NFT), "tether_space_name": "tether", "tether_space_ref": "local:tether",
     }
     play = tmp_path / "space-play.json"
@@ -1214,6 +1246,9 @@ def _run_space_tasks(
     if not expect_ok:
         assert proc.returncode != 0, "the step must fail loudly"
         return log.read_text().splitlines(), ""
+    if rescue:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return log.read_text().splitlines(), facts.read_text()
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert SPACE_TOKEN not in proc.stdout + proc.stderr, "the token never reaches the run output"
     return log.read_text().splitlines(), facts.read_text()
@@ -1325,13 +1360,16 @@ def test_the_fence_is_rendered_inside_the_block_after_the_address_and_before_the
     render = names.index("Render the fence around tether's Cua Space")
     load = names.index("Load the fence around tether's Cua Space")
     token = names.index("Read tether's Cua Space token, which also waits until the Space answers")
-    assert inspect < names.index("Keep the address of tether's Cua Space container") < render < load < token
+    keep = names.index("Keep the address and interface of tether's Cua Space container")
+    assert inspect < names.index("Read the peer interface index of tether's Cua Space container") < keep < render < load < token
+    assert names.index("Record that the fence is loaded for tether's Cua Space") == load + 1
     task = block[render]
     assert task["become_user"] == "root" and "tags" not in task
     assert task["ansible.builtin.template"]["src"] == "{{ tether_space_nft_src }}" and task["ansible.builtin.template"]["dest"] == "{{ tether_space_nft }}"
     assert "when" not in task and "when" not in block[load], "no marker or tether condition on the fence"
     assert _space_block()["when"] == "not tether_off.stat.exists"
-    assert "tether_space_ip" in json.dumps(block[names.index("Keep the address of tether's Cua Space container")])
+    assert {"tether_space_ip", "tether_space_veth"} == set(block[keep]["ansible.builtin.set_fact"])
+    assert block[names.index("Read the peer interface index of tether's Cua Space container")]["become_user"] == "root"
     assert block[names.index("Read tether's Cua Space address")]["no_log"] is True
 
 
@@ -1381,8 +1419,8 @@ def test_with_the_marker_the_space_is_stopped_and_the_fence_file_is_untouched(tm
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
 @pytest.mark.parametrize(
     "kwargs",
-    [{"restart": "always"}, {"restart": "unless-stopped"}, {"ip6": "2001:db8::3"}, {"space_ip": ""}],
-    ids=["restart-always", "restart-unless-stopped", "ipv6", "no-address"],
+    [{"restart": "always"}, {"restart": "unless-stopped"}, {"ip6": "2001:db8::3"}, {"space_ip": ""}, {"privileged": True}, {"peer_index": 999}],
+    ids=["restart-always", "restart-unless-stopped", "ipv6", "no-address", "privileged", "no-host-veth"],
 )
 def test_a_space_that_breaks_the_fence_assumptions_fails_loudly_and_leaves_the_fence(tmp_path: Path, kwargs: dict) -> None:
     (tmp_path / "tether-space.nft").write_text("# previous fence\n")
@@ -1390,6 +1428,31 @@ def test_a_space_that_breaks_the_fence_assumptions_fails_loudly_and_leaves_the_f
     assert (tmp_path / "tether-space.nft").read_text() == "# previous fence\n", "the last rendered fence stays"
     assert not [c for c in calls if c.startswith("nft ")], "and nothing is loaded"
     assert not [c for c in calls if "env-token" in c], "the token is never read after a bad network"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_a_space_that_was_not_fenced_is_stopped_by_the_rescue_and_the_message_is_only_the_task_name(tmp_path: Path) -> None:
+    calls, failure = _run_space_tasks(tmp_path, "running", privileged=True, rescue=True)
+    assert "spaces stop local:tether" in calls, "a run that did not fence the Space stops it"
+    assert not [c for c in calls if c.startswith("nft ")]
+    assert failure.strip() == "Require one IPv4 address, no IPv6, restart policy no and no privileged mode (the Space was stopped)"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_a_failure_after_the_fence_is_loaded_leaves_the_space_running(tmp_path: Path) -> None:
+    calls, failure = _run_space_tasks(tmp_path, "running", token_fails=True, rescue=True)
+    assert [c for c in calls if c.startswith("nft ")], "the fence was loaded"
+    assert not [c for c in calls if c.startswith("spaces stop")] and not [c for c in calls if c.startswith("docker stop")]
+    assert failure.strip() == "Read tether's Cua Space token, which also waits until the Space answers", "no message text, no suffix"
+
+
+def test_the_rescue_records_no_task_message_and_falls_back_to_docker() -> None:
+    rescue = _space_block()["rescue"]
+    assert "ansible_failed_result" not in json.dumps(rescue)
+    names = [task["name"] for task in rescue]
+    assert names.index("Stop tether's Cua Space, which this run did not fence") < names.index("Stop tether's Cua Space container through Docker when Cua could not") < names.index("Record that tether's Cua Space did not come up")
+    assert all(task.get("ignore_errors") is True for task in rescue[:2]), "a failed stop must not hide the failure record"
+    assert all("tether_space_fenced is not defined" in task["when"] for task in rescue[:2])
 
 
 def test_space_waits_stay_well_inside_the_deploy_job_budget() -> None:

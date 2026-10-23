@@ -2,39 +2,53 @@
 # The fence around tether's own Cua Space. The Space is a Docker container on
 # the default bridge, so what a command in it sends never passes the uid test in
 # tether.nft. Cua has no network option for a local container (`--network none`
-# is QEMU only), so this matches the container's own address, which host.yml
-# reads from Docker and renders here as soon as it has it. Three hooks, because
-# no one of them sees it all:
-#   inet input      the Space toward the host's own addresses (the bridge gateway)
-#   inet forward    the Space routed toward a private range or the internet
-#   bridge forward  the Space toward a neighbour container on the same bridge;
-#                   the host loads no br_netfilter, so that traffic skips both IP hooks
-# Replies to a connection somebody else opened (the published port, a docker
-# exec) pass. The internet stays open. The Space's resolvers are public, so no
-# DNS exception is needed. A host-local destination never reaches the forward
-# hook (it goes to input), so no host address is listed there.
+# is QEMU only), so this matches the container's own host-side interface, the
+# veth that host.yml reads from its network namespace, and also its address
+# (read from Docker). The interface is what a forged source address cannot
+# change. Hooks, because no one of them sees it all:
+#   bridge prerouting  marks every frame that enters on the Space's veth
+#   bridge forward     drops every frame from that veth to another bridge port
+#                      (the host loads no br_netfilter, so a neighbour container
+#                      is never seen by the IP hooks)
+#   inet input         the marked or Space-sourced packet toward the host's own addresses
+#   inet forward       the marked or Space-sourced packet toward a private range
+# The IP hooks see the bridge device, not the veth, so they match the mark the
+# bridge hook set. Replies to a connection somebody else opened (the published
+# port, a docker exec) pass. The internet stays open. The Space's resolvers are
+# public, so no DNS exception is needed. A host-local destination never reaches
+# the forward hook (it goes to input), so no host address is listed there.
+# 0x10000000 is a bit nothing else on the host uses (tailscale uses 0xff0000).
 # This file is separate from tether.nft on purpose: it is not removed by the
 # tether off marker, and a failed run leaves it as it was.
 destroy table inet tether_space
 destroy table bridge tether_space
+table bridge tether_space {
+  chain space_mark {
+    type filter hook prerouting priority -300; policy accept;
+    iifname "{{ tether_space_veth }}" meta mark set meta mark | 0x10000000
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "{{ tether_space_veth }}" drop
+    ip saddr {{ tether_space_ip }} drop
+  }
+}
 table inet tether_space {
   chain space_input {
     type filter hook input priority filter; policy accept;
+    meta mark & 0x10000000 == 0x10000000 ct state established,related accept
     ip saddr {{ tether_space_ip }} ct state established,related accept
+    meta mark & 0x10000000 == 0x10000000 drop
     ip saddr {{ tether_space_ip }} drop
   }
   chain space_forward {
     type filter hook forward priority filter; policy accept;
+    meta mark & 0x10000000 == 0x10000000 ct state established,related accept
     ip saddr {{ tether_space_ip }} ct state established,related accept
     # 100.64/10, the tailnet block, as a mask test (the address, written out, is private detail).
+    meta mark & 0x10000000 == 0x10000000 ip daddr & 0xffc00000 == 0x64400000 drop
     ip saddr {{ tether_space_ip }} ip daddr & 0xffc00000 == 0x64400000 drop
+    meta mark & 0x10000000 == 0x10000000 ip daddr { 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
     ip saddr {{ tether_space_ip }} ip daddr { 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
-  }
-}
-table bridge tether_space {
-  chain forward {
-    type filter hook forward priority filter; policy accept;
-    ip saddr {{ tether_space_ip }} ct state established,related accept
-    ip saddr {{ tether_space_ip }} drop
   }
 }

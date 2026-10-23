@@ -737,27 +737,39 @@ exists:
   restarts tether when it changed;
 - adds `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port to
   `tether.nft.j2`, before the loopback drop. No other loopback port opens;
-- reads the Space container's network and restart policy from Docker (`docker
-  inspect` on the container id `cua sandbox info` reports). It must have restart
-  policy `no`, one network, one IPv4 address and no IPv6 address, or the step
-  fails and pages. It then renders and loads `tether-space.nft` (the fence
-  below) from that address, before it reads the token and renders the env file.
+- reads the Space container's network, restart policy and privileged flag from
+  Docker (`docker inspect` on the container id `cua sandbox info` reports). It
+  must have restart policy `no`, not be privileged, and have one network, one
+  IPv4 address and no IPv6 address, or the step fails and pages. It also reads
+  the container's veth: the peer index of `eth0` in the container's network
+  namespace (`nsenter`), and the host interface with that index. It then renders
+  and loads `tether-space.nft` (the fence below) from the address and veth,
+  before it reads the token and renders the env file. If the step fails before
+  the fence is loaded, the rescue stops the Space (`cua spaces stop`, or `docker
+  stop` when the Cua daemon is the failure), so it never runs unfenced; a failure
+  after the fence is loaded leaves it running and fenced.
 
 The Space is a Docker container on the default bridge, next to the desk Space
 and the host. Cua has no network option for a local container (`--network none`
-is for a QEMU VM only), so `tether-space.nft.j2` fences it by its address, in
-its own file and tables (`inet tether_space`, `bridge tether_space`): from the
-Space, nothing reaches the host's own addresses (inet input hook), nothing is
-routed to 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16 or 100.64/10 (inet
-forward hook; a host-local destination goes to input, not forward), and nothing
-reaches a neighbour container on the bridge (bridge family, because the host
-loads no `br_netfilter` and bridged traffic skips both IP hooks). Replies to
-connections others open (the published port, `sandbox exec`) pass; the internet
-stays open. The Space's DNS servers are the host's public upstream resolvers,
-so no DNS exception is needed (if they ever move into a private range, name
-lookups in the Space fail until an exception is added). Checked on the box with
-a throwaway Space: before the fence the desk Space's `:3211` answered from
-inside it, after it only the internet did.
+is for a QEMU VM only), so `tether-space.nft.j2` fences it, in its own file and
+tables (`bridge tether_space`, `inet tether_space`), by its host-side veth and
+also by its address. The veth is what a forged source address cannot change: the
+bridge prerouting hook marks every frame that enters on it, and the IP hooks
+drop on that mark as well as on the address. From the Space, nothing reaches the
+host's own addresses (inet input), nothing is routed to 10/8, 127/8, 169.254/16,
+172.16/12, 192.168/16 or 100.64/10 (inet forward; a host-local destination goes
+to input, not forward), and every frame to another bridge port is dropped
+(bridge forward, no connection tracking: the host loads no `br_netfilter`, so
+bridged traffic skips both IP hooks). Replies to connections others open (the
+published port, `sandbox exec`) pass; the internet stays open. The Space's DNS
+servers are the host's public upstream resolvers, so no DNS exception is needed
+(if they ever move into a private range, name lookups in the Space fail until an
+exception is added). Checked on the box with a throwaway Space: before the fence
+the desk Space's `:3211` answered from inside it, after it only the internet did.
+Cua gives the Space `CapAdd SYS_ADMIN` and cannot drop `NET_RAW`; in a runsc
+Space root still has neither `NET_RAW` nor `NET_ADMIN` (`ip addr add` and raw and
+packet sockets fail with `Operation not permitted`), and the interface match
+holds even if that changed.
 
 The fence file is not part of tether's off marker: the marker removes
 `tether.nft`, not `tether-space.nft`. A failed Space step leaves the last
