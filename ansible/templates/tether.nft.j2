@@ -3,7 +3,21 @@
 # destinations are denied except the model router, tether's own Cua Space (the
 # one published spacesd port, read live by host.yml) and the DNS stub.
 # Its own table, so it never touches the filter table or docker's rules.
+#
+# The Space itself is fenced too. It is a Docker container on the default
+# bridge, so what a command in it sends never passes the uid test of the output chain. Cua has
+# no network option for a local container (`--network none` is QEMU only), so
+# the fence matches the container's own address, which host.yml re-reads from
+# Docker on every run. Three hooks, because no one of them sees it all:
+#   inet input    the Space toward the host's own addresses (the bridge gateway)
+#   inet forward  the Space routed toward another network or the internet
+#   bridge forward  the Space toward a neighbour container on the same bridge;
+#                 the host loads no br_netfilter, so that traffic skips both IP hooks
+# Replies to a connection somebody else opened (the published port, a docker
+# exec) pass. The internet stays open. No address known (the Space step failed):
+# no fence, and no port allow either.
 destroy table inet tether
+destroy table bridge tether_space
 table inet tether {
   chain output {
     type filter hook output priority filter; policy accept;
@@ -34,4 +48,31 @@ table inet tether {
 {% endif %}
 {% endfor %}
   }
+{% if tether_space_ip is defined %}
+  # Input: a Space may only answer; it opens nothing toward the host itself.
+  chain space_input {
+    type filter hook input priority filter; policy accept;
+    ip saddr {{ tether_space_ip }} ct state established,related accept
+    ip saddr {{ tether_space_ip }} drop
+  }
+  # Forward: neighbour containers and every private range are out of reach.
+  chain space_forward {
+    type filter hook forward priority filter; policy accept;
+    ip saddr {{ tether_space_ip }} ct state established,related accept
+    ip saddr {{ tether_space_ip }} ip daddr { 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+    ip saddr {{ tether_space_ip }} ip daddr & 0xffc00000 == 0x64400000 drop
+{% for addr in ansible_facts.all_ipv4_addresses | default([]) | unique %}
+    ip saddr {{ tether_space_ip }} ip daddr {{ addr }} drop
+{% endfor %}
+  }
+{% endif %}
 }
+{% if tether_space_ip is defined %}
+table bridge tether_space {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    ip saddr {{ tether_space_ip }} ct state established,related accept
+    ip saddr {{ tether_space_ip }} drop
+  }
+}
+{% endif %}

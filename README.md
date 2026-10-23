@@ -735,8 +735,24 @@ exists:
 - renders `/etc/tether/cua.env` (`TETHER_SPACE_URL`, `TETHER_SPACE_TOKEN`,
   `root:tether 0640`, `no_log`, no diff), which the tether unit loads, and
   restarts tether when it changed;
-- adds `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port to
-  `tether.nft.j2`, before the loopback drop. No other loopback port opens.
+- reads the Space container's address from Docker (`docker inspect` on the
+  container id `cua sandbox info` reports) and renders `tether.nft.j2` from it:
+  `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port before the
+  loopback drop (no other loopback port opens), and the fence below.
+
+The Space is a Docker container on the default bridge, next to the desk Space
+and the host. Cua has no network option for a local container (`--network none`
+is for a QEMU VM only), so `tether.nft.j2` fences it by its address: from the
+Space, nothing reaches the host's own addresses (inet input hook), nothing is
+routed to 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16, 100.64/10 or a host
+address (inet forward hook), and nothing reaches a neighbour container on the
+bridge (bridge family `tether_space`, because the host loads no `br_netfilter`
+and bridged traffic skips both IP hooks). Replies to connections others open
+(the published port, `sandbox exec`) pass; the internet stays open. Checked on
+the box with a throwaway Space: before the fence the desk Space's `:3211`
+answered from inside it, after it only the internet did. The address is re-read
+on every run and after every boot, like the port. A manual `docker restart` of
+the Space can give it a new address, and the fence follows on the next run.
 
 The port is read live on each run because Docker publishes `spacesd` on a random
 loopback port that changes whenever the container starts. A pause and resume
@@ -749,10 +765,12 @@ that, `fleet-host-config-boot.timer` runs `fleet-host-config.service` three
 minutes after every boot (the daily timer's random delay of up to an hour is too
 late): the run starts the Space, then renders the env file and the nft rule from
 its new port and restarts tether. Until it does, tether's unit may start with the
-last port, and its calls to the Space fail. If the
-Space step fails (the Cua daemon is down after 3 minutes of waiting), the run
-completes everything else, keeps the old env file and nft rule, and fails at its
-last tether task, which pages.
+last port, and its calls to the Space fail, because the old port is not allowed
+any more. If the Space step fails (the Cua daemon is down after about 90 seconds
+of waiting), the run completes everything else, keeps the old env file, renders
+the nft rule without the Space port and without the fence (it fails closed:
+tether reaches no Space port until a run succeeds), and fails at its last tether
+task, which pages.
 
 Switch off: `touch /etc/fleet-ops/tether-off`. The next run skips the Space
 tasks, removes `/etc/tether/cua.env` and the firewall rule, and keeps tether
