@@ -134,7 +134,10 @@ def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lock
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
     lines = values(start_conf.read_text(), "ExecStartPre")
-    assert lines and not any(line.startswith("+") for line in lines), lines
+    assert lines, "no ExecStartPre= pre-create line"
+    # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
+    for conf in {start_conf, lockdown_conf}:
+        assert not any(line.startswith("+") for line in values(conf.read_text(), "ExecStartPre")), conf.name
 
 
 def test_every_runner_drop_in_that_hides_user_runtime_paths_is_covered() -> None:
@@ -184,7 +187,10 @@ def test_gate_fails_when_the_start_order_is_missing() -> None:
     ]
     assert starts_after_user_manager(both.replace("Wants=", "Requires=")) == ["[Unit] Wants=user@1000.service"]
     # Right key, wrong section: a [Service] line is not an ordering.
-    assert starts_after_user_manager("[Service]\nAfter=user@1000.service\nWants=user@1000.service\n") != []
+    assert starts_after_user_manager("[Service]\nAfter=user@1000.service\nWants=user@1000.service\n") == [
+        "[Unit] After=user@1000.service",
+        "[Unit] Wants=user@1000.service",
+    ]
 
 
 def test_gate_accepts_a_pre_created_dir(tmp_path: Path) -> None:
