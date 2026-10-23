@@ -18,9 +18,9 @@
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater (Hermes on its stable channel with its
 #              services restarted, tincan with its idle listeners restarted,
-#              the npm and uv tools (yt-dlp is a uv tool)) and the redis container through
-#              `podman auto-update`. Stale npm staging dirs go first, so
-#              one interrupted self-update cannot fail `npm update`.
+#              the npm and uv tools (yt-dlp is a uv tool)). Stale npm staging
+#              dirs go first, so one interrupted self-update cannot fail
+#              `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -38,16 +38,17 @@
 # chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
 # new Claude version take effect at the next reboot.
 #
-# Container images move two ways. A tag changes in a PR, and that covers
-# postgres (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd,
-# so a rollback would only catch a start failure), the proxy, grafana and
-# aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
-# `podman auto-update` below moves it inside this paused window. podman reads
-# that label from the running container, so redis needs one restart in this
-# window before the first scheduled run does anything:
-# `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
-# purpose: GitHub runners (they update themselves) and the raw binaries in
-# ~/.local/bin that have no updater.
+# Container images move when a PR changes what it names: the digest the
+# quadlet pins, or the tag a tag-only quadlet follows. That covers postgres (it
+# holds the LiteLLM keys and spend, and no quadlet has a HealthCmd, so a
+# rollback would only catch a start failure), the proxy, grafana and
+# aiostreams. Redis was the last quadlet carrying AutoUpdate=registry, and
+# fleet-ops#10098 pinned it by digest and removed that key, so no image moves
+# inside this paused window and `podman auto-update` below finds nothing to
+# pull. The step stays because it is podman's own mechanism: a quadlet that
+# opts into AutoUpdate=registry later moves through it, still inside the
+# window. Skipped on purpose: GitHub runners (they update themselves) and the
+# raw binaries in ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -812,14 +813,17 @@
           when: podman_socket_probe.stderr is search('connection refused')
           changed_when: true
 
-        # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
-        # image and restarts the unit; a unit that fails to start is rolled
-        # back, and podman auto-update then exits non-zero (the assert at the
-        # end of the run fails loud on it). A unit that starts but is broken is
-        # not rolled back: no quadlet has a HealthCmd. As nish, because the
-        # quadlets are systemd user units. The dry-run on either side shows the
-        # pending updates in the report; the real check runs on the box, not in
-        # a workspace harness where newuidmap is blocked (fleet-ops#9254).
+        # Only a quadlet carrying AutoUpdate=registry moves here, and none does
+        # now: redis was the last, and fleet-ops#10098 pinned it by digest and
+        # removed the key. The step stays as podman's own mechanism for a
+        # quadlet that opts in later: it pulls the newer image and restarts the
+        # unit, a unit that fails to start is rolled back, and podman auto-update
+        # then exits non-zero (the assert at the end of the run fails loud on
+        # it). A unit that starts but is broken is not rolled back: no quadlet
+        # has a HealthCmd. As nish, because the quadlets are systemd user units.
+        # The dry-run on either side shows the pending updates in the report; the
+        # real check runs on the box, not in a workspace harness where newuidmap
+        # is blocked (fleet-ops#9254).
         - name: Record container images podman can auto-update, before
           become: true
           become_user: nish
@@ -833,7 +837,7 @@
           # below is the gate.
           failed_when: false
 
-        - name: Update the redis container image
+        - name: Update any container image that opted into auto-update
           become: true
           become_user: nish
           environment: "{{ nish_env }}"
@@ -899,10 +903,9 @@
           changed_when: false
           ignore_errors: true
 
-        # The smoke call cannot pass while the router is still starting: `podman
-        # auto-update` above restarts the redis cache the proxy's readiness reads,
-        # and a call in that window fails on the connection, not on pi. Wait for
-        # the router first, bounded so a genuinely dead router still fails the run
+        # The smoke call cannot pass while the router is still starting, and a
+        # call in that window fails on the connection, not on pi. Wait for the
+        # router first, bounded so a genuinely dead router still fails the run
         # (60 x (10 s + 5 s timeout) = about 15 min, then recorded as a failure).
         - name: Wait for the model router to answer before the smoke call
           ansible.builtin.uri:
