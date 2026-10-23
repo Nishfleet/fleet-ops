@@ -36,8 +36,9 @@
     # release's .sha256 asset). An upgrade is one reviewed PR that changes both
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
-    tether_version: 0.5.3
-    tether_sha256: bb304c4a574c947894d878f286e6e3ab2c2ad8469a1a7ce0a0ed7a9582c62c4a
+    # 0.7.0 is the first release that uses its own Space's key from cua.env.
+    tether_version: 0.7.0
+    tether_sha256: 1c5d0bad9be0784a5fbf4dfc2b8cd0bd442c6f33a726722b5a9ece77b034b2e0
     # Everything below derives from the two pins. The directory and the cached
     # file carry the version AND the first 12 hex of the hash, so a new hash at
     # the same version is a new name and never reuses old content. The root and
