@@ -1,5 +1,6 @@
 """A unit file with an unknown directive must fail CI: systemd skips it with a warning and exit 0 (fleet-ops#9967)."""
 
+import fnmatch
 import json
 import os
 import re
@@ -690,6 +691,132 @@ def test_systemd_analyze_accepts_the_dropin_on_a_stand_in(tmp_path: Path) -> Non
     )
     out = proc.stdout + proc.stderr
     assert "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
+
+
+TMPFILES = ROOT / "rootfs/etc/tmpfiles.d"
+RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
+CREATING_TYPES = {"d", "D", "f", "F", "L"}
+RUN_PATH_ALLOWLIST = {
+    "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
+    "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
+    "/run/podman-eval": "retired path, kept masked",
+}
+
+
+def _run_norm(path: str) -> str:
+    path = path.rstrip("/") or "/"
+    return "/run" + path[len("/var/run"):] if path == "/var/run" or path.startswith("/var/run/") else path
+
+
+def tmpfiles_created(tmpfiles_dir: Path) -> set[str]:
+    created = set()
+    for conf in sorted(tmpfiles_dir.glob("*.conf")):
+        for line in conf.read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and not line.lstrip().startswith("#") and fields[0].rstrip("+!-=~^") in CREATING_TYPES:
+                created.add(_run_norm(fields[1]))
+    return created
+
+
+def runner_mask_paths(dropin: Path) -> list[str]:
+    """Every InaccessiblePaths= entry of one drop-in without its "-"/"+" prefixes; ValueError when empty or unparsable."""
+    paths: list[str] = []
+    lines = dropin.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line.startswith("InaccessiblePaths="):
+            continue
+        value = line.removeprefix("InaccessiblePaths=")
+        while value.endswith("\\") and i < len(lines):
+            value = value[:-1] + " " + lines[i].strip()
+            i += 1
+        try:
+            tokens = shlex.split(value)
+        except ValueError as err:
+            raise ValueError(f"{dropin}: unparsable InaccessiblePaths= line {line!r}: {err}") from err
+        if not tokens:
+            raise ValueError(f"{dropin}: empty InaccessiblePaths= line (it would reset the mask list)")
+        for token in tokens:
+            path = token.lstrip("-+")
+            if not path.startswith("/") or path == "/":
+                raise ValueError(f"{dropin}: unparsable InaccessiblePaths= entry {token!r}")
+            paths.append(path)
+    return paths
+
+
+def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: dict[str, str]) -> list[str]:
+    """Masked /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a mask list is empty."""
+    created = tmpfiles_created(tmpfiles_dir)
+    bad = []
+    for directory in dropin_dirs:
+        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_mask_paths(conf)]
+        if not paths:
+            raise ValueError(f"{directory}: no InaccessiblePaths= entry in any drop-in")
+        for path in paths:
+            norm = _run_norm(path)
+            if (norm == "/run" or norm.startswith("/run/")) and norm not in created:
+                if not any(fnmatch.fnmatchcase(norm, pattern) for pattern in allowlist):
+                    bad.append(f"{directory.name}: {path}")
+    return bad
+
+
+def test_every_masked_run_path_has_a_boot_time_creator() -> None:
+    assert len(RUNNER_DROPINS) >= 5, "the runner drop-in directories were not found"
+    assert unguarded_run_paths(RUNNER_DROPINS, TMPFILES, RUN_PATH_ALLOWLIST) == []
+
+
+def test_run_path_allowlist_has_no_stale_entry() -> None:
+    masked = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_mask_paths(conf)}
+    created = tmpfiles_created(TMPFILES)
+    for pattern, reason in RUN_PATH_ALLOWLIST.items():
+        assert reason.strip()
+        assert any(fnmatch.fnmatchcase(path, pattern) for path in masked), f"{pattern} is masked by no runner"
+        assert pattern not in created, f"{pattern} has a tmpfiles creator, drop it from the allowlist"
+    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in masked
+
+
+def _fixture(tmp_path: Path, mask: str, tmpfiles: str = "") -> tuple[list[Path], Path]:
+    dropin = tmp_path / "actions.runner.X.service.d"
+    dropin.mkdir()
+    (dropin / "20-lockdown.conf").write_text(mask)
+    tmpdir = tmp_path / "tmpfiles.d"
+    tmpdir.mkdir()
+    (tmpdir / "x.conf").write_text(tmpfiles)
+    return [dropin], tmpdir
+
+
+def test_run_path_check_fails_on_a_path_with_no_creator(tmp_path: Path) -> None:
+    dirs, tmpdir = _fixture(tmp_path, "[Service]\nInaccessiblePaths=-/etc/example -/run/new-thing\n", "d /run/other 0700 nish nish -\n")
+    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/new-thing"]
+    assert unguarded_run_paths(dirs, tmpdir, {"/run/new-thing": "test"}) == []
+
+
+def test_run_path_check_accepts_a_creator_and_normalises_var_run(tmp_path: Path) -> None:
+    mask = "[Service]\nInaccessiblePaths=-/run/a\nInaccessiblePaths=+/var/run/b -/run/c\n"
+    tmpfiles = "# d /run/c\nd /run/a 0755 - - -\nf+ /run/b 0600 - - -\nz /run/c\n"
+    dirs, tmpdir = _fixture(tmp_path, mask, tmpfiles)
+    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/c"]
+
+
+def test_run_path_check_reads_every_line_and_prefix(tmp_path: Path) -> None:
+    mask = "[Service]\nInaccessiblePaths=-/etc/a \\\n  -/run/x\nInaccessiblePaths=/run/y +/run/z\n"
+    dirs, tmpdir = _fixture(tmp_path, mask)
+    assert runner_mask_paths(dirs[0] / "20-lockdown.conf") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
+    assert len(unguarded_run_paths(dirs, tmpdir, {})) == 3
+
+
+@pytest.mark.parametrize(
+    "mask",
+    ["[Service]\n", "[Service]\nInaccessiblePaths=\n", "[Service]\nInaccessiblePaths=-run/x\n", "[Service]\nInaccessiblePaths='-/run/x\n"],
+    ids=["no-line", "empty-line", "relative-path", "bad-quote"],
+)
+def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None:
+    dirs, tmpdir = _fixture(tmp_path, mask)
+    with pytest.raises(ValueError):
+        unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
 
 
 # Units whose output files hold agent session text. The user manager default is
