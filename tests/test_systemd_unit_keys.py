@@ -174,6 +174,7 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 # marker's own tasks.
 TETHER_ALWAYS = {
     "Look for the tether off marker",
+    "Look for an enabled tether-agent unit",
     "Look for the tether Photon credentials file",
     "Look up the tether uid",
     "Read the host's addresses and bridges",
@@ -481,9 +482,37 @@ def test_host_run_never_enables_or_starts_tether() -> None:
     blocks = re.split(r"\n    - name: ", (ROOT / "ansible/host.yml").read_text())
     tether = [block for block in blocks if "name: tether-agent.service" in block]
     assert tether, "the marker task is gone"
+    restart = [block for block in tether if "state: restarted" in block]
+    assert len(restart) <= 1
     for block in tether:
         assert "enabled: true" not in block and "state: started" not in block, block
-        assert "when: tether_off.stat.exists" in block, block
+        if block in restart:
+            assert "tether_agent_enabled.stat.islnk" in block and "not tether_off.stat.exists" in block, block
+        else:
+            assert "when: tether_off.stat.exists" in block, block
+
+
+def test_tether_release_change_restarts_an_enabled_agent() -> None:
+    text = HOST_YML.read_text()
+    link = [block for block in re.split(r"\n        - name: ", text) if block.startswith("Point tether current at the verified release")]
+    assert len(link) == 1
+    assert "notify: Restart tether-agent after its release changed" in link[0]
+    lookup = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[0])
+        if block.startswith("Look for an enabled tether-agent unit")
+    ]
+    assert len(lookup) == 1
+    assert "multi-user.target.wants/tether-agent.service" in lookup[0]
+    assert "follow: false" in lookup[0]
+    handler = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[1])
+        if block.startswith("Restart tether-agent after its release changed")
+    ]
+    assert len(handler) == 1
+    assert "ansible.builtin.systemd_service:" in handler[0]
+    assert "state: restarted" in handler[0]
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
