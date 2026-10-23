@@ -223,7 +223,7 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.conflicts.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -727,8 +727,12 @@ jobs:
             esac
             pages="$pages$i"$'\n'
           done
+          # agent.yml's Gate skips these five labels, so a ref that carries one is a
+          # matrix slot spent on a job that ends in 9 s. ci.yml keeps this set equal to
+          # the Gate's `for l in` list.
           refs=$(printf '%s' "$pages" |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+              | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
@@ -738,13 +742,10 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
-      # Bound the sweep fan-out to live seat slots. The matrix starts one worker per ref at
-      # once; a 14-ref sweep put ~14 workers on ~7 live router slots and 429'd them into strikes
-      # (fleet-ops#8553), and 9 of 10 hit Devin's rate limit on 2026-09-29 because matrix jobs
-      # all read a live count of 0. strategy.max-parallel, tunable via vars.AGENT_MAX_PARALLEL
-      # (unset -> 4, the Devin cap), bounds only this matrix; the rework/ejected jobs are one
-      # dispatch per event. Sweeps themselves are one running plus one waiting (concurrency above).
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
+      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots,
+      # Devin's 4) is gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -932,17 +933,14 @@ jobs:
             echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
           } >> "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
-  # These jobs run inside the sweep's concurrency group, so they bound how long
-  # a sweep holds it: at most 4 reviews, 2 at a time, each under agent.yml's
-  # 20-minute review timeout, is 40 minutes on top of stuck-prs. A sweep started
-  # meanwhile waits as the one pending run and starts when this one ends; it is
-  # not dropped, so the next hourly start still finds every PR.
+  # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
+  # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.
   stuck-review:
     needs: stuck-prs
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'"
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.review) }}
     # See review-risky: a caller job must grant what the called workflow's other jobs request.
@@ -974,7 +972,7 @@ jobs:
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'"
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.stuck-prs.outputs.rework) }}
     permissions:
@@ -1166,7 +1164,7 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
     concurrency:
