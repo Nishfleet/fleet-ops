@@ -27,11 +27,12 @@ Group=tether
 WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
 # The model key lives in tether.env and the Photon Spectrum credentials in
-# photon.env, both root:tether 0640. Phase 1 holds no other credential: no
-# shell, no GitHub, Cloudflare or database token reaches this unit
-# (fleet-ops#9980).
+# photon.env, and the calendar and contacts credentials in calendar.env, all
+# root:tether 0640. No shell, no GitHub, Cloudflare or database token reaches
+# this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
 EnvironmentFile=-/etc/tether/photon.env
+EnvironmentFile=-/etc/tether/calendar.env
 # The Node binary is the pinned release that ansible/host.yml unpacks
 # (tether_node_version), named by absolute path, not the distro /usr/bin/node.
 ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/current/dist/index.js
