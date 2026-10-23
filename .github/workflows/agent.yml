@@ -943,9 +943,7 @@ jobs:
     # workflow could post as the same bot; that is why a PR that edits the guard
     # list or a workflow needs three independent reviews, not one (below). Arming is
     # the arm job's, as the worker App.
-    permissions:
-      pull-requests: write
-      contents: read  # the git fetch below: a private repo refuses an anonymous one, and every agent-dispatch stub already grants contents: write
+    permissions: {pull-requests: write, contents: read}  # contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -1025,12 +1023,12 @@ jobs:
           jq -e '(.guard | type) == "array" and (.guard | length) > 0' <<<"$cfg" >/dev/null 2>&1 || retry "the guard list could not be read"
           hits=$(jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length' < "$RUNNER_TEMP/files.txt")
           guard=false; [ "$hits" = 0 ] || guard=true
-          # The diff comes from git, not the diff API, which refuses a PR over 20,000 lines (406, drive#949). Both SHAs are fetched whole, the token in git's config env, never argv (#8403).
+          # The diff is read with git from a checkout, never the diff API: the API refuses a PR
+          # over 20,000 diff lines (406, Nishfleet/drive#949). Both SHAs are fetched whole.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0); echo "::add-mask::$basic"
-          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/$REPO.git.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
-            git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
+          # gh is a git credential helper: it hands git this run's own token, so no header is built here.
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.

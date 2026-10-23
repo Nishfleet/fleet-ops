@@ -6,6 +6,7 @@ on:
     inputs:
       urls: {description: "Page URLs to audit, one per line.", required: true, type: string}
       require_audit: {description: "Fail the job when no URL is left to audit.", type: boolean, default: false}
+      upload_reports: {description: "Keep the full reports as a run artifact. Off unless the caller asks.", type: boolean, default: false}
 
 permissions:
   contents: read
@@ -36,4 +37,5 @@ jobs:
           urls: ${{ steps.reach.outputs.urls }}
           runs: 5
           configPath: ./config/lighthouserc.json
+          uploadArtifacts: ${{ inputs.upload_reports }}
           temporaryPublicStorage: false
