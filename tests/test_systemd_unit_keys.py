@@ -614,9 +614,9 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
 
 
 SEOFIXKIT_UNITS = (
-    "/home/nish/.config/systemd/user/seofixkit-d1-backup.service",
-    "/home/nish/.config/systemd/user/seofixkit-d1-backup.timer",
-    "/home/nish/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer",
+    '"{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"',
+    '"{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"',
+    '"{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"',
 )
 
 
