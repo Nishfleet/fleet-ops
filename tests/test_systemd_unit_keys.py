@@ -174,7 +174,6 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
         "-e", f"tether_node_cache={root}/node-cache",
         "-e", f"tether_release_root={root}/opt-tether",
         "-e", f"tether_release_cache={root}/release-cache",
-        "-e", f"tether_cua_env={root}/cua.env",
     )
     env = {**os.environ, "ANSIBLE_STDOUT_CALLBACK": "json", "ANSIBLE_LOCALHOST_WARNING": "False"}
     proc = subprocess.run(
@@ -203,6 +202,8 @@ TETHER_ALWAYS = {
     "Remove the tether egress rule while the marker exists",
     "Keep tether disabled and stopped while the marker exists",
     "Apply pending handlers before the tether failure check",
+    "Remove tether's retired Cua env file",
+    "Remove the retired Cua daemon token file",
 }
 # Tasks that a clean host (temp roots, nothing installed) must really reach with
 # no marker. The rest of the release tasks are skipped by design on a clean host,
@@ -240,7 +241,6 @@ TETHER_REACHED = (
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
     "Let the tether group read the calendar credentials file",
-    "Render tether's Cua env file",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -483,7 +483,6 @@ def test_tether_loads_all_environment_files() -> None:
         "-/etc/tether/tether.env",
         "-/etc/tether/photon.env",
         "-/etc/tether/calendar.env",
-        "-/etc/tether/cua.env",
     ]
 
 
@@ -580,7 +579,7 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     }
     task = {
         "ansible.builtin.template": {"src": str(ROOT / "ansible/templates/tether.nft.j2"), "dest": str(out)},
-        "vars": {"tether_uid": 995, "cua_daemon_port": 4730, "ansible_facts": facts},
+        "vars": {"tether_uid": 995, "ansible_facts": facts},
     }
     play = tmp_path / "play.json"
     play.write_text(json.dumps([{"hosts": "localhost", "gather_facts": False, "tasks": [task]}]))
@@ -591,10 +590,7 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     text = out.read_text()
     assert "meta skuid != 995 return" in text
     assert "ip daddr 127.0.0.1 tcp dport 4000 accept" in text
-    lines = text.splitlines()
-    cua_rule = "ip daddr 127.0.0.1 tcp dport 4730 accept"
-    assert cua_rule in text, "tether may reach the Cua daemon port"
-    assert lines.index(f"    {cua_rule}") < lines.index("    ip daddr 127.0.0.0/8 drop"), "the allow comes before the loopback drop"
+    assert "tcp dport 4000 accept" in text and text.count("127.0.0.1 tcp dport") == 1, "the router port is the only loopback port"
     assert "ip daddr 198.51.100.0/24 drop" in text, "a bridge subnet is dropped"
     assert text.rstrip().endswith("}\n}"), "an interface with no fact does not break the render"
     if shutil.which("sudo") and shutil.which("nft"):
@@ -602,42 +598,38 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
         assert check.returncode == 0, check.stderr
 
 
-CUA_DROPIN = ROOT / "rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf"
+CUA_DROPIN_DIR = "etc/systemd/user/cua-desk-daemon.service.d"
 
 
-def test_cua_daemon_port_is_one_value_in_the_drop_in_and_host_yml() -> None:
-    port = _host_var("cua_daemon_port")
-    assert port.isdigit() and 1024 <= int(port) < 32768, "a fixed port outside the ephemeral range"
-    keys = runner_dropin_keys(CUA_DROPIN)
-    assert keys["ExecStart"][0] == "", "the drop-in clears the unit's own ExecStart first"
-    assert keys["ExecStart"][1].endswith(f"daemon start --foreground --loopback 127.0.0.1:{port}")
-
-
-def test_tether_cua_env_is_the_address_only_and_follows_the_off_marker() -> None:
-    drop_in = CUA_DROPIN.read_text()
-    assert "--daemon-token" not in drop_in and "TOKEN" not in drop_in, "the daemon ignores a supplied token, so none is provisioned"
-    text = HOST_YML.read_text()
-    assert "lookup('ansible.builtin.password', cua" not in text
-    block = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Render tether's Cua env file")]
-    assert len(block) == 1
-    assert "owner: root\n        group: tether\n        mode: \"0640\"" in block[0]
-    assert 'content: "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}\\n"' in block[0]
-    assert "when: not tether_off.stat.exists" in block[0], "the off marker leaves tether no new file"
-    assert "notify: Restart tether-agent after its release changed" in block[0]
-
-
-def test_cua_daemon_config_change_restarts_the_daemon_only_through_the_idle_desk_logic() -> None:
-    update = (ROOT / "ansible/update.yml").read_text()
+def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_config() -> None:
+    assert not (ROOT / "rootfs" / CUA_DROPIN_DIR).exists(), "the fixed-port drop-in is gone from the repo"
     host = HOST_YML.read_text()
-    assert not re.search(r"restart[^\n]*cua|cua[^\n]*restart", "\n".join(l for l in host.splitlines() if not l.lstrip().startswith("#")), re.I), "host.yml never restarts the daemon"
-    assert update.count('spaces, delete, "{{ cua_desk_space }}"') == 1 and update.count("spaces, create, linux, --name, \"{{ cua_desk_space") == 1, "one desk recreate, shared"
-    assert "cua_upgrade: \"{{ (cua_newer or cua_daemon_stale) and (cua_runs.stdout" in update
+    update = (ROOT / "ansible/update.yml").read_text()
+    assert f"- /{CUA_DROPIN_DIR}\n" in host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0], "host.yml deletes it on the host"
+    assert "cua_daemon_port" not in host + update + (ROOT / "ansible/templates/tether.nft.j2").read_text()
+    assert "cua_daemon_stale" not in update and "cua_daemon_unit" not in update, "no config-triggered daemon restart"
+    assert "EnvironmentFile=-/etc/tether/cua.env" not in TETHER.read_text()
+    assert 'cua_upgrade: "{{ cua_newer and (cua_runs.stdout' in update, "the desk is recreated only for a newer release"
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
-    before_restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[0]
-    reload = before_restart.rsplit("- name: ", 1)[1]
-    assert reload.startswith("Reload the user manager") and "daemon-reload" in reload and "when: cua_upgrade" in reload, "the drop-in is loaded right before the idle-gated restart"
-    restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[1].split("- name:", 1)[0]
-    assert "when: cua_upgrade" in restart and "cua_daemon_unit" in restart
+
+
+def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
+    blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
+    by_path = {
+        "/etc/tether/cua.env": "Remove tether's retired Cua env file",
+        "/etc/fleet-ops/cua-daemon-token": "Remove the retired Cua daemon token file",
+        '{{ nish_config }}/fleet-ops/cua/daemon.env': "Remove the retired Cua daemon env file",
+    }
+    for path, name in by_path.items():
+        block = blocks[name]
+        assert f"path: {path if path.startswith('/') else chr(34) + path + chr(34)}\n        state: absent" in block, name
+        # CI runs `--tags tether --check` as an unprivileged user: a task that
+        # becomes nish and carries the tag fails there.
+        assert ("become_user: nish" in block) != ("tags: [tether]" in block), name
+    rmdir = blocks["Remove the retired Cua daemon env directory when it is empty"]
+    assert 'argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]' in rmdir and "LC_ALL: C" in rmdir
+    assert "tags:" not in rmdir and "become_user: nish" in rmdir
+    assert "'Directory not empty' not in" in rmdir and "'No such file or directory' not in" in rmdir
 
 
 RUNNER_RULES = ROOT / "rootfs/etc/nftables.d/runners.nft"
