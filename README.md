@@ -631,7 +631,24 @@ sets `/etc/tether/photon.env` (placed by hand, never created here) to
 credentials file, `/etc/tether/calendar.env` (calendar and contacts), is handled
 the same way: placed by hand, never created here, `root:tether 0640`, loaded
 after `photon.env`. Internet egress for the service user is already open, so it
-needed no firewall change.
+needed no firewall change for the internet.
+
+The server's Cua daemon (`cua-desk-daemon.service`, a user unit of the box owner)
+is also reachable from tether, so each agent on the server can have its own
+Space. The drop-in `rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf`
+gives the daemon a fixed loopback port (`cua_daemon_port` in `ansible/host.yml`)
+and an `EnvironmentFile` with `CUA_DAEMON_TOKEN`. `host.yml` mints the token once
+into a root-only file with the stock `password` lookup (deleting the file mints
+a new one), renders the daemon's env file from it, and renders
+`/etc/tether/cua.env` (`TETHER_CUA_URL`, `TETHER_CUA_TOKEN`, root:tether 0640,
+loaded by the unit) unless the off marker exists. `tether.nft.j2` allows tcp to
+that port for the tether uid. A running daemon reads none of this until it
+restarts, and a restart kills the desk Space's Volume mount, so `host.yml` never
+restarts it: the daily `update.yml` restarts it only when the desk is idle (the
+same check, restart and desk recreate as a Cua Spaces upgrade, triggered when
+the daemon started before its newest config file) and otherwise tries again the
+next day. Switch off: delete the drop-in and the two env-file tasks and the nft
+line, so the next idle restart is back on an ephemeral port.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
@@ -647,8 +664,8 @@ Models go through the LiteLLM router at `127.0.0.1:4000`, never a direct
 provider key. The unit allows `127.0.0.1/32` and `127.0.0.53/32` and denies
 the rest of loopback. `IPAddressAllow=` takes no port, so the `inet tether`
 nftables table matches the `tether` uid (numeric, so `deluser` cannot break the
-file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`
-and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
+file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`,
+the Cua daemon's port and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
 addresses (from ansible facts, plus `fib daddr type local`), `172.16.0.0/12`,
 `10.0.0.0/8`, `192.168.0.0/16`, IPv4 link-local, every docker or podman bridge
 subnet present, the tailnet's CGNAT block and the tailnet, ULA and link-local
