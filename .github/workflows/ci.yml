@@ -665,6 +665,8 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
         # The headless claude in systemd/tincan-listen-claude-vps.service loads only
         # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
