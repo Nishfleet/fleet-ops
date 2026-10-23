@@ -1906,8 +1906,28 @@
       check_mode: false
       no_log: true
 
-    # Stock command, value on stdin (never in argv). --replace swaps the secret in one step.
-    - name: Create or replace each Grafana secret when its value differs
+    # Stock command, value on stdin (never in argv). Podman 4.9 fails `--replace` on a name that
+    # does not exist yet, so a missing secret is created and a differing one is replaced.
+    - name: Create each missing Grafana secret
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, secret, create, "{{ item.name }}", "-"]
+        stdin: "{{ value }}"
+        stdin_add_newline: false
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: i
+      vars:
+        value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
+        current: "{{ grafana_secret_current.results[i] }}"
+      when: value != '' and current.rc != 0
+      notify: Restart fleet-grafana
+      no_log: true
+
+    - name: Replace each Grafana secret whose value differs
       become: true
       become_user: nish
       ansible.builtin.command:
@@ -1922,7 +1942,7 @@
       vars:
         value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
         current: "{{ grafana_secret_current.results[i] }}"
-      when: value != '' and (current.rc != 0 or (current.stdout | trim) != value)
+      when: value != '' and current.rc == 0 and (current.stdout | trim) != value
       notify: Restart fleet-grafana
       no_log: true
 
@@ -1952,12 +1972,7 @@
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
 
-    # Last task of the play: a tether release that could not be installed (see the
-    # block above) fails the run here, after every other task and handler has
-    # run, so the deploy goes red and pages while the rest of the host config
-    # still applied.
-    - name: Apply pending handlers before the tether failure check
-      tags: [tether, tether-release]
+    - name: Apply pending handlers before the Grafana credential check
       ansible.builtin.meta: flush_handlers
 
     # After the handlers, so a missing source never stops them. A missing or empty credential
@@ -1979,6 +1994,14 @@
         that: grafana_secrets_missing | length == 0
         fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
         quiet: true
+
+    # Last task of the play: a tether release that could not be installed (see the
+    # block above) fails the run here, after every other task and handler has
+    # run, so the deploy goes red and pages while the rest of the host config
+    # still applied.
+    - name: Apply pending handlers before the tether failure check
+      tags: [tether, tether-release]
+      ansible.builtin.meta: flush_handlers
 
     - name: Fail when the tether release could not be installed
       tags: [tether, tether-release]
