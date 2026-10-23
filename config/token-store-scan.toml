@@ -10,47 +10,61 @@
 #
 # Measured on this host 2026-10-23: 1.8 GB of Pi transcripts, 32 s, 82 findings
 # in 26 files, 34 of them in sessions older than that day.
+#
+# Reliable on a text store, unreliable on a binary one. The same rules found 24 of
+# 24 canary copies in a Claude Code transcript and 0 of 6 in the redacted Pi
+# session, but 8 of the 452 shape matches in the Devin sqlite store: in a binary
+# the byte in front of a token is arbitrary, so the leading boundary rejects most
+# of them. Scan a sqlite store by extracting the text columns first, or count
+# with a pattern that has no leading boundary and read the hits by hand.
+#
+# The boundary in every regex carries `|\\[ntrbfu]` on purpose. A session store is
+# JSONL, so the newline in front of a token is stored as the two characters
+# backslash and n, and the n alone satisfies `[^A-Za-z0-9_]`'s opposite: without
+# the extra branch a gitleaks run over a real store found 1 of the 6 shapes in a
+# tool result (2026-10-23). tests/test_token_store_scan.py holds this with an
+# escaped fixture.
 
 title = "token store shapes"
 
 [[rules]]
 id = "store-github-token"
 description = "GitHub token (ghp_, gho_, ghu_, ghs_, ghr_)"
-regex = '''(?:^|[^A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9_]{20,})'''
+regex = '''(?:^|[^A-Za-z0-9_]|\\[ntrbfu])(gh[pousr]_[A-Za-z0-9_]{20,})'''
 secretGroup = 1
 keywords = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]
 
 [[rules]]
 id = "store-github-fine-grained-pat"
 description = "GitHub fine-grained token (github_pat_)"
-regex = '''(?:^|[^A-Za-z0-9_])(github_pat_[A-Za-z0-9_]{20,})'''
+regex = '''(?:^|[^A-Za-z0-9_]|\\[ntrbfu])(github_pat_[A-Za-z0-9_]{20,})'''
 secretGroup = 1
 keywords = ["github_pat_"]
 
 [[rules]]
 id = "store-anthropic-key"
 description = "Anthropic API key (sk-ant-)"
-regex = '''(?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})'''
+regex = '''(?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(sk-ant-[A-Za-z0-9_-]{20,})'''
 secretGroup = 1
 keywords = ["sk-ant-"]
 
 [[rules]]
 id = "store-gitlab-token"
 description = "GitLab personal access token (glpat-)"
-regex = '''(?:^|[^A-Za-z0-9_-])(glpat-[A-Za-z0-9_-]{20,})'''
+regex = '''(?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(glpat-[A-Za-z0-9_-]{20,})'''
 secretGroup = 1
 keywords = ["glpat-"]
 
 [[rules]]
 id = "store-slack-token"
 description = "Slack token (xoxb-, xoxa-, xoxp-, xoxr-, xoxs-)"
-regex = '''(?:^|[^A-Za-z0-9_-])(xox[baprs]-[A-Za-z0-9-]{10,})'''
+regex = '''(?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(xox[baprs]-[A-Za-z0-9-]{10,})'''
 secretGroup = 1
 keywords = ["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"]
 
 [[rules]]
 id = "store-npm-token"
 description = "npm access token (npm_)"
-regex = '''(?:^|[^A-Za-z0-9_])(npm_[A-Za-z0-9_]{30,})'''
+regex = '''(?:^|[^A-Za-z0-9_]|\\[ntrbfu])(npm_[A-Za-z0-9_]{30,})'''
 secretGroup = 1
 keywords = ["npm_"]

@@ -12,35 +12,40 @@
 # The default gitleaks rules stay off: generic-api-key alone flagged 20,000
 # lines of ordinary prose and hashes in the Claude transcripts. These six
 # shapes are narrow enough that a match is a token-shaped string, not a word.
+#
+# The boundary in every regex carries `|\\[ntrbfu]` for the same reason as the
+# gitleaks config: a JSONL line stores the newline in front of a token as the
+# two characters backslash and n, and the n alone defeats a bare
+# `[^A-Za-z0-9_]`.
 
 rules:
   - id: store-github-token
     languages: [generic]
     severity: ERROR
     message: GitHub token shape (ghp_, gho_, ghu_, ghs_, ghr_)
-    pattern-regex: (?:^|[^A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9_]{20,})
+    pattern-regex: (?:^|[^A-Za-z0-9_]|\\[ntrbfu])(gh[pousr]_[A-Za-z0-9_]{20,})
   - id: store-github-fine-grained-pat
     languages: [generic]
     severity: ERROR
     message: GitHub fine-grained token shape (github_pat_)
-    pattern-regex: (?:^|[^A-Za-z0-9_])(github_pat_[A-Za-z0-9_]{20,})
+    pattern-regex: (?:^|[^A-Za-z0-9_]|\\[ntrbfu])(github_pat_[A-Za-z0-9_]{20,})
   - id: store-anthropic-key
     languages: [generic]
     severity: ERROR
     message: Anthropic API key shape (sk-ant-)
-    pattern-regex: (?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})
+    pattern-regex: (?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(sk-ant-[A-Za-z0-9_-]{20,})
   - id: store-gitlab-token
     languages: [generic]
     severity: ERROR
     message: GitLab personal access token shape (glpat-)
-    pattern-regex: (?:^|[^A-Za-z0-9_-])(glpat-[A-Za-z0-9_-]{20,})
+    pattern-regex: (?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(glpat-[A-Za-z0-9_-]{20,})
   - id: store-slack-token
     languages: [generic]
     severity: ERROR
     message: Slack token shape (xoxb-, xoxa-, xoxp-, xoxr-, xoxs-)
-    pattern-regex: (?:^|[^A-Za-z0-9_-])(xox[baprs]-[A-Za-z0-9-]{10,})
+    pattern-regex: (?:^|[^A-Za-z0-9_-]|\\[ntrbfu])(xox[baprs]-[A-Za-z0-9-]{10,})
   - id: store-npm-token
     languages: [generic]
     severity: ERROR
     message: npm access token shape (npm_)
-    pattern-regex: (?:^|[^A-Za-z0-9_])(npm_[A-Za-z0-9_]{30,})
+    pattern-regex: (?:^|[^A-Za-z0-9_]|\\[ntrbfu])(npm_[A-Za-z0-9_]{30,})

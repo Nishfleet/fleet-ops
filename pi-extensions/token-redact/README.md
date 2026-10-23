@@ -68,3 +68,16 @@ To delete it: remove this directory, `config/token-store-scan.toml`, `.semgrep/t
 - **Leviathan** mirrors the Pi and Claude logs into its own SQLite index, so a token already in a log is already in the index. Fixing the writers fixes the index going forward.
 - Rows already in a store are purged by W1b, not here.
 - `config/token-store-scan.toml` deliberately turns the default gitleaks rules off: `generic-api-key` alone flagged 20,000 lines of ordinary prose and hashes in the Claude transcripts.
+- The gitleaks config is reliable on a text store and unreliable on a binary one. On 2026-10-23 it found 24 of 24 canary copies in a Claude Code transcript and 0 of 6 in a redacted Pi session, but 8 of the 452 shape matches in the Devin sqlite store, because the byte in front of a token in a binary file is arbitrary and the leading boundary rejects it. Read the header of `config/token-store-scan.toml` for the workaround.
+
+## Measured canary, 2026-10-23
+
+One fake token-shaped string per shape, written through each writer's own tool
+output, then the store scanned with `config/token-store-scan.toml`:
+
+| writer | shapes in the store | note |
+| --- | --- | --- |
+| Pi with this extension | **0** | 6 `[REDACTED:store-...]` markers instead |
+| Pi without it (`TOKEN_REDACT=off`) | 6 | the negative control |
+| Claude Code | 24 | no stock redaction switch |
+| Devin | 55 copies, and still there after `devin rm --force` | no stock redaction switch, and deleting the session rewrites the pages instead of purging them |

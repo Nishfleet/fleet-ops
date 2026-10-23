@@ -1,3 +1,4 @@
+import json
 import re
 import shlex
 import shutil
@@ -83,6 +84,32 @@ def test_the_redaction_compiled_regex_uses_the_same_boundaries(shape_id: str) ->
     assert "(?<![${shape.chars}])" in source
     assert "(?![${shape.chars}])" in source
     assert f'chars: "{chars}"' in source, f"{shape_id}: no chars class to bound the shape"
+
+
+@pytest.mark.parametrize("shape_id", [sid for sid, _, _ in _ts_shapes()])
+def test_the_gitleaks_regex_finds_the_shape_inside_a_jsonl_line(shape_id: str) -> None:
+    # A session store is JSONL, so the newline in front of a token is the two
+    # characters backslash and n. The n alone satisfies `[^A-Za-z0-9_]`'s
+    # opposite, so a regex without the escape branch finds 1 of the 6 shapes in
+    # a tool result: measured 2026-10-23 on a real canary session.
+    regex = next(rx for sid, rx, _ in _toml_rules() if sid == shape_id)
+    keywords = next(kw for sid, _, kw in _toml_rules() if sid == shape_id)
+    pattern = re.compile(regex)
+    line = json.dumps({"text": "\n".join(["one", f"{keywords[0]}{'B' * 40}"])})
+    assert pattern.search(line), f"{shape_id}: the gitleaks regex misses a token on a JSONL line"
+    assert pattern.search(json.dumps({"text": f"prefix{keywords[0]}{'B' * 40}"})) is None, (
+        f"{shape_id}: the escape branch must not turn a prefixed word into a match"
+    )
+
+
+def test_every_scanner_regex_carries_the_json_escape_branch() -> None:
+    for label, regexes in (
+        ("config/token-store-scan.toml", [rx for _, rx, _ in _toml_rules()]),
+        (".semgrep/token-store-shapes.yml", [rx for _, rx in _semgrep_rules()]),
+    ):
+        assert regexes, f"no regexes read from {label}"
+        for regex in regexes:
+            assert "\\\\[ntrbfu]" in regex, f"{label}: a regex lost the JSON escape branch"
 
 
 def test_the_store_scan_config_is_the_shape_list_the_ci_rules_use() -> None:
