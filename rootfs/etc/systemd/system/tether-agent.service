@@ -28,7 +28,7 @@ WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
 # The model key lives in tether.env and the Photon Spectrum credentials in
 # photon.env, the calendar and contacts credentials in calendar.env, and the
-# address and token of the Cua daemon in cua.env (rendered by ansible/host.yml),
+# address of the Cua daemon in cua.env (rendered by ansible/host.yml),
 # all root:tether 0640. No shell, no GitHub, Cloudflare or database token reaches
 # this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
