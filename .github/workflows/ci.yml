@@ -219,6 +219,12 @@ jobs:
         # and asserts no old pattern is left in ansible/update.yml.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+      - name: The update playbook's test files run in CI, so they stop rotting (fleet-ops#10075)
+        # pytest here runs by an explicit file list, and a test file left off it
+        # stayed red on main with no signal (fleet-ops#10073). The false-failures
+        # file joins this list when #10074 lands.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py
       - name: Chrome DevTools MCP is pinned once and wired into every agent
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_hermes_computer_use.py
