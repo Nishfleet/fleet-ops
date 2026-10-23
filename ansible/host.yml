@@ -148,6 +148,13 @@
     redis_password_file: /etc/fleet-ops/litellm-redis-password
     redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
     redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
+    # Grafana credentials as Podman secrets (mounted by containers/quadlet/fleet-grafana.container).
+    # The values are read from their original files the way systemd reads an EnvironmentFile
+    # (systemd-run, no parser of our own) and the secret is recreated only when it differs.
+    grafana_secrets:
+      - {name: grafana-telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
+      - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
+      - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -1850,6 +1857,95 @@
       diff: false
       notify: Restart litellm redis then proxy
 
+    # Grafana credentials: each task runs as nish and none prints a value (no_log). A source or
+    # key that is missing or empty is reported by the check after the handlers, at the end of the play.
+    - name: Read the Grafana credentials the way systemd reads an EnvironmentFile
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-run
+          - --user
+          - --quiet
+          - -p
+          - "EnvironmentFile={{ item.src }}"
+          - --wait
+          - --pipe
+          - --collect
+          - /usr/bin/printenv
+          - "{{ item.key }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: grafana_secret_values
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the Grafana secrets that exist now
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - secret
+          - inspect
+          - --showsecret
+          - --format
+          - "{% raw %}{{.SecretData}}{% endraw %}"
+          - "{{ item.name }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: grafana_secret_current
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    # Stock command, value on stdin (never in argv). Podman 4.9 fails `--replace` on a name that
+    # does not exist yet, so a missing secret is created and a differing one is replaced.
+    - name: Create each missing Grafana secret
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, secret, create, "{{ item.name }}", "-"]
+        stdin: "{{ value }}"
+        stdin_add_newline: false
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: i
+      vars:
+        value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
+        current: "{{ grafana_secret_current.results[i] }}"
+      when: value != '' and current.rc != 0
+      notify: Restart fleet-grafana
+      no_log: true
+
+    - name: Replace each Grafana secret whose value differs
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, secret, create, --replace, "{{ item.name }}", "-"]
+        stdin: "{{ value }}"
+        stdin_add_newline: false
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: i
+      vars:
+        value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
+        current: "{{ grafana_secret_current.results[i] }}"
+      when: value != '' and current.rc == 0 and (current.stdout | trim) != value
+      notify: Restart fleet-grafana
+      no_log: true
+
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
         that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
@@ -1875,6 +1971,29 @@
       vars:
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+
+    - name: Apply pending handlers before the Grafana credential check
+      ansible.builtin.meta: flush_handlers
+
+    # After the handlers, so a missing source never stops them. A missing or empty credential
+    # fails the run here, naming the secret, key and file and never a value.
+    - name: Work out which Grafana credentials could not be read
+      ansible.builtin.set_fact:
+        grafana_secrets_missing: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for r in grafana_secret_values.results -%}
+          {%- if r.rc | default(1) != 0 or (r.stdout | default('') | trim) == '' -%}
+          {%- set ns.bad = ns.bad + [r.item.name ~ ' (' ~ r.item.key ~ ' in ' ~ r.item.src ~ ')'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+      no_log: true
+
+    - name: Fail when a Grafana credential source or key is missing or empty
+      ansible.builtin.assert:
+        that: grafana_secrets_missing | length == 0
+        fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
+        quiet: true
 
     # Last task of the play: a tether release that could not be installed (see the
     # block above) fails the run here, after every other task and handler has
@@ -1949,6 +2068,12 @@
       ansible.builtin.systemd_service:
         name: htpdate.service
         state: restarted
+
+    # Reported when it fails, but it never stops the rest of the play. A running Grafana
+    # keeps the secret files it was started with, so it is restarted only after a change.
+    - name: Restart fleet-grafana
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-grafana.service
+      ignore_errors: true
 
     - name: Reload prometheus
       ansible.builtin.systemd_service:
