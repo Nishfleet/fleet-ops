@@ -50,6 +50,7 @@
     hermes_update: {stderr: ok}
     tincan_upgrade: {stderr: ok}
     unpinned_extensions: {stdout_lines: []}
+    off_branch_pins: {stdout_lines: []}
     cua_update_failed: ok
     podman_autoupdate: {stdout_lines: [ok], stderr: ""}
     failed_system: {stdout_lines: []}
@@ -355,6 +356,15 @@
           ran, so the 2026-10-23 cascade ("pi smoke reply: no result") can
           come back and read as a pi failure. It rendered as
           {{ rendered_never_run }}.
+
+    - name: The failure text carries the git pins off the default branch
+      ansible.builtin.assert:
+        that:
+          - "rendered_never_run is search('git pins off the default branch: none')"
+        fail_msg: >-
+          The closing assert's failure text no longer names a git pin that
+          sits off its repo's default branch, so the daily run cannot say
+          which pin to move. It rendered as {{ rendered_never_run }}.
 
     - name: The failure text renders the reply when the smoke answered
       ansible.builtin.set_fact:
