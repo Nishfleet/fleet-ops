@@ -611,3 +611,21 @@ def test_systemd_analyze_accepts_the_dropin_on_a_stand_in(tmp_path: Path) -> Non
     )
     out = proc.stdout + proc.stderr
     assert "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
+
+
+# Units whose output files hold agent session text. The user manager default is
+# UMask=0002, so each one needs a drop-in that makes new files owner-only.
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d",)
+
+
+@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
+def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
+    dropin = ROOT / dropin_dir / "20-umask.conf"
+    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
+    lines = [line.strip() for line in dropin.read_text().splitlines()]
+    assert "[Service]" in lines
+    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
+    unit = ROOT / dropin_dir.removesuffix(".d")
+    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+        f"{unit.name} sets UMask itself; keep it in the drop-in only"
+    )
