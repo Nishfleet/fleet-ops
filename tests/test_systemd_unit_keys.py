@@ -640,6 +640,9 @@ def test_cua_daemon_config_change_restarts_the_daemon_only_through_the_idle_desk
     assert update.count('spaces, delete, "{{ cua_desk_space }}"') == 1 and update.count("spaces, create, linux, --name, \"{{ cua_desk_space") == 1, "one desk recreate, shared"
     assert "cua_upgrade: \"{{ (cua_newer or cua_daemon_stale) and (cua_runs.stdout" in update
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
+    before_restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[0]
+    reload = before_restart.rsplit("- name: ", 1)[1]
+    assert reload.startswith("Reload the user manager") and "daemon-reload" in reload and "when: cua_upgrade" in reload, "the drop-in is loaded right before the idle-gated restart"
     restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[1].split("- name:", 1)[0]
     assert "when: cua_upgrade" in restart and "cua_daemon_unit" in restart
 

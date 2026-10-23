@@ -733,6 +733,15 @@
                 DEBIAN_FRONTEND: noninteractive
               when: cua_upgrade and cua_newer
 
+            # A drop-in is read only after a reload of the user manager, and a
+            # plain restart keeps the unit as it was loaded. host.yml reloads it
+            # after installing the drop-in, but a run of this playbook must not
+            # depend on that having happened.
+            - name: Reload the user manager so the daemon's current drop-in is used
+              ansible.builtin.command:
+                argv: [systemctl, --user, daemon-reload]
+              when: cua_upgrade
+
             - name: Restart the daemon that hosts the desk agent
               ansible.builtin.command:
                 argv: [systemctl, --user, restart, "{{ cua_daemon_unit }}"]
