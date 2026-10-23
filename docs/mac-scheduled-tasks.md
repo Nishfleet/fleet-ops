@@ -95,14 +95,11 @@ and "Nishfleet" or "nish.sh" contain `sh`) and a command whose shell body its
 scanner cannot resolve: a bracket test `[ ... ]`, or `x=$(...)` inside a
 `for` or `while` loop. The prompt commands avoid both; keep them that way.
 
-To check the live copy still matches the canonical file, diff them:
-`diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
-
-To switch a digest off: `hermes cron pause <job id>` stops it without deleting
-anything, and `hermes cron resume <job id>` brings it back. To restore the
-previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
-prompts (copy the old `prompt` value back with the same `hermes cron edit`
-command).
+The README's "Digest prompts" section holds the live checks (diffing a live
+copy against its file), how to switch the waiting lines off, and the gates that
+run in CI; read it there, this page is the history. To restore the pre-#9706
+wording, `~/.hermes/cron/jobs.json.bak-9706` holds it (copy the old `prompt`
+value back with the same `hermes cron edit` command).
 
 ## Checked, not assumed
 

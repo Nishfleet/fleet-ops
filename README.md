@@ -1233,6 +1233,40 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
   `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
 
+## Digest prompts
+
+`config/hermes/digest-morning.md` and `config/hermes/digest-evening.md` are the
+prompts of the two Hermes cron jobs that report to Nish twice a day (08:00 and
+20:00 IST, to Telegram). `ansible/host.yml` applies them with the stock
+`hermes cron edit <job> --prompt` and fails the play when a live prompt differs
+from its file, so the file in git is the one that runs.
+
+Step 3 of each prompt lists what is waiting on Nish. One command walks every
+repo that has issues enabled and is not archived, lists the open issues carrying
+the `needs-nish-decision` label, and prints the count itself: `WAITING_TOTAL`,
+`WAITING_MORE` for the remainder beyond the two items the reply names, or
+`COUNT FAILED` when a listing fails. The reply copies those printed numbers and
+never counts the lines itself. A count the model worked out from stored state
+drifted from the live backlog — a digest said 13 more waiting when 66 were
+unreported (fleet-ops#10072) — so the command owns the number now.
+
+- Check the live copy still matches the file: `diff <(jq -r '.jobs[] |
+  select(.name=="digest-evening") | .prompt' ~/.hermes/cron/jobs.json)
+  config/hermes/digest-evening.md` — no output means they match.
+- Switch the waiting lines off, with no prompt edit: remove the
+  `needs-nish-decision` label from every issue. The command then lists nothing,
+  the reply carries no waiting line and no overflow line, and relabelling one
+  issue brings its line back.
+- Switch only the overflow line off: delete the sentence that writes
+  `"and N more waiting"` from step 3 of both files and land it. The two named
+  waiting lines stay.
+- Switch the whole digest off: `hermes cron pause digest-morning` and
+  `hermes cron pause digest-evening`; `hermes cron resume <job>` brings one back.
+- Tests: `tests/test_digest_checks.py` runs the step-3 command against a fake
+  `gh` and proves the printed total, the `COUNT FAILED` paths, the
+  issues-enabled filter and that the prompt stays inside the Hermes shell guard.
+  `tests/test_digest_reply_shape.py` holds the reply-shape checker.
+
 ## Provider watch
 
 Providers change their offerings and publish no change event (Command Code moved to
