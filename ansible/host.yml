@@ -36,8 +36,8 @@
     # release's .sha256 asset). An upgrade is one reviewed PR that changes both
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
-    tether_version: 0.3.0
-    tether_sha256: 5ce9033095d78e553ffda566e5a5e70ed8261961866c60f4dd53060904bdec00
+    tether_version: 0.5.2
+    tether_sha256: ac6dd67f103aef18778d3846d856f937396396a0e6cbb726b31359148bae98bc
     # Everything below derives from the two pins. The directory and the cached
     # file carry the version AND the first 12 hex of the hash, so a new hash at
     # the same version is a new name and never reuses old content. The root and
