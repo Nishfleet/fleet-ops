@@ -208,10 +208,10 @@ jobs:
         # a parse error would stop every root config change at deploy time.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses (ansible-playbook --syntax-check)
-        # fleet-update.service runs this playbook as root every day.
+      - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
+        # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
       - name: The report survives a skipped registration (fleet-ops#9340)
         # The report task renders every registered var with (var | default({})).results | default([]).
         # A skipped non-looped registration has no 'results' key, so the old pattern (x | default({'results': []})).results
