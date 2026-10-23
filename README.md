@@ -635,20 +635,26 @@ needed no firewall change for the internet.
 
 The server's Cua daemon (`cua-desk-daemon.service`, a user unit of the box owner)
 is also reachable from tether, so each agent on the server can have its own
-Space. The drop-in `rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf`
-gives the daemon a fixed loopback port (`cua_daemon_port` in `ansible/host.yml`).
-`host.yml` renders `/etc/tether/cua.env` (`TETHER_CUA_URL`, root:tether 0640,
-loaded by the unit) unless the off marker exists, and `tether.nft.j2` allows tcp
-to that port for the tether uid. The daemon writes a new token to its own
-`daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and `--daemon-token`
-(tested on 0.6.0), so no token is provisioned here: how tether gets it is open.
-A running daemon reads the drop-in only after a restart, and a restart kills the
-desk Space's Volume mount, so `host.yml` never restarts it: the daily
-`update.yml` restarts it only when the desk is idle (the same check, reload,
-restart and desk recreate as a Cua Spaces upgrade, triggered when the daemon
-started before the newest file in its drop-in directory) and otherwise tries
-again the next day. Switch off: delete the drop-in, the env-file task and the
-nft line, so the next idle restart is back on an ephemeral port.
+Space. The daemon needs no change and no restart (so no desk downtime): it
+creates an owner-only socket and writes a new random token at every start, and
+ignores `CUA_DAEMON_TOKEN` and `--daemon-token` (tested on 0.6.0), so a token or
+a loopback port cannot be shared. Instead each agent gets one socket of its own.
+`rootfs/etc/systemd/system/cua-agent-tether.socket` owns
+`/run/cua-agents/tether.sock` (`SocketUser=nish`, `SocketGroup=tether`,
+`SocketMode=0660`; the root-owned parent directory is 0755, because 0750 would
+keep the `tether` user out and the socket's own mode is the gate), and
+`cua-agent-tether.service` runs the stock `systemd-socket-proxyd` as the owner,
+so the daemon sees its own user and needs no token. `tether-agent.service`
+`Wants=` the socket, and `host.yml` renders `/etc/tether/cua.env`
+(`TETHER_CUA_URL=/run/cua-agents/tether.sock`, root:tether 0640, loaded by the
+unit) unless the off marker exists. A user outside the `tether` group is
+refused at the socket. Another agent gets its own `cua-agent-<name>.socket` and
+group the same way. Switch one agent off alone: `systemctl stop
+cua-agent-tether.socket cua-agent-tether.service`, then `systemctl mask
+cua-agent-tether.socket` (mask, because the tether unit `Wants=` it). The first
+fixed-port and token attempt (#10102) is gone: its drop-in is in `retired`, its
+token file and env file are removed by tasks in `host.yml`, and the nft rule for
+the port is dropped.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
@@ -664,8 +670,8 @@ Models go through the LiteLLM router at `127.0.0.1:4000`, never a direct
 provider key. The unit allows `127.0.0.1/32` and `127.0.0.53/32` and denies
 the rest of loopback. `IPAddressAllow=` takes no port, so the `inet tether`
 nftables table matches the `tether` uid (numeric, so `deluser` cannot break the
-file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`,
-the Cua daemon's port and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
+file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`
+and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
 addresses (from ansible facts, plus `fib daddr type local`), `172.16.0.0/12`,
 `10.0.0.0/8`, `192.168.0.0/16`, IPv4 link-local, every docker or podman bridge
 subnet present, the tailnet's CGNAT block and the tailnet, ULA and link-local

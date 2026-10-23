@@ -1,0 +1,37 @@
+[Unit]
+Description=Relay tether's socket to the Cua daemon (systemd-socket-proxyd)
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/README.md
+Requires=cua-agent-tether.socket
+After=cua-agent-tether.socket
+# Not a daemon of its own: started by the first connection, it exits after 5 s
+# with no connection (--exit-idle-time), and the socket starts it again.
+
+[Service]
+Type=simple
+# Runs as the owner of the daemon's socket, which is the only user that may open
+# it, so the daemon sees its own user and needs no token. A system unit has no
+# %h for this user: the shell reads $HOME, which User= sets.
+User=nish
+ExecStart=/bin/sh -c 'exec /usr/lib/systemd/systemd-socket-proxyd --exit-idle-time=5s "$$HOME/.cua/cua.sock"'
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+# The home stays readable (read-only) so the proxy can connect to the socket in it.
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

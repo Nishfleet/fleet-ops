@@ -1,0 +1,22 @@
+[Unit]
+Description=Tether's socket to the Cua daemon (one socket per agent)
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/README.md
+# One agent, one socket: its access is switched off alone with
+# `systemctl stop cua-agent-tether.socket cua-agent-tether.service` and
+# `systemctl mask cua-agent-tether.socket` (mask, because tether-agent.service
+# Wants= it). The daemon's own socket is owner-only and its token changes at
+# every start, so this stock socket unit owns the listening socket and the
+# stock systemd-socket-proxyd in cua-agent-tether.service relays to the daemon.
+
+[Socket]
+ListenStream=/run/cua-agents/tether.sock
+SocketUser=nish
+SocketGroup=tether
+SocketMode=0660
+# The directory is root-owned; 0750 would keep the tether user out of it.
+# The socket file's own mode and group are what admit tether.
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target
