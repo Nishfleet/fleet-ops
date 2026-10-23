@@ -175,6 +175,7 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 TETHER_ALWAYS = {
     "Look for the tether off marker",
     "Look for the tether Photon credentials file",
+    "Look for the tether calendar credentials file",
     "Look up the tether uid",
     "Read the host's addresses and bridges",
     "Create the nftables drop-in directory",
@@ -217,6 +218,7 @@ TETHER_REACHED = (
     "Look at where tether current points now",
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
+    "Let the tether group read the calendar credentials file",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -248,7 +250,9 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"
     photon = tmp_path / "photon.env"
     photon.touch()
-    extra = ("-e", f"tether_photon_env={photon}")
+    calendar = tmp_path / "calendar.env"
+    calendar.touch()
+    extra = ("-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}")
     on = _tether_tasks(marker, extra)
     marker.touch()
     off = _tether_tasks(marker, extra)
@@ -452,8 +456,12 @@ def test_tether_release_prunes_to_the_new_and_the_previous_release() -> None:
         assert "tether_cur.stat.lnk_source" in loop, "keep what current pointed at before"
 
 
-def test_tether_loads_both_environment_files() -> None:
-    assert _tether_keys()["EnvironmentFile"] == ["-/etc/tether/tether.env", "-/etc/tether/photon.env"]
+def test_tether_loads_all_environment_files() -> None:
+    assert _tether_keys()["EnvironmentFile"] == [
+        "-/etc/tether/tether.env",
+        "-/etc/tether/photon.env",
+        "-/etc/tether/calendar.env",
+    ]
 
 
 def test_tether_photon_env_is_only_chowned_never_created() -> None:
@@ -474,6 +482,30 @@ def test_tether_photon_env_task_waits_for_the_file(tmp_path: Path) -> None:
     assert missing[name].get("skipped"), "no file: nothing to do and nothing to fail"
     photon.touch()
     present = _tether_tasks(tmp_path / "no-marker", extra=("-e", f"tether_photon_env={photon}"))
+    assert not present[name].get("skipped")
+
+
+def test_tether_calendar_env_is_only_chowned_never_created() -> None:
+    assert _host_var("tether_calendar_env") == "/etc/tether/calendar.env"
+    users = [block for block in _tether_blocks() if "tether_calendar_env }}" in block and "ansible.builtin.stat:" not in block]
+    assert len(users) == 1
+    block = users[0]
+    assert "ansible.builtin.file:" in block and "        state: file\n" in block
+    assert "        owner: root\n        group: tether\n        mode: \"0640\"\n" in block
+    assert "tether_calendar.stat.exists" in block, "a missing file must skip the task, not fail the run"
+    assert 'ignore_errors: "{{ ansible_check_mode }}"' in block
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_calendar_env_task_waits_for_the_file(tmp_path: Path) -> None:
+    name = "Let the tether group read the calendar credentials file"
+    calendar = tmp_path / "calendar.env"
+    # Photon's path is pointed away too: /etc/tether may not be readable here.
+    extra = ("-e", f"tether_photon_env={tmp_path / 'photon.env'}", "-e", f"tether_calendar_env={calendar}")
+    missing = _tether_tasks(tmp_path / "no-marker", extra=extra)
+    assert missing[name].get("skipped"), "no file: nothing to do and nothing to fail"
+    calendar.touch()
+    present = _tether_tasks(tmp_path / "no-marker", extra=extra)
     assert not present[name].get("skipped")
 
 

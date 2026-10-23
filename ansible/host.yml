@@ -54,6 +54,7 @@
     tether_gh: /usr/bin/gh
     # Placed by hand, never created here. A var so the test can point it at a file.
     tether_photon_env: /etc/tether/photon.env
+    tether_calendar_env: /etc/tether/calendar.env
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -1132,6 +1133,24 @@
         group: tether
         mode: "0640"
       when: not tether_off.stat.exists and tether_photon.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the tether calendar credentials file
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_calendar_env }}"
+      register: tether_calendar
+
+    - name: Let the tether group read the calendar credentials file
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_calendar_env }}"
+        state: file
+        owner: root
+        group: tether
+        mode: "0640"
+      when: not tether_off.stat.exists and tether_calendar.stat.exists
       # Under --check the group above was not really created yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
