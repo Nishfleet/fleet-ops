@@ -108,6 +108,7 @@ jobs:
     # issues: write is what agent.yml's work job asks for (Router wall and the
     # strike step relabel with GITHUB_TOKEN).
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -162,6 +163,7 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -228,6 +230,7 @@ jobs:
         ref: ${{ fromJSON(needs.conflicts.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -247,6 +250,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -478,6 +482,7 @@ jobs:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
     permissions:
+      contents: read
       pull-requests: write
       # agent.yml's work job asks for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
       issues: write
@@ -750,6 +755,7 @@ jobs:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -945,6 +951,7 @@ jobs:
         x: ${{ fromJSON(needs.stuck-prs.outputs.review) }}
     # See review-risky: a caller job must grant what the called workflow's other jobs request.
     permissions:
+      contents: read
       pull-requests: write
       issues: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -961,6 +968,7 @@ jobs:
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.arm) }}
     permissions:
+      contents: read
       pull-requests: write
       issues: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -976,6 +984,7 @@ jobs:
       matrix:
         ref: ${{ fromJSON(needs.stuck-prs.outputs.rework) }}
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -990,6 +999,7 @@ jobs:
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.file) }}
     permissions:
+      contents: read
       pull-requests: write
       issues: write
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
@@ -1139,6 +1149,7 @@ jobs:
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -1155,6 +1166,7 @@ jobs:
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
@@ -1172,6 +1184,7 @@ jobs:
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     with:
