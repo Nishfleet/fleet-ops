@@ -30,8 +30,10 @@ Environment=NODE_ENV=production
 # photon.env, the calendar and contacts credentials in calendar.env, and the
 # address and token of tether's own Cua Space in cua.env (rendered by
 # ansible/host.yml), all root:tether 0640. That token opens that one Space and
-# nothing else. No shell, no GitHub, Cloudflare or database token reaches this
-# unit (fleet-ops#9980).
+# nothing else, but that Space runs commands: tether holds a key that runs
+# commands inside its own Space, which tether-space.nft fences off from the host
+# and its neighbours. No shell on the host, and no GitHub, Cloudflare or
+# database token, reaches this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
 EnvironmentFile=-/etc/tether/photon.env
 EnvironmentFile=-/etc/tether/calendar.env
