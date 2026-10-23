@@ -15,14 +15,16 @@ What this does NOT do (the honest limits, each pinned by a test below):
 - Backoff. `Router._time_to_sleep_before_retry` returns 0 as soon as the group has
   one healthy row left, so the same-row retry is instant. "retry the same row once
   after the backoff" is met in *which row*, not in *when*.
-- A hard-down row. Once the in-group budget is spent, litellm 1.98.0 runs the
+- A hard-down row. Once the in-group budget is spent, litellm 1.105.0 runs the
   fallback group on the same call, so one cold re-send on the fallback seat stays.
   Cutting it needs litellm to suppress the fallback for a retryable error.
-- 500. `RetryPolicy` ships `InternalServerErrorRetries`, but 1.98.0's
-  `get_num_retries_from_retry_policy` has no `InternalServerError` branch, so that
-  field is dead config until litellm adds the handler.
+- 500. `InternalServerErrorRetries` is read since litellm 1.105.0 (it was dead config
+  on 1.98.0): with the shipped value 1, a 5xx now gets one in-group retry before the
+  fallback group answers. test_internal_server_error_retry_is_live_on_litellm_1_105_0
+  pins that; the 429 numbers below do not involve it.
 
-Measured on this host, litellm 1.98.0, one call into a pinned seat that 429s:
+Measured on litellm 1.98.0 (this host, the pick counts) and re-run on litellm 1.105.0
+(the v1.105.0 image, same numbers), one call into a pinned seat that 429s:
 
   shipped 2/2/2 -> 3 in-group picks (/fail, /fail, /failcapable) + 1 fallback
   fixed   0/1/1 -> 2 in-group picks (/fail, /fail - the same row) + 1 fallback
@@ -38,7 +40,7 @@ still caps the in-group picks at 2 instead of 3, but one of them is a cross-seat
 Two cross-seat re-sends become one, and a briefly-limited row is no longer kicked
 to another seat at all.
 
-These tests run in-process against litellm 1.98.0 (the version pinned for prod)
+These tests run in-process against litellm 1.105.0 (the version pinned for prod)
 and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
 redis_url the DeploymentAffinityCheck degrades to a pod-local pin. The affinity
 lookup the routing decision depends on is the same code path the proxy uses, and
@@ -92,7 +94,7 @@ REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 # This constant is also the one home for the version: the CI job that will run
 # this file reads the pin from here (issue 9427), so the pin and the test cannot
 # drift apart.
-PINNED_LITELLM = "1.98.0"
+PINNED_LITELLM = "1.105.0"
 
 # fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
@@ -378,19 +380,19 @@ def test_the_mock_reads_the_request_body():
         server.close()
 
 
-def test_internal_server_error_is_inert_on_litellm_1_98_0():
-    # litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError
-    # branch (litellm.types.router.RetryPolicy ships the field but the lookup omits
-    # it), so InternalServerErrorRetries is dead config until litellm adds the handler:
-    # it resolves to None and the Router falls back to num_retries (0) -> exactly one
-    # attempt before the fallback group, never an in-group hop.
+def test_internal_server_error_retry_is_live_on_litellm_1_105_0():
+    # litellm 1.98.0's get_num_retries_from_retry_policy had no InternalServerError
+    # branch, so InternalServerErrorRetries was dead config there (one attempt, then the
+    # fallback group). litellm 1.105.0 reads it: the shipped value 1 now gives a 5xx one
+    # in-group retry before the fallback group answers. That is the forward value the
+    # config comment names, measured here on 1.105.0.
     #
     # This and the no-backoff test below read litellm internals, so both are the
     # litellm upgrade tripwires: a litellm bump that changes either shape fails CI
     # and the numbers in this file and in the config comment must be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
-    assert get_num_retries_from_retry_policy(exc, rp) is None
+    assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -522,6 +524,22 @@ def test_pin_survives_a_failed_then_fallback_success():
     assert pin == {"model_id": "seat-a"}
 
 
+def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
+    # fleet-litellm-proxy.container names the image twice: Image= and the ExecStartPre= that
+    # runs the migration job. A bump that edits only one would migrate the schema with one
+    # release and serve with another, so the two references must be identical.
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "containers/quadlet/fleet-litellm-proxy.container").read_text()
+    image = re.findall(r"^Image=(\S+)$", text, re.M)
+    migrate = [m for m in re.findall(r"^ExecStartPre=/usr/bin/podman run .*$", text, re.M)]
+    assert len(image) == 1 and len(migrate) == 1, (image, migrate)
+    assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
+    assert image[0] in migrate[0].split(), (image[0], migrate[0])
+    assert migrate[0].endswith("--skip_server_startup") and "--config" not in migrate[0]
+    assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
+
+
 if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
@@ -529,7 +547,7 @@ if __name__ == "__main__":
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
-        test_internal_server_error_is_inert_on_litellm_1_98_0,
+        test_internal_server_error_retry_is_live_on_litellm_1_105_0,
         test_the_same_row_retry_has_no_backoff,
         test_the_mock_reads_the_request_body,
         test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall,
@@ -538,6 +556,7 @@ if __name__ == "__main__":
         test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself,
         test_zero_retries_hit_the_fallback_on_a_transient_429,
         test_pin_survives_a_failed_then_fallback_success,
+        test_the_migration_pre_start_names_the_same_image_as_the_proxy,
     ]
     failures = 0
     for fn in fns:
