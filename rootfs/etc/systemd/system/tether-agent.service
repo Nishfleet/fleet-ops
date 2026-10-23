@@ -7,6 +7,12 @@ After=network-online.target
 # narrows its 127.0.0.1 access to the router port.
 Requires=nftables.service
 After=nftables.service
+# tether reaches the Cua daemon through its own socket, which the socket unit
+# owns; Wants=, not Requires=, so tether still starts when that socket is
+# not there (its off switch is the /etc/fleet-ops/tether-cua-off marker, which
+# makes host.yml remove the socket unit).
+Wants=cua-agent-tether.socket
+After=cua-agent-tether.socket
 # The app ships from Nishfleet/tether as a pinned, checksummed release that
 # ansible/host.yml unpacks into /opt/tether/<version>-<sha12>, owned by root, so
 # the service user cannot rewrite its own code. /opt/tether/current names the
@@ -28,7 +34,7 @@ WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
 # The model key lives in tether.env and the Photon Spectrum credentials in
 # photon.env, the calendar and contacts credentials in calendar.env, and the
-# address of the Cua daemon in cua.env (rendered by ansible/host.yml),
+# socket of the Cua daemon in cua.env (rendered by ansible/host.yml),
 # all root:tether 0640. No shell, no GitHub, Cloudflare or database token reaches
 # this unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
@@ -73,7 +79,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # Loopback is denied except the router (127.0.0.1) and the resolved stub
 # (127.0.0.53). IPAddressAllow= takes no port, so the nftables table
 # `inet tether` (ansible/templates/tether.nft.j2) narrows 127.0.0.1 to tcp 4000
-# and the Cua daemon's port, and 127.0.0.53 to port 53, and drops every other host-local destination.
+# and 127.0.0.53 to port 53, and drops every other host-local destination.
 IPAddressDeny=localhost
 IPAddressAllow=127.0.0.1/32 127.0.0.53/32
 RestrictNamespaces=true
