@@ -613,6 +613,32 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
 
 
+SEOFIXKIT_UNITS = (
+    '"{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"',
+    '"{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"',
+    '"{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"',
+)
+
+
+def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    for path in SEOFIXKIT_UNITS:
+        assert f"- {path}\n" in retired.group(1), f"host.yml deletes {path} from the host"
+    assert [path for path in unit_files() if "seofixkit" in path.name] == [], "fleet-ops ships no copy of the unit"
+    tasks = {block.split("\n", 1)[0]: block for block in re.split(r"\n    - name: ", host)}
+    stop = tasks["Stop the retired seo-fix-kit D1 backup timer before its files go"]
+    disable = tasks["Disable the retired seo-fix-kit D1 backup timer before its files go"]
+    assert "argv: [systemctl, --user, --machine=nish@.host, stop, seofixkit-d1-backup.timer]" in stop
+    assert "argv: [systemctl, --user, --machine=nish@.host, disable, seofixkit-d1-backup.timer]" in disable
+    assert "Reload nish's user manager" in stop, "the reload drops the stopped unit"
+    assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
+        "the timer stops and disables before its files go"
+    )
+    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {

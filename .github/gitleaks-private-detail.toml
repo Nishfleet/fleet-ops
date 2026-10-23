@@ -97,3 +97,10 @@ targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]+\.service\.d/40-egress\.conf$''']
 regexes = ['''^100\.64\.0\.0$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The seo-fix-kit D1 backup retirement names three user-unit paths the host deploy stops, disables and deletes (fleet-ops#10145). An earlier commit of that PR wrote them as literals; the play now renders them from nish_home and the test asserts that form, and a PR scan reads every commit while history cannot be rewritten on an open PR. Only these three paths, in the two files that carry the retirement"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
+regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
+condition = "AND"
