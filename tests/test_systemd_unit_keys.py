@@ -1,5 +1,6 @@
 """A unit file with an unknown directive must fail CI: systemd skips it with a warning and exit 0 (fleet-ops#9967)."""
 
+import fnmatch
 import json
 import os
 import re
@@ -117,7 +118,7 @@ def _listener_keys() -> dict[str, list[str]]:
 
 def test_claude_vps_listener_restart_is_capped_and_pages() -> None:
     keys = _listener_keys()
-    assert keys["Restart"] == ["always"]
+    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
     interval = keys["StartLimitIntervalSec"][0]
     assert interval.endswith("min") and int(interval.removesuffix("min")) > 0, "a zero interval disables the start limit"
     burst = int(keys["StartLimitBurst"][0])
@@ -145,6 +146,24 @@ def test_claude_vps_listener_config_paths_are_read_only() -> None:
     assert WORKSPACES in read_only
 
 
+def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
+    keys = _listener_keys()
+    assert keys["ProtectSystem"] == ["strict"]
+    assert keys["ProtectHome"] == ["tmpfs"]
+    assert keys["NoNewPrivileges"] == ["yes"]
+    families = set(keys["RestrictAddressFamilies"][0].split())
+    assert families <= {"AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"}, families
+    # Private and link-local ranges are closed; loopback stays open. The tailnet range is not capped here.
+    denied = set(keys["IPAddressDeny"][0].split())
+    allowed = set(keys["IPAddressAllow"][0].split())
+    assert "any" not in denied, "the listener must still reach the public model API"
+    assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"} <= denied
+    assert allowed == {"localhost"}
+    assert any("/srv/aiostreams" in v for v in keys["InaccessiblePaths"])
+    for key in ("ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock", "ProtectHostname", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality"):
+        assert keys[key] == ["yes"], key
+
+
 def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
     # Every path the tether tasks look at is pointed at a temp root next to the
     # marker, so the result never depends on what this host already has under
@@ -155,6 +174,8 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
         "-e", f"tether_node_cache={root}/node-cache",
         "-e", f"tether_release_root={root}/opt-tether",
         "-e", f"tether_release_cache={root}/release-cache",
+        "-e", f"cua_daemon_token_file={root}/cua-daemon-token",
+        "-e", f"tether_cua_env={root}/cua.env",
     )
     env = {**os.environ, "ANSIBLE_STDOUT_CALLBACK": "json", "ANSIBLE_LOCALHOST_WARNING": "False"}
     proc = subprocess.run(
@@ -174,7 +195,10 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 # marker's own tasks.
 TETHER_ALWAYS = {
     "Look for the tether off marker",
+    "Look for an enabled tether-agent unit",
     "Look for the tether Photon credentials file",
+    "Look for the tether calendar credentials file",
+    "Read the Cua daemon token (the password lookup creates the file once)",
     "Look up the tether uid",
     "Read the host's addresses and bridges",
     "Create the nftables drop-in directory",
@@ -217,6 +241,8 @@ TETHER_REACHED = (
     "Look at where tether current points now",
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
+    "Let the tether group read the calendar credentials file",
+    "Render tether's Cua env file from that token",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -248,7 +274,9 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"
     photon = tmp_path / "photon.env"
     photon.touch()
-    extra = ("-e", f"tether_photon_env={photon}")
+    calendar = tmp_path / "calendar.env"
+    calendar.touch()
+    extra = ("-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}")
     on = _tether_tasks(marker, extra)
     marker.touch()
     off = _tether_tasks(marker, extra)
@@ -452,8 +480,13 @@ def test_tether_release_prunes_to_the_new_and_the_previous_release() -> None:
         assert "tether_cur.stat.lnk_source" in loop, "keep what current pointed at before"
 
 
-def test_tether_loads_both_environment_files() -> None:
-    assert _tether_keys()["EnvironmentFile"] == ["-/etc/tether/tether.env", "-/etc/tether/photon.env"]
+def test_tether_loads_all_environment_files() -> None:
+    assert _tether_keys()["EnvironmentFile"] == [
+        "-/etc/tether/tether.env",
+        "-/etc/tether/photon.env",
+        "-/etc/tether/calendar.env",
+        "-/etc/tether/cua.env",
+    ]
 
 
 def test_tether_photon_env_is_only_chowned_never_created() -> None:
@@ -477,13 +510,65 @@ def test_tether_photon_env_task_waits_for_the_file(tmp_path: Path) -> None:
     assert not present[name].get("skipped")
 
 
+def test_tether_calendar_env_is_only_chowned_never_created() -> None:
+    assert _host_var("tether_calendar_env") == "/etc/tether/calendar.env"
+    users = [block for block in _tether_blocks() if "tether_calendar_env }}" in block and "ansible.builtin.stat:" not in block]
+    assert len(users) == 1
+    block = users[0]
+    assert "ansible.builtin.file:" in block and "        state: file\n" in block
+    assert "        owner: root\n        group: tether\n        mode: \"0640\"\n" in block
+    assert "tether_calendar.stat.exists" in block, "a missing file must skip the task, not fail the run"
+    assert 'ignore_errors: "{{ ansible_check_mode }}"' in block
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_calendar_env_task_waits_for_the_file(tmp_path: Path) -> None:
+    name = "Let the tether group read the calendar credentials file"
+    calendar = tmp_path / "calendar.env"
+    # Photon's path is pointed away too: /etc/tether may not be readable here.
+    extra = ("-e", f"tether_photon_env={tmp_path / 'photon.env'}", "-e", f"tether_calendar_env={calendar}")
+    missing = _tether_tasks(tmp_path / "no-marker", extra=extra)
+    assert missing[name].get("skipped"), "no file: nothing to do and nothing to fail"
+    calendar.touch()
+    present = _tether_tasks(tmp_path / "no-marker", extra=extra)
+    assert not present[name].get("skipped")
+
+
 def test_host_run_never_enables_or_starts_tether() -> None:
     blocks = re.split(r"\n    - name: ", (ROOT / "ansible/host.yml").read_text())
     tether = [block for block in blocks if "name: tether-agent.service" in block]
     assert tether, "the marker task is gone"
+    restart = [block for block in tether if "state: restarted" in block]
+    assert len(restart) <= 1
     for block in tether:
         assert "enabled: true" not in block and "state: started" not in block, block
-        assert "when: tether_off.stat.exists" in block, block
+        if block in restart:
+            assert "tether_agent_enabled.stat.islnk" in block and "not tether_off.stat.exists" in block, block
+        else:
+            assert "when: tether_off.stat.exists" in block, block
+
+
+def test_tether_release_change_restarts_an_enabled_agent() -> None:
+    text = HOST_YML.read_text()
+    link = [block for block in re.split(r"\n        - name: ", text) if block.startswith("Point tether current at the verified release")]
+    assert len(link) == 1
+    assert "notify: Restart tether-agent after its release changed" in link[0]
+    lookup = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[0])
+        if block.startswith("Look for an enabled tether-agent unit")
+    ]
+    assert len(lookup) == 1
+    assert "multi-user.target.wants/tether-agent.service" in lookup[0]
+    assert "follow: false" in lookup[0]
+    handler = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[1])
+        if block.startswith("Restart tether-agent after its release changed")
+    ]
+    assert len(handler) == 1
+    assert "ansible.builtin.systemd_service:" in handler[0]
+    assert "state: restarted" in handler[0]
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
@@ -497,7 +582,7 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     }
     task = {
         "ansible.builtin.template": {"src": str(ROOT / "ansible/templates/tether.nft.j2"), "dest": str(out)},
-        "vars": {"tether_uid": 995, "ansible_facts": facts},
+        "vars": {"tether_uid": 995, "cua_daemon_port": 4730, "ansible_facts": facts},
     }
     play = tmp_path / "play.json"
     play.write_text(json.dumps([{"hosts": "localhost", "gather_facts": False, "tasks": [task]}]))
@@ -508,11 +593,55 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     text = out.read_text()
     assert "meta skuid != 995 return" in text
     assert "ip daddr 127.0.0.1 tcp dport 4000 accept" in text
+    lines = text.splitlines()
+    cua_rule = "ip daddr 127.0.0.1 tcp dport 4730 accept"
+    assert cua_rule in text, "tether may reach the Cua daemon port"
+    assert lines.index(f"    {cua_rule}") < lines.index("    ip daddr 127.0.0.0/8 drop"), "the allow comes before the loopback drop"
     assert "ip daddr 198.51.100.0/24 drop" in text, "a bridge subnet is dropped"
     assert text.rstrip().endswith("}\n}"), "an interface with no fact does not break the render"
     if shutil.which("sudo") and shutil.which("nft"):
         check = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(out)], capture_output=True, text=True, check=False)
         assert check.returncode == 0, check.stderr
+
+
+CUA_DROPIN = ROOT / "rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf"
+
+
+def test_cua_daemon_port_is_one_value_in_the_drop_in_and_host_yml() -> None:
+    port = _host_var("cua_daemon_port")
+    assert port.isdigit() and 1024 <= int(port) < 32768, "a fixed port outside the ephemeral range"
+    keys = runner_dropin_keys(CUA_DROPIN)
+    assert keys["ExecStart"][0] == "", "the drop-in clears the unit's own ExecStart first"
+    assert keys["ExecStart"][1].endswith(f"daemon start --foreground --loopback 127.0.0.1:{port}")
+    assert keys["EnvironmentFile"] == ["-%h/.config/fleet-ops/cua/daemon.env"]
+
+
+def test_cua_daemon_token_is_minted_on_the_host_and_never_in_argv_or_git() -> None:
+    drop_in = CUA_DROPIN.read_text()
+    assert "--daemon-token" not in drop_in and "CUA_DAEMON_TOKEN" not in drop_in, "the token is in an env file, not a flag"
+    assert _host_var("cua_daemon_token_file") == "/etc/fleet-ops/cua-daemon-token"
+    text = HOST_YML.read_text()
+    assert "lookup('ansible.builtin.password', cua_daemon_token_file" in text
+    for name, mode in (("Render the Cua daemon's env file from that token", "0600"), ("Render tether's Cua env file from that token", "0640")):
+        block = [b for b in re.split(r"\n    - name: ", text) if b.startswith(name)]
+        assert len(block) == 1, name
+        assert "no_log: true" in block[0] and "diff: false" in block[0], name
+        assert f'mode: "{mode}"' in block[0], name
+    tether = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Render tether's Cua env file from that token")][0]
+    assert "owner: root\n        group: tether" in tether
+    assert "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}" in tether and "TETHER_CUA_TOKEN={{ cua_daemon_token }}" in tether
+    assert "when: not tether_off.stat.exists" in tether, "the off marker leaves tether no new credentials file"
+
+
+def test_cua_daemon_config_change_restarts_the_daemon_only_through_the_idle_desk_logic() -> None:
+    update = (ROOT / "ansible/update.yml").read_text()
+    host = HOST_YML.read_text()
+    assert not re.search(r"restart[^\n]*cua|cua[^\n]*restart", "\n".join(l for l in host.splitlines() if not l.lstrip().startswith("#")), re.I), "host.yml never restarts the daemon"
+    assert update.count('spaces, delete, "{{ cua_desk_space }}"') == 1 and update.count("spaces, create, linux, --name, \"{{ cua_desk_space") == 1, "one desk recreate, shared"
+    assert "cua_upgrade: \"{{ (cua_newer or cua_daemon_stale) and (cua_runs.stdout" in update
+    assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
+    restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[1].split("- name:", 1)[0]
+    assert "when: cua_upgrade" in restart and "cua_daemon_unit" in restart
 
 
 RUNNER_RULES = ROOT / "rootfs/etc/nftables.d/runners.nft"
@@ -611,3 +740,164 @@ def test_systemd_analyze_accepts_the_dropin_on_a_stand_in(tmp_path: Path) -> Non
     )
     out = proc.stdout + proc.stderr
     assert "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
+
+
+TMPFILES = ROOT / "rootfs/etc/tmpfiles.d"
+RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
+CREATING_TYPES = {"d", "D", "f", "F", "L"}
+RUN_PATH_ALLOWLIST = {
+    "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
+    "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
+    "/run/podman-eval": "retired path, kept masked",
+}
+
+
+def _run_norm(path: str) -> str:
+    path = path.rstrip("/") or "/"
+    return "/run" + path[len("/var/run"):] if path == "/var/run" or path.startswith("/var/run/") else path
+
+
+def tmpfiles_created(tmpfiles_dir: Path) -> set[str]:
+    created = set()
+    for conf in sorted(tmpfiles_dir.glob("*.conf")):
+        for line in conf.read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and not line.lstrip().startswith("#") and fields[0].rstrip("+!-=~^") in CREATING_TYPES:
+                created.add(_run_norm(fields[1]))
+    return created
+
+
+def runner_mask_paths(dropin: Path) -> list[str]:
+    """Every InaccessiblePaths= entry of one drop-in without its "-"/"+" prefixes; ValueError when empty or unparsable."""
+    paths: list[str] = []
+    lines = dropin.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line.startswith("InaccessiblePaths="):
+            continue
+        value = line.removeprefix("InaccessiblePaths=")
+        while value.endswith("\\") and i < len(lines):
+            value = value[:-1] + " " + lines[i].strip()
+            i += 1
+        try:
+            tokens = shlex.split(value)
+        except ValueError as err:
+            raise ValueError(f"{dropin}: unparsable InaccessiblePaths= line {line!r}: {err}") from err
+        if not tokens:
+            raise ValueError(f"{dropin}: empty InaccessiblePaths= line (it would reset the mask list)")
+        for token in tokens:
+            path = token.lstrip("-+")
+            if not path.startswith("/") or path == "/":
+                raise ValueError(f"{dropin}: unparsable InaccessiblePaths= entry {token!r}")
+            paths.append(path)
+    return paths
+
+
+def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: dict[str, str]) -> list[str]:
+    """Masked /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a mask list is empty."""
+    created = tmpfiles_created(tmpfiles_dir)
+    bad = []
+    for directory in dropin_dirs:
+        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_mask_paths(conf)]
+        if not paths:
+            raise ValueError(f"{directory}: no InaccessiblePaths= entry in any drop-in")
+        for path in paths:
+            norm = _run_norm(path)
+            if (norm == "/run" or norm.startswith("/run/")) and norm not in created:
+                if not any(fnmatch.fnmatchcase(norm, pattern) for pattern in allowlist):
+                    bad.append(f"{directory.name}: {path}")
+    return bad
+
+
+def test_every_masked_run_path_has_a_boot_time_creator() -> None:
+    assert len(RUNNER_DROPINS) >= 5, "the runner drop-in directories were not found"
+    assert unguarded_run_paths(RUNNER_DROPINS, TMPFILES, RUN_PATH_ALLOWLIST) == []
+
+
+def test_run_path_allowlist_has_no_stale_entry() -> None:
+    masked = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_mask_paths(conf)}
+    created = tmpfiles_created(TMPFILES)
+    for pattern, reason in RUN_PATH_ALLOWLIST.items():
+        assert reason.strip()
+        assert any(fnmatch.fnmatchcase(path, pattern) for path in masked), f"{pattern} is masked by no runner"
+        assert pattern not in created, f"{pattern} has a tmpfiles creator, drop it from the allowlist"
+    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in masked
+
+
+def _fixture(tmp_path: Path, mask: str, tmpfiles: str = "") -> tuple[list[Path], Path]:
+    dropin = tmp_path / "actions.runner.X.service.d"
+    dropin.mkdir()
+    (dropin / "20-lockdown.conf").write_text(mask)
+    tmpdir = tmp_path / "tmpfiles.d"
+    tmpdir.mkdir()
+    (tmpdir / "x.conf").write_text(tmpfiles)
+    return [dropin], tmpdir
+
+
+def test_run_path_check_fails_on_a_path_with_no_creator(tmp_path: Path) -> None:
+    dirs, tmpdir = _fixture(tmp_path, "[Service]\nInaccessiblePaths=-/etc/example -/run/new-thing\n", "d /run/other 0700 nish nish -\n")
+    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/new-thing"]
+    assert unguarded_run_paths(dirs, tmpdir, {"/run/new-thing": "test"}) == []
+
+
+def test_run_path_check_accepts_a_creator_and_normalises_var_run(tmp_path: Path) -> None:
+    mask = "[Service]\nInaccessiblePaths=-/run/a\nInaccessiblePaths=+/var/run/b -/run/c\n"
+    tmpfiles = "# d /run/c\nd /run/a 0755 - - -\nf+ /run/b 0600 - - -\nz /run/c\n"
+    dirs, tmpdir = _fixture(tmp_path, mask, tmpfiles)
+    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/c"]
+
+
+def test_run_path_check_reads_every_line_and_prefix(tmp_path: Path) -> None:
+    mask = "[Service]\nInaccessiblePaths=-/etc/a \\\n  -/run/x\nInaccessiblePaths=/run/y +/run/z\n"
+    dirs, tmpdir = _fixture(tmp_path, mask)
+    assert runner_mask_paths(dirs[0] / "20-lockdown.conf") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
+    assert len(unguarded_run_paths(dirs, tmpdir, {})) == 3
+
+
+@pytest.mark.parametrize(
+    "mask",
+    ["[Service]\n", "[Service]\nInaccessiblePaths=\n", "[Service]\nInaccessiblePaths=-run/x\n", "[Service]\nInaccessiblePaths='-/run/x\n"],
+    ids=["no-line", "empty-line", "relative-path", "bad-quote"],
+)
+def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None:
+    dirs, tmpdir = _fixture(tmp_path, mask)
+    with pytest.raises(ValueError):
+        unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
+
+
+# Units whose output files hold agent session text. The user manager default is
+# UMask=0002, so each one needs a drop-in that makes new files owner-only.
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d",)
+
+
+@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
+def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
+    dropin = ROOT / dropin_dir / "20-umask.conf"
+    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
+    lines = [line.strip() for line in dropin.read_text().splitlines()]
+    assert "[Service]" in lines
+    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
+    unit = ROOT / dropin_dir.removesuffix(".d")
+    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+        f"{unit.name} sets UMask itself; keep it in the drop-in only"
+    )
+
+
+CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
+CF_TOKENS_ENCRYPTION_EXAMPLE = ROOT / "infra/cloudflare-tokens/state-encryption.env.example"
+
+
+def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_inline() -> None:
+    text = CF_TOKENS_UNIT.read_text()
+    files = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("EnvironmentFile=")]
+    assert "-%h/.config/cloudflare/tofu-state-encryption.env" in files
+    assert "TF_ENCRYPTION" not in text and "passphrase" not in text.lower(), "the key and method belong in the private file only"
+
+
+def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:
+    lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
+    assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
+    assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]

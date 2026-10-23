@@ -1,6 +1,6 @@
 # Rendered by ansible/host.yml for fleet-ops#9980. Do not edit on the box.
 # Egress for the tether service user: internet stays open; host-local
-# destinations are denied except the model router and the DNS stub.
+# destinations are denied except the model router, the Cua daemon and the DNS stub.
 # Its own table, so it never touches the filter table or docker's rules.
 destroy table inet tether
 table inet tether {
@@ -8,6 +8,7 @@ table inet tether {
     type filter hook output priority filter; policy accept;
     meta skuid != {{ tether_uid }} return
     ip daddr 127.0.0.1 tcp dport 4000 accept
+    ip daddr 127.0.0.1 tcp dport {{ cua_daemon_port }} accept
     ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 accept
     ip daddr 127.0.0.0/8 drop
     ip6 daddr ::1 drop

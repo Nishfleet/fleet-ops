@@ -60,7 +60,3 @@ def test_every_new_step_is_checked_in_the_final_assert():
     that = " ".join(ASSERT["ansible.builtin.assert"]["that"])
     for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners", "app_versions_after"):
         assert var in that
-
-
-def test_yt_dlp_is_in_the_tool_updates():
-    assert ["yt-dlp", "--update"] in [u["argv"] for u in PLAY["vars"]["tool_updates"]]

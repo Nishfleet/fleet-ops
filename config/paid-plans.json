@@ -7,5 +7,6 @@
   {"name": "z.ai coding plan", "api_base": "https://api.z.ai/api/coding/paas/v4", "billing": "subscription", "source": "fleet-ops#8929"},
   {"name": "Ollama Cloud", "api_base": "https://ollama.com", "billing": "subscription", "source": "seat-roster (Nish 2026-09-22)"},
   {"name": "OpenCode Go", "api_base": "https://opencode.ai/zen/go/v1", "billing": "subscription", "source": "fleet-ops#8035"},
-  {"name": "Alibaba Token Plan (SG)", "api_base": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "billing": "subscription", "source": "fleet-ops#4329, #4445 (judge only)"}
+  {"name": "Alibaba Token Plan (SG)", "api_base": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", "billing": "subscription", "source": "fleet-ops#4329, #4445 (judge only)"},
+  {"name": "Anthropic Claude API credit", "api_base": "https://api.anthropic.com", "billing": "prepaid", "source": "Nish 2026-10-22 and 2026-10-23, Nishfleet/tether#7 (tether group only, fleet-ops#9980)"}
 ]

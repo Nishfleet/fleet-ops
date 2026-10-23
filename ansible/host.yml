@@ -16,6 +16,10 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  # A change to tether.nft once failed a later task and dropped the pending
+  # "Reload nftables" handler; the next run saw no change and never reloaded.
+  # force_handlers runs notified handlers even when a later task fails.
+  force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
@@ -32,8 +36,8 @@
     # release's .sha256 asset). An upgrade is one reviewed PR that changes both
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
-    tether_version: 0.1.2
-    tether_sha256: e16764afe6121a9964ca440de2ca14bf9bd10ccf478835e0b230de82583196f9
+    tether_version: 0.3.0
+    tether_sha256: 5ce9033095d78e553ffda566e5a5e70ed8261961866c60f4dd53060904bdec00
     # Everything below derives from the two pins. The directory and the cached
     # file carry the version AND the first 12 hex of the hash, so a new hash at
     # the same version is a new name and never reuses old content. The root and
@@ -50,6 +54,16 @@
     tether_gh: /usr/bin/gh
     # Placed by hand, never created here. A var so the test can point it at a file.
     tether_photon_env: /etc/tether/photon.env
+    tether_calendar_env: /etc/tether/calendar.env
+    # The Cua daemon (user unit cua-desk-daemon.service) listens on this fixed
+    # loopback port so tether can reach it. The token is minted once, like the
+    # Redis password below; tether's copy is the env file named here, which the
+    # tasks render only while tether is not switched off. The same port is in
+    # the drop-in rootfs/etc/systemd/user/cua-desk-daemon.service.d/ and the
+    # nft rule; tests/test_systemd_unit_keys.py fails when they differ.
+    cua_daemon_port: 4730
+    cua_daemon_token_file: /etc/fleet-ops/cua-daemon-token
+    tether_cua_env: /etc/tether/cua.env
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -98,6 +112,8 @@
       - /etc/systemd/system.control/github-tsin.slice.d
       - /etc/systemd/system.control/user-1000.slice.d
       - /usr/local/bin/gh
+      # Replaced by dockerd-eval.service (fleet-ops#9983).
+      - /etc/systemd/system/podman-eval.service
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -137,6 +153,8 @@
     redis_password_file: /etc/fleet-ops/litellm-redis-password
     redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
     redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
+    cua_daemon_env_dir: "{{ nish_config }}/fleet-ops/cua"
+    cua_daemon_env: "{{ cua_daemon_env_dir }}/daemon.env"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -240,6 +258,21 @@
         mode: preserve
       notify: Restart journald
 
+    # A plaintext git credential file at this path makes the tmpfiles `d` line
+    # fail and leaves the secrets in place. Nothing here deletes or moves it: a
+    # person does that, then reruns.
+    - name: Look for a plaintext git credential file in nish's home
+      ansible.builtin.stat:
+        path: "{{ nish_home }}/.git-credentials"
+        follow: false
+      register: git_credential_stat
+
+    - name: Fail the run when a plaintext git credential file is in the way
+      ansible.builtin.assert:
+        that: not (git_credential_stat.stat.exists and not git_credential_stat.stat.isdir)
+        fail_msg: "{{ nish_home }}/.git-credentials exists and is not a directory. Run mkdir -p /root/quarantine, mv it there, then rerun. Nothing deletes it for you; tmpfiles needs a directory there."
+        quiet: true
+
     - name: Install tmpfiles.d entries
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/tmpfiles.d/"
@@ -248,6 +281,36 @@
         group: root
         mode: preserve
       notify: Create tmpfiles
+
+    # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
+    # config instead of the host's /etc/docker/daemon.json, which sets the runsc
+    # runtime. rootlesskit comes from apt: the unit runs dockerd under it.
+    - name: Create the fleet-ops config directory
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the rootless Docker engine's config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
+        dest: /etc/fleet-ops/dockerd-eval.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
+      ansible.builtin.apt:
+        name:
+          - rootlesskit
+          - slirp4netns
+          - uidmap
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
 
     - name: Install sysctl settings
       ansible.builtin.copy:
@@ -283,6 +346,28 @@
         owner: root
         group: root
         mode: preserve
+      notify: Reload nftables
+
+    # The drive eval engine's egress limit (fleet-ops#9983): its own table, loaded
+    # by nftables.service through the nftables.d include. Installed before the
+    # queued handlers run, so the table and its set exist when dockerd-eval.service
+    # starts and systemd adds the engine's cgroup to the set.
+    - name: Create the nftables drop-in directory for the eval engine's rule
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the eval engine's egress rule
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables.d/evalnet.nft"
+        dest: /etc/nftables.d/evalnet.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
       notify: Reload nftables
 
     # The postgres account is a package leftover with no login use: set its shell
@@ -602,6 +687,9 @@
       loop:
         - "{{ agent_share }}/devin"
         - "{{ agent_share }}/devin/cli"
+        # Pi worker session logs live under here (directory mode only; the
+        # files inside are nish's and stay as the tool writes them).
+        - "{{ nish_home }}/.pi"
       register: agent_state_dirs
 
     - name: Keep the agent state directories private
@@ -689,6 +777,16 @@
       ansible.builtin.stat:
         path: "{{ tether_off_marker }}"
       register: tether_off
+
+    # tether-agent.service is enabled by hand (this run never enables it), so
+    # the release-change restart handler fires only when that wants symlink
+    # exists. Read-only, so it runs with and without the marker.
+    - name: Look for an enabled tether-agent unit
+      tags: [tether, tether-release]
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/tether-agent.service
+        follow: false
+      register: tether_agent_enabled
 
     - name: Create the tether group
       tags: [tether]
@@ -1007,6 +1105,10 @@
             owner: root
             group: root
           register: tether_link
+          # The running agent keeps the old release until it restarts (v0.1.2
+          # landed on 23 Oct and the unit kept running 0.1.1), so the link move
+          # notifies the restart handler.
+          notify: Restart tether-agent after its release changed
           ignore_errors: "{{ ansible_check_mode }}"
 
         # Keep the new release and the one `current` pointed at before: one
@@ -1073,6 +1175,70 @@
       when: not tether_off.stat.exists and tether_photon.stat.exists
       # Under --check the group above was not really created yet.
       ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the tether calendar credentials file
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_calendar_env }}"
+      register: tether_calendar
+
+    - name: Let the tether group read the calendar credentials file
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_calendar_env }}"
+        state: file
+        owner: root
+        group: tether
+        mode: "0640"
+      when: not tether_off.stat.exists and tether_calendar.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The Cua daemon's token: ONE root-only file that the stock password lookup
+    # creates when it is missing (deleting it mints a new token). The daemon's own
+    # env file and tether's are rendered from it on every run, so the two cannot
+    # differ. Neither restarts anything here: the daemon restarts only through
+    # update.yml, when the desk Space is idle; tether restarts through the handler
+    # below. no_log and diff: false keep the value out of the ansible-pull log.
+    - name: Read the Cua daemon token (the password lookup creates the file once)
+      tags: [tether, cua]
+      ansible.builtin.set_fact:
+        cua_daemon_token: "{{ lookup('ansible.builtin.password', cua_daemon_token_file ~ ' length=48 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Make sure the directory for the Cua daemon env file exists
+      tags: [cua]
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ cua_daemon_env_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Render the Cua daemon's env file from that token
+      tags: [cua]
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "CUA_DAEMON_TOKEN={{ cua_daemon_token }}\n"
+        dest: "{{ cua_daemon_env }}"
+        mode: "0600"
+      no_log: true
+      diff: false
+
+    - name: Render tether's Cua env file from that token
+      tags: [tether]
+      ansible.builtin.copy:
+        content: "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}\nTETHER_CUA_TOKEN={{ cua_daemon_token }}\n"
+        dest: "{{ tether_cua_env }}"
+        owner: root
+        group: tether
+        mode: "0640"
+      no_log: true
+      diff: false
+      ignore_errors: "{{ ansible_check_mode }}"
+      when: not tether_off.stat.exists
+      notify: Restart tether-agent after its release changed
 
     # tether's egress firewall: its own table, loaded by the host's existing
     # nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
@@ -1176,15 +1342,41 @@
         daemon_reload: true
       ignore_errors: "{{ ansible_check_mode }}"
 
-    # The rootless podman socket for drive's agent eval (fleet-ops#9983); the
+    # The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
     # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
-    # once; a later edit to the unit file is staged until the next restart.
-    - name: Enable the rootless podman socket for the drive eval
+    # once; a later edit to the unit file is staged until the next restart. It
+    # replaces podman-eval, which cannot run the eval (Inspect needs Docker Engine
+    # 24.0.6 or newer). The tmpfiles entry and the unit were installed above, and
+    # the queued handlers ran, before this point.
+    - name: Enable the rootless Docker engine for the drive eval
       ansible.builtin.systemd_service:
-        name: podman-eval.service
+        name: dockerd-eval.service
         enabled: true
         state: started
         daemon_reload: true
+      register: dockerd_eval_up
+      # A unit that fails to start must not stop the rest of the host config, so
+      # the error is not fatal here; the task below puts it in this run's output.
+      ignore_errors: true
+
+    # The engine is one unit among many: the eval's own run fails until it is
+    # fixed, and a failed unit is listed by fleet-unit-failed@.service.
+    - name: Report a rootless Docker engine that did not start
+      ansible.builtin.debug:
+        msg: "dockerd-eval.service did not start ({{ dockerd_eval_up.msg | default('no message') | trim }}). drive's agent eval fails until it does."
+      when: dockerd_eval_up is failed
+
+    # The retired podman engine: stopped and disabled, and its unit file is in
+    # `retired` below. A host where the unit is already gone is not an error.
+    - name: Stop and disable the retired rootless podman socket
+      ansible.builtin.systemd_service:
+        name: podman-eval.service
+        enabled: false
+        state: stopped
+      register: podman_eval_off
+      failed_when:
+        - podman_eval_off.failed | default(false)
+        - "'Could not find' not in (podman_eval_off.msg | default(''))"
       ignore_errors: "{{ ansible_check_mode }}"
 
     # gh comes from the vendor's apt repository, so the daily dist-upgrade in
@@ -1748,6 +1940,21 @@
       ansible.builtin.systemd_service:
         name: nftables.service
         state: reloaded
+
+    # A moved `current` link is invisible to the running agent: v0.1.2 landed
+    # on 23 Oct and the unit kept running 0.1.1 until a hand restart. This
+    # fires only when the hand-enabled wants symlink exists, and never while
+    # the off marker exists (the marker run notifies nothing and keeps the
+    # unit stopped).
+    # A change to /etc/tether/cua.env notifies it too: the unit reads its env
+    # files only at start.
+    - name: Restart tether-agent after its release changed
+      ansible.builtin.systemd_service:
+        name: tether-agent.service
+        state: restarted
+      when:
+        - tether_agent_enabled.stat.islnk | default(false)
+        - not tether_off.stat.exists
 
     # htpdate reads /etc/default/htpdate only at start.
     - name: Restart htpdate

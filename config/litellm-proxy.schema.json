@@ -3,6 +3,11 @@
   "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
+  "if": { "properties": { "model_list": { "contains": { "$ref": "#/$defs/tetherGroupRow" } } } },
+  "then": {
+    "$comment": "A tether row without its fallback would leave Tether unanswered on any Claude failure (Nish 2026-10-22: any Claude failure falls through to assistant).",
+    "properties": { "router_settings": { "properties": { "fallbacks": { "contains": { "$ref": "#/$defs/tetherFallsToAssistant" } } } } }
+  },
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
     "seniorRow": {
@@ -21,6 +26,39 @@
           }
         }
       }
+    },
+    "tetherRow": {
+      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group, so no routing group or fallback other than tether reaches the prepaid credit. The row carries a 50 USD/day wall (Nish 2026-10-23), and raising it is a deliberate change with its own issue. A caller holding the proxy master key can still name the group, so Tether's own virtual key is the only key that should list it.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "tether" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_key", "max_budget", "budget_duration"],
+          "properties": {
+            "model": { "const": "anthropic/claude-sonnet-5-5" },
+            "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
+            "max_budget": { "const": 50 },
+            "budget_duration": { "const": "1d" }
+          }
+        }
+      }
+    },
+    "anthropicKeyRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_key"], "properties": { "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" } } } }
+    },
+    "tetherGroupRow": {
+      "type": "object",
+      "required": ["model_name"],
+      "properties": { "model_name": { "const": "tether" } }
+    },
+    "tetherFallsToAssistant": {
+      "type": "object",
+      "required": ["tether"],
+      "properties": { "tether": { "const": ["assistant"] } }
     },
     "straitlyRow": {
       "type": "object",
@@ -174,6 +212,21 @@
             "if": { "$ref": "#/$defs/syntheticRow" },
             "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
           }
+        },
+        {
+          "$comment": "Tether's Claude row: every row named tether is the pinned row, every row on the Anthropic key is a tether row, and there is at most one of each, so a second tether row, a tether row on another model or provider, or the Anthropic key on another group all fail here. Absence is allowed (the schema's own reject cases are built without it); router_settings.fallbacks requires tether -> assistant whenever the row exists.",
+          "allOf": [
+            { "contains": { "$ref": "#/$defs/tetherGroupRow" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/anthropicKeyRow" }, "minContains": 0, "maxContains": 1 },
+            {
+              "items": {
+                "allOf": [
+                  { "if": { "$ref": "#/$defs/tetherGroupRow" }, "then": { "$ref": "#/$defs/tetherRow" } },
+                  { "if": { "$ref": "#/$defs/anthropicKeyRow" }, "then": { "$ref": "#/$defs/tetherRow" } }
+                ]
+              }
+            }
+          ]
         },
         {
           "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
@@ -333,12 +386,14 @@
           }
         },
         "fallbacks": {
-          "$comment": "fleet-ops#10040: senior is one row and has no fallback, so no entry may be keyed senior or name senior-backup (no such group exists), which also keeps judge -> senior from cycling. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether, so the Claude credit is spent by Tether alone. fleet-ops#10040: senior is one row and has no fallback, so no entry may be keyed senior or name senior-backup (no such group exists), which also keeps judge -> senior from cycling. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
           "not": { "anyOf": [
             { "contains": { "type": "object", "required": ["senior"] } },
             { "contains": { "type": "object", "required": ["senior-backup"] } },
-            { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } }
+            { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
+            { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
+            { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } }
           ] }
         },
         "redis_host": { "const": "127.0.0.1" },
