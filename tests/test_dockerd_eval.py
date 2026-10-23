@@ -132,8 +132,8 @@ def test_the_engine_config_is_an_empty_object() -> None:
 
 
 @pytest.mark.parametrize("path", OTHER_POOLS, ids=lambda p: p.parent.name)
-def test_other_pools_add_no_hidden_path_in_this_change(path: Path) -> None:
-    assert "-/run/dockerd-eval" not in hidden(path)
+def test_other_pools_hide_the_retired_and_engine_sockets(path: Path) -> None:
+    assert "-/run/dockerd-eval" in hidden(path)
     assert "-/run/podman-eval" in hidden(path)
 
 
