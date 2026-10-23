@@ -7,9 +7,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-# Podman 4.9.3 has no Memory= key for quadlets, so the cap is the unit's MemoryMax=; the
-# [Container] spellings are accepted for a later podman.
-CAP_KEYS = {"Service": {"MemoryMax"}, "Container": {"Memory"}}
+# Podman 4.9.3 has no Memory= key for quadlets and rejects an unknown key in [Container], so the
+# cap is the unit's [Service] MemoryMax=; --memory= through [Container] PodmanArgs= is the stock
+# spelling podman does accept.
+CAP_KEYS = {"Service": {"MemoryMax"}}
 
 
 def quadlets() -> list[Path]:
@@ -58,7 +59,7 @@ def test_has_memory_cap(path: Path) -> None:
         if value.lower() not in {"", "infinity", "0"}
     ]
     explicit_podman = [v for v in values(sections, "Container", "PodmanArgs") if v.startswith(("--memory=", "--memory "))]
-    assert caps or explicit_podman, f"{path.name}: needs [Service] MemoryMax= (or [Container] Memory=)"
+    assert caps or explicit_podman, f"{path.name}: needs [Service] MemoryMax= (or [Container] PodmanArgs=--memory=)"
 
 
 @pytest.mark.parametrize("path", quadlets(), ids=lambda path: path.name)
@@ -66,3 +67,12 @@ def test_image_is_pinned_by_digest(path: Path) -> None:
     images = values(parse(path), "Container", "Image")
     assert len(images) == 1, f"{path.name}: expected one [Container] Image= line"
     assert DIGEST.search(images[0]), f"{path.name}: Image={images[0]} must end in @sha256:<64 hex>"
+
+
+def test_proxy_cap_equals_its_slice() -> None:
+    unit = values(parse(ROOT / "containers/quadlet/fleet-litellm-proxy.container"), "Service", "MemoryMax")
+    slice_cap = values(parse(ROOT / "systemd/app-litellm.slice"), "Slice", "MemoryMax")
+    assert unit and unit == slice_cap, (
+        f"fleet-litellm-proxy [Service] MemoryMax={unit} must equal app-litellm.slice [Slice] MemoryMax={slice_cap}, "
+        "because the unit cap is only made visible, not made tighter"
+    )

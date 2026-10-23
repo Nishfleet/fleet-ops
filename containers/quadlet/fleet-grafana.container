@@ -21,8 +21,8 @@ Wants=fleet-grafana-github-token.service
 After=fleet-grafana-github-token.service
 
 [Container]
-# Pinned by digest (the image running when this was pinned); the tag is only a label.
-# Bump the digest in its own PR.
+# Pinned to the digest of the 13.2.3 manifest list (provenance in PR #10163); the tag is a
+# label only, the digest decides the image.
 Image=docker.io/grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
 ContainerName=fleet-grafana
 Network=host
