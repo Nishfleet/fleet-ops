@@ -960,10 +960,35 @@ jobs:
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      - name: Fetch token
+        id: fetch-token
+        # The diff is fetched over git, and a private repo refuses an anonymous fetch (tether runs
+        # 39928753337 and 39931933105: "Repository not found"). This job's GITHUB_TOKEN stays
+        # pull-requests: write only: a contents permission would have to be granted by every caller
+        # stub. The App token reads contents and nothing else.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: read
       - name: Review the held head
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
+          FETCH_TOKEN: ${{ steps.fetch-token.outputs.token }}
           # Pi sends this as x-litellm-session-id; without it the litellm provider refuses to start (0509 run 37676671633).
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # The first review is a no-tools Claude call on a Claude seat: Opus 5.5 for all work,
@@ -1028,7 +1053,11 @@ jobs:
           # over 20,000 diff lines (406, Nishfleet/drive#949). Both SHAs are fetched whole.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
+          # The token goes in through git's config environment, not argv, where ps would show it.
+          basic=$(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0); echo "::add-mask::$basic"
+          GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="http.https://github.com/$REPO.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+            GIT_CONFIG_KEY_1="http.https://github.com/$REPO.git.extraheader" GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic" \
+            git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
