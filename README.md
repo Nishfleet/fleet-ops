@@ -657,6 +657,16 @@ table, loaded by the host's `nftables.service` through
 `include "/etc/nftables.d/*.nft"` in `rootfs/etc/nftables.conf`, so it never
 touches the `filter` table or docker's rules and a boot re-applies it.
 
+Web lookup (fleet-ops#9980, `Nishfleet/tether#7`): the app's nearby-places tool
+calls exactly one public host, `photon.komoot.io` over https, read-only, with no
+key. Because internet egress stays open for the `tether` uid, this needs no rule
+or unit change: the table above only drops host-local destinations, and the
+service user's own `IPAddressDeny=localhost` does not touch a public host. The
+host is a constant in the app, the model never supplies a URL, and redirects are
+refused, so a poisoned name cannot point the tool at the router port or the
+tailnet. If egress is ever narrowed to named hosts, this host is the one to add
+for the lookup.
+
 LiteLLM virtual keys are minted by hand with the admin API (the RUNBOOK says
 the proxy has no declarative key list), so no key is created here. After merge
 the orchestrator mints one: `POST /key/generate` with `key_alias` `tether`,
