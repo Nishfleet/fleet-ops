@@ -1,0 +1,36 @@
+# Schema migration for the router database (fleet-ops#10015). It runs the image's own migration
+# (`litellm --skip_server_startup`: prisma migrate deploy, then exit) and nothing else.
+# fleet-litellm-proxy.service Requires= and is After= this unit, so the proxy never starts on
+# an unmigrated schema, and a failed migration keeps the proxy down. This unit Requires= and is
+# After= fleet-litellm-dump.service, so the dump always finishes before the migration starts.
+#
+# The image is the same digest as fleet-litellm-proxy.container (tests/test_litellm_upgrade_order.py
+# fails when they differ). There is no --config: the migration runs because DISABLE_SCHEMA_UPDATE
+# is false here, and the proxy's yaml (disable_prisma_schema_update: true) is not read. The job
+# exits 1 or 2 when the migration fails and 0 when it is already applied (nothing to do).
+# Failure leaves the unit failed; there is no Restart=, so it retries only on the next proxy start.
+
+[Unit]
+Description=Router database schema migration (fleet-ops#10015)
+Requires=fleet-litellm-postgres.service fleet-litellm-dump.service
+After=fleet-litellm-postgres.service fleet-litellm-dump.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Container]
+Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
+Network=host
+Environment=DISABLE_SCHEMA_UPDATE=false
+Environment=LITELLM_LOG=INFO
+# DATABASE_URL comes from the same 0600 file as the proxy's, through systemd EnvironmentFile=
+# (which strips quotes) and a named pass-through, as in fleet-litellm-proxy.container.
+PodmanArgs=--env=DATABASE_URL
+Volume=fleet-litellm-pycache:/pycache
+Environment=PYTHONPYCACHEPREFIX=/pycache
+Exec=--skip_server_startup
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
+Slice=app-litellm.slice
+# A 1.98 to 1.105 migration took about 25 s plus the import; a stalled one must end the start job.
+TimeoutStartSec=10min

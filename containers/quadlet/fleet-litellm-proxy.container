@@ -1,11 +1,15 @@
 # Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494).
-# The image is pinned to the version the venv ran (1.98.0), so the Prisma
-# schema and config semantics do not move with the cutover. Bump the tag in its own PR.
+# The image is pinned by tag and digest (1.105.0). A bump changes this line and the Image= line
+# of fleet-litellm-migrate.container together (tests/test_litellm_upgrade_order.py fails when
+# the two differ).
 
 [Unit]
 Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
-Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
-After=fleet-litellm-postgres.service fleet-litellm-redis.service
+Requires=fleet-litellm-postgres.service fleet-litellm-redis.service fleet-litellm-migrate.service
+After=fleet-litellm-postgres.service fleet-litellm-redis.service fleet-litellm-migrate.service
+# Upgrade order is enforced here, not in a runbook: systemd starts fleet-litellm-dump.service
+# (pg_dump -Fc), then fleet-litellm-migrate.service (the pinned image's own schema migration),
+# then this unit, and a failed link in that chain keeps this unit down.
 # Keep restarting for a few minutes, then enter failed and page
 # (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
 # dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
@@ -16,7 +20,17 @@ StartLimitBurst=20
 OnFailure=fleet-unit-failed@%N.service
 
 [Container]
-Image=ghcr.io/berriai/litellm:v1.98.0
+Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
+# Only fleet-litellm-migrate.service changes the schema. general_settings.disable_prisma_schema_update
+# in config/litellm-proxy.yaml already wins over this variable; the variable keeps the proxy
+# read-only on the schema if that key is ever removed from the config.
+Environment=DISABLE_SCHEMA_UPDATE=true
+# LiteLLM asks the default Ollama address (localhost:11434) for model info while it builds the
+# router for each ollama_chat row, and on this host that connect hangs: startup measured about
+# 5 min on both v1.98.0 and v1.105.0, and about 30 s with OLLAMA_API_BASE set (the stock variable
+# for that default). Every ollama_chat row in config/litellm-proxy.yaml sets its own api_base
+# (https://ollama.com), so no request changes.
+Environment=OLLAMA_API_BASE=https://ollama.com
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 # DATABASE_URL carries the database password, so it comes from a 0600 file, not this

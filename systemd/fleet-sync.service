@@ -150,6 +150,12 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     beacon-hermes-poll.service was never linked (fleet-ops#9967).
 ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2i. The router dump and migration Quadlets (fleet-ops#10015): fleet-litellm-proxy.container
+#     Requires= the migrate unit, which Requires= the dump unit, so both must be linked into the
+#     Quadlet search path before the daemon-reload below. `ln -sfn` is idempotent. A unit missing
+#     here fails the proxy start (loud, OnFailure=) rather than starting it unmigrated.
+ExecStart=/usr/bin/ln -sfn %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-litellm-dump.container %h/.config/containers/systemd/fleet-litellm-dump.container
+ExecStart=/usr/bin/ln -sfn %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-litellm-migrate.container %h/.config/containers/systemd/fleet-litellm-migrate.container
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer

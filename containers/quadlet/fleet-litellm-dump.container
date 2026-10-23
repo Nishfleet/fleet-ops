@@ -1,0 +1,32 @@
+# Dump of the router database taken before every schema migration (fleet-ops#10015).
+# fleet-litellm-migrate.service Requires= and is After= this unit, so the dump always finishes
+# before the migration starts, and a failed dump keeps the migration and the proxy down.
+#
+# Same command as the restic backup unit's ExecStartPre (a root unit installed outside this
+# repo): pg_dump -Fc of the `litellm` database as role litellm, password from ~/.pgpass. That
+# unit cannot be ordered from the user manager, so this is the same pg_dump run from the same
+# postgres:16 image the server uses, over 127.0.0.1 with the libpq password file mounted read-only.
+#
+# Not a oneshot with RemainAfterExit: it runs on every proxy start, so the file is replaced by
+# each run. agent-state/backups is in config/restic/include.txt, so restic keeps the history.
+
+[Unit]
+Description=Pre-migration dump of the router database (fleet-ops#10015)
+Requires=fleet-litellm-postgres.service
+After=fleet-litellm-postgres.service
+OnFailure=fleet-unit-failed@%N.service
+
+[Container]
+Image=docker.io/library/postgres:16
+Network=host
+Volume=%h/.pgpass:/run/secrets/pgpass:ro
+Environment=PGPASSFILE=/run/secrets/pgpass
+Volume=%h/workspaces/agent-state/backups:/backups
+# The dump holds keys and spend: 0600, like the other dumps in that directory.
+PodmanArgs=--umask=0077
+Exec=pg_dump -h 127.0.0.1 -U litellm -Fc -f /backups/litellm-pre-migrate.dump litellm
+
+[Service]
+Type=oneshot
+Slice=app-litellm-postgres.slice
+TimeoutStartSec=15min
