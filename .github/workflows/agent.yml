@@ -1033,10 +1033,12 @@ jobs:
           # over 20,000 diff lines (406, Nishfleet/drive#949). Both SHAs are fetched whole.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          # The fetch carries github.token: a private repo answers an anonymous fetch with
+          # The fetch carries GH_TOKEN, which this step's env sets to github.token, and the job
+          # grants that token contents: read: a private repo answers an anonymous fetch with
           # "Repository not found", which held every private-repo head unjudged (fleet-ops#10129).
           # The header goes in git's env config, never argv (/proc/<pid>/cmdline is world
           # readable, #8403), scoped to this one repo's URL, and it is masked in the log.
+          [ -n "$GH_TOKEN" ] || retry "GH_TOKEN is empty, so the fetch would be anonymous"
           basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
           echo "::add-mask::$basic"
           # Both URL spellings, because git matches a key's path up to a slash or the end of the
