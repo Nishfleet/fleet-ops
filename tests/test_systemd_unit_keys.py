@@ -117,7 +117,7 @@ def _listener_keys() -> dict[str, list[str]]:
 
 def test_claude_vps_listener_restart_is_capped_and_pages() -> None:
     keys = _listener_keys()
-    assert keys["Restart"] == ["always"]
+    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
     interval = keys["StartLimitIntervalSec"][0]
     assert interval.endswith("min") and int(interval.removesuffix("min")) > 0, "a zero interval disables the start limit"
     burst = int(keys["StartLimitBurst"][0])
@@ -143,6 +143,24 @@ def test_claude_vps_listener_config_paths_are_read_only() -> None:
         if rw.startswith(WORKSPACES + "/"):
             assert not mcp.startswith(rw + "/") and not workdir.startswith(rw + "/")
     assert WORKSPACES in read_only
+
+
+def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
+    keys = _listener_keys()
+    assert keys["ProtectSystem"] == ["strict"]
+    assert keys["ProtectHome"] == ["tmpfs"]
+    assert keys["NoNewPrivileges"] == ["yes"]
+    families = set(keys["RestrictAddressFamilies"][0].split())
+    assert families <= {"AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"}, families
+    # Private, link-local and tailnet ranges are closed; loopback and the Tincan relay are the only ones open.
+    denied = set(keys["IPAddressDeny"][0].split())
+    allowed = set(keys["IPAddressAllow"][0].split())
+    assert "any" not in denied, "the listener must still reach the public model API"
+    assert {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "fc00::/7", "fe80::/10"} <= denied
+    assert allowed == {"localhost", "100.117.133.81/32"}
+    assert any("/srv/aiostreams" in v for v in keys["InaccessiblePaths"])
+    for key in ("ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock", "ProtectHostname", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality"):
+        assert keys[key] == ["yes"], key
 
 
 def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
