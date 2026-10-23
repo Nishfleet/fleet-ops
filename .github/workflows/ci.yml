@@ -241,7 +241,7 @@ jobs:
         # home: both lanes read through ~/.claude-max/agents, and a hand-made
         # dir in the link's place fails the sync.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
@@ -1644,12 +1644,11 @@ jobs:
             l=${l//%h\/workspaces\/tooling\/fleet-ops-deploy-clone/$PWD}
             args+=(-v "$l")
           done < <(sed -n 's/^Volume=//p' "$q" | grep 'config/grafana')
+          while IFS= read -r n; do echo dummy > "$RUNNER_TEMP/secrets/$n"; chmod 0644 "$RUNNER_TEMP/secrets/$n"; args+=(-v "$RUNNER_TEMP/secrets/$n:/run/secrets/$n:ro"); done < <(sed -n 's/^Secret=\([^,]*\),.*/\1/p' "$q")
           docker run -d --name grafana --network host \
             "${args[@]}" \
             -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
             -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
-            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
-            --env CLOUDFLARE_API_TOKEN=dummy \
             -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
             "docker.io/$image"
           port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
