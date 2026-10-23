@@ -60,11 +60,11 @@ gate. They do not end the same way, and the difference matters.
   task, broke the no-clock rule above, and had no test on its keys.
   fleet-ops#10145 moved that unit into the product repo, next to the script it
   runs (`ops/seofixkit-d1-backup.service`, `ops/seofixkit-d1-backup.timer`, keys
-  pinned by that repo's `test/d1-backup-unit.test.mjs`), and deleted the host
-  copy. The user manager holds the deleted timer in memory until its next
-  reload, so one last run can still land on a Sunday; after that this box
-  schedules nothing. Until the CI job lands, the export runs by hand from that
-  repo, and D1 Time Travel still covers the last 30 days.
+  pinned by that repo's `test/d1-backup-unit.test.mjs`), and retired the host
+  copy: the deploy stops and disables the timer first, then deletes the files,
+  so the box ends up scheduling nothing instead of firing into a unit that is
+  gone. The export is manual until the CI job in fleet-ops#9527 lands, and D1
+  Time Travel still covers the last 30 days.
 
 ## The other nine
 

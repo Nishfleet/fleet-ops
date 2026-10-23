@@ -110,8 +110,10 @@
       # reloaded below so it forgets the drop-in.
       - /etc/systemd/user/cua-desk-daemon.service.d
       # The seo-fix-kit weekly D1 backup unit lived loose in nish's user
-      # directory, with no test on its keys (#10125). Its home is now that
-      # product repo, next to ops/backup-d1.sh (fleet-ops#10145).
+      # directory, which the 2026-10-23 glue audit named (#10125). Its home is
+      # now that product repo, next to ops/backup-d1.sh (fleet-ops#10145), and
+      # its install there is for a machine that runs the export, not this box:
+      # no clock is added here (docs/mac-scheduled-tasks.md).
       - /home/nish/.config/systemd/user/seofixkit-d1-backup.service
       - /home/nish/.config/systemd/user/seofixkit-d1-backup.timer
       - /home/nish/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer
@@ -1399,6 +1401,33 @@
         update_cache: true
         cache_valid_time: 3600
         lock_timeout: 300
+
+    # A deleted timer file does not stop a timer the user manager already
+    # loaded: it keeps running until it is stopped, and its next elapse would
+    # start a unit whose files are gone. Stop it first, then drop the enable
+    # link. A unit that is already gone answers non-zero, which is the state
+    # this leaves behind.
+    - name: Stop the retired seo-fix-kit D1 backup timer before its files go
+      ansible.builtin.command:
+        argv: [systemctl, --user, --machine=nish@.host, stop, seofixkit-d1-backup.timer]
+      register: seofixkit_timer_stop
+      changed_when: seofixkit_timer_stop.rc == 0
+      failed_when: >-
+        seofixkit_timer_stop.rc != 0
+        and 'not loaded' not in seofixkit_timer_stop.stderr | lower
+        and 'does not exist' not in seofixkit_timer_stop.stderr | lower
+      notify:
+        - Reload nish's user manager
+
+    - name: Disable the retired seo-fix-kit D1 backup timer before its files go
+      ansible.builtin.command:
+        argv: [systemctl, --user, --machine=nish@.host, disable, seofixkit-d1-backup.timer]
+      register: seofixkit_timer_disable
+      changed_when: seofixkit_timer_disable.rc == 0
+      failed_when: >-
+        seofixkit_timer_disable.rc != 0
+        and 'not loaded' not in seofixkit_timer_disable.stderr | lower
+        and 'does not exist' not in seofixkit_timer_disable.stderr | lower
 
     # Files the repo used to leave live and now removes, and files a session
     # hand-installed that the repo or a product repo now owns. Each path is named,

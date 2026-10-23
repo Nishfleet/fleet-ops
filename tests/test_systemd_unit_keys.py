@@ -620,15 +620,23 @@ SEOFIXKIT_UNITS = (
 )
 
 
-def test_seofixkit_d1_backup_unit_is_retired_and_its_home_is_the_product_repo() -> None:
+def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     host = HOST_YML.read_text()
-    retired = host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0]
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
     for path in SEOFIXKIT_UNITS:
-        assert f"- {path}\n" in retired, f"host.yml deletes {path} from the host"
+        assert f"- {path}\n" in retired.group(1), f"host.yml deletes {path} from the host"
     assert [path for path in unit_files() if "seofixkit" in path.name] == [], "fleet-ops ships no copy of the unit"
-    doc = (ROOT / "docs/mac-scheduled-tasks.md").read_text()
-    assert "ops/seofixkit-d1-backup.service" in doc and "ops/seofixkit-d1-backup.timer" in doc
-    assert "test/d1-backup-unit.test.mjs" in doc, "the doc names the test that pins the unit's keys"
+    tasks = {block.split("\n", 1)[0]: block for block in re.split(r"\n    - name: ", host)}
+    stop = tasks["Stop the retired seo-fix-kit D1 backup timer before its files go"]
+    disable = tasks["Disable the retired seo-fix-kit D1 backup timer before its files go"]
+    assert "argv: [systemctl, --user, --machine=nish@.host, stop, seofixkit-d1-backup.timer]" in stop
+    assert "argv: [systemctl, --user, --machine=nish@.host, disable, seofixkit-d1-backup.timer]" in disable
+    assert "Reload nish's user manager" in stop, "the reload drops the stopped unit"
+    assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
+        "the timer stops and disables before its files go"
+    )
+    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
