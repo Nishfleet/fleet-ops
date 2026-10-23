@@ -165,7 +165,7 @@ that changed nothing running, because nothing read it (fleet-ops#9670).
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
 `containers/quadlet/fleet-litellm-{postgres,redis,proxy}.container` (images
-`postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.105.0`, all
+`postgres:16`, `redis:7`, `ghcr.io/berriai/litellm:v1.98.0`, all
 `Network=host`), run as `fleet-litellm-postgres.service`,
 `fleet-litellm-redis.service` and `fleet-litellm-proxy.service`. Healthy
 check: `systemctl --user is-active fleet-litellm-postgres.service
@@ -175,35 +175,7 @@ three times. Host data directories stay at
 `~/.local/share/fleet-litellm-redis`.
 
 The proxy version is the image tag in `fleet-litellm-proxy.container`,
-bumped in its own PR. Because `disable_prisma_schema_update` is true, the proxy
-does not migrate by itself, and a new release must have its schema applied once
-before it serves; started on the old schema it runs but its queries can fail. The
-schema change between releases is not additive, so the rollback is a dump plus the
-old image.
-
-Bump procedure, in this order:
-
-1. `pg_dump -Fc` of the router database to a 0600 file; `pg_restore --list | grep
-   -c 'TABLE DATA'` must be above 0.
-2. `systemctl --user stop fleet-litellm-proxy.service`. A stopped unit is not
-   started again by `Restart=on-failure` or by the config path unit's try-restart,
-   so no restart can reach the new image before the schema is migrated. Do not merge
-   the image PR before this step.
-3. Merge the image PR and let fleet-sync apply the Quadlet. Check the proxy is still
-   stopped.
-4. Run the image's own migration job: `podman run --rm --network host --env-file
-   ~/.config/fleet-ops/litellm-db.env <the Image= of fleet-litellm-proxy.container>
-   --skip_server_startup`, with no `--config`, so the key is not in play. Proceed
-   only if it exits 0, prints "All migrations have been successfully applied", and
-   `select count(*) from _prisma_migrations` rose (152 to 196 on the 1.98 to 1.105
-   jump, about 25 s). The env file is read by podman, which does not strip quotes,
-   so `DATABASE_URL` must be unquoted in it.
-5. `systemctl --user start fleet-litellm-proxy.service` and check readiness.
-
-Rollback: stop the proxy, `pg_restore --clean --if-exists` the dump, revert the image
-PR, start the proxy. The restore returns the database to the dump point: spend logs,
-key spend and budgets written after the dump are lost, so keep the window between
-dump and bump short.
+bumped in its own PR.
 
 The live config `~/.config/fleet-ops/litellm-proxy.yaml` is a copy of
 `config/litellm-proxy.yaml`: `fleet-sync.service` installs it with `install -C`,
