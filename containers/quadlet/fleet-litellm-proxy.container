@@ -172,6 +172,17 @@ RestartSec=10s
 # Above the 45 s --stop-timeout, so podman's own SIGKILL fires first and the unit
 # still has time to remove the container.
 TimeoutStopSec=60
+# A planned stop ends in podman's SIGKILL of the one uvicorn worker that never exits (the pinned
+# litellm CLI has no uvicorn timeout_graceful_shutdown flag to bound it), so conmon exits 137 and the
+# unit would fail and page on a restart that worked (fleet-ops#10177). Exit 137 is therefore a
+# success. Systemd cannot tell a stop-initiated 137 from another one, so the cases that must still
+# page do not rely on that code: a failed start is podman exit 125, a crash is another exit code or
+# signal, and a kernel OOM kill inside this unit's cgroup ends the unit as `oom-kill`, which
+# OOMPolicy=stop (the default, written here so the pair stays together) sets whatever the exit code.
+# Only a hand `kill -9` of the container with no OOM behind it goes unnoticed.
+# tests/test_litellm_proxy_stop_not_failure.py pins both halves.
+SuccessExitStatus=137
+OOMPolicy=stop
 
 [Install]
 WantedBy=default.target
