@@ -110,8 +110,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
@@ -166,8 +164,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
   # main moved (CI finished on a push to the default branch): a claim PR it
@@ -234,8 +230,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ matrix.ref }}
   # The merge queue ejected a claim PR (failed checks or a conflict): send the
@@ -255,8 +249,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # Approved-head merge guard (0509#7092: a risky PR was armed by the
@@ -487,10 +479,8 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
     permissions:
       pull-requests: write
-      # agent.yml's work job asks for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup. Every agent.yml caller below also grants checks and statuses read, ahead of the work job asking for them to read a claim PR's checks with the run's own token: a repo whose stub pins an older agent-dispatch.yml must never call an agent.yml that asks for more than that pin grants.
+      # agent.yml's work job asks for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
       issues: write
-      checks: read
-      statuses: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ github.event.pull_request.number }}
@@ -761,8 +751,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ matrix.ref }}
   # Any open PR that has waited over 15 minutes, on any branch (2026-10-11: 53
@@ -961,8 +949,6 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
-      checks: read
-      statuses: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ matrix.x.pr }}
@@ -979,8 +965,6 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
-      checks: read
-      statuses: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       arm_pr: ${{ matrix.x.pr }}
@@ -996,8 +980,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ matrix.ref }}
@@ -1012,8 +994,6 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
-      checks: read
-      statuses: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       stuck_pr: ${{ matrix.x.pr }}
@@ -1163,8 +1143,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
   miss-review-pr:
@@ -1181,8 +1159,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
   miss-stalled:
@@ -1200,8 +1176,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      checks: read
-      statuses: read
     with:
       ref: ${{ matrix.ref }}
   admit:

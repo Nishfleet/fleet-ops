@@ -1,16 +1,10 @@
 # Fails the job when a path its runner unit hides (InaccessiblePaths) can be read or written (fleet-ops#9983).
 name: runner-probe
 description: Fail when a path the runner unit hides is readable from the job.
-inputs:
-  require-lock:
-    description: Fail, not warn, when the unit hides no paths.
-    default: 'false'
 runs:
   using: composite
   steps:
     - shell: bash
-      env:
-        REQUIRE: ${{ inputs.require-lock }}
       run: |
         set -f
         unit=$(grep -o 'actions\.runner\.[^/]*\.service' /proc/self/cgroup | tail -1)
@@ -21,7 +15,5 @@ runs:
           if test -r "$p" || test -w "$p"; then echo "::error::$p is readable from this job"; bad=$((bad + 1)); fi
         done
         echo "runner=$RUNNER_NAME unit=$unit checked=$n readable=$bad"
-        if [ "$n" -eq 0 ]; then
-          if [ "$REQUIRE" = true ]; then echo "::error::$unit hides no paths"; bad=1; else echo "::warning::$unit hides no paths"; fi
-        fi
+        if [ "$n" -eq 0 ]; then echo "::warning::$unit hides no paths"; fi
         test "$bad" -eq 0

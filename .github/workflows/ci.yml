@@ -1197,10 +1197,10 @@ jobs:
           printf '%b\n' "$FIRST"
           MOCK
           # shellcheck disable=SC2016 # the mock's own $ expansions run when it does
-          printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; printenv GIT_CONFIG_VALUE_0 | grep -q "^AUTHORIZATION: basic ." || { echo "mock git: the fetch carries no auth header" >&2; exit 1; }; case "$*" in *"$FETCH_TOKEN"*) echo "mock git: the token is in argv" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
+          printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; printenv GIT_CONFIG_VALUE_0 | grep -q "^AUTHORIZATION: basic ." || { echo "mock git: the fetch carries no auth header" >&2; exit 1; }; case "$*" in *"$GH_TOKEN"*) echo "mock git: the token is in argv" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git" "$t/bin/claude"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
-          export GH_TOKEN=x ARM_TOKEN=y FETCH_TOKEN=tokenvalue
+          export GH_TOKEN=ghtokenvalue ARM_TOKEN=y
           none=
           clean='No blockers.\nchecked: a, b, c'
           blocked='blocker .github/workflows/new.yml: removes a gate\nrisk x'
