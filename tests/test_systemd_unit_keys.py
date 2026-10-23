@@ -7,7 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -163,6 +163,133 @@ def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
     for key in ("ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock", "ProtectHostname", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality"):
         assert keys[key] == ["yes"], key
 
+
+HERMES_UNITS = ("hermes-gateway", "hermes-serve")
+HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d" for unit in HERMES_UNITS))
+HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
+
+
+def _unit_keys(path: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in path.read_text().replace("\\\n", " ").splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith(("#", ";", "[")):
+            key, value = line.split("=", 1)
+            keys.setdefault(key.strip(), []).append(value.strip())
+    return keys
+
+
+def _shipped_dropins() -> dict[str, list[Path]]:
+    return {
+        directory.name.removesuffix(".service.d"): sorted(directory.glob("*.conf"))
+        for directory in HERMES_DIRS
+        if directory.is_dir()
+    }
+
+
+def _layers(unit: str) -> list[Path]:
+    base = INSTALLED / f"{unit}.service"
+    layers = [base] if base.is_file() else []
+    for prefix, paths in _shipped_dropins().items():
+        if unit.startswith(prefix):
+            layers.extend(paths)
+    return layers
+
+
+def _effective(unit: str) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for path in _layers(unit):
+        for key, values in _unit_keys(path).items():
+            keys.setdefault(key, []).extend(values)
+    return keys
+
+
+def _last(keys: dict[str, list[str]], key: str) -> str:
+    return keys[key][-1].lower()
+
+
+def test_the_hermes_checks_read_every_dropin_the_repo_ships() -> None:
+    shipped = _shipped_dropins()
+    dirs = sorted(path.name for path in INSTALLED.glob("hermes*.service.d") if path.is_dir())
+    assert dirs == sorted(f"{prefix}.service.d" for prefix in shipped), f"a hermes drop-in dir that applies to no unit, or one these checks never read: {dirs}"
+    for prefix, paths in shipped.items():
+        assert paths, f"{prefix}.service.d carries no *.conf, so nothing here reads it"
+    units = sorted(path.name for path in INSTALLED.glob("hermes*.service"))
+    assert units == sorted(f"{unit}.service" for unit in HERMES_UNITS if (INSTALLED / f"{unit}.service").is_file()), f"a hermes unit these checks do not cover: {units}"
+    for unit in HERMES_UNITS:
+        assert list((INSTALLED / f"{unit}.service.d").glob("80-*.conf")), f"{unit} lost the drop-in of its own, so only the shared layer would apply"
+
+
+def test_hermes_sandbox_dropin_sits_in_the_prefix_dir_both_units_read() -> None:
+    directory = INSTALLED / "hermes-.service.d"
+    prefix = directory.name.removesuffix("-.service.d")
+    assert prefix != directory.name, f"{directory.name} is an ordinary drop-in dir: the shared file would cover no unit"
+    assert [unit for unit in HERMES_UNITS if unit.startswith(prefix)] == list(HERMES_UNITS), prefix
+    assert (directory / "sandbox.conf").is_file()
+
+
+def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
+    for unit in HERMES_UNITS:
+        keys = _effective(unit)
+        assert _last(keys, "ProtectSystem") == "strict", unit
+        assert _last(keys, "ProtectHome") == "read-only", f"{unit}: Hermes reads ~/.hermes/secrets.env and its config from HOME, so HOME cannot be a tmpfs"
+        assert _last(keys, "UMask") == "0077", unit
+        raw = shlex.split(" ".join(keys["ReadWritePaths"]))
+        for key in ("ReadWritePaths", "RestrictAddressFamilies"):
+            for path in _layers(unit):
+                for value in _unit_keys(path).get(key, []):
+                    assert value and not value.startswith("~"), f"{path.relative_to(INSTALLED)}: a reset or an inverted {key} means the merged view below stops describing what systemd applies"
+        writable = {PurePosixPath(entry.removeprefix("-")) for entry in raw}
+        assert len(writable) == len(raw), f"{unit}: the same grant twice, once with and once without the - prefix: {raw}"
+        homes = sorted(path for path in writable if path.name == ".hermes")
+        assert len(homes) == 1, f"{unit}: exactly one grant must be the .hermes home: {homes}"
+        home = homes[0].parent
+        assert len(home.parts) == 3, f"{unit}: a grant root this shallow undoes ProtectSystem=strict: {home}"
+        vault = {path for path in writable if str(path).endswith("/nish-vault/00 Inbox/agent-drop/hermes")}
+        assert len(vault) == 1, f"{unit}: the vault drop is missing: {writable}"
+        assert {home / ".hermes", home / ".local/state/hermes"} <= writable, (unit, writable)
+        rest = writable - {home / ".hermes", home / ".local/state/hermes"} - vault
+        assert rest <= {home / ".config/gh"}, f"{unit}: an unmeasured grant: {rest}"
+        assert all(entry.startswith("-") for entry in raw if "nish-vault" in entry), f"{unit}: the vault drop may not exist yet, so it needs the - prefix"
+        for key in ("NoNewPrivileges", "PrivateTmp", "PrivateDevices", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock"):
+            assert _last(keys, key) in {"yes", "true", "1"}, (unit, key)
+        assert _last(keys, "SystemCallArchitectures") == "native", unit
+
+
+def test_hermes_units_drop_the_power_they_never_use() -> None:
+    generic = set(_unit_keys(INSTALLED / "hermes-.service.d/sandbox.conf"))
+    for unit in HERMES_UNITS:
+        keys = _effective(unit)
+        assert _last(keys, "ProtectHostname") == "yes", unit
+        assert keys.get("CapabilityBoundingSet", [None])[-1] == "", unit
+        assert keys.get("AmbientCapabilities", [None])[-1] == "", unit
+        families = {token for value in keys["RestrictAddressFamilies"] for token in value.split()}
+        assert families == {"AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK"}, (unit, families)
+        own = INSTALLED / f"{unit}.service.d/80-hardening.conf"
+        assert set(_unit_keys(own)).isdisjoint(generic), f"{unit}: a key set in both layers can drift; keep it in hermes-.service.d/sandbox.conf only"
+
+
+def test_no_hermes_layer_takes_what_the_children_need() -> None:
+    layers = {path for unit in HERMES_UNITS for path in _layers(unit)}
+    assert len(layers) >= 4, f"these checks read too few layers to mean anything: {layers}"
+    assert (INSTALLED / "hermes-gateway.service").is_file(), "the base gateway unit must stay in rootfs/, or this check stops seeing it"
+    for path in sorted(layers):
+        keys = _unit_keys(path)
+        for key in HERMES_FORBIDDEN:
+            assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
+
+
+def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.conf"
+    sample.write_text("[Service]\n# RestrictNamespaces=user\n; SystemCallFilter=@system-service\n  ProtectSystem=strict\n  RestrictAddressFamilies=AF_INET \\\n    AF_UNIX\nProtectControlGroups=yes\r\n")
+    keys = _unit_keys(sample)
+    assert set(keys) == {"ProtectSystem", "RestrictAddressFamilies", "ProtectControlGroups"}, keys
+    assert keys["ProtectSystem"] == ["strict"], "systemd strips leading whitespace, so the parser has to as well"
+    assert set(keys["RestrictAddressFamilies"][0].split()) == {"AF_INET", "AF_UNIX"}, "a continued line is one value"
+    assert keys["ProtectControlGroups"] == ["yes"], "a file written with CRLF still has to parse to the value systemd reads"
+    seen = tmp_path / "seen.conf"
+    seen.write_text("RestrictNamespaces=user\n")
+    assert "RestrictNamespaces" in _unit_keys(seen), "an absence check is worthless if this parser cannot report the key at all"
 
 def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
     # Every path the tether tasks look at is pointed at a temp root next to the
