@@ -38,8 +38,8 @@
 # chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
 # new Claude version take effect at the next reboot.
 #
-# Container images move when a PR changes what it names: the digest the
-# quadlet pins, or the tag a tag-only quadlet follows. That covers postgres (it
+# Container images move when a PR changes a quadlet's image reference: the
+# digest it pins, or the tag a tag-only quadlet follows. That covers postgres (it
 # holds the LiteLLM keys and spend, and no quadlet has a HealthCmd, so a
 # rollback would only catch a start failure), the proxy, grafana and
 # aiostreams. Redis was the last quadlet carrying AutoUpdate=registry, and
