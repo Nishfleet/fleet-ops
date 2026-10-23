@@ -951,17 +951,12 @@
           changed_when: false
           ignore_errors: true
 
-        # A pin can be exact and still sit off the repo's default branch: the
-        # pi-runner-guard pin named a pull request head, so the box ran code no
-        # default-branch commit reached, and nothing said so for a week
-        # (fleet-ops#10144). GitHub's compare answers it in one call per
-        # package: `identical` and `behind` mean the pinned commit is on the
-        # default branch, `ahead` and `diverged` mean it is not. A package with
-        # no answer (404, no network, no gh login) is printed too and fails the
-        # run, because a check that waves itself through when it cannot run is
-        # not a check. Only `git:github.com/` pins are checked: that is every
-        # git pin in settings.json today, and a pin on another host needs its
-        # own way to ask.
+        # GitHub's compare status is `diverged`, `ahead`, `behind` or `identical`
+        # (https://docs.github.com/en/rest/commits/commits#compare-two-commits):
+        # `behind` and `identical` pass, `ahead` and `diverged` fail, and no
+        # answer at all (404, no network, no gh login) fails too, because a
+        # check that waves itself through when it cannot run is not a check
+        # (fleet-ops#10144).
         - name: Check every git extension pin is on its repo's default branch
           become: true
           become_user: nish
@@ -969,8 +964,7 @@
           ansible.builtin.shell:
             executable: /bin/bash
             cmd: |
-              set -o pipefail
-              specs=$(jq -r '.packages[] | select(startswith("git:github.com/"))' /home/nish/.pi/agent/settings.json) || {
+              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' /home/nish/.pi/agent/settings.json) || {
                 echo "could not read the git pins from settings.json"; exit 1; }
               bad=0
               while IFS= read -r spec; do

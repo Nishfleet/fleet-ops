@@ -51,6 +51,10 @@ def run_git_pin_check(tmp_path, packages, answers=ANSWERS):
         encoding="utf-8",
     )
     gh.chmod(0o755)
+    for package in packages:
+        if isinstance(package, str) and package.startswith("git:github.com/"):
+            prefix = package.rsplit("@", 1)[1][:4]
+            assert prefix in answers or prefix == UNANSWERED.rsplit("@", 1)[1][:4], package
     cmd = INNER[GIT_PIN_CHECK]["ansible.builtin.shell"]["cmd"].replace(PI_SETTINGS, str(settings))
     assert str(settings) in cmd
     return subprocess.run(
@@ -106,7 +110,7 @@ def test_the_git_pin_check_asks_github_about_the_default_branch_of_every_github_
     assert task["become_user"] == "nish"
     assert task["register"] == "off_branch_pins"
     assert task["ignore_errors"] is True
-    assert 'select(startswith("git:github.com/"))' in shell["cmd"]
+    assert 'select(type == "string" and startswith("git:github.com/"))' in shell["cmd"]
     assert "repos/${repo}/compare/HEAD...${sha}" in shell["cmd"]
     assert "identical|behind" in shell["cmd"]
 
@@ -137,3 +141,15 @@ def test_a_settings_file_that_cannot_be_read_fails_the_check(tmp_path):
     result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=False)
     assert result.returncode == 1
     assert "could not read the git pins from settings.json" in result.stdout
+
+
+def test_a_settings_file_with_no_git_pins_passes_the_check_without_asking_github(tmp_path):
+    result = run_git_pin_check(tmp_path, [])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_a_packages_entry_that_is_not_a_string_does_not_fail_the_check(tmp_path):
+    result = run_git_pin_check(tmp_path, [ON_MAIN, None, {"name": "pi-grok"}])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""

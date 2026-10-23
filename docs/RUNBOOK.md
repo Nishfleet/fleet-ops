@@ -77,10 +77,11 @@ use instead.
   `git:github.com/` pin, whether the pinned commit is on that repo's default
   branch, and fails the run when it is not, or when GitHub gives no answer at
   all. A pin on a pull request head is the failure this catches, because the
-  box then runs code that no default-branch commit reaches. To move a pin, merge
-  the pull request first, then re-pin with
-  `pi update "git:github.com/Nishfleet/pi-runner-guard@<sha>"` where `<sha>` is
-  the merge commit on `main`. A red run names the pin under
+  box then runs code that no default-branch commit reaches.
+  To move a pin, merge the pull request first, then re-pin with
+  `pi update "git:github.com/<owner>/<repo>@<sha>"`, where `<sha>` is the merge
+  commit on that repo's default branch. For the runner guard that is
+  `git:github.com/Nishfleet/pi-runner-guard@<sha>`. A red run names the pin under
   `git pins off the default branch` in
   `journalctl -u fleet-update.service`. When that line reads
   `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
