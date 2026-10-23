@@ -2,6 +2,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
@@ -53,10 +54,12 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     assert not missing, f"fallbacks naming a group with no row: {missing}"
 
 
+REMOVED_PROVIDER_HOSTS = {"api.cline.bot", "ollama.com"}
+
+
 def test_no_row_serves_a_removed_provider_again():
-    # Cline and Ollama Cloud rows were removed with the owner's yes of 2026-10-23 (fleet-ops#10068). Re-adding one is the owner's call.
     bases = _bases(_router_rows())
-    back = sorted({b for b in bases if b.startswith("https://api.cline.bot") or b.startswith("https://ollama.com")})
+    back = sorted({b for b in bases if urllib.parse.urlparse(b).hostname in REMOVED_PROVIDER_HOSTS})
     assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
 
 
