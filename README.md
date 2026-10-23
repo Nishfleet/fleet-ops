@@ -638,12 +638,11 @@ token was tried (#10102) and never worked: the daemon writes a new token to its
 own `daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and
 `--daemon-token`. It is retired: `host.yml` lists the drop-in directory
 `/etc/systemd/user/cua-desk-daemon.service.d` in `retired` (so it is deleted and
-nish's user manager reloaded), removes `/etc/tether/cua.env`,
-`/etc/fleet-ops/cua-daemon-token` and nish's `fleet-ops/cua/daemon.env` by name,
-and then removes that last directory only when it is empty. The tether unit no
-longer loads `cua.env` and the nftables table has no Cua port. The daemon is
-restarted only by a newer Cua Spaces release (the idle-desk check, restart and
-desk recreate above), never for a config change.
+nish's user manager reloaded), removes `/etc/fleet-ops/cua-daemon-token` and
+nish's `fleet-ops/cua/daemon.env` by name, and then removes that last directory
+only when it is empty. The daemon is restarted only by a newer Cua Spaces
+release (the idle-desk check, restart and desk recreate above), never for a
+config change. What tether can reach instead is its own Space, below.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
@@ -708,6 +707,59 @@ in `ansible/host.yml`, and adds the unit path to `retired`.
 In-band, without root, Nish's own off-switch is the `STOP` text. The app that
 handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is
 proved there, not by this repo.
+
+### Tether's own Cua Space
+
+tether can reach one Cua Space, `local:tether`, and nothing else on Cua. Its key
+is that Space's own `cua-spacesd` token: it opens that Space's `spacesd` only
+(checked: the same token against the desk Space's port answers
+`unauthenticated`). It is not the server's Cua login. What the Space itself can
+see, the Cua Volume included, follows Cua's own grants (`cua volume`), not this
+repo.
+
+`host.yml` does this as nish, like the other Cua tasks, unless the off marker
+exists:
+
+- creates the Space with `cua spaces create linux --name tether --on local`
+  only when `cua sandbox ls --local` does not list it. An existing Space is
+  never recreated, so its files and token stay;
+- runs `cua spaces start local:tether` when it is stopped or suspended;
+- reads the token from `/run/cua/env-token` in the Space (the documented
+  `spacesd` location) and the address from `cua --embedded sandbox info`;
+- renders `/etc/tether/cua.env` (`TETHER_SPACE_URL`, `TETHER_SPACE_TOKEN`,
+  `root:tether 0640`, `no_log`, no diff), which the tether unit loads, and
+  restarts tether when it changed;
+- adds `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port to
+  `tether.nft.j2`, before the loopback drop. No other loopback port opens.
+
+The port is read live on each run because Docker publishes `spacesd` on a random
+loopback port that changes whenever the container starts. A pause and resume
+(`cua spaces stop` and `start`) keeps it. A container stop, which is what a
+reboot does (Docker restart policy `no`), does not: after `docker stop` and
+`cua spaces start` the port was new, the token was the same, and the Cua daemon
+kept answering with the old port, so `cua sandbox info` and `cua sandbox exec`
+without `--embedded` fail. `--embedded` reads Docker's live port. Because of
+that, `fleet-host-config-boot.timer` runs `fleet-host-config.service` three
+minutes after every boot (the daily timer's random delay of up to an hour is too
+late): the run starts the Space, then renders the env file and the nft rule from
+its new port and restarts tether. Until it does, tether's unit may start with the
+last port, and its calls to the Space fail. If the
+Space step fails (the Cua daemon is down after 3 minutes of waiting), the run
+completes everything else, keeps the old env file and nft rule, and fails at its
+last tether task, which pages.
+
+Switch off: `touch /etc/fleet-ops/tether-off`. The next run skips the Space
+tasks, removes `/etc/tether/cua.env` and the firewall rule, and keeps tether
+stopped. The Space itself is left alone. To pause just the Space,
+`cua spaces stop local:tether`; the next run starts it again unless the marker
+exists.
+
+Delete it: switch it off, then `cua spaces delete local:tether --force` as nish,
+and `rm -f /etc/tether/cua.env` as root. Without the marker the next run creates
+a new empty Space. To remove the feature for good, open a PR that deletes the
+Space tasks, the env task, the nft line, the `EnvironmentFile=` line and
+`rootfs/etc/systemd/system/fleet-host-config-boot.timer` (add the timer to
+`retired`).
 
 ### Tether release installs
 

@@ -27,12 +27,15 @@ Group=tether
 WorkingDirectory=/var/lib/tether
 Environment=NODE_ENV=production
 # The model key lives in tether.env and the Photon Spectrum credentials in
-# photon.env, and the calendar and contacts credentials in calendar.env, all
-# root:tether 0640. No shell, no GitHub, Cloudflare or database token reaches
-# this unit (fleet-ops#9980).
+# photon.env, the calendar and contacts credentials in calendar.env, and the
+# address and token of tether's own Cua Space in cua.env (rendered by
+# ansible/host.yml), all root:tether 0640. That token opens that one Space and
+# nothing else. No shell, no GitHub, Cloudflare or database token reaches this
+# unit (fleet-ops#9980).
 EnvironmentFile=-/etc/tether/tether.env
 EnvironmentFile=-/etc/tether/photon.env
 EnvironmentFile=-/etc/tether/calendar.env
+EnvironmentFile=-/etc/tether/cua.env
 # The Node binary is the pinned release that ansible/host.yml unpacks
 # (tether_node_version), named by absolute path, not the distro /usr/bin/node.
 ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/current/dist/index.js
@@ -71,7 +74,10 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # Loopback is denied except the router (127.0.0.1) and the resolved stub
 # (127.0.0.53). IPAddressAllow= takes no port, so the nftables table
 # `inet tether` (ansible/templates/tether.nft.j2) narrows 127.0.0.1 to tcp 4000
-# and 127.0.0.53 to port 53, and drops every other host-local destination.
+# and tether's own Cua Space port, and 127.0.0.53 to port 53, and drops every
+# other host-local destination. The Space is started by the host config run, not
+# by a unit, so After= cannot order it; the run restarts this unit when the
+# Space's address or token changed.
 IPAddressDeny=localhost
 IPAddressAllow=127.0.0.1/32 127.0.0.53/32
 RestrictNamespaces=true

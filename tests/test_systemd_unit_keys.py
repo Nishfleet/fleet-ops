@@ -22,7 +22,7 @@ def unit_files() -> list[Path]:
         found += sorted(ROOT.glob(pattern))
     found += sorted(INSTALLED.glob("*.slice"))
     found += sorted(INSTALLED.glob("fleet-deploy.*"))
-    found += sorted(INSTALLED.glob("fleet-host-config.*"))
+    found += sorted(INSTALLED.glob("fleet-host-config*"))
     found += sorted(INSTALLED.glob("fleet-update.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))
@@ -202,7 +202,7 @@ TETHER_ALWAYS = {
     "Remove the tether egress rule while the marker exists",
     "Keep tether disabled and stopped while the marker exists",
     "Apply pending handlers before the tether failure check",
-    "Remove tether's retired Cua env file",
+    "Remove tether's Cua Space env file while the marker exists",
     "Remove the retired Cua daemon token file",
 }
 # Tasks that a clean host (temp roots, nothing installed) must really reach with
@@ -241,6 +241,7 @@ TETHER_REACHED = (
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
     "Let the tether group read the calendar credentials file",
+    "Render tether's Cua Space env file",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -274,7 +275,10 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     photon.touch()
     calendar = tmp_path / "calendar.env"
     calendar.touch()
-    extra = ("-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}")
+    extra = (
+        "-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}",
+        "-e", f"tether_cua_env={tmp_path / 'cua.env'}", "-e", "tether_space_port=40001", "-e", "tether_space_token=" + "a" * 32,
+    )
     on = _tether_tasks(marker, extra)
     marker.touch()
     off = _tether_tasks(marker, extra)
@@ -292,6 +296,8 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     assert not off["Keep tether disabled and stopped while the marker exists"].get("skipped")
     assert not off["Remove the tether egress rule while the marker exists"].get("skipped")
     assert on["Remove the tether egress rule while the marker exists"].get("skipped")
+    assert not off["Remove tether's Cua Space env file while the marker exists"].get("skipped")
+    assert on["Remove tether's Cua Space env file while the marker exists"].get("skipped")
     assert on["Keep tether disabled and stopped while the marker exists"].get("skipped"), "no marker: the run never touches the unit"
 
 
@@ -483,6 +489,7 @@ def test_tether_loads_all_environment_files() -> None:
         "-/etc/tether/tether.env",
         "-/etc/tether/photon.env",
         "-/etc/tether/calendar.env",
+        "-/etc/tether/cua.env",
     ]
 
 
@@ -568,9 +575,8 @@ def test_tether_release_change_restarts_an_enabled_agent() -> None:
     assert "state: restarted" in handler[0]
 
 
-@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
-def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
-    out = tmp_path / "tether.nft"
+def _render_tether_nft(tmp_path: Path, name: str, extra_vars: dict) -> str:
+    out = tmp_path / name
     facts = {
         "all_ipv4_addresses": ["192.0.2.5", "127.0.0.1"],
         "all_ipv6_addresses": ["2001:db8::5"],
@@ -579,23 +585,45 @@ def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
     }
     task = {
         "ansible.builtin.template": {"src": str(ROOT / "ansible/templates/tether.nft.j2"), "dest": str(out)},
-        "vars": {"tether_uid": 995, "ansible_facts": facts},
+        "vars": {"tether_uid": 995, "ansible_facts": facts, **extra_vars},
     }
-    play = tmp_path / "play.json"
+    play = tmp_path / f"{name}.json"
     play.write_text(json.dumps([{"hosts": "localhost", "gather_facts": False, "tasks": [task]}]))
     proc = subprocess.run(
         ["ansible-playbook", "-c", "local", "-i", "localhost,", str(play)], capture_output=True, text=True, check=False
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    text = out.read_text()
+    return out.read_text()
+
+
+def _nft_check(path: Path) -> None:
+    if shutil.which("sudo") and shutil.which("nft"):
+        check = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(path)], capture_output=True, text=True, check=False)
+        assert check.returncode == 0, check.stderr
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_nft_template_renders_and_loads(tmp_path: Path) -> None:
+    text = _render_tether_nft(tmp_path, "tether.nft", {})
     assert "meta skuid != 995 return" in text
     assert "ip daddr 127.0.0.1 tcp dport 4000 accept" in text
-    assert "tcp dport 4000 accept" in text and text.count("127.0.0.1 tcp dport") == 1, "the router port is the only loopback port"
+    assert "tcp dport 4000 accept" in text and text.count("127.0.0.1 tcp dport") == 1, "no Space port is known: the router port is the only loopback port"
     assert "ip daddr 198.51.100.0/24 drop" in text, "a bridge subnet is dropped"
     assert text.rstrip().endswith("}\n}"), "an interface with no fact does not break the render"
-    if shutil.which("sudo") and shutil.which("nft"):
-        check = subprocess.run(["sudo", "-n", "nft", "-c", "-f", str(out)], capture_output=True, text=True, check=False)
-        assert check.returncode == 0, check.stderr
+    _nft_check(tmp_path / "tether.nft")
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_nft_allows_exactly_the_spaces_port_before_the_loopback_drop(tmp_path: Path) -> None:
+    text = _render_tether_nft(tmp_path, "with-port.nft", {"tether_space_port": "32786"})
+    rule = "ip daddr 127.0.0.1 tcp dport 32786 accept"
+    lines = [line.strip() for line in text.splitlines()]
+    assert lines.count(rule) == 1
+    assert lines.index("ip daddr 127.0.0.1 tcp dport 4000 accept") < lines.index(rule) < lines.index("ip daddr 127.0.0.0/8 drop")
+    assert text.count("127.0.0.1 tcp dport") == 2, "the router and the one Space port"
+    other = _render_tether_nft(tmp_path, "other-port.nft", {"tether_space_port": 32791})
+    assert "tcp dport 32791 accept" in other and "tcp dport 32786" not in other, "the rule follows the port it is given"
+    _nft_check(tmp_path / "with-port.nft")
 
 
 CUA_DROPIN_DIR = "etc/systemd/user/cua-desk-daemon.service.d"
@@ -608,7 +636,6 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
     assert f"- /{CUA_DROPIN_DIR}\n" in host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0], "host.yml deletes it on the host"
     assert "cua_daemon_port" not in host + update + (ROOT / "ansible/templates/tether.nft.j2").read_text()
     assert "cua_daemon_stale" not in update and "cua_daemon_unit" not in update, "no config-triggered daemon restart"
-    assert "EnvironmentFile=-/etc/tether/cua.env" not in TETHER.read_text()
     assert 'cua_upgrade: "{{ cua_newer and (cua_runs.stdout' in update, "the desk is recreated only for a newer release"
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
 
@@ -616,7 +643,6 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {
-        "/etc/tether/cua.env": "Remove tether's retired Cua env file",
         "/etc/fleet-ops/cua-daemon-token": "Remove the retired Cua daemon token file",
         '{{ nish_config }}/fleet-ops/cua/daemon.env': "Remove the retired Cua daemon env file",
     }
@@ -889,3 +915,153 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
+
+
+SPACE_TOKEN = "Tk3-" + "x" * 28
+
+
+def _host_task(name: str) -> dict:
+    return next(task for task in _play_tasks() if task.get("name") == name)
+
+
+def _space_block() -> dict:
+    return _host_task("Ready tether's own Cua Space, or record why it failed")
+
+
+def _space_ls(state: str | None) -> str:
+    rows = [{"id": "local:desk", "state": "running", "status": "ready"}]
+    if state is not None:
+        rows.append({"id": "local:tether", "state": state, "status": "ready"})
+    return json.dumps(rows)
+
+
+def _run_space_tasks(tmp_path: Path, state: str | None, port: int = 32791) -> tuple[list[str], str]:
+    log = tmp_path / "calls.log"
+    log.write_text("")
+    (tmp_path / "ls.json").write_text(_space_ls(state))
+    (tmp_path / "token").write_text(SPACE_TOKEN + "\n")
+    (tmp_path / "info.json").write_text(json.dumps({"endpoints": {"env": f"http://127.0.0.1:{port}"}, "state": "running"}))
+    stub = tmp_path / "cua"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> {shlex.quote(str(log))}\n'
+        'case "$*" in\n'
+        f'"sandbox ls --local --json --no-size") cat {shlex.quote(str(tmp_path / "ls.json"))};;\n'
+        '"spaces create "*|"spaces start "*) ;;\n'
+        f'"--embedded sandbox exec local:tether cat /run/cua/env-token") cat {shlex.quote(str(tmp_path / "token"))};;\n'
+        f'"--embedded sandbox info local:tether --json") cat {shlex.quote(str(tmp_path / "info.json"))};;\n'
+        "*) exit 2;;\nesac\n"
+    )
+    stub.chmod(0o755)
+    facts = tmp_path / "facts.txt"
+    tasks = _space_block()["block"] + [
+        {"ansible.builtin.copy": {"content": "{{ tether_space_port }} {{ tether_space_token }}", "dest": str(facts)}}
+    ]
+    vars_ = {"cua_cli": str(stub), "tether_space_name": "tether", "tether_space_ref": "local:tether"}
+    play = tmp_path / "space-play.json"
+    play.write_text(json.dumps([{"hosts": "localhost", "gather_facts": False, "vars": vars_, "tasks": tasks}]))
+    proc = subprocess.run(["ansible-playbook", "-c", "local", "-i", "localhost,", str(play)], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert SPACE_TOKEN not in proc.stdout + proc.stderr, "the token never reaches the run output"
+    return log.read_text().splitlines(), facts.read_text()
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_an_existing_running_space_is_neither_recreated_nor_started(tmp_path: Path) -> None:
+    calls, facts = _run_space_tasks(tmp_path, "running")
+    assert not [c for c in calls if c.startswith("spaces ")], calls
+    assert facts == f"32791 {SPACE_TOKEN}"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+@pytest.mark.parametrize("state", ["stopped", "suspended"])
+def test_an_existing_space_that_is_not_running_is_started_never_recreated(tmp_path: Path, state: str) -> None:
+    calls, facts = _run_space_tasks(tmp_path, state, port=32795)
+    assert "spaces start local:tether" in calls
+    assert not [c for c in calls if c.startswith("spaces create")], calls
+    assert facts == f"32795 {SPACE_TOKEN}", "the port is the one Docker publishes now"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_a_missing_space_is_created_once_on_this_computer(tmp_path: Path) -> None:
+    calls, _ = _run_space_tasks(tmp_path, None)
+    assert calls.count("spaces create linux --name tether --on local") == 1
+    assert not [c for c in calls if c.startswith("spaces start")], calls
+
+
+def test_space_tasks_run_as_nish_stay_off_the_tether_tag_and_respect_the_marker() -> None:
+    block = _space_block()
+    assert block["become"] is True and block["become_user"] == "nish" and block["environment"] == "{{ nish_env }}"
+    assert block["when"] == "not tether_off.stat.exists"
+    assert "tags" not in block and not any("tags" in task for task in block["block"])
+    assert "no_log" not in block and "ignore_errors" not in block, "a failure must reach the rescue"
+    facts = [task["ansible.builtin.set_fact"] for task in block["rescue"] if "ansible.builtin.set_fact" in task]
+    assert [list(fact) for fact in facts] == [["tether_space_failure"]]
+    names = [task["name"] for task in block["block"]]
+    assert names.index("Wait until the Cua daemon answers") < names.index("Create tether's Cua Space when it does not exist")
+    for task in block["block"]:
+        argv = task.get("ansible.builtin.command", {}).get("argv", [])
+        assert "delete" not in argv and "rm" not in argv, "nothing here deletes a Space"
+        if "--embedded" in argv:
+            assert argv[1] == "--embedded"
+    secret = [task for task in block["block"] if "tether_space_token" in json.dumps(task) or "tether_space_token_out" in json.dumps(task)]
+    assert secret and all(task.get("no_log") is True for task in secret), [task["name"] for task in secret]
+
+
+def test_space_env_task_is_private_no_log_and_restarts_tether() -> None:
+    task = _host_task("Render tether's Cua Space env file")
+    copy = task["ansible.builtin.copy"]
+    assert copy["content"] == "TETHER_SPACE_URL=http://127.0.0.1:{{ tether_space_port }}\nTETHER_SPACE_TOKEN={{ tether_space_token }}\n"
+    assert (copy["dest"], copy["owner"], copy["group"], copy["mode"]) == ("{{ tether_cua_env }}", "root", "tether", "0640")
+    assert task["no_log"] is True and task["diff"] is False
+    assert task["notify"] == "Restart tether-agent after its release changed"
+    assert task["tags"] == ["tether"]
+    assert task["when"] == "not tether_off.stat.exists and tether_space_port is defined and tether_space_token is defined"
+    assert _host_var("tether_cua_env") == "/etc/tether/cua.env"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_space_env_task_renders_the_address_and_token(tmp_path: Path) -> None:
+    task = dict(_host_task("Render tether's Cua Space env file"))
+    copy = dict(task["ansible.builtin.copy"])
+    dest = tmp_path / "cua.env"
+    copy.update(dest=str(dest), mode="0640")
+    copy.pop("owner")
+    copy.pop("group")
+    for key in ("tags", "notify", "ignore_errors"):
+        task.pop(key, None)
+    task["ansible.builtin.copy"] = copy
+    play = tmp_path / "env-play.json"
+    play.write_text(json.dumps([{"hosts": "localhost", "gather_facts": False, "vars": {
+        "tether_off": {"stat": {"exists": False}}, "tether_space_port": 32791, "tether_space_token": SPACE_TOKEN,
+    }, "tasks": [task]}]))
+    proc = subprocess.run(["ansible-playbook", "-c", "local", "-i", "localhost,", "--diff", str(play)], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert dest.read_text() == f"TETHER_SPACE_URL=http://127.0.0.1:32791\nTETHER_SPACE_TOKEN={SPACE_TOKEN}\n"
+    assert oct(dest.stat().st_mode & 0o777) == "0o640"
+    assert SPACE_TOKEN not in proc.stdout + proc.stderr, "no_log and diff: false keep the token out of the run output"
+
+
+def test_space_failure_keeps_the_old_nft_rule_and_fails_the_run_late() -> None:
+    nft = _host_task("Install the tether egress rule")
+    assert "tether_space_failure is not defined" in nft["when"]
+    names = [task["name"] for task in _play_tasks()]
+    fail = names.index("Fail when tether's Cua Space could not be readied")
+    assert names.index("Ready tether's own Cua Space, or record why it failed") < names.index("Render tether's Cua Space env file") < fail
+    assert names.index("Install the tether egress rule") < fail
+    assert fail == len(names) - 3
+
+
+def test_host_config_runs_once_after_every_boot() -> None:
+    timer = INSTALLED / "fleet-host-config-boot.timer"
+    keys: dict[str, list[str]] = {}
+    for line in timer.read_text().splitlines():
+        if "=" in line and not line.startswith(("#", "[")):
+            key, value = line.split("=", 1)
+            keys.setdefault(key, []).append(value)
+    assert keys["OnBootSec"] == ["3min"] and keys["Unit"] == ["fleet-host-config.service"]
+    assert "RandomizedDelaySec" not in keys, "the daily timer's random delay would hold the boot run back"
+    assert keys["WantedBy"] == ["timers.target"]
+    enable = _host_task("Enable the host config run after boot")["ansible.builtin.systemd_service"]
+    assert enable["name"] == "fleet-host-config-boot.timer" and enable["enabled"] is True
+    assert "state" not in enable, "starting the timer after boot would fire it at once"

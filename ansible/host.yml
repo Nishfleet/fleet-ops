@@ -55,6 +55,15 @@
     # Placed by hand, never created here. A var so the test can point it at a file.
     tether_photon_env: /etc/tether/photon.env
     tether_calendar_env: /etc/tether/calendar.env
+    # tether's own Cua Space: the only Cua target its key opens. The env file
+    # holds the Space's address and token, rendered by the tasks below. Docker
+    # publishes a Space's spacesd on a random loopback port that changes at
+    # every container start (pause and resume keep it), so the port is read
+    # live on each run and never kept in a var.
+    tether_cua_env: /etc/tether/cua.env
+    tether_space_name: tether
+    tether_space_ref: "local:{{ tether_space_name }}"
+    cua_cli: /opt/Cua Spaces/resources/native/cua
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -1190,15 +1199,9 @@
     # #10102 gave tether a fixed-port route to the Cua daemon with a token. The
     # daemon ignores a supplied token, so nothing ever used the route. Its
     # leftovers are removed by name here; the drop-in is in `retired`.
-    # The first two tasks run as root and carry the tether tag. The two that
+    # The first task runs as root and carries the tether tag. The two that
     # run as nish do not: CI runs `--tags tether --check` as an unprivileged
     # user, where becoming nish fails.
-    - name: Remove tether's retired Cua env file
-      tags: [tether]
-      ansible.builtin.file:
-        path: /etc/tether/cua.env
-        state: absent
-
     - name: Remove the retired Cua daemon token file
       tags: [tether]
       ansible.builtin.file:
@@ -1227,6 +1230,106 @@
         - cua_env_dir_rmdir.rc != 0
         - "'Directory not empty' not in cua_env_dir_rmdir.stderr"
         - "'No such file or directory' not in cua_env_dir_rmdir.stderr"
+
+    # tether's own Cua Space (Nish, 2026-10-23): a key that opens that one
+    # Space's spacesd and nothing else. It is created once and never recreated
+    # (its files and its token are its own), started when it is not running,
+    # and read for its live address and token. Docker restart policy is `no`,
+    # so a reboot leaves it stopped, and a start gives it a new published port
+    # while the Cua daemon keeps answering with the old one; `--embedded` reads
+    # Docker's live port. These tasks run as nish, like the other Cua tasks, and
+    # carry no tether tag (CI's `--tags tether --check` cannot become nish). A
+    # failure is recorded here and fails the run at its last tether task, so the
+    # rest of the host config still applies and the old env file and nft rule
+    # stay as they were.
+    - name: Ready tether's own Cua Space, or record why it failed
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      when: not tether_off.stat.exists
+      block:
+        - name: Wait until the Cua daemon answers
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+          register: tether_space_ls
+          until: tether_space_ls.rc == 0
+          retries: 18
+          delay: 10
+          changed_when: false
+
+        - name: Create tether's Cua Space when it does not exist
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ tether_space_name }}", --on, local]
+          when: tether_space_ref not in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+
+        - name: Start tether's Cua Space when it exists and is not running
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, start, "{{ tether_space_ref }}"]
+          when:
+            - tether_space_ref in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+            - (tether_space_ls.stdout | from_json | selectattr('id', 'equalto', tether_space_ref) | map(attribute='state') | first) != 'running'
+
+        - name: Read tether's Cua Space token, which also waits until the Space answers
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", --embedded, sandbox, exec, "{{ tether_space_ref }}", "cat /run/cua/env-token"]
+          register: tether_space_token_out
+          until: tether_space_token_out.rc == 0 and (tether_space_token_out.stdout | trim | length) > 0
+          retries: 12
+          delay: 5
+          changed_when: false
+          no_log: true
+
+        - name: Read tether's Cua Space address
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", --embedded, sandbox, info, "{{ tether_space_ref }}", --json]
+          register: tether_space_info
+          until: tether_space_info.rc == 0 and ((tether_space_info.stdout | from_json).endpoints.env | default('')) is match('^http://127\.0\.0\.1:[0-9]+$')
+          retries: 6
+          delay: 5
+          changed_when: false
+
+        - name: Require a sane port and token before they are kept or written anywhere
+          ansible.builtin.assert:
+            that:
+              - (tether_space_info.stdout | from_json).endpoints.env is match('^http://127\.0\.0\.1:[0-9]+$')
+              - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) > 1024
+              - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) < 65536
+              - (tether_space_token_out.stdout | trim) is match('^[A-Za-z0-9._~+=-]{16,128}$')
+            quiet: true
+          no_log: true
+
+        - name: Keep the address and token of tether's Cua Space
+          ansible.builtin.set_fact:
+            tether_space_port: "{{ (tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int }}"
+            tether_space_token: "{{ tether_space_token_out.stdout | trim }}"
+          no_log: true
+      rescue:
+        - name: Record that tether's Cua Space did not come up
+          ansible.builtin.set_fact:
+            tether_space_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') | truncate(200) }}"
+
+    # The unit reads this at start, so a change notifies the restart handler.
+    # Written only from a live read, never from a default.
+    - name: Render tether's Cua Space env file
+      tags: [tether]
+      ansible.builtin.copy:
+        content: "TETHER_SPACE_URL=http://127.0.0.1:{{ tether_space_port }}\nTETHER_SPACE_TOKEN={{ tether_space_token }}\n"
+        dest: "{{ tether_cua_env }}"
+        owner: root
+        group: tether
+        mode: "0640"
+      no_log: true
+      diff: false
+      ignore_errors: "{{ ansible_check_mode }}"
+      when: not tether_off.stat.exists and tether_space_port is defined and tether_space_token is defined
+      notify: Restart tether-agent after its release changed
+
+    - name: Remove tether's Cua Space env file while the marker exists
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_cua_env }}"
+        state: absent
+      when: tether_off.stat.exists
 
     # tether's egress firewall: its own table, loaded by the host's existing
     # nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
@@ -1266,7 +1369,9 @@
         validate: /usr/sbin/nft -c -f %s
       vars:
         tether_uid: "{{ getent_passwd.tether[1] }}"
-      when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
+      # A run whose Space step failed keeps the rule it has: a render without the
+      # port would cut the Space off while its container may still be up.
+      when: not tether_off.stat.exists and tether_space_failure is not defined and getent_passwd is defined and getent_passwd.tether is not none
       notify: Reload nftables
 
     # Runner egress (fleet-ops canary: fleet-ci-2). A plain file: the table and an
@@ -1307,6 +1412,18 @@
         name: fleet-host-config.timer
         enabled: true
         state: started
+        daemon_reload: true
+      # Under --check the copy above did not really install the timer yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # A reboot stops tether's Cua Space (Docker restart policy `no`) and its next
+    # start publishes a new port, so the env file and the nft rule must be
+    # rendered again: this runs this very playbook once after every boot.
+    # `enabled` only: a start now would fire the elapsed boot timer at once.
+    - name: Enable the host config run after boot
+      ansible.builtin.systemd_service:
+        name: fleet-host-config-boot.timer
+        enabled: true
         daemon_reload: true
       # Under --check the copy above did not really install the timer yet.
       ignore_errors: "{{ ansible_check_mode }}"
@@ -1875,6 +1992,14 @@
       vars:
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+
+    # A Cua Space that did not come up fails the run here, before the last two
+    # tasks; force_handlers still runs the pending handlers.
+    - name: Fail when tether's Cua Space could not be readied
+      tags: [tether]
+      ansible.builtin.fail:
+        msg: "tether's Cua Space did not come up ({{ tether_space_failure }}). The previous {{ tether_cua_env }} and nft rule were left as they were and the rest of this run completed."
+      when: tether_space_failure is defined and not ansible_check_mode
 
     # Last task of the play: a tether release that could not be installed (see the
     # block above) fails the run here, after every other task and handler has
