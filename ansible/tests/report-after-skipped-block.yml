@@ -169,19 +169,23 @@
     # The fleet-ops#10074 section. Everything here is read out of the real
     # ansible/update.yml, so a change that reintroduces the class fails this
     # gate instead of the next daily run.
-    - name: Read the npm check's pattern out of ansible/update.yml
+    - name: Read the npm check out of ansible/update.yml
       ansible.builtin.command:
         argv:
           - yq
           - -o=json
-          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Check that no npm install or update runs as nish before its staging dirs go") | .["ansible.builtin.command"].argv[-1]][0]'
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Check that no npm install or update runs as nish before its staging dirs go") | .["ansible.builtin.command"]][0]'
           - "{{ playbook_dir }}/../update.yml"
-      register: npm_pattern_json
+      register: npm_check_json
       changed_when: false
+
+    - name: Hold the npm check as a fact
+      ansible.builtin.set_fact:
+        npm_check: "{{ npm_check_json.stdout | from_json }}"
 
     - name: The npm check matches only install activity
       ansible.builtin.command:
-        argv: [grep, -cE, "{{ npm_pattern_json.stdout | from_json }}"]
+        argv: [grep, -cE, "{{ npm_check.argv[-1] }}"]
         stdin: |
           npm install -g @openai/codex
           npm update --global
@@ -196,7 +200,7 @@
 
     - name: The npm check ignores a long-lived npm exec
       ansible.builtin.command:
-        argv: [grep, -qE, "{{ npm_pattern_json.stdout | from_json }}"]
+        argv: [grep, -qE, "{{ npm_check.argv[-1] }}"]
         stdin: |
           npm exec @modelcontextprotocol/server-filesystem /srv/notes
           npm run build
@@ -207,6 +211,12 @@
     - name: The npm check separates an install from a long-lived npm exec
       ansible.builtin.assert:
         that:
+          # `pgrep -u nish -f <pattern>`: the user and the whole-command-line
+          # match are both load-bearing, so the shape is asserted too.
+          - npm_check.argv[0] == 'pgrep'
+          - npm_check.argv[1] == '-u'
+          - npm_check.argv[2] == 'nish'
+          - npm_check.argv[3] == '-f'
           # Five of the seven lines above are install activity: the three
           # global updates, the bare `npm ci`, and the same by bin name and
           # by npm-cli.js. `npm run` and `npm exec` are not, and they are
