@@ -174,7 +174,6 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
         "-e", f"tether_node_cache={root}/node-cache",
         "-e", f"tether_release_root={root}/opt-tether",
         "-e", f"tether_release_cache={root}/release-cache",
-        "-e", f"cua_daemon_token_file={root}/cua-daemon-token",
         "-e", f"tether_cua_env={root}/cua.env",
     )
     env = {**os.environ, "ANSIBLE_STDOUT_CALLBACK": "json", "ANSIBLE_LOCALHOST_WARNING": "False"}
@@ -198,7 +197,6 @@ TETHER_ALWAYS = {
     "Look for an enabled tether-agent unit",
     "Look for the tether Photon credentials file",
     "Look for the tether calendar credentials file",
-    "Read the Cua daemon token (the password lookup creates the file once)",
     "Look up the tether uid",
     "Read the host's addresses and bridges",
     "Create the nftables drop-in directory",
@@ -242,7 +240,7 @@ TETHER_REACHED = (
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
     "Let the tether group read the calendar credentials file",
-    "Render tether's Cua env file from that token",
+    "Render tether's Cua env file",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -613,24 +611,19 @@ def test_cua_daemon_port_is_one_value_in_the_drop_in_and_host_yml() -> None:
     keys = runner_dropin_keys(CUA_DROPIN)
     assert keys["ExecStart"][0] == "", "the drop-in clears the unit's own ExecStart first"
     assert keys["ExecStart"][1].endswith(f"daemon start --foreground --loopback 127.0.0.1:{port}")
-    assert keys["EnvironmentFile"] == ["-%h/.config/fleet-ops/cua/daemon.env"]
 
 
-def test_cua_daemon_token_is_minted_on_the_host_and_never_in_argv_or_git() -> None:
+def test_tether_cua_env_is_the_address_only_and_follows_the_off_marker() -> None:
     drop_in = CUA_DROPIN.read_text()
-    assert "--daemon-token" not in drop_in and "CUA_DAEMON_TOKEN" not in drop_in, "the token is in an env file, not a flag"
-    assert _host_var("cua_daemon_token_file") == "/etc/fleet-ops/cua-daemon-token"
+    assert "--daemon-token" not in drop_in and "TOKEN" not in drop_in, "the daemon ignores a supplied token, so none is provisioned"
     text = HOST_YML.read_text()
-    assert "lookup('ansible.builtin.password', cua_daemon_token_file" in text
-    for name, mode in (("Render the Cua daemon's env file from that token", "0600"), ("Render tether's Cua env file from that token", "0640")):
-        block = [b for b in re.split(r"\n    - name: ", text) if b.startswith(name)]
-        assert len(block) == 1, name
-        assert "no_log: true" in block[0] and "diff: false" in block[0], name
-        assert f'mode: "{mode}"' in block[0], name
-    tether = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Render tether's Cua env file from that token")][0]
-    assert "owner: root\n        group: tether" in tether
-    assert "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}" in tether and "TETHER_CUA_TOKEN={{ cua_daemon_token }}" in tether
-    assert "when: not tether_off.stat.exists" in tether, "the off marker leaves tether no new credentials file"
+    assert "lookup('ansible.builtin.password', cua" not in text
+    block = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Render tether's Cua env file")]
+    assert len(block) == 1
+    assert "owner: root\n        group: tether\n        mode: \"0640\"" in block[0]
+    assert 'content: "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}\\n"' in block[0]
+    assert "when: not tether_off.stat.exists" in block[0], "the off marker leaves tether no new file"
+    assert "notify: Restart tether-agent after its release changed" in block[0]
 
 
 def test_cua_daemon_config_change_restarts_the_daemon_only_through_the_idle_desk_logic() -> None:
@@ -640,6 +633,9 @@ def test_cua_daemon_config_change_restarts_the_daemon_only_through_the_idle_desk
     assert update.count('spaces, delete, "{{ cua_desk_space }}"') == 1 and update.count("spaces, create, linux, --name, \"{{ cua_desk_space") == 1, "one desk recreate, shared"
     assert "cua_upgrade: \"{{ (cua_newer or cua_daemon_stale) and (cua_runs.stdout" in update
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
+    before_restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[0]
+    reload = before_restart.rsplit("- name: ", 1)[1]
+    assert reload.startswith("Reload the user manager") and "daemon-reload" in reload and "when: cua_upgrade" in reload, "the drop-in is loaded right before the idle-gated restart"
     restart = update.split("- name: Restart the daemon that hosts the desk agent", 1)[1].split("- name:", 1)[0]
     assert "when: cua_upgrade" in restart and "cua_daemon_unit" in restart
 
