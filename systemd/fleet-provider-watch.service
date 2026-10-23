@@ -44,7 +44,7 @@ Description=Daily check of each router provider's model list against the host sn
 #
 # Credentials: the issues-only token of the worker App (fleet-grafana-github-token.service
 # mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so the human
-# gh login is never read, as retro-weekly.service files its issues. The provider keys come
+# gh login is never read, as the issues-only token is the only credential in play. The provider keys come
 # from the same per-provider key files the LiteLLM container reads, listed one by one so the
 # master key and the Claude logins are not in this unit's environment. A key goes to curl
 # through a 0600 header file in the runtime dir (-H @file, a form AGENTS.md lists), never argv.
