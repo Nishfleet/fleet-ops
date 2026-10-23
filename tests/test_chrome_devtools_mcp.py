@@ -139,7 +139,15 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Check whether Hermes has its cua-driver",
                 "Install Hermes' pinned cua-driver",
                 "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
+                "Look for the agent state directories",
             ), task["name"]
+    for name in ("Look for the agent state directories", "Keep the agent state directories private"):
+        task = TASKS[name]
+        assert task.get("become") is True and task.get("become_user") == "nish", name
+        for module in task.values():
+            if isinstance(module, dict):
+                assert module.get("follow") is not True, name
+                assert "owner" not in module and "group" not in module, name
 
 
 def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_assert():
