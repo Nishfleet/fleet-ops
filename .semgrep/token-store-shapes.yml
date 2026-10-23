@@ -1,0 +1,46 @@
+# Token shapes must never land in a file in this repo (fleet-ops#10157, W1c).
+# A token that reaches a file here is read by every agent session that opens
+# the repo, so the file is a fourth store after the Pi, Claude and Devin
+# transcripts. ci.yml runs this file with `semgrep scan --error`, next to
+# .semgrep/no-glue.yml.
+#
+# Each rule's regex is the same shape as the matching rule in
+# config/token-store-scan.toml and the same `token` sub-pattern as
+# pi-extensions/token-redact/src/shapes.ts. tests/test_token_store_scan.py
+# holds the three in step, so widening one and not the others is red.
+#
+# The default gitleaks rules stay off: generic-api-key alone flagged 20,000
+# lines of ordinary prose and hashes in the Claude transcripts. These six
+# shapes are narrow enough that a match is a token-shaped string, not a word.
+
+rules:
+  - id: store-github-token
+    languages: [generic]
+    severity: ERROR
+    message: GitHub token shape (ghp_, gho_, ghu_, ghs_, ghr_)
+    pattern-regex: (?:^|[^A-Za-z0-9_])(gh[pousr]_[A-Za-z0-9_]{20,})
+  - id: store-github-fine-grained-pat
+    languages: [generic]
+    severity: ERROR
+    message: GitHub fine-grained token shape (github_pat_)
+    pattern-regex: (?:^|[^A-Za-z0-9_])(github_pat_[A-Za-z0-9_]{20,})
+  - id: store-anthropic-key
+    languages: [generic]
+    severity: ERROR
+    message: Anthropic API key shape (sk-ant-)
+    pattern-regex: (?:^|[^A-Za-z0-9_-])(sk-ant-[A-Za-z0-9_-]{20,})
+  - id: store-gitlab-token
+    languages: [generic]
+    severity: ERROR
+    message: GitLab personal access token shape (glpat-)
+    pattern-regex: (?:^|[^A-Za-z0-9_-])(glpat-[A-Za-z0-9_-]{20,})
+  - id: store-slack-token
+    languages: [generic]
+    severity: ERROR
+    message: Slack token shape (xoxb-, xoxa-, xoxp-, xoxr-, xoxs-)
+    pattern-regex: (?:^|[^A-Za-z0-9_-])(xox[baprs]-[A-Za-z0-9-]{10,})
+  - id: store-npm-token
+    languages: [generic]
+    severity: ERROR
+    message: npm access token shape (npm_)
+    pattern-regex: (?:^|[^A-Za-z0-9_])(npm_[A-Za-z0-9_]{30,})
