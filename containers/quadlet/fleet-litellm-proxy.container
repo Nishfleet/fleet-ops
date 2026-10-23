@@ -50,6 +50,9 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
 # is already covered by the seats/*.env EnvironmentFile below.
 PodmanArgs=--env=ALIBABA_CODING_API_KEY
+# Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key in
+# ~/.config/fleet-ops/seats/anthropic-api.env is already covered by the seats/*.env EnvironmentFile below.
+PodmanArgs=--env=ANTHROPIC_API_KEY
 PodmanArgs=--env=CLINE_API_KEY
 PodmanArgs=--env=COMMANDCODE_API_KEY
 PodmanArgs=--env=LITELLM_MASTER_KEY
