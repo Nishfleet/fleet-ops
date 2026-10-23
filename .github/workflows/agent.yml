@@ -1024,7 +1024,7 @@ jobs:
           # extraheader in git's env config, never argv (#8403), for both URL spellings, because git matches a key's path up to a slash or the end of the URL.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          [ -n "$GH_TOKEN" ] || retry "GH_TOKEN is empty, so the fetch would be anonymous"; basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0); echo "::add-mask::$basic"
+          [ -n "$GH_TOKEN" ] || retry "GH_TOKEN is empty, so the fetch would be anonymous"; basic=$(tr -d '\r\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0); echo "::add-mask::$basic"
           GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="http.https://github.com/$REPO.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" GIT_CONFIG_KEY_1="http.https://github.com/$REPO.git.extraheader" GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic" \
             git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
