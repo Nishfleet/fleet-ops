@@ -943,8 +943,7 @@ jobs:
     # workflow could post as the same bot; that is why a PR that edits the guard
     # list or a workflow needs three independent reviews, not one (below). Arming is
     # the arm job's, as the worker App.
-    permissions:
-      pull-requests: write
+    permissions: {pull-requests: write, contents: read}  # contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -1028,7 +1027,8 @@ jobs:
           # over 20,000 diff lines (406, Nishfleet/drive#949). Both SHAs are fetched whole.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
+          # gh is a git credential helper: it hands git this run's own token, so no header is built here.
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
