@@ -57,6 +57,10 @@ Environment=LITELLM_LOG=INFO
 # still sat the full 110 s: one uvicorn worker never exits after "Waiting for
 # connections to close", so the SIGKILL, not the drain, set the restart time.
 # 45 s keeps the whole 30 s drain and a margin, and takes 65 s off each such stop.
+# The value is fixed when the container is created, so it bounds the stop of the next container, not of
+# the one already running: the first restart after a change of this line still waits the old value
+# (2026-10-23 17:08 IST: a container made under 110 s sat until systemd's new 60 s timeout, then its
+# SIGKILL, about 120 s). tests/test_litellm_proxy_migration_skip.py keeps this below TimeoutStopSec.
 PodmanArgs=--stop-timeout=45
 # Bytecode cache that outlives the --rm container. Each start re-compiled
 # litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
