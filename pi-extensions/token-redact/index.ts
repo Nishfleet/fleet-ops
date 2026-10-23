@@ -1,4 +1,9 @@
-import type { ExtensionAPI, MessageEndEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  MessageEndEvent,
+  ToolResultEvent,
+  ToolResultEventResult,
+} from "@earendil-works/pi-coding-agent";
 import { redactJson, redactText } from "./src/shapes.ts";
 
 const OFF = new Set(["0", "false", "no", "off"]);
@@ -60,16 +65,16 @@ export const createTokenRedact = (pi: ExtensionAPI, options: TokenRedactOptions 
     return;
   }
 
-  pi.on("tool_result", (event: ToolResultEvent) => {
-    const result: Record<string, unknown> = {};
-    const content = redactContent(event.content);
+  pi.on("tool_result", (event: ToolResultEvent): ToolResultEventResult | undefined => {
+    const result: ToolResultEventResult = {};
+    const content = redactContent(event.content) as ToolResultEvent["content"];
     if (!sameJson(content, event.content)) {
       result.content = content;
     }
     if (event.structuredContent !== undefined) {
       const structured = redactJson(event.structuredContent);
       if (!sameJson(structured, event.structuredContent)) {
-        result.structuredContent = structured;
+        result.structuredContent = structured as ToolResultEventResult["structuredContent"];
       }
     }
     if (event.details !== undefined) {
@@ -78,7 +83,13 @@ export const createTokenRedact = (pi: ExtensionAPI, options: TokenRedactOptions 
         result.details = details;
       }
     }
-    return Object.keys(result).length > 0 ? result : undefined;
+    if (Object.keys(result).length === 0) {
+      return undefined;
+    }
+    if (event.structuredContent !== undefined && result.structuredContent === undefined) {
+      result.structuredContent = event.structuredContent;
+    }
+    return result;
   });
 
   pi.on("message_end", (event: MessageEndEvent) => {

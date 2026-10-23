@@ -52,7 +52,7 @@ npm ci
 npm test
 ```
 
-42 tests, no network: a fake Pi records the handlers, and a session-shaped JSONL transcript is the input. They cover each shape, the boundaries (a prefix inside a longer word is not touched, two adjacent tokens are both redacted), every content type, the off switch, and that the extension registers no tool, no command and no flag.
+43 tests, no network: a fake Pi records the handlers, and a session-shaped JSONL transcript is the input. They cover each shape, the boundaries (a prefix inside a longer word is not touched, two adjacent tokens are both redacted), every content type, the off switch, and that the extension registers no tool, no command and no flag.
 
 `tests/test_token_store_scan.py` in the repo root runs them in CI, alongside the checks that hold the three shape lists in step.
 

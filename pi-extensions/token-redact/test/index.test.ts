@@ -73,8 +73,22 @@ describe("tool_result", () => {
         structuredContent: { ok: true },
       }),
     ) as Record<string, unknown>;
-    expect(out.structuredContent).toBeUndefined();
+    expect(out.structuredContent).toEqual({ ok: true });
     expect(out.content).toBeDefined();
+  });
+
+  it("keeps structuredContent when only the details changed", () => {
+    const handlers = load();
+    const out = handlers.tool_result[0](
+      toolResultEvent({
+        content: [{ type: "text", text: "ok" }],
+        structuredContent: { ok: true },
+        details: { command: `curl -H ${GITHUB}` },
+      }),
+    ) as Record<string, unknown>;
+    expect(out.structuredContent).toEqual({ ok: true });
+    expect(out.content).toBeUndefined();
+    expect(JSON.stringify(out.details)).not.toContain(GITHUB);
   });
 
   it("returns nothing when the result holds no shape", () => {
