@@ -122,12 +122,11 @@
     # passed a staged test after 24 h. Empty = take the newest aged release.
     cua_spaces_tag: ""
     cua_desk_space: local:desk
-    # The daemon's own unit and its config files. host.yml writes the files; a
-    # daemon that started before the newest of them has not read them yet.
+    # The daemon's own unit and its drop-in directory. host.yml writes the
+    # drop-in; a daemon that started before the newest file in it has not read it.
     cua_daemon_unit: cua-desk-daemon.service
     cua_daemon_config_dirs:
       - /etc/systemd/user/cua-desk-daemon.service.d
-      - "{{ nish_env.HOME }}/.config/fleet-ops/cua"
     cua_desk_agent_dir: agents/desk
     cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
@@ -600,7 +599,7 @@
         # update back until the next day. Any failure is recorded and fails the
         # run at the final assert.
         # The same restart and recreate also applies a change to the daemon's
-        # own config (host.yml writes its drop-in and env file, which a running
+        # own config (host.yml writes its drop-in, which a running
         # daemon does not read until it restarts): it runs when the daemon
         # started before the newest config file, with or without a new release,
         # and under the same idle check.

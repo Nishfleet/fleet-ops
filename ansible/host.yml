@@ -56,13 +56,14 @@
     tether_photon_env: /etc/tether/photon.env
     tether_calendar_env: /etc/tether/calendar.env
     # The Cua daemon (user unit cua-desk-daemon.service) listens on this fixed
-    # loopback port so tether can reach it. The token is minted once, like the
-    # Redis password below; tether's copy is the env file named here, which the
-    # tasks render only while tether is not switched off. The same port is in
-    # the drop-in rootfs/etc/systemd/user/cua-desk-daemon.service.d/ and the
-    # nft rule; tests/test_systemd_unit_keys.py fails when they differ.
+    # loopback port so tether can reach it. tether's copy of the address is the
+    # env file named here, which the task below renders only while tether is not
+    # switched off. The same port is in the drop-in
+    # rootfs/etc/systemd/user/cua-desk-daemon.service.d/ and the nft rule;
+    # tests/test_systemd_unit_keys.py fails when they differ. The daemon writes
+    # its own token at every start and ignores a supplied one, so no token is
+    # provisioned here.
     cua_daemon_port: 4730
-    cua_daemon_token_file: /etc/fleet-ops/cua-daemon-token
     tether_cua_env: /etc/tether/cua.env
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
@@ -153,8 +154,6 @@
     redis_password_file: /etc/fleet-ops/litellm-redis-password
     redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
     redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
-    cua_daemon_env_dir: "{{ nish_config }}/fleet-ops/cua"
-    cua_daemon_env: "{{ cua_daemon_env_dir }}/daemon.env"
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
@@ -1194,48 +1193,16 @@
       # Under --check the group above was not really created yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    # The Cua daemon's token: ONE root-only file that the stock password lookup
-    # creates when it is missing (deleting it mints a new token). The daemon's own
-    # env file and tether's are rendered from it on every run, so the two cannot
-    # differ. Neither restarts anything here: the daemon restarts only through
-    # update.yml, when the desk Space is idle; tether restarts through the handler
-    # below. no_log and diff: false keep the value out of the ansible-pull log.
-    - name: Read the Cua daemon token (the password lookup creates the file once)
-      tags: [tether, cua]
-      ansible.builtin.set_fact:
-        cua_daemon_token: "{{ lookup('ansible.builtin.password', cua_daemon_token_file ~ ' length=48 chars=ascii_letters,digits') }}"
-      no_log: true
-
-    - name: Make sure the directory for the Cua daemon env file exists
-      tags: [cua]
-      become: true
-      become_user: nish
-      ansible.builtin.file:
-        path: "{{ cua_daemon_env_dir }}"
-        state: directory
-        mode: "0700"
-
-    - name: Render the Cua daemon's env file from that token
-      tags: [cua]
-      become: true
-      become_user: nish
-      ansible.builtin.copy:
-        content: "CUA_DAEMON_TOKEN={{ cua_daemon_token }}\n"
-        dest: "{{ cua_daemon_env }}"
-        mode: "0600"
-      no_log: true
-      diff: false
-
-    - name: Render tether's Cua env file from that token
+    # The address of the Cua daemon for tether. The unit reads env files only at
+    # start, so a change notifies the tether restart handler below.
+    - name: Render tether's Cua env file
       tags: [tether]
       ansible.builtin.copy:
-        content: "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}\nTETHER_CUA_TOKEN={{ cua_daemon_token }}\n"
+        content: "TETHER_CUA_URL=http://127.0.0.1:{{ cua_daemon_port }}\n"
         dest: "{{ tether_cua_env }}"
         owner: root
         group: tether
         mode: "0640"
-      no_log: true
-      diff: false
       ignore_errors: "{{ ansible_check_mode }}"
       when: not tether_off.stat.exists
       notify: Restart tether-agent after its release changed

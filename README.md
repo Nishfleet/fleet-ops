@@ -636,19 +636,19 @@ needed no firewall change for the internet.
 The server's Cua daemon (`cua-desk-daemon.service`, a user unit of the box owner)
 is also reachable from tether, so each agent on the server can have its own
 Space. The drop-in `rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf`
-gives the daemon a fixed loopback port (`cua_daemon_port` in `ansible/host.yml`)
-and an `EnvironmentFile` with `CUA_DAEMON_TOKEN`. `host.yml` mints the token once
-into a root-only file with the stock `password` lookup (deleting the file mints
-a new one), renders the daemon's env file from it, and renders
-`/etc/tether/cua.env` (`TETHER_CUA_URL`, `TETHER_CUA_TOKEN`, root:tether 0640,
-loaded by the unit) unless the off marker exists. `tether.nft.j2` allows tcp to
-that port for the tether uid. A running daemon reads none of this until it
-restarts, and a restart kills the desk Space's Volume mount, so `host.yml` never
-restarts it: the daily `update.yml` restarts it only when the desk is idle (the
-same check, restart and desk recreate as a Cua Spaces upgrade, triggered when
-the daemon started before its newest config file) and otherwise tries again the
-next day. Switch off: delete the drop-in and the two env-file tasks and the nft
-line, so the next idle restart is back on an ephemeral port.
+gives the daemon a fixed loopback port (`cua_daemon_port` in `ansible/host.yml`).
+`host.yml` renders `/etc/tether/cua.env` (`TETHER_CUA_URL`, root:tether 0640,
+loaded by the unit) unless the off marker exists, and `tether.nft.j2` allows tcp
+to that port for the tether uid. The daemon writes a new token to its own
+`daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and `--daemon-token`
+(tested on 0.6.0), so no token is provisioned here: how tether gets it is open.
+A running daemon reads the drop-in only after a restart, and a restart kills the
+desk Space's Volume mount, so `host.yml` never restarts it: the daily
+`update.yml` restarts it only when the desk is idle (the same check, reload,
+restart and desk recreate as a Cua Spaces upgrade, triggered when the daemon
+started before the newest file in its drop-in directory) and otherwise tries
+again the next day. Switch off: delete the drop-in, the env-file task and the
+nft line, so the next idle restart is back on an ephemeral port.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
