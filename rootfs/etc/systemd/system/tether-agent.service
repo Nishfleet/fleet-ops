@@ -9,7 +9,8 @@ Requires=nftables.service
 After=nftables.service
 # tether reaches the Cua daemon through its own socket, which the socket unit
 # owns; Wants=, not Requires=, so tether still starts when that socket is
-# masked (its off switch).
+# not there (its off switch is the /etc/fleet-ops/tether-cua-off marker, which
+# makes host.yml remove the socket unit).
 Wants=cua-agent-tether.socket
 After=cua-agent-tether.socket
 # The app ships from Nishfleet/tether as a pinned, checksummed release that

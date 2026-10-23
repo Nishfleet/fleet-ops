@@ -336,6 +336,7 @@ def test_claude_lane_invocation(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "--model claude-opus-5-5" in claude
     assert "--permission-mode bypassPermissions" in claude
+    assert "--allowedTools Bash Read Edit Write" in claude and "mcp__chrome-devtools" in claude
     assert "--max-turns 200" in claude
     assert "Fleet issue worker" in (tmp_path / "state/claude.stdin").read_text()
     assert "-- claude -p" in bwrap and "--chdir" in bwrap and "agent-worktrees/issue-" in bwrap

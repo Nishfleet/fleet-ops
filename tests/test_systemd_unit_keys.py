@@ -197,6 +197,8 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 TETHER_ALWAYS = {
     "Look for the tether off marker",
     "Look for the tether Cua off marker",
+    "Remove the unused Cua daemon token file",
+    "Remove the unused Cua daemon env file",
     "Stop the Cua socket and proxy while an off marker exists",
     "Remove the Cua socket, proxy and env file while an off marker exists",
     "Look for an enabled tether-agent unit",

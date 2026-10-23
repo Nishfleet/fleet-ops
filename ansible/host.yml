@@ -1249,11 +1249,13 @@
     # daemon ignores a supplied token, so nothing reads them. The files go; the
     # drop-in that set the fixed port is in `retired`.
     - name: Remove the unused Cua daemon token file
+      tags: [tether]
       ansible.builtin.file:
         path: /etc/fleet-ops/cua-daemon-token
         state: absent
 
     - name: Remove the unused Cua daemon env file
+      tags: [tether]
       become: true
       become_user: nish
       ansible.builtin.file:
@@ -1267,6 +1269,8 @@
       become_user: nish
       ansible.builtin.command:
         argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]
+      environment:
+        LC_ALL: C
       register: cua_env_dir_rmdir
       changed_when: cua_env_dir_rmdir.rc == 0
       failed_when:

@@ -693,8 +693,12 @@
                 deb: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
                 state: present
                 lock_timeout: 300
+              # The block's environment is nish's PATH, which has no sbin
+              # directory: dpkg then cannot find ldconfig or start-stop-daemon
+              # and the install fails (the 2026-10-23 run exited 2 on this).
               environment:
                 DEBIAN_FRONTEND: noninteractive
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
               when: cua_upgrade
 
             - name: Restart the daemon that hosts the desk agent
