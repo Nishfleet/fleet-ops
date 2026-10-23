@@ -21,7 +21,9 @@ Wants=fleet-grafana-github-token.service
 After=fleet-grafana-github-token.service
 
 [Container]
-Image=docker.io/grafana/grafana:13.2.3
+# Pinned by digest (the image running when this was pinned); the tag is only a label.
+# Bump the digest in its own PR.
+Image=docker.io/grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
 ContainerName=fleet-grafana
 Network=host
 # The host user maps to the image's grafana uid 472, so the nish-owned data

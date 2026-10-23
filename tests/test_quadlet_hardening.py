@@ -1,4 +1,4 @@
-"""Every quadlet but the two excluded ones has a restart policy, a memory cap and a digest-pinned image."""
+"""Every quadlet has a restart policy, a memory cap and a digest-pinned image."""
 
 import re
 from pathlib import Path
@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED = {"fleet-litellm-proxy.container", "fleet-grafana.container"}
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 # Podman 4.9.3 has no Memory= key for quadlets, so the cap is the unit's MemoryMax=; the
 # [Container] spellings are accepted for a later podman.
@@ -14,7 +13,7 @@ CAP_KEYS = {"Service": {"MemoryMax"}, "Container": {"Memory"}}
 
 
 def quadlets() -> list[Path]:
-    return [path for path in sorted(ROOT.glob("containers/quadlet/*.container")) if path.name not in EXCLUDED]
+    return sorted(ROOT.glob("containers/quadlet/*.container"))
 
 
 def parse(path: Path) -> dict[str, list[tuple[str, str]]]:
@@ -39,7 +38,7 @@ def values(sections: dict[str, list[tuple[str, str]]], section: str, key: str) -
 
 
 def test_quadlets_are_found() -> None:
-    assert quadlets(), "no containers/quadlet/*.container files found besides the excluded ones"
+    assert quadlets(), "no containers/quadlet/*.container files found"
 
 
 @pytest.mark.parametrize("path", quadlets(), ids=lambda path: path.name)

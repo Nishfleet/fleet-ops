@@ -131,6 +131,12 @@ EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
 # instead of running with a cache it cannot authenticate to. ansible/host.yml renders it.
 EnvironmentFile=%h/.config/fleet-ops/litellm-keys/redis.env
 Slice=app-litellm.slice
+# The router's own cap, equal to app-litellm.slice's MemoryMax, so the unit reports a
+# cap of its own in `systemctl show -p MemoryMax` instead of `infinity`. The slice
+# stays the ceiling for the whole tree (proxy + Postgres + Redis), so this adds no
+# tighter limit and cannot page differently. ManagedOOMPreference=avoid stays on the
+# slice's members as before.
+MemoryMax=5G
 # Pre-start steps, in this order. A failing step fails the start job, so the proxy never runs on a
 # schema the job did not migrate; Restart=on-failure and OnFailure= then page as for any failed start.
 # The proxy is stopped while they run, so nothing writes between the dump and the migration.
