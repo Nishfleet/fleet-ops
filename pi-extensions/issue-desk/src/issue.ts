@@ -1,7 +1,7 @@
 import { countRecent, withStateLock } from "./cap.ts";
 import { loadIntake, NEVER_REPO } from "./config.ts";
 import type { Runner } from "./exec.ts";
-import { clip, firstLine, plain, singleLine } from "./text.ts";
+import { clip, firstLine, plain, quoteAuthority, singleLine } from "./text.ts";
 
 export const TITLE_MAX = 120;
 export const BODY_MAX = 8000;
@@ -9,6 +9,8 @@ export const BODY_MAX = 8000;
 export const INTAKE_LABEL = "needs-triage";
 
 export const ISSUE_URL = /https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/issues\/\d+/;
+
+export const RELAYED_BY = "relayed-by: issue-desk (not written by Nish)";
 
 export const footerFor = (
   requestId: string,
@@ -22,6 +24,7 @@ export const footerFor = (
     "",
     `tincan-request: ${requestId}`,
     `requested-by: ${sender}`,
+    RELAYED_BY,
     `chain: ${trail}`,
   ].join("\n");
 };
@@ -31,7 +34,7 @@ export const composeBody = (
   requestId: string,
   sender: string,
   chain: readonly string[],
-): string => `${plain(body).trim()}\n${footerFor(requestId, sender, chain)}`;
+): string => `${quoteAuthority(plain(body)).trim()}\n${footerFor(requestId, sender, chain)}`;
 
 export const issueUrlFrom = (stdout: string): string => {
   const match = stdout.match(ISSUE_URL);
@@ -44,8 +47,15 @@ export const issueUrlFrom = (stdout: string): string => {
 };
 
 export const hasMarker = (body: string, requestId: string): boolean => {
-  const needle = `tincan-request: ${requestId}`;
-  return body.split("\n").some((line) => line.trim() === needle);
+  const lines = body.trimEnd().split("\n");
+  const last = lines.slice(-4);
+  return (
+    last.length === 4 &&
+    last[0].trim() === `tincan-request: ${requestId}` &&
+    last[1].trim().startsWith("requested-by: ") &&
+    last[2].trim() === RELAYED_BY &&
+    last[3].trim().startsWith("chain: ")
+  );
 };
 
 export interface FileIssueDeps {

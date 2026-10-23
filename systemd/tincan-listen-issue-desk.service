@@ -3,6 +3,14 @@
 # own wake for agents without channels, and the three tools live in a Pi
 # extension (pi-extensions/issue-desk), not in a wrapper.
 #
+# tincan runs the --exec command through `sh -c` (tincan listen --help), so the
+# wake below is plain sh: it exits at once while TINCAN_WAITING (requests plus
+# unseen replies) is zero - a relay upgrade nudge fires with zero waiting, and
+# waking the model then buys a paid worker-cheap call for nothing - and
+# otherwise execs coreutils timeout around pi, so one stuck model call cannot
+# run past 600 s. systemd expands $$ to a literal $, so the shell receives
+# ${TINCAN_WAITING:-0}.
+#
 # The model gets no shell, no file tools, no MCP and no skills: --no-builtin-tools
 # leaves only the tools the extension registers (tincan_inbox, file_issue,
 # tincan_reply), so the worst a fooled model can do is file a bad product issue.
@@ -40,7 +48,7 @@ Environment=ISSUE_DESK_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-
 Environment=ISSUE_DESK_MAX_PER_DAY=10
 StateDirectory=tincan-listen-issue-desk
 WorkingDirectory=%S/tincan-listen-issue-desk
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/pi --print --no-session --no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates -e /home/nish/workspaces/tooling/fleet-ops-deploy-clone/pi-extensions/issue-desk/index.ts --provider litellm --model worker-cheap < /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/issue-desk.md'
+ExecStart=/home/nish/.local/bin/tincan listen --exec 'test "$${TINCAN_WAITING:-0}" -gt 0 || exit 0 ; exec timeout 600 /home/nish/.local/bin/pi --print --no-session --no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates -e /home/nish/workspaces/tooling/fleet-ops-deploy-clone/pi-extensions/issue-desk/index.ts --provider litellm --model worker-cheap < /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/issue-desk.md'
 Restart=always
 RestartSec=30
 

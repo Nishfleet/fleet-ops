@@ -2,7 +2,7 @@
   "name": "pi-issue-desk",
   "version": "0.1.0",
   "private": true,
-  "description": "Pi extension: the three tools issue-desk uses to turn one Agent Tincan request into one agent-ready GitHub issue",
+  "description": "Pi extension: the three tools issue-desk uses to turn one Agent Tincan request into one needs-triage GitHub issue for the admit job",
   "keywords": ["pi-package"],
   "license": "UNLICENSED",
   "type": "module",

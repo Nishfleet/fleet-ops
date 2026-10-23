@@ -10,7 +10,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/tincan-listen-issue-desk.service"
+LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 EXTENSION = ROOT / "pi-extensions/issue-desk"
+README = EXTENSION / "README.md"
 PROMPT = ROOT / "prompts/issue-desk.md"
 TOOLS = {"tincan_inbox", "file_issue", "tincan_reply"}
 TINCAN = "/.local/bin/tincan"
@@ -41,7 +43,8 @@ def exec_start() -> str:
 
 
 def pi_argv() -> list[str]:
-    argv = shlex.split(exec_start())
+    # systemd expands $$ to a literal $ before the shell sees the line.
+    argv = shlex.split(exec_start().replace("$$", "$"))
     assert argv[0].endswith(TINCAN) and argv[1:3] == ["listen", "--exec"], argv[:3]
     return shlex.split(argv[3])
 
@@ -53,9 +56,21 @@ def test_the_wake_is_the_vendors_own_listen_command() -> None:
     assert argv[2] == "--exec"
 
 
+def test_the_wake_no_ops_when_nothing_is_waiting_and_bounds_the_call() -> None:
+    argv = pi_argv()
+    assert argv[0] == "test"
+    assert argv[1] == "${TINCAN_WAITING:-0}"
+    assert argv[2:4] == ["-gt", "0"]
+    assert argv[4:7] == ["||", "exit", "0"]
+    assert argv[7:10] == [";", "exec", "timeout"]
+    assert argv[10] == "600"
+    assert argv[11].endswith("/.local/bin/pi")
+    assert "TINCAN_WAITING" in UNIT.read_text(), "the unit never explains the gate"
+
+
 def test_the_model_gets_no_tools_except_the_extension() -> None:
     argv = pi_argv()
-    assert argv[0].endswith("/.local/bin/pi")
+    assert argv[11].endswith("/.local/bin/pi")
     missing = [flag for flag in NO_TOOLS_FLAGS if flag not in argv]
     assert missing == [], f"pi would load more than the three tools; missing {missing}"
     extensions = [argv[index + 1] for index, arg in enumerate(argv) if arg == "-e"]
@@ -104,6 +119,22 @@ def test_the_extension_can_reach_no_shell_and_no_path() -> None:
         assert f"{name}:" not in schema, f"a tool parameter is called {name}"
 
 
+def test_the_later_sweep_never_promotes_a_needs_triage_issue() -> None:
+    text = LATER_SWEEP.read_text()
+    match = re.search(r"any\(\.==(.*?)\)\|not", text, re.S)
+    assert match is not None, "later-sweep has no parked-label exclusion"
+    assert '.=="needs-triage"' in match.group(1), (
+        "later-sweep would promote a relayed needs-triage issue whose body carries a past due: line"
+    )
+
+
+def test_the_readme_says_the_wake_runs_through_sh() -> None:
+    text = README.read_text()
+    assert "sh -c" in text
+    assert "TINCAN_WAITING" in text
+    assert "timeout 600" in text
+
+
 def test_the_desk_never_skips_admission() -> None:
     issue = (EXTENSION / "src/issue.ts").read_text()
     assert '"needs-triage"' in issue
@@ -115,23 +146,29 @@ def test_the_desk_never_skips_admission() -> None:
 NODE_MIN = (22, 12)
 
 
-def node_is_new_enough() -> bool:
+def node_version() -> tuple[int, int] | None:
     node = shutil.which("node")
     if node is None:
-        return False
+        return None
     out = subprocess.run(
         [node, "--version"], capture_output=True, text=True, check=False
     ).stdout.strip()
     match = re.match(r"v(\d+)\.(\d+)", out)
     if match is None:
-        return False
-    return (int(match.group(1)), int(match.group(2))) >= NODE_MIN
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def test_the_suite_runs_on_a_node_new_enough_for_vitest() -> None:
+    version = node_version()
+    assert version is not None, "node is not installed; vitest 5 cannot run"
+    assert version >= NODE_MIN, (
+        f"node {'.'.join(map(str, version))} is older than vitest 5's floor "
+        f"{'.'.join(map(str, NODE_MIN))}; run the suite on a newer node, never skip it"
+    )
 
 
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm is not installed")
-@pytest.mark.skipif(
-    not node_is_new_enough(), reason="vitest 5 needs node 22.12 or newer"
-)
 def test_the_extension_tests_pass() -> None:
     install = subprocess.run(
         ["npm", "ci", "--no-audit", "--no-fund"],
@@ -153,5 +190,5 @@ def test_the_extension_tests_pass() -> None:
     assert tests.returncode == 0, tests.stdout + tests.stderr
     clean = strip_ansi(tests.stdout)
     assert "failed" not in clean, clean
-    assert re.search(r"Test Files\s+4 passed", clean), clean
+    assert re.search(r"Test Files\s+5 passed", clean), clean
     assert re.search(r"Tests\s+\d+ passed", clean), clean
