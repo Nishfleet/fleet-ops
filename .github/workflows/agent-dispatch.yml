@@ -481,6 +481,9 @@ jobs:
       pull-requests: write
       # agent.yml's work job asks for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
       issues: write
+      # agent.yml's review job fetches the head with github.token, so a private repo's PR can be
+      # judged at all (fleet-ops#10129); read-only, and the same grant stuck-review needs below.
+      contents: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ github.event.pull_request.number }}
@@ -949,6 +952,7 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
+      contents: read
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ matrix.x.pr }}

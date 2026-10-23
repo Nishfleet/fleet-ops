@@ -945,6 +945,11 @@ jobs:
     # the arm job's, as the worker App.
     permissions:
       pull-requests: write
+      # The head's repo can be private (Nishfleet/tether), and an anonymous fetch of it
+      # answers "Repository not found", so the diff below is fetched with github.token
+      # (fleet-ops#10129). contents: read is that fetch and nothing else: the token is
+      # this one repo's own, read-only, and no other scope is asked for.
+      contents: read
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -1028,7 +1033,18 @@ jobs:
           # over 20,000 diff lines (406, Nishfleet/drive#949). Both SHAs are fetched whole.
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"
           rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
-          git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
+          # The fetch carries github.token: a private repo answers an anonymous fetch with
+          # "Repository not found", which held every private-repo head unjudged (fleet-ops#10129).
+          # The header goes in git's env config, never argv (/proc/<pid>/cmdline is world
+          # readable, #8403), scoped to this one repo's URL, and it is masked in the log.
+          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          # Both URL spellings, because git matches a key's path up to a slash or the end of the
+          # URL: the bare one covers https://github.com/OWNER/REPO, the .git one the fetch below.
+          GIT_CONFIG_COUNT=2 \
+          GIT_CONFIG_KEY_0="http.https://github.com/$REPO.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+          GIT_CONFIG_KEY_1="http.https://github.com/$REPO.git.extraheader" GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $basic" \
+            git -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
