@@ -120,6 +120,81 @@ def starts_after_user_manager(text: str) -> list[str]:
     return missing
 
 
+def merged_values(dirs: list[Path], key: str) -> list[str]:
+    """Effective `key=` list of one unit the way systemd merges its drop-ins.
+
+    A drop-in of the unit's own .service.d replaces a same-named one in a prefix dir (`...ci-.service.d`);
+    all are read in file-name order, and an empty `key=` clears what came before.
+    """
+    files = {}
+    for d in dirs:  # prefix dirs first, so the unit's own dir wins on a same name
+        for conf in d.glob("*.conf"):
+            files[conf.name] = conf
+    out: list[str] = []
+    for name in sorted(files):
+        for value in values(files[name].read_text(), key):
+            out = [] if value.strip() == "" else out + [value]
+    return out
+
+
+def runner_units() -> dict[str, list[Path]]:
+    """Unit dir name -> the drop-in dirs that apply to it, for every runner .service.d in the repo."""
+    dirs = sorted(SYSTEM.glob("actions.runner.*.service.d"))
+    units = {}
+    for d in dirs:
+        stem = d.name.removesuffix(".service.d")
+        prefixes = [SYSTEM / (stem[: i + 1] + ".service.d") for i, c in enumerate(stem) if c == "-" and i + 1 < len(stem)]
+        units[d.name] = [p for p in prefixes if p.is_dir()] + [d]
+    return units
+
+
+def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
+    """Paths an unprivileged ExecStartPre= touches that sit under a directory the unit hides whole.
+
+    InaccessiblePaths= also applies to ExecStartPre= (same mount namespace), so a mkdir below a hidden
+    parent fails with "Permission denied" and the runner never starts. Hiding the target itself is fine:
+    it exists already, so mkdir -p finds it.
+    """
+    hidden = set()
+    for value in merged_values(dirs, "InaccessiblePaths"):
+        hidden |= {Path(t.lstrip("-+")) for t in shlex.split(value)}
+    bad = []
+    for value in merged_values(dirs, "ExecStartPre"):
+        for arg in shlex.split(value.lstrip("-@:!")):
+            if arg.startswith("/") and hidden & set(Path(arg).parents):
+                bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & set(Path(arg).parents))[0]}")
+    return bad
+
+
+def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> None:
+    units = runner_units()
+    assert len(units) >= 5, "the runner drop-in dirs were not found"
+    for name, dirs in units.items():
+        assert pre_start_paths_under_hidden_dir(dirs) == [], name
+    # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in makes dirs in it (2026-10-23).
+    ci3 = units["actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"]
+    assert FLEET_CI_DIR in ci3
+    assert merged_values(ci3, "ExecStartPre") == []
+    assert any("/run/user/1000" in [t.lstrip("-+") for t in v.split()] for v in merged_values(ci3, "InaccessiblePaths"))
+
+
+def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: Path) -> None:
+    shared = tmp_path / "x-.service.d"
+    own = tmp_path / "x-3.service.d"
+    shared.mkdir()
+    own.mkdir()
+    (shared / "10.conf").write_text("[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a\n")
+    (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000\n")
+    assert pre_start_paths_under_hidden_dir([shared, own]) == [
+        "ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a needs /run/user/1000/a, below hidden /run/user/1000"
+    ]
+    # Hiding the target itself is fine (it exists, so mkdir -p finds it), and an empty ExecStartPre= clears the shared line.
+    (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/a\n")
+    assert pre_start_paths_under_hidden_dir([shared, own]) == []
+    (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000\nExecStartPre=\n")
+    assert pre_start_paths_under_hidden_dir([shared, own]) == []
+
+
 @pool
 def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: Path) -> None:
     assert starts_after_user_manager(start_conf.read_text()) == []
