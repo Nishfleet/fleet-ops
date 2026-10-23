@@ -9,6 +9,8 @@ AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
 SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework", "miss-stalled")
 AGENT_RUNNERS_MEASURED_2026_10_23 = 22
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+WORKFLOWS = ROOT / ".github/workflows"
 
 
 def yaml_json(path):
@@ -71,3 +73,42 @@ def test_review_concurrency_stays_inside_the_judge_seats():
 
 def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
+
+
+def agent_yml_requests():
+    agent = yaml_json(AGENT)
+    default = agent.get("permissions") or {}
+    asked = {}
+    for name, job in agent["jobs"].items():
+        block = job.get("permissions", default) or {}
+        for scope, level in block.items():
+            assert level in PERMISSION_LEVELS, f"agent.yml job {name} asks {scope}: {level}; extend PERMISSION_LEVELS"
+            asked[scope] = max(asked.get(scope, "none"), level, key=PERMISSION_LEVELS.get)
+    return asked
+
+
+def agent_yml_callers():
+    found = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        wf = yaml_json(path)
+        for name, job in (wf.get("jobs") or {}).items():
+            if str(job.get("uses") or "").split("@")[0].endswith("/agent.yml"):
+                found.append((path.name, name, job, wf))
+    return found
+
+
+def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
+    asked = agent_yml_requests()
+    callers = agent_yml_callers()
+    assert callers, "no workflow job calls agent.yml, so the caller grant check would pass vacuously"
+    shortfalls = []
+    for fname, jname, job, wf in callers:
+        granted = job.get("permissions", wf.get("permissions") or {}) or {}
+        for scope, level in sorted(asked.items()):
+            have = PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
+            if have < PERMISSION_LEVELS[level]:
+                shortfalls.append(f"{fname} job {jname} grants {scope}: {granted.get(scope, 'none')} but agent.yml asks {scope}: {level}")
+    assert not shortfalls, (
+        "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
+        + "; ".join(shortfalls)
+    )
