@@ -108,7 +108,7 @@ RP_SHIPPED = {
 # fleet-ops#9375 as the fix ships it.
 RP_PROPOSED = {
     "AuthenticationErrorRetries": 0,
-    "RateLimitErrorRetries": 1,
+    "RateLimitErrorRetries": 2,
     "TimeoutErrorRetries": 1,
     "InternalServerErrorRetries": 1,
     "BadRequestErrorRetries": 1,
@@ -278,6 +278,38 @@ async def _run(server, retry_policy, sid, park_on_first_429=False):
         litellm.callbacks = saved_callbacks
 
 
+async def _run_no_fallback(server, retry_policy, sid):
+    server.hits.clear()
+    saved_callbacks = litellm.callbacks
+    random.seed(10178)
+    _CURRENT_SERVER.append(server)
+    litellm.callbacks = []
+    try:
+        rows = _rows(server.port)[:2]
+        rows[1]["litellm_params"]["api_base"] = f"http://127.0.0.1:{server.port}/okcapable"
+        router = Router(
+            model_list=rows,
+            routing_strategy="simple-shuffle",
+            num_retries=0, cooldown_time=60, allowed_fails=1,
+            optional_pre_call_checks=["prompt_caching", "session_affinity"],
+            deployment_affinity_ttl_seconds=3600,
+            retry_policy=retry_policy,
+        )
+        await router.cache.async_set_cache(
+            key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
+        outcome = "ok"
+        try:
+            await router.acompletion(model="worker-capable",
+                                     messages=[{"role": "user", "content": "hi"}],
+                                     metadata={"session_id": sid})
+        except Exception as e:  # noqa: BLE001
+            outcome = type(e).__name__
+        return list(server.hits), outcome
+    finally:
+        _CURRENT_SERVER.pop()
+        litellm.callbacks = saved_callbacks
+
+
 # --------------------------------------------------------------------------- #
 # Config gate
 # --------------------------------------------------------------------------- #
@@ -336,10 +368,10 @@ def test_authentication_error_gets_zero_retries():
     assert get_num_retries_from_retry_policy(AuthenticationError("401", "openai", "m", None), rp) == 0
 
 
-def test_rate_limit_gets_one_retry():
+def test_rate_limit_gets_two_retries():
     rp = RetryPolicy(**RP_PROPOSED)
     exc = RateLimitError(message="x", llm_provider="openai", model="m")
-    assert get_num_retries_from_retry_policy(exc, rp) == 1
+    assert get_num_retries_from_retry_policy(exc, rp) == 2
 
 
 def test_the_same_row_retry_has_no_backoff():
@@ -432,20 +464,20 @@ def test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall():
     assert pin == {"model_id": "seat-a"}, pin
 
 
-def test_the_fix_retries_the_row_that_failed_not_a_peer():
+def test_the_fix_retries_the_row_that_failed_then_a_peer():
     server = _Server()
     try:
         attempts, outcome, pin = asyncio.run(_run(server, RP_PROPOSED, "s-proposed-wall"))
     finally:
         server.close()
-    # proposed: the capped budget leaves exactly one retry and litellm sends it back
-    # to the row that just 429d, so only the fallback hop is a cross-seat re-send.
+    # fleet-ops#10178: two retries. The first goes back to the row that just 429d and
+    # parks it (router allowed_fails 1), the second reaches seat-c, which 429s too, so
+    # the fallback group answers: three in-group picks on two seats.
     ing = _in_group(attempts)
-    assert len(ing) == 2, attempts
-    assert len(set(ing)) == 1, attempts
-    # The first attempt is the pinned seat (see _assert_first_pick_is_the_pinned_seat)
-    # and the single retry came back to it: both in-group hits are the same row.
+    assert len(ing) == 3, attempts
+    assert len(set(ing)) == 2, attempts
     _assert_first_pick_is_the_pinned_seat(attempts)
+    assert attempts[1].startswith("/fail/"), attempts
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
@@ -505,11 +537,35 @@ def test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself():
         server.close()
     _assert_first_pick_is_the_pinned_seat(attempts)
     ing = _in_group(attempts)
-    assert len(ing) == 2, attempts
+    assert len(ing) == 3, attempts
     assert len(set(ing)) == 2, attempts          # the retry left the failed row
+    assert attempts[1].startswith("/failcapable/"), attempts
     assert attempts.count("/okcheap/chat/completions") == 1, attempts
     assert outcome == "ok"
     assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_a_429_on_the_pinned_row_is_answered_by_a_peer_row():
+    # fleet-ops#10178: worker-capable has no fallback group, so a pinned row that keeps
+    # answering 429 (a one-slot row that is full) must be left by the in-router retries
+    # themselves. Two rows, no fallbacks: the pinned seat-a 429s on every call, seat-c
+    # answers 200. The first retry goes back to seat-a and parks it, the second reaches
+    # seat-c, and the caller never sees the 429. With the old budget of 1 the same call
+    # raised RateLimitError (see the contrast test below).
+    for retries, expect_ok in ((RP_PROPOSED["RateLimitErrorRetries"], True), (1, False)):
+        server = _Server()
+        try:
+            attempts, outcome = asyncio.run(_run_no_fallback(server, dict(RP_PROPOSED, RateLimitErrorRetries=retries), f"s-peer-{retries}"))
+        finally:
+            server.close()
+        _assert_first_pick_is_the_pinned_seat(attempts)
+        if expect_ok:
+            assert outcome == "ok", (outcome, attempts)
+            assert attempts[-1] == "/okcapable/chat/completions", attempts
+            assert [p for p in attempts if p.startswith("/fail/")] == ["/fail/chat/completions"] * 2, attempts
+        else:
+            assert outcome == "RateLimitError", (outcome, attempts)
+            assert "/okcapable/chat/completions" not in attempts, attempts
 
 
 def test_pin_survives_a_failed_then_fallback_success():
@@ -547,14 +603,15 @@ if __name__ == "__main__":
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_zero_retries,
-        test_rate_limit_gets_one_retry,
+        test_rate_limit_gets_two_retries,
         test_internal_server_error_retry_is_live_on_litellm_1_105_0,
         test_the_same_row_retry_has_no_backoff,
         test_the_mock_reads_the_request_body,
         test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall,
-        test_the_fix_retries_the_row_that_failed_not_a_peer,
+        test_the_fix_retries_the_row_that_failed_then_a_peer,
         test_a_transient_429_recovers_on_the_row_it_hit,
         test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself,
+        test_a_429_on_the_pinned_row_is_answered_by_a_peer_row,
         test_zero_retries_hit_the_fallback_on_a_transient_429,
         test_pin_survives_a_failed_then_fallback_success,
         test_the_migration_pre_start_names_the_same_image_as_the_proxy,
