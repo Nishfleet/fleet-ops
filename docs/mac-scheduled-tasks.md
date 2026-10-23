@@ -40,7 +40,7 @@ gate. They do not end the same way, and the difference matters.
   decision. Nothing is lost by letting the Mac task die.
 - **`seofixkit-weekly-d1-backup` — retired from the Mac, capability still
   open.** The weekly export script still exists in the `seofixkit` product repo
-  (`nish3451/seo-fix-kit`, `ops/backup-d1.sh`), and the Mac task was its only
+  (`Nishfleet/seo-fix-kit`, `ops/backup-d1.sh`), and the Mac task was its only
   scheduler: that repo's `.github/workflows` holds `deploy-production.yml`,
   `pr-check.yml` and `secret-scan.yml` and no scheduled backup job. It runs
   through wrangler OAuth on the Mac, which this box cannot hold, and Wrangler is
@@ -55,6 +55,16 @@ gate. They do not end the same way, and the difference matters.
   queue. This needs the Cloudflare API, which the worker jail cannot reach
   (AGENTS.md), so it goes to the coordinator rather than being solved with an
   ad-hoc credential.
+
+  A loose user unit installed on this box on 2026-10-18 stood in for the Mac
+  task, broke the no-clock rule above, and had no test on its keys.
+  fleet-ops#10145 moved that unit into the product repo, next to the script it
+  runs (`ops/seofixkit-d1-backup.service`, `ops/seofixkit-d1-backup.timer`, keys
+  pinned by that repo's `test/d1-backup-unit.test.mjs`), and deleted the host
+  copy. The user manager holds the deleted timer in memory until its next
+  reload, so one last run can still land on a Sunday; after that this box
+  schedules nothing. Until the CI job lands, the export runs by hand from that
+  repo, and D1 Time Travel still covers the last 30 days.
 
 ## The other nine
 

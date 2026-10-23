@@ -109,6 +109,12 @@
       # supplied token, so tether never used the route. The user manager is
       # reloaded below so it forgets the drop-in.
       - /etc/systemd/user/cua-desk-daemon.service.d
+      # The seo-fix-kit weekly D1 backup unit lived loose in nish's user
+      # directory, with no test on its keys (#10125). Its home is now that
+      # product repo, next to ops/backup-d1.sh (fleet-ops#10145).
+      - /home/nish/.config/systemd/user/seofixkit-d1-backup.service
+      - /home/nish/.config/systemd/user/seofixkit-d1-backup.timer
+      - /home/nish/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -1394,7 +1400,8 @@
         cache_valid_time: 3600
         lock_timeout: 300
 
-    # Files the repo used to leave live and now removes. Each path is named,
+    # Files the repo used to leave live and now removes, and files a session
+    # hand-installed that the repo or a product repo now owns. Each path is named,
     # so a deletion is always a reviewed line in this file. system.control
     # holds `systemctl set-property` leftovers: the fleet-ci MemoryMax moved
     # to rootfs/.../netcup-fleet-ci-.service.d/10-fleet-ci.conf, the github-*

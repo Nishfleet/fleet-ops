@@ -613,6 +613,24 @@ def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_con
     assert "rejectattr('status', 'equalto', 'idle') | list | length == 0) }}" in update, "idle only"
 
 
+SEOFIXKIT_UNITS = (
+    "/home/nish/.config/systemd/user/seofixkit-d1-backup.service",
+    "/home/nish/.config/systemd/user/seofixkit-d1-backup.timer",
+    "/home/nish/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer",
+)
+
+
+def test_seofixkit_d1_backup_unit_is_retired_and_its_home_is_the_product_repo() -> None:
+    host = HOST_YML.read_text()
+    retired = host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0]
+    for path in SEOFIXKIT_UNITS:
+        assert f"- {path}\n" in retired, f"host.yml deletes {path} from the host"
+    assert [path for path in unit_files() if "seofixkit" in path.name] == [], "fleet-ops ships no copy of the unit"
+    doc = (ROOT / "docs/mac-scheduled-tasks.md").read_text()
+    assert "ops/seofixkit-d1-backup.service" in doc and "ops/seofixkit-d1-backup.timer" in doc
+    assert "test/d1-backup-unit.test.mjs" in doc, "the doc names the test that pins the unit's keys"
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {
