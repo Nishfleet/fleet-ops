@@ -603,6 +603,7 @@
                 argv: [dpkg-query, --show, --showformat, "${Version}", cua-spaces]
               register: cua_installed
               changed_when: false
+              failed_when: cua_installed.rc not in [0, 1]
 
             - name: Find the newest stable Cua Spaces release old enough to take
               ansible.builtin.command:
@@ -628,6 +629,9 @@
                 cua_tag: "{{ cua_spaces_tag if cua_spaces_tag | length > 0 else cua_release.stdout | trim }}"
                 cua_target: "{{ (cua_spaces_tag if cua_spaces_tag | length > 0 else cua_release.stdout | trim) | regex_replace('^' ~ cua_release_prefix, '') }}"
 
+            # Strictly greater only, for the age-gated pick and for a pin alike,
+            # so the update never downgrades. An empty installed version (not
+            # installed) compares lower than any release.
             - name: Compare it with the installed version the way dpkg does
               ansible.builtin.command:
                 argv: [dpkg, --compare-versions, "{{ cua_target }}", gt, "{{ cua_installed.stdout }}"]
