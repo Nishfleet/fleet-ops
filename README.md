@@ -195,6 +195,17 @@ script, or prompt lands unseen.
   `~/.config/systemd/user/tincan-listen-devin-vps.service.d/`, then
   `systemctl --user daemon-reload` and restart that listener, which only
   wakes Devin).
+- `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
+  teammate that turns one request into one queued issue (`needs-triage`, so the
+  [admission job](#triage-admission-needs-triage) decides whether a worker starts)
+  and answers with its URL. Stock `tincan listen --exec`, and the three tools it
+  may use live in `pi-extensions/issue-desk/` (its README has the allowlist, the cap, the off
+  switch and the delete steps). Pi starts with no built-in tools, no other
+  extensions, no MCP and no skills, so the model cannot run anything else. Install
+  by hand from the deploy clone (link, then `enable --now`): it is not enabled by
+  `fleet-sync.service`.
+- `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
+  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:

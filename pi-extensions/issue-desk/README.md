@@ -1,0 +1,62 @@
+# issue-desk
+
+The Pi extension behind `issue-desk`, the Agent Tincan teammate that turns a request from another agent into exactly one queued GitHub issue and answers the request with its URL.
+
+It is the whole of what that agent can do. `systemd/tincan-listen-issue-desk.service` starts Pi with `--no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates`, so the model has no shell, no file tools and no network of its own: only the three tools below. A fooled model can file a bad product issue, and nothing else.
+
+Stock Pi extension point only: `pi.registerTool` in `index.ts`, no wrapper, no poller, no script. The wake is the vendor's own `tincan listen --exec`.
+
+## The three tools
+
+| tool | what it does |
+| --- | --- |
+| `tincan_inbox` | runs `tincan inbox --json` and lists the requests waiting in this run: `request_id`, sender, chain and text. Requests already listed in this run are shown once, as ids only. |
+| `file_issue` | files one `needs-triage` issue in one allowlisted repo and returns its URL. |
+| `tincan_reply` | answers one request from this run with one text. |
+
+## What stops a bad issue
+
+- **Repo allowlist.** `file_issue` re-reads `config/intake-repos.json` on every call and accepts only `product: true` repos, by bare name. `fleet-ops` is refused by name even if that file ever lists it: control-plane work enters as a scoped packet, never as a stranger's request.
+- **The request must exist.** `request_id` must be one `tincan_inbox` returned in this process, and its sender must be in `ISSUE_DESK_SENDERS`. A made-up id or an unknown sender files nothing.
+- **Admission stays in charge.** `file_issue` adds `needs-triage` and nothing else. The `admit` job in `.github/workflows/agent-dispatch.yml` reads that label, bands money, privacy, security, legal and customer-data work to `needs-orchestrator`, and asks Jev about the rest. A stranger's request can therefore never start a worker on its own, and the desk never writes `agent-ready`.
+- **One issue per request.** A filed request is recorded in `filed.jsonl` in the state directory, and every issue body carries the marker line `tincan-request: <id>`. A second call returns the same URL instead of filing again, and a fresh process finds the issue by searching the repo for that exact marker line. The record is written before `gh` runs, so a process that dies mid-create leaves a claim that refuses a retry instead of filing twice.
+- **A daily cap.** `ISSUE_DESK_MAX_PER_DAY` issues per rolling 24 hours, counted from `filed.jsonl`.
+- **Size limits.** The title is one line of at most 120 characters, and the body is at most 8000 including the footer that names the request.
+- **No shell, no paths.** Every child process is `execFile` with an argument array and `shell: false`. No tool takes a command, a path or a flag.
+
+The request text is data. The prompt tells the model so, and the tools give it no way to act on an instruction inside a request beyond filing an issue about it.
+
+## Configuration
+
+The unit sets these. Every one has a default in `src/config.ts`.
+
+| variable | default |
+| --- | --- |
+| `ISSUE_DESK_SENDERS` | `muse,instinct,tether,hermes` |
+| `ISSUE_DESK_MAX_PER_DAY` | `10` |
+| `ISSUE_DESK_REPO_ROOT` | the deploy clone, which holds `config/intake-repos.json` |
+| `ISSUE_DESK_STATE_DIR` | `STATE_DIRECTORY` from the unit, else the working directory |
+| `ISSUE_DESK_TINCAN` | `tincan` |
+| `ISSUE_DESK_GH` | `gh` |
+
+`tincan` finds its identity through `TINCAN_CONFIG`, which the unit sets. `gh` is the host's own login, so the unit is not jailed: the model cannot run `gh` itself, only the fixed argument arrays above.
+
+## Tests
+
+```
+npm ci
+npm test
+```
+
+65 tests, no network: a scripted runner stands in for `gh` and `tincan`, and a fake Pi records the registered tools. They cover the allowlist, `fleet-ops`, unknown request ids, senders outside the list, both idempotency paths, the rolling cap, the size limits, a failed `gh`, and that exactly three tools are registered and no tool takes a command or a path.
+
+`tests/test_issue_desk.py` in the repo root runs them in CI and checks the unit's flags, so a later edit that adds a tool-loading flag or drops `--no-builtin-tools` fails `ci`.
+
+## Switch off, delete
+
+```
+systemctl --user disable --now tincan-listen-issue-desk.service
+```
+
+Requests to `issue-desk` then queue on the relay until someone checks its inbox. To delete it: switch it off, `systemctl --user unlink tincan-listen-issue-desk.service`, then remove this directory, `systemd/tincan-listen-issue-desk.service`, `prompts/issue-desk.md` and `tests/test_issue_desk.py` in a PR. Nothing else reads them, and the agent's identity file under `~/.config/tincan/` is a hand-placed host file, not a repo file.
+

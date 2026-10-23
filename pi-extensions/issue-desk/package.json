@@ -1,0 +1,15 @@
+{
+  "name": "pi-issue-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension: the three tools issue-desk uses to turn one Agent Tincan request into one agent-ready GitHub issue",
+  "keywords": ["pi-package"],
+  "license": "UNLICENSED",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/Nishfleet/fleet-ops.git" },
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": { "test": "vitest run" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "devDependencies": { "typebox": "1.3.27", "vitest": "5.0.3" }
+}
