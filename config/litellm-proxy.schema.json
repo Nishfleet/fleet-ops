@@ -28,17 +28,19 @@
       }
     },
     "tetherRow": {
-      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group, so the prepaid credit cannot be spent by a worker, judge or assistant call.",
+      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group, so no routing group or fallback other than tether reaches the prepaid credit. The row carries a 50 USD/day wall (Nish 2026-10-23), and raising it is a deliberate change with its own issue. A caller holding the proxy master key can still name the group, so Tether's own virtual key is the only key that should list it.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
         "model_name": { "const": "tether" },
         "litellm_params": {
           "type": "object",
-          "required": ["model", "api_key"],
+          "required": ["model", "api_key", "max_budget", "budget_duration"],
           "properties": {
             "model": { "const": "anthropic/claude-sonnet-5-5" },
-            "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" }
+            "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
+            "max_budget": { "const": 50 },
+            "budget_duration": { "const": "1d" }
           }
         }
       }

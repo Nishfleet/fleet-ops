@@ -1529,7 +1529,7 @@ model_list:
     id: ollama-ds41flashj-assistant
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# tether: Claude Sonnet 5.5 for the Tether assistant, on its own group so the Hermes chat agent that shares `assistant` never reaches it (Nish 2026-10-22, fleet-ops#9980 comment 6347106070; 2026-10-23, Nishfleet/tether#7: "yes duhh with the anthropic api key I provided last night"). This adds one provider (Anthropic) over the 3-5 provider cap, by his explicit ask. The key is the prepaid Claude API credit with no payment method, so an empty balance fails the call and nothing is billed; every Claude failure (credit, rate limit, auth, outage, timeout) falls to `assistant` through router_settings.fallbacks, the one strong-to-cheaper fallback Nish allowed, for Tether only. Tether reads x-litellm-model-id and the response model to tell which deployment answered. The two cache_control injection points put Anthropic's cache markers on the system prompt and the last message, since Tether speaks plain OpenAI chat and sends none. Prices: Anthropic pricing page, Sonnet 5.5 (input 2, cache write 2.5, cache read 0.10, output 10 USD per million tokens).
+# tether: Claude Sonnet 5.5 for the Tether assistant, on its own group so the Hermes chat agent that shares `assistant` never reaches it (Nish 2026-10-22, fleet-ops#9980 comment 6347106070; 2026-10-23, Nishfleet/tether#7: "yes duhh with the anthropic api key I provided last night"). This adds one provider (Anthropic) over the 3-5 provider cap, by his explicit ask. The key is the prepaid Claude API credit with no payment method, so an empty balance fails the call and nothing is billed; the row also carries a 50 USD/day max_budget (Nish 2026-10-23, "$50 on sonnet 5.5 actually for the heavy days"), past which LiteLLM stops routing to it until the day rolls over; every Claude failure (credit, rate limit, auth, outage, timeout) falls to `assistant` through router_settings.fallbacks, the one strong-to-cheaper fallback Nish allowed, for Tether only. Tether reads x-litellm-model-id and the response model to tell which deployment answered. The two cache_control injection points put Anthropic's cache markers on the system prompt and the last message, since Tether speaks plain OpenAI chat and sends none. Prices: Anthropic pricing page, Sonnet 5.5 (input 2, cache write 2.5, cache read 0.10, output 10 USD per million tokens).
 - model_name: tether
   litellm_params:
     model: anthropic/claude-sonnet-5-5
@@ -1551,6 +1551,8 @@ model_list:
     max_parallel_requests: 4
     # 5 min: a spent credit or a rate limit parks the row, Tether is answered by `assistant` meanwhile, and the next probe after the window finds Claude again.
     cooldown_time: 300
+    max_budget: 50.0
+    budget_duration: 1d
   model_info:
     mode: chat
     supports_prompt_caching: true
