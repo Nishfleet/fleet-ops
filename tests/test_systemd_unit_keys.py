@@ -690,3 +690,20 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
     assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
         f"{unit.name} sets UMask itself; keep it in the drop-in only"
     )
+
+
+CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
+CF_TOKENS_ENCRYPTION_EXAMPLE = ROOT / "infra/cloudflare-tokens/state-encryption.env.example"
+
+
+def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_inline() -> None:
+    text = CF_TOKENS_UNIT.read_text()
+    files = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("EnvironmentFile=")]
+    assert "-%h/.config/cloudflare/tofu-state-encryption.env" in files
+    assert "TF_ENCRYPTION" not in text and "passphrase" not in text.lower(), "the key and method belong in the private file only"
+
+
+def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:
+    lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
+    assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
+    assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
