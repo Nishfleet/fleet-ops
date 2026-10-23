@@ -631,24 +631,19 @@ sets `/etc/tether/photon.env` (placed by hand, never created here) to
 credentials file, `/etc/tether/calendar.env` (calendar and contacts), is handled
 the same way: placed by hand, never created here, `root:tether 0640`, loaded
 after `photon.env`. Internet egress for the service user is already open, so it
-needed no firewall change for the internet.
+needed no firewall change.
 
-The server's Cua daemon (`cua-desk-daemon.service`, a user unit of the box owner)
-is also reachable from tether, so each agent on the server can have its own
-Space. The drop-in `rootfs/etc/systemd/user/cua-desk-daemon.service.d/20-fixed-loopback.conf`
-gives the daemon a fixed loopback port (`cua_daemon_port` in `ansible/host.yml`).
-`host.yml` renders `/etc/tether/cua.env` (`TETHER_CUA_URL`, root:tether 0640,
-loaded by the unit) unless the off marker exists, and `tether.nft.j2` allows tcp
-to that port for the tether uid. The daemon writes a new token to its own
-`daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and `--daemon-token`
-(tested on 0.6.0), so no token is provisioned here: how tether gets it is open.
-A running daemon reads the drop-in only after a restart, and a restart kills the
-desk Space's Volume mount, so `host.yml` never restarts it: the daily
-`update.yml` restarts it only when the desk is idle (the same check, reload,
-restart and desk recreate as a Cua Spaces upgrade, triggered when the daemon
-started before the newest file in its drop-in directory) and otherwise tries
-again the next day. Switch off: delete the drop-in, the env-file task and the
-nft line, so the next idle restart is back on an ephemeral port.
+tether has no route to the server's Cua daemon. A fixed loopback port with a
+token was tried (#10102) and never worked: the daemon writes a new token to its
+own `daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and
+`--daemon-token`. It is retired: `host.yml` lists the drop-in directory
+`/etc/systemd/user/cua-desk-daemon.service.d` in `retired` (so it is deleted and
+nish's user manager reloaded), removes `/etc/tether/cua.env`,
+`/etc/fleet-ops/cua-daemon-token` and nish's `fleet-ops/cua/daemon.env` by name,
+and then removes that last directory only when it is empty. The tether unit no
+longer loads `cua.env` and the nftables table has no Cua port. The daemon is
+restarted only by a newer Cua Spaces release (the idle-desk check, restart and
+desk recreate above), never for a config change.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
@@ -664,8 +659,8 @@ Models go through the LiteLLM router at `127.0.0.1:4000`, never a direct
 provider key. The unit allows `127.0.0.1/32` and `127.0.0.53/32` and denies
 the rest of loopback. `IPAddressAllow=` takes no port, so the `inet tether`
 nftables table matches the `tether` uid (numeric, so `deluser` cannot break the
-file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`,
-the Cua daemon's port and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
+file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`
+and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
 addresses (from ansible facts, plus `fib daddr type local`), `172.16.0.0/12`,
 `10.0.0.0/8`, `192.168.0.0/16`, IPv4 link-local, every docker or podman bridge
 subnet present, the tailnet's CGNAT block and the tailnet, ULA and link-local
