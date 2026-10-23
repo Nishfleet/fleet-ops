@@ -866,7 +866,7 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
 
 # Units whose output files hold agent session text. The user manager default is
 # UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d",)
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d", "systemd/tincan-listen-devin-vps.service.d")
 
 
 @pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
@@ -877,9 +877,11 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
     assert "[Service]" in lines
     assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
     unit = ROOT / dropin_dir.removesuffix(".d")
-    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-        f"{unit.name} sets UMask itself; keep it in the drop-in only"
-    )
+    # The Devin listener unit is hand-placed on the host (no repo copy), so only its drop-in is here.
+    if unit.is_file():
+        assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+            f"{unit.name} sets UMask itself; keep it in the drop-in only"
+        )
 
 
 CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
