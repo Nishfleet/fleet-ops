@@ -72,8 +72,8 @@ One cycle per runner unit, repeated forever:
   mint step is part of `config.sh`, so it needs no script. This is in the
   runner source (`ConfigurationManager.GetRunnerTokenAsync`), but the runner's
   `--help` text describes `--pat` only for `--check`. Step 0 of the rollout
-  proves it on one runner before anything else depends on it. If it does not
-  work, the fallback below applies.
+  proves it on one runner before anything else depends on it. If Step 0 fails,
+  the JIT fallback in the next section applies.
 - Restart: `Restart=always` in a drop-in. systemd documents that an exit with
   status 0 does not restart under `on-failure`, and an ephemeral runner exits
   cleanly after its job, so `always` is needed.
@@ -129,7 +129,7 @@ own isolation, so the reset is the unit stopping and not a clean-up command:
 
 | State | How it resets |
 |---|---|
-| Work directory (`_work`, which holds checkouts) | A tmpfs over `_work` (`TemporaryFileSystem=`). It is discarded when the unit stops. It counts against the unit's `MemoryMax`, so it needs a size cap. If checkouts are too large for that, a disk directory the unit owns is the alternative, and it needs a decision on how it is emptied. |
+| Work directory (`_work`, which holds checkouts) | A tmpfs over `_work` (`TemporaryFileSystem=<path>:size=<limit>`, which takes mount options after the colon). It is discarded when the unit stops. It counts against the unit's `MemoryMax`, so it needs the size limit. If checkouts are too large for that, a disk directory the unit owns is the alternative, and it needs a decision on how it is emptied. |
 | Tool cache (`RUNNER_TOOL_CACHE`, under `_work/_tool` by default) | Lives inside the work directory, so it resets with it. |
 | `/tmp` and `/var/tmp` | `PrivateTmp=yes`. |
 | The runner's home directory | A tmpfs over the home directory with explicit `BindPaths=` for what the pool needs. `fleet-ci-3` already works this way. |
@@ -228,13 +228,15 @@ finishes. Runner names below are examples.
 
 ## How to switch it off
 
-Revert the one PR that adds or widens the drop-ins. After the deploy, restart
-the affected runner units. The old `ExecStart` and `Restart=on-failure` apply
-again. Because a reverted unit starts without the pre-start step, run
+Revert the one PR that adds or widens the drop-ins. After the deploy, stop the
+affected runner units and do not start them yet. The old `ExecStart` and
+`Restart=on-failure` apply again. A reverted unit starts without the pre-start
+step, so it would loop on failure with no registration. Before starting it, run
 `config.sh remove --local` (only if a leftover local registration exists) and
 then `config.sh --unattended` without `--ephemeral`, once for each runner that
-was already converted, to put back a standing registration. The Step 1 PR keeps
-that to a single runner, and the later steps keep the same revert shape.
+was already converted, to put back a standing registration, then start the
+unit. The Step 1 PR keeps that to a single runner, and the later steps keep
+the same revert shape.
 
 This design PR changes nothing live, so merging it needs no rollback.
 
