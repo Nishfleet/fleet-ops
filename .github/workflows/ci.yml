@@ -398,8 +398,6 @@ jobs:
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
       # Native provider only (fleet-ops#9253): openai/ on ollama.com/v1 returns reply ids
       # chatcmpl-<0..999> that collide in LiteLLM_SpendLogs, so its calls never log.
-      # The permitted-slug test is made before the string is built: with yq 4.x an interpolated string after the select
-      # printed " @ " when no Ollama row was left, so the step failed once the last Ollama row was removed (fleet-ops#10068).
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | select(.litellm_params.model != "ollama_chat/deepseek-v4.1-flash" or .litellm_params.api_base != "https://ollama.com") | (.litellm_params.model + " @ " + (.litellm_params.api_base // ""))]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'

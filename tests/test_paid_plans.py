@@ -58,3 +58,9 @@ def test_no_row_serves_a_removed_provider_again():
     bases = _bases(_router_rows())
     back = sorted({b for b in bases if b.startswith("https://api.cline.bot") or b.startswith("https://ollama.com")})
     assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
+
+
+def test_judge_paid_row_drops_caller_reasoning_effort():
+    # DashScope answers 400 when a request carries reasoning_effort next to the row's thinking_budget (fleet-ops#10109).
+    row = next(r for r in _model_list() if r["model_name"] == "judge" and r["litellm_params"].get("order") == 1)
+    assert "reasoning_effort" in row["litellm_params"].get("additional_drop_params", []), row["model_name"]

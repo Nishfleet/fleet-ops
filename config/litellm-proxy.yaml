@@ -1092,6 +1092,11 @@ model_list:
     extra_body:
       enable_thinking: true
       thinking_budget: 2048
+    # fleet-ops#10109: a caller that sends reasoning_effort (pi with a thinking level) made DashScope answer 400 "'reasoning_effort' and
+    # 'thinking_budget' cannot be set simultaneously" (14 rejections 2026-10-23, row state 2). The row owns its thinking budget, so the
+    # per-request reasoning_effort is dropped here and never reaches the provider.
+    additional_drop_params:
+    - reasoning_effort
   model_info:
     mode: chat
     supports_prompt_caching: true
