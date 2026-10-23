@@ -2,9 +2,12 @@
 Description=Tether's socket to the Cua daemon (one socket per agent)
 Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/README.md
 # One agent, one socket: its access is switched off alone with
-# `systemctl stop cua-agent-tether.socket cua-agent-tether.service` and
-# `systemctl mask cua-agent-tether.socket` (mask, because tether-agent.service
-# Wants= it). The daemon's own socket is owner-only and its token changes at
+# `touch /etc/fleet-ops/tether-cua-off`. The next host-config run then stops and
+# removes this unit and the proxy unit and the env file, and keeps them away
+# while the file exists (`systemctl mask` fails on a unit file under /etc, and a
+# plain stop lasts only until tether-agent.service restarts and Wants= it back).
+# `systemctl stop cua-agent-tether.socket cua-agent-tether.service` switches it
+# off at once, until that run. The daemon's own socket is owner-only and its token changes at
 # every start, so this stock socket unit owns the listening socket and the
 # stock systemd-socket-proxyd in cua-agent-tether.service relays to the daemon.
 

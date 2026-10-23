@@ -649,9 +649,13 @@ so the daemon sees its own user and needs no token. `tether-agent.service`
 (`TETHER_CUA_URL=/run/cua-agents/tether.sock`, root:tether 0640, loaded by the
 unit) unless the off marker exists. A user outside the `tether` group is
 refused at the socket. Another agent gets its own `cua-agent-<name>.socket` and
-group the same way. Switch one agent off alone: `systemctl stop
-cua-agent-tether.socket cua-agent-tether.service`, then `systemctl mask
-cua-agent-tether.socket` (mask, because the tether unit `Wants=` it). The first
+group the same way. Switch one agent off alone: `touch /etc/fleet-ops/tether-cua-off` (the
+tether off marker does it too). Each host-config run then stops and removes the
+socket and proxy units and the env file, renders no env file, and keeps doing so
+until the marker is removed (the tether unit's `Wants=` of a missing unit is
+ignored). For an immediate stop before that run: `systemctl stop
+cua-agent-tether.socket cua-agent-tether.service`. `systemctl mask` does not
+work here, because the unit file itself lives under `/etc/systemd/system`. The first
 fixed-port and token attempt (#10102) is gone: its drop-in is in `retired`, its
 token file and env file are removed by tasks in `host.yml`, and the nft rule for
 the port is dropped.

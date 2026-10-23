@@ -176,6 +176,7 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
         "-e", f"tether_release_root={root}/opt-tether",
         "-e", f"tether_release_cache={root}/release-cache",
         "-e", f"tether_cua_env={root}/cua.env",
+        "-e", f"tether_cua_off_marker={marker.parent}/tether-cua-off",
     )
     env = {**os.environ, "ANSIBLE_STDOUT_CALLBACK": "json", "ANSIBLE_LOCALHOST_WARNING": "False"}
     proc = subprocess.run(
@@ -195,6 +196,9 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 # marker's own tasks.
 TETHER_ALWAYS = {
     "Look for the tether off marker",
+    "Look for the tether Cua off marker",
+    "Stop the Cua socket and proxy while an off marker exists",
+    "Remove the Cua socket, proxy and env file while an off marker exists",
     "Look for an enabled tether-agent unit",
     "Look for the tether Photon credentials file",
     "Look for the tether calendar credentials file",
@@ -294,6 +298,29 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     assert not off["Remove the tether egress rule while the marker exists"].get("skipped")
     assert on["Remove the tether egress rule while the marker exists"].get("skipped")
     assert on["Keep tether disabled and stopped while the marker exists"].get("skipped"), "no marker: the run never touches the unit"
+    for name in ("Stop the Cua socket and proxy while an off marker exists", "Remove the Cua socket, proxy and env file while an off marker exists"):
+        assert on[name].get("skipped"), f"no marker: {name} does nothing"
+        assert not off[name].get("skipped"), f"the tether off marker also takes the Cua socket away: {name}"
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_cua_off_marker_removes_the_socket_and_env_alone(tmp_path: Path) -> None:
+    marker = tmp_path / "tether-off"
+    photon = tmp_path / "photon.env"
+    photon.touch()
+    calendar = tmp_path / "calendar.env"
+    calendar.touch()
+    extra = ("-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}")
+    on = _tether_tasks(marker, extra)
+    (tmp_path / "tether-cua-off").touch()
+    off = _tether_tasks(marker, extra)
+    assert not on["Render tether's Cua env file"].get("skipped")
+    assert off["Render tether's Cua env file"].get("skipped"), "the Cua marker renders no env file"
+    for name in ("Stop the Cua socket and proxy while an off marker exists", "Remove the Cua socket, proxy and env file while an off marker exists"):
+        assert on[name].get("skipped"), name
+        assert not off[name].get("skipped"), name
+    assert not off["Create the tether group"].get("skipped"), "the Cua marker leaves the rest of tether alone"
+    assert off["Keep tether disabled and stopped while the marker exists"].get("skipped"), "the Cua marker does not stop tether itself"
 
 
 HOST_YML = ROOT / "ansible/host.yml"
@@ -625,6 +652,21 @@ def test_cua_agent_proxy_is_the_stock_proxyd_as_the_daemon_user() -> None:
     assert keys["ProtectHome"] == ["read-only"], "the proxy must read the daemon's socket under the home"
 
 
+def test_cua_env_url_is_the_socket_units_listen_stream() -> None:
+    text = HOST_YML.read_text()
+    block = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Render tether's Cua env file")][0]
+    url = re.search(r'content: "TETHER_CUA_URL=([^"\\]+)\\n"', block).group(1)
+    assert url.startswith("/") and ".." not in url and " " not in url, "tether 0.6.0 reads an absolute socket path or an http loopback URL"
+    assert [url] == runner_dropin_keys(CUA_SOCKET)["ListenStream"]
+
+
+def test_cua_off_marker_is_documented_where_it_acts() -> None:
+    assert _host_var("tether_cua_off_marker") == "/etc/fleet-ops/tether-cua-off"
+    for doc in (ROOT / "README.md", CUA_SOCKET):
+        assert "/etc/fleet-ops/tether-cua-off" in doc.read_text(), doc
+        assert "systemctl mask cua-agent-tether.socket" not in doc.read_text(), f"mask fails on a unit file under /etc: {doc}"
+
+
 def test_tether_reaches_the_cua_socket_and_the_daemon_is_not_reconfigured() -> None:
     keys = _tether_keys()
     assert "cua-agent-tether.socket" in keys["Wants"] and "cua-agent-tether.socket" in keys["After"] and "cua-agent-tether.socket" not in keys["Requires"]
@@ -633,7 +675,7 @@ def test_tether_reaches_the_cua_socket_and_the_daemon_is_not_reconfigured() -> N
     assert len(block) == 1
     assert "owner: root\n        group: tether\n        mode: \"0640\"" in block[0]
     assert 'content: "TETHER_CUA_URL=/run/cua-agents/tether.sock\\n"' in block[0]
-    assert "when: not tether_off.stat.exists" in block[0], "the off marker leaves tether no new file"
+    assert "when: not tether_off.stat.exists and not tether_cua_off.stat.exists" in block[0], "either off marker leaves tether no new file"
     assert "notify: Restart tether-agent after its release changed" in block[0]
     assert not (ROOT / "rootfs/etc/systemd/user/cua-desk-daemon.service.d").exists(), "the daemon keeps its own flags: no restart, no desk downtime"
     assert "/etc/systemd/user/cua-desk-daemon.service.d" in text.split("retired:", 1)[1].split("box_only_file", 1)[0]
@@ -645,11 +687,17 @@ def test_unused_cua_token_files_are_removed_by_code() -> None:
     text = HOST_YML.read_text()
     for name, path in (
         ("Remove the unused Cua daemon token file", "/etc/fleet-ops/cua-daemon-token"),
-        ("Remove the unused Cua daemon env directory", 'nish_config }}/fleet-ops/cua"'),
+        ("Remove the unused Cua daemon env file", 'nish_config }}/fleet-ops/cua/daemon.env"'),
     ):
         block = [b for b in re.split(r"\n    - name: ", text) if b.startswith(name)]
         assert len(block) == 1, name
         assert path in block[0] and "state: absent" in block[0], name
+    # The directory is never deleted as a tree: only rmdir, which refuses a
+    # directory that holds anything, and only those two failures are tolerated.
+    (rmdir,) = [b for b in re.split(r"\n    - name: ", text) if b.startswith("Remove the unused Cua daemon env directory when it is empty")]
+    assert "ansible.builtin.command:" in rmdir and 'argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]' in rmdir
+    assert "Directory not empty" in rmdir and "No such file or directory" in rmdir and "state: absent" not in rmdir
+    assert not re.search(r'path: "\{\{ nish_config \}\}/fleet-ops/cua"', text), "no tree delete of the directory"
     assert "lookup('ansible.builtin.password', cua" not in text
 
 

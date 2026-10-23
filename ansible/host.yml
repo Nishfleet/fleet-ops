@@ -23,6 +23,8 @@
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
+    # Switches off tether's Cua socket alone (see the Cua tasks below).
+    tether_cua_off_marker: /etc/fleet-ops/tether-cua-off
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -36,6 +38,7 @@
     # release's .sha256 asset). An upgrade is one reviewed PR that changes both
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
+    # tether 0.6.0 is the first release with its own Cua Space. It reads TETHER_CUA_URL as an absolute socket path or an http loopback URL (Nishfleet/tether#15, src/config.ts).
     tether_version: 0.6.0
     tether_sha256: 35bc6c089a223f4098394e69590706a18f1d4428946abee6f4cdc586375a6090
     # Everything below derives from the two pins. The directory and the cached
@@ -57,7 +60,7 @@
     tether_calendar_env: /etc/tether/calendar.env
     # tether's address for the Cua daemon: the socket that cua-agent-tether.socket
     # owns (rootfs/etc/systemd/system/). The task below renders this env file
-    # only while tether is not switched off.
+    # only while neither off marker exists.
     tether_cua_env: /etc/tether/cua.env
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
@@ -1194,6 +1197,12 @@
     # systemd-socket-proxyd (cua-agent-tether.service, running as the daemon's
     # user) relays to the daemon. The unit reads env files only at start, so a
     # change notifies the tether restart handler below.
+    - name: Look for the tether Cua off marker
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_cua_off_marker }}"
+      register: tether_cua_off
+
     - name: Render tether's Cua env file
       tags: [tether]
       ansible.builtin.copy:
@@ -1203,8 +1212,38 @@
         group: tether
         mode: "0640"
       ignore_errors: "{{ ansible_check_mode }}"
-      when: not tether_off.stat.exists
+      when: not tether_off.stat.exists and not tether_cua_off.stat.exists
       notify: Restart tether-agent after its release changed
+
+    # The lasting off switch for tether's Cua access: `touch
+    # /etc/fleet-ops/tether-cua-off`. While that file (or the tether off marker)
+    # exists, each run stops and removes the socket and proxy units, removes
+    # the env file and renders none. tether-agent.service's Wants= of a unit
+    # that is not there is ignored. Removing the marker brings it all back on
+    # the next run (the units are reinstalled with the rest of rootfs).
+    - name: Stop the Cua socket and proxy while an off marker exists
+      tags: [tether]
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - cua-agent-tether.socket
+        - cua-agent-tether.service
+      when: tether_off.stat.exists or tether_cua_off.stat.exists
+      # Under --check the copy that installs the units did not really run yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Remove the Cua socket, proxy and env file while an off marker exists
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/cua-agent-tether.socket
+        - /etc/systemd/system/cua-agent-tether.service
+        - "{{ tether_cua_env }}"
+      when: tether_off.stat.exists or tether_cua_off.stat.exists
+      notify: Reload systemd
 
     # #10102 minted a Cua daemon token and rendered it into two files; the
     # daemon ignores a supplied token, so nothing reads them. The files go; the
@@ -1214,12 +1253,26 @@
         path: /etc/fleet-ops/cua-daemon-token
         state: absent
 
-    - name: Remove the unused Cua daemon env directory
+    - name: Remove the unused Cua daemon env file
       become: true
       become_user: nish
       ansible.builtin.file:
-        path: "{{ nish_config }}/fleet-ops/cua"
+        path: "{{ nish_config }}/fleet-ops/cua/daemon.env"
         state: absent
+
+    # Only the two named files above are deleted. The directory goes only when
+    # nothing else is in it: rmdir refuses a directory that holds anything.
+    - name: Remove the unused Cua daemon env directory when it is empty
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]
+      register: cua_env_dir_rmdir
+      changed_when: cua_env_dir_rmdir.rc == 0
+      failed_when:
+        - cua_env_dir_rmdir.rc != 0
+        - "'Directory not empty' not in cua_env_dir_rmdir.stderr"
+        - "'No such file or directory' not in cua_env_dir_rmdir.stderr"
 
     # tether's egress firewall: its own table, loaded by the host's existing
     # nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
