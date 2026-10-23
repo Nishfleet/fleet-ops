@@ -1263,8 +1263,11 @@ number now.
 - Switch only the overflow line off: delete the sentence that writes
   `"and N more waiting"` from step 3 of both files and land it. The two named
   waiting lines stay.
-- Switch the whole digest off: `hermes cron pause digest-morning` and
-  `hermes cron pause digest-evening`; `hermes cron resume <job>` brings one back.
+- Switch the whole digest off: `hermes cron list` shows both jobs, then
+  `hermes cron pause <job id>` stops one without deleting it, and
+  `hermes cron resume <job id>` brings it back. The id is what the apply task
+  in `ansible/host.yml` passes to `hermes cron edit`, so it is the form the
+  other cron subcommands take too.
 - Tests: `tests/test_digest_checks.py` runs the step-3 command against a fake
   `gh` and proves the printed total, the remainder, the empty backlog, the two
   `COUNT FAILED` paths, the issues-enabled and not-archived filters, that the
