@@ -752,6 +752,16 @@
         path: "{{ tether_off_marker }}"
       register: tether_off
 
+    # tether-agent.service is enabled by hand (this run never enables it), so
+    # the release-change restart handler fires only when that wants symlink
+    # exists. Read-only, so it runs with and without the marker.
+    - name: Look for an enabled tether-agent unit
+      tags: [tether, tether-release]
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/tether-agent.service
+        follow: false
+      register: tether_agent_enabled
+
     - name: Create the tether group
       tags: [tether]
       ansible.builtin.group:
@@ -1069,6 +1079,10 @@
             owner: root
             group: root
           register: tether_link
+          # The running agent keeps the old release until it restarts (v0.1.2
+          # landed on 23 Oct and the unit kept running 0.1.1), so the link move
+          # notifies the restart handler.
+          notify: Restart tether-agent after its release changed
           ignore_errors: "{{ ansible_check_mode }}"
 
         # Keep the new release and the one `current` pointed at before: one
@@ -1854,6 +1868,19 @@
       ansible.builtin.systemd_service:
         name: nftables.service
         state: reloaded
+
+    # A moved `current` link is invisible to the running agent: v0.1.2 landed
+    # on 23 Oct and the unit kept running 0.1.1 until a hand restart. This
+    # fires only when the hand-enabled wants symlink exists, and never while
+    # the off marker exists (the marker run notifies nothing and keeps the
+    # unit stopped).
+    - name: Restart tether-agent after its release changed
+      ansible.builtin.systemd_service:
+        name: tether-agent.service
+        state: restarted
+      when:
+        - tether_agent_enabled.stat.islnk | default(false)
+        - not tether_off.stat.exists
 
     # htpdate reads /etc/default/htpdate only at start.
     - name: Restart htpdate
