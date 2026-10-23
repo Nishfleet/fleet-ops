@@ -58,6 +58,11 @@
   never source `~/.config/fleet-ops/litellm-master-key.env`: the master key is
   the proxy's own admin credential — seat traffic uses the per-group virtual
   keys; `/jev` only where worker.md step 4 or miss-review say so (RUNBOOK).
+- Restart the router only with `systemctl --user restart fleet-litellm-proxy.service`,
+  and only for a reason that needs one (a stale gauge is not one). `podman restart`
+  skips systemd: the 2026-10-23 14:36 IST one cost two 110 s SIGKILL waits and a
+  false page, about 10 min without a router. A config or image change restarts it
+  by itself, on the sync that carries it (fleet-litellm-proxy-config.path).
 - `main`/`master` are protected. Branch or use a worktree.
 - Machine wiring — symlinks under `~/.config/systemd/user`, `~/.local/bin`,
   `~/.pi/agent`, and the vault — resolves only into stable install trees

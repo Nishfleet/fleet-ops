@@ -212,6 +212,10 @@ jobs:
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+      - name: Router migration pre-start runs once per image and schema, not on every start
+        # The ExecStartPre= line in fleet-litellm-proxy.container, run under sh with stubs for psql and podman.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_litellm_proxy_migration_skip.py
       - name: The report survives a skipped registration (fleet-ops#9340)
         # The report task renders every registered var with (var | default({})).results | default([]).
         # A skipped non-looped registration has no 'results' key, so the old pattern (x | default({'results': []})).results

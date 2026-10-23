@@ -532,11 +532,12 @@ def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
     from pathlib import Path
     text = (Path(__file__).resolve().parents[1] / "containers/quadlet/fleet-litellm-proxy.container").read_text()
     image = re.findall(r"^Image=(\S+)$", text, re.M)
-    migrate = [m for m in re.findall(r"^ExecStartPre=/usr/bin/podman run .*$", text, re.M)]
+    migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.M)]
     assert len(image) == 1 and len(migrate) == 1, (image, migrate)
     assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
-    assert image[0] in migrate[0].split(), (image[0], migrate[0])
-    assert migrate[0].endswith("--skip_server_startup") and "--config" not in migrate[0]
+    # The line is a sh -c wrapper (skip when nothing changed): the image is assigned to i=.
+    assert f"i={image[0]} " in migrate[0], (image[0], migrate[0])
+    assert re.search(r"\$\$i --skip_server_startup ", migrate[0]) and "--config" not in migrate[0]
     assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
 
 
