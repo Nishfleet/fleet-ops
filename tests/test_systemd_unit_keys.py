@@ -175,7 +175,9 @@ def _tether_tasks(marker: Path, extra: tuple[str, ...] = ()) -> dict[str, dict]:
 # marker's own tasks.
 TETHER_ALWAYS = {
     "Look for the tether off marker",
+    "Look for an enabled tether-agent unit",
     "Look for the tether Photon credentials file",
+    "Look for the tether calendar credentials file",
     "Look up the tether uid",
     "Read the host's addresses and bridges",
     "Create the nftables drop-in directory",
@@ -218,6 +220,7 @@ TETHER_REACHED = (
     "Look at where tether current points now",
     "Point tether current at the verified release",
     "Let the tether group read the Photon credentials file",
+    "Let the tether group read the calendar credentials file",
 )
 TETHER_COMMANDS = ("Move the staged tether release into place",)
 # The block's own name and its rescue tasks never show as tasks of a run that
@@ -249,7 +252,9 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"
     photon = tmp_path / "photon.env"
     photon.touch()
-    extra = ("-e", f"tether_photon_env={photon}")
+    calendar = tmp_path / "calendar.env"
+    calendar.touch()
+    extra = ("-e", f"tether_photon_env={photon}", "-e", f"tether_calendar_env={calendar}")
     on = _tether_tasks(marker, extra)
     marker.touch()
     off = _tether_tasks(marker, extra)
@@ -453,8 +458,12 @@ def test_tether_release_prunes_to_the_new_and_the_previous_release() -> None:
         assert "tether_cur.stat.lnk_source" in loop, "keep what current pointed at before"
 
 
-def test_tether_loads_both_environment_files() -> None:
-    assert _tether_keys()["EnvironmentFile"] == ["-/etc/tether/tether.env", "-/etc/tether/photon.env"]
+def test_tether_loads_all_environment_files() -> None:
+    assert _tether_keys()["EnvironmentFile"] == [
+        "-/etc/tether/tether.env",
+        "-/etc/tether/photon.env",
+        "-/etc/tether/calendar.env",
+    ]
 
 
 def test_tether_photon_env_is_only_chowned_never_created() -> None:
@@ -478,13 +487,65 @@ def test_tether_photon_env_task_waits_for_the_file(tmp_path: Path) -> None:
     assert not present[name].get("skipped")
 
 
+def test_tether_calendar_env_is_only_chowned_never_created() -> None:
+    assert _host_var("tether_calendar_env") == "/etc/tether/calendar.env"
+    users = [block for block in _tether_blocks() if "tether_calendar_env }}" in block and "ansible.builtin.stat:" not in block]
+    assert len(users) == 1
+    block = users[0]
+    assert "ansible.builtin.file:" in block and "        state: file\n" in block
+    assert "        owner: root\n        group: tether\n        mode: \"0640\"\n" in block
+    assert "tether_calendar.stat.exists" in block, "a missing file must skip the task, not fail the run"
+    assert 'ignore_errors: "{{ ansible_check_mode }}"' in block
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
+def test_tether_calendar_env_task_waits_for_the_file(tmp_path: Path) -> None:
+    name = "Let the tether group read the calendar credentials file"
+    calendar = tmp_path / "calendar.env"
+    # Photon's path is pointed away too: /etc/tether may not be readable here.
+    extra = ("-e", f"tether_photon_env={tmp_path / 'photon.env'}", "-e", f"tether_calendar_env={calendar}")
+    missing = _tether_tasks(tmp_path / "no-marker", extra=extra)
+    assert missing[name].get("skipped"), "no file: nothing to do and nothing to fail"
+    calendar.touch()
+    present = _tether_tasks(tmp_path / "no-marker", extra=extra)
+    assert not present[name].get("skipped")
+
+
 def test_host_run_never_enables_or_starts_tether() -> None:
     blocks = re.split(r"\n    - name: ", (ROOT / "ansible/host.yml").read_text())
     tether = [block for block in blocks if "name: tether-agent.service" in block]
     assert tether, "the marker task is gone"
+    restart = [block for block in tether if "state: restarted" in block]
+    assert len(restart) <= 1
     for block in tether:
         assert "enabled: true" not in block and "state: started" not in block, block
-        assert "when: tether_off.stat.exists" in block, block
+        if block in restart:
+            assert "tether_agent_enabled.stat.islnk" in block and "not tether_off.stat.exists" in block, block
+        else:
+            assert "when: tether_off.stat.exists" in block, block
+
+
+def test_tether_release_change_restarts_an_enabled_agent() -> None:
+    text = HOST_YML.read_text()
+    link = [block for block in re.split(r"\n        - name: ", text) if block.startswith("Point tether current at the verified release")]
+    assert len(link) == 1
+    assert "notify: Restart tether-agent after its release changed" in link[0]
+    lookup = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[0])
+        if block.startswith("Look for an enabled tether-agent unit")
+    ]
+    assert len(lookup) == 1
+    assert "multi-user.target.wants/tether-agent.service" in lookup[0]
+    assert "follow: false" in lookup[0]
+    handler = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[1])
+        if block.startswith("Restart tether-agent after its release changed")
+    ]
+    assert len(handler) == 1
+    assert "ansible.builtin.systemd_service:" in handler[0]
+    assert "state: restarted" in handler[0]
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
@@ -738,3 +799,21 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
     dirs, tmpdir = _fixture(tmp_path, mask)
     with pytest.raises(ValueError):
         unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
+
+
+# Units whose output files hold agent session text. The user manager default is
+# UMask=0002, so each one needs a drop-in that makes new files owner-only.
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d",)
+
+
+@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
+def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
+    dropin = ROOT / dropin_dir / "20-umask.conf"
+    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
+    lines = [line.strip() for line in dropin.read_text().splitlines()]
+    assert "[Service]" in lines
+    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
+    unit = ROOT / dropin_dir.removesuffix(".d")
+    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+        f"{unit.name} sets UMask itself; keep it in the drop-in only"
+    )

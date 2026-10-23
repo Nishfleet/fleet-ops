@@ -627,7 +627,11 @@ pinned in `host.yml`, unpacked into the root-owned `/opt/node-v<version>`. The
 unit's `ExecStart` names that `node` by absolute path. A new Node version is a
 PR that changes the version, the hash and that path together. `host.yml` also
 sets `/etc/tether/photon.env` (placed by hand, never created here) to
-`root:tether 0640`, and the unit loads it after `tether.env`.
+`root:tether 0640`, and the unit loads it after `tether.env`. A second
+credentials file, `/etc/tether/calendar.env` (calendar and contacts), is handled
+the same way: placed by hand, never created here, `root:tether 0640`, loaded
+after `photon.env`. Internet egress for the service user is already open, so it
+needed no firewall change.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
