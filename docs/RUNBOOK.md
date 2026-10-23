@@ -82,7 +82,9 @@ use instead.
   `pi update "git:github.com/Nishfleet/pi-runner-guard@<sha>"` where `<sha>` is
   the merge commit on `main`. A red run names the pin under
   `git pins off the default branch` in
-  `journalctl -u fleet-update.service`.
+  `journalctl -u fleet-update.service`. When that line reads
+  `no answer from GitHub`, `gh` lost its login or GitHub was unreachable, and
+  the pin is not the problem: re-run the playbook.
 
 ## Dashboards and the CI runner flip
 

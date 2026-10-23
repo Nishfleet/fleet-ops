@@ -52,6 +52,7 @@ def run_git_pin_check(tmp_path, packages, answers=ANSWERS):
     )
     gh.chmod(0o755)
     cmd = INNER[GIT_PIN_CHECK]["ansible.builtin.shell"]["cmd"].replace(PI_SETTINGS, str(settings))
+    assert str(settings) in cmd
     return subprocess.run(
         ["bash", "-c", cmd],
         capture_output=True,
@@ -132,6 +133,7 @@ def test_a_git_pin_github_cannot_answer_fails_the_check_instead_of_passing(tmp_p
 
 def test_a_settings_file_that_cannot_be_read_fails_the_check(tmp_path):
     cmd = INNER[GIT_PIN_CHECK]["ansible.builtin.shell"]["cmd"].replace(PI_SETTINGS, str(tmp_path / "gone.json"))
+    assert str(tmp_path / "gone.json") in cmd
     result = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=False)
     assert result.returncode == 1
     assert "could not read the git pins from settings.json" in result.stdout

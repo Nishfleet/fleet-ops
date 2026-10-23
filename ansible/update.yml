@@ -1273,7 +1273,7 @@
               tincan upgrade: {{ (tincan_upgrade | default({})).stderr | default('ok') | truncate(300) }};
               pi smoke: {{ (('reply ' ~ (pi_smoke.stdout | default('', true) | trim)) if (pi_smoke.stdout | default('', true) | trim) else ('no reply, stderr: ' ~ (pi_smoke.stderr | default('', true) | trim | truncate(300)))) if pi_smoke is defined else 'not run, an earlier step in the block failed' }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
-              git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) if off_branch_pins is defined else 'not run, an earlier step in the block failed' }};
               Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
