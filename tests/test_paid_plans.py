@@ -60,7 +60,9 @@ def test_no_row_serves_a_removed_provider_again():
     assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
 
 
-def test_judge_paid_row_drops_caller_reasoning_effort():
-    # DashScope answers 400 when a request carries reasoning_effort next to the row's thinking_budget (fleet-ops#10109).
-    row = next(r for r in _model_list() if r["model_name"] == "judge" and r["litellm_params"].get("order") == 1)
-    assert "reasoning_effort" in row["litellm_params"].get("additional_drop_params", []), row["model_name"]
+def test_every_thinking_budget_row_drops_caller_reasoning_effort():
+    # DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget (fleet-ops#10109).
+    rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
+    assert rows, "no row sets thinking_budget"
+    bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]
+    assert not bad, f"rows with thinking_budget that keep a caller's reasoning_effort: {bad}"
