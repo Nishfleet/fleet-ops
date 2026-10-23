@@ -189,6 +189,12 @@ script, or prompt lands unseen.
   default is 0002). Link it once after the merge with the drop-in `ln -sfn`
   idiom under "Install" (before the merge it would dangle), then
   `systemctl --user daemon-reload`; it applies at the next index run.
+  The same `UMask=0077` drop-in sits in
+  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
+  Tincan listener (its unit file is hand-placed; link only the drop-in into
+  `~/.config/systemd/user/tincan-listen-devin-vps.service.d/`, then
+  `systemctl --user daemon-reload` and restart that listener, which only
+  wakes Devin).
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
@@ -834,6 +840,7 @@ of swap full. Nothing alerted anyone.
 | `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
 | `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
 | `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
+| Sandbox drop-in (kernel, clock, devices, `/proc`, `/home` read-only except `/home/nish`, address families, capability and syscall trims): `systemd-analyze security` 9.2 to 4.8 offline. `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem` stay off on purpose, because sessions use `sudo`, `/tmp` and system edits | `claude-remote-control.service.d/80-hardening.conf` | next restart of Remote Control (Nish). Roll back: delete the file, reload, restart |
 | `OOMScoreAdjust=-500` for `hermes-gateway.service` | `hermes-gateway.service.d/70-oom-protect.conf` | next restart of hermes (it restarts itself) |
 
 The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
