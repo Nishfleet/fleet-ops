@@ -604,9 +604,10 @@ jobs:
             if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
               --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
               unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
+              set -o pipefail
               conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
                 for _ in 1 2 3; do
-                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
+                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable) || exit 1
                   [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
                   sleep 10
                 done
@@ -661,7 +662,6 @@ jobs:
               # newest counted run. A DIRTY PR is the conflicts job's. A PR at
               # the 3-run cap is sent on so the Gate parks it.
               red=$(
-                set -o pipefail
                 for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
                   v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
                   ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}

@@ -1218,6 +1218,22 @@ The orchestrate and admit jobs are the self-hosted jobs here: org runner group
 or the job queues forever next to idle runners. Delete that entry with them.
 ```
 
+### agent-dispatch.yml: the sweep's reads fail the step
+
+The `list` step runs under the runner's default shell, `bash -e` on Linux, which
+has no pipefail. `conflicted`, `missing`, `orphans` and `red` are each a loop
+piped into jq, so the pipeline's status was jq's and the `|| exit 1` written
+inside those loops never failed the step. A token without `checks:read` printed
+`GraphQL: Resource not accessible by integration
+(repository.pullRequest.statusCheckRollup.nodes.0)`, then
+`claim PRs missing required checks: []`, and exited 0 (Nishfleet/drive run
+37166163754, 2026-10-04; fleet-ops#9208). One `set -o pipefail` above the four
+claim-PR lists covers them all; `red`'s own copy was removed, so the line count
+is unchanged (the ratchet). `tests/test_agent_dispatch_list_reads.py` runs the
+real step under plain `bash -e`, with no pipefail, so it fails without that line.
+ci.yml's deleted-issue harness for this same step runs it as `bash -eo pipefail`,
+which is why it never saw this: the live job has no pipefail.
+
 ### agent-dispatch.yml: stuck-prs STUCK program
 
 stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
