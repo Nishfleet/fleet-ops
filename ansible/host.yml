@@ -402,6 +402,92 @@
         mode: preserve
       notify: Restart htpdate
 
+    # Alertmanager requires basic auth on its whole API, and the two files that
+    # make that work are hand-placed host state, like deadman_url and the bot
+    # token: never in the repo, and never readable by nish. A credential nish
+    # could read would close nothing, because the only processes that reach a
+    # loopback listener already run as nish. The web config holds the bcrypt hash
+    # (root-owned, group prometheus, because the service runs as that user); the
+    # password file holds the matching plaintext and belongs to the prometheus
+    # user, which reads it on every alert push and scrape. This runs before the
+    # Prometheus config below, because that config names the password file: a
+    # prometheus.yml that pointed at a file the box does not have would stop
+    # every alert push and the alertmanager scrape, and the run already fails
+    # without the pair, so the old config stays until both halves are in place.
+    - name: Look for the alertmanager web config
+      ansible.builtin.stat:
+        path: /etc/alertmanager/web.yml
+        follow: false
+      register: alertmanager_web_config
+
+    - name: Look for the password Prometheus authenticates to alertmanager with
+      ansible.builtin.stat:
+        path: /etc/prometheus/alertmanager_password
+        follow: false
+      register: alertmanager_password
+
+    # A symlink fails isreg, so a link cannot steer the restart or the checks below.
+    - name: Note whether both halves of the alertmanager credential are in place
+      ansible.builtin.set_fact:
+        alertmanager_auth_ready: "{{ alertmanager_web_config.stat.isreg | default(false) and alertmanager_password.stat.isreg | default(false) }}"
+
+    - name: Keep the alertmanager web config root-owned and readable by the service group
+      ansible.builtin.file:
+        path: /etc/alertmanager/web.yml
+        owner: root
+        group: prometheus
+        mode: "0640"
+      when: alertmanager_auth_ready | default(false) | bool
+
+    - name: Keep the alertmanager password owned by the prometheus user
+      ansible.builtin.file:
+        path: /etc/prometheus/alertmanager_password
+        owner: prometheus
+        group: prometheus
+        mode: "0600"
+      when: alertmanager_auth_ready | default(false) | bool
+
+    # A web config without basic_auth_users leaves the API open, and a hash that
+    # is not bcrypt makes Alertmanager refuse it at start, so the pair is checked
+    # before the options that switch auth on are installed. The user Prometheus
+    # sends must be a key the web config defines, or every alert push and the
+    # scrape get a 401 and only the outside dead-man notices. Whether the hash
+    # matches the plaintext is not knowable here: that shows up as a 401 the next
+    # time Prometheus pushes an alert, which is what the outside dead-man sees.
+    # It runs on the same /usr/bin/python3 the validation task above uses, and the
+    # play is connection: local, so the repo path below is on this box too.
+    - name: Check that the alertmanager credential is shaped like one
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import re, sys, yaml
+            web = yaml.safe_load(open(sys.argv[1])) or {}
+            users = web.get("basic_auth_users") or {}
+            if not users:
+                sys.exit("no basic_auth_users in the web config")
+            for name, hashed in users.items():
+                if not re.match(r"^\$2[aby]\$[0-9]{2}\$", str(hashed)):
+                    sys.exit("%s is not a bcrypt hash" % name)
+            body = open(sys.argv[2]).read().strip()
+            if not body or any(c.isspace() for c in body):
+                sys.exit("the password file must hold one line and no whitespace")
+            prom = yaml.safe_load(open(sys.argv[3])) or {}
+            clients = list((prom.get("alerting") or {}).get("alertmanagers") or [])
+            clients += [j for j in prom.get("scrape_configs") or [] if j.get("job_name") == "alertmanager"]
+            for client in clients:
+                name = (client.get("basic_auth") or {}).get("username")
+                if not name:
+                    sys.exit("prometheus.yml has an alertmanager client with no basic_auth username")
+                if name not in users:
+                    sys.exit("prometheus.yml authenticates as %s, which the web config does not define" % name)
+          - /etc/alertmanager/web.yml
+          - /etc/prometheus/alertmanager_password
+          - "{{ rootfs }}/etc/prometheus/prometheus.yml"
+      changed_when: false
+      when: alertmanager_auth_ready | default(false) | bool
+
     - name: Install prometheus and blackbox exporter config
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/prometheus/"
@@ -409,6 +495,7 @@
         owner: root
         group: root
         mode: preserve
+      when: alertmanager_auth_ready | default(false) | bool
       notify:
         - Reload prometheus
         - Reload alertmanager
@@ -479,7 +566,8 @@
       when: telegram_chat_id.content is defined
       notify: Reload alertmanager
 
-    # Alertmanager's API is unauthenticated, so the options pin it to loopback.
+    # The options pin the listener to loopback and name the web config, so they
+    # are installed only when the config they point at exists.
     - name: Install the alertmanager options
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/default/prometheus-alertmanager"
@@ -487,6 +575,7 @@
         owner: root
         group: root
         mode: preserve
+      when: alertmanager_auth_ready | default(false) | bool
       notify: Restart alertmanager
 
     # The ping URL and the bot token are hand-placed credentials that stay out of
@@ -1984,8 +2073,10 @@
 
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
-        that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
-        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
+        that:
+          - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+          - alertmanager_auth_ready | default(false) | bool
+        fail_msg: "Alertmanager is not running: a hand-placed credential file is missing. Looked for deadman_url, telegram_bot_token and telegram_chat_id in /etc/prometheus, and for the API auth pair /etc/alertmanager/web.yml (root:prometheus 0640, holding a bcrypt hash under basic_auth_users) and /etc/prometheus/alertmanager_password (prometheus:prometheus 0600, the matching plaintext). The dead-man heartbeat, the hermes-gateway page and the authenticated API are off until they are placed."
         quiet: true
 
     - name: Fail when the Command Code login could not be set up
@@ -2120,14 +2211,17 @@
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: reloaded
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
-    # The options file is read only at start.
+    # The options file and the web config are read only at start.
     - name: Restart alertmanager
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: restarted
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+        - alertmanager_auth_ready | default(false) | bool
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:

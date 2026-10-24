@@ -11,10 +11,24 @@ for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
 
+It also holds the other end of the alert path: Alertmanager's API answers only
+with basic auth, and every Prometheus client of it carries the credential
+(fleet-ops#10058). Three files have to agree for that to hold and nothing else
+in CI compares them: the options file that names the web config, ansible, which
+has to see both hand-placed files in place before it installs either side, and
+Prometheus's client config, which needs the matching plaintext for both the
+alerting target and the scrape job. A drift in the first two stops the service
+from starting, or stops the play that would install it. A drift in the third is
+silent until the outside dead-man notices that the alert set stopped arriving.
+The two credential files are hand-placed host state, root- and service-owned:
+any process that can reach the loopback listener already runs as nish, so a
+credential nish could read would protect nothing.
+
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -74,6 +88,23 @@ def matches(matchers, labels):
     return True
 
 
+def task_blocks(text):
+    """The play's tasks and handlers, one string each, comments kept for context."""
+    blocks, current = [], None
+    for line in text.splitlines():
+        if line.startswith("    - name: "):
+            current = [line]
+            blocks.append(current)
+        elif current is not None:
+            current.append(line)
+    return ["\n".join(b) for b in blocks]
+
+
+def code(task):
+    """The task's lines that run, so a comment cannot stand in for a setting."""
+    return "\n".join(l for l in task.splitlines() if not l.lstrip().startswith("#"))
+
+
 def route(node, labels, repeat=None):
     """(receiver, repeat seconds) pairs reached by an alert with these labels
     (Alertmanager tree walk): a matching child contributes its own receivers and
@@ -93,6 +124,67 @@ def route(node, labels, repeat=None):
     return out if matched else {(node["receiver"], repeat)}
 
 
+AM_OPTIONS = "rootfs/etc/default/prometheus-alertmanager"
+AM_PROMETHEUS = "rootfs/etc/prometheus/prometheus.yml"
+AM_ANSIBLE = "ansible/host.yml"
+AM_WEB_CONFIG = "/etc/alertmanager/web.yml"
+AM_AUTH_FILE = "/etc/prometheus/alertmanager_password"
+
+
+def alertmanager_auth(repo):
+    bad = []
+    args = ""
+    for line in (repo / AM_OPTIONS).read_text().splitlines():
+        if line.startswith("ARGS="):
+            args = line
+    if f"--web.config.file={AM_WEB_CONFIG}" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS does not set --web.config.file={AM_WEB_CONFIG}")
+    if "--web.listen-address=127.0.0.1:9093" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS no longer pins the listener to loopback")
+    config = yaml.safe_load((repo / AM_PROMETHEUS).read_text())
+    clients = [("alerting.alertmanagers", e) for e in (config.get("alerting") or {}).get("alertmanagers") or []]
+    clients += [(f"scrape_configs[{j.get('job_name')}]", j) for j in config.get("scrape_configs") or [] if j.get("job_name") == "alertmanager"]
+    if len(clients) < 2:
+        bad.append(f"{AM_PROMETHEUS}: want an alerting target and an alertmanager scrape job, found {len(clients)}")
+    for name, entry in clients:
+        auth = entry.get("basic_auth")
+        if not auth:
+            bad.append(f"{AM_PROMETHEUS}: {name} has no basic_auth, so Alertmanager answers it 401")
+            continue
+        if not auth.get("username"):
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth has no username")
+        if auth.get("password") or auth.get("password_file") != AM_AUTH_FILE:
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_AUTH_FILE}, not an inline password")
+    ansible = (repo / AM_ANSIBLE).read_text()
+    tasks = task_blocks(ansible)
+    if ".config/fleet-ops/alertmanager" in ansible:
+        bad.append(f"{AM_ANSIBLE}: an alertmanager credential is read from nish's home, where any process on the box can read it")
+    for dest in (AM_WEB_CONFIG, AM_AUTH_FILE):
+        looked = [t for t in tasks if dest in code(t) and "ansible.builtin.stat" in code(t)]
+        if not looked:
+            bad.append(f"{AM_ANSIBLE}: nothing stats {dest}, so the play cannot tell whether the auth pair is in place")
+        elif not all("follow: false" in code(t) for t in looked):
+            bad.append(f"{AM_ANSIBLE}: the stat of {dest} follows symlinks, so a link could steer the check")
+        if any("ansible.builtin.copy" in code(t) and dest in code(t) for t in tasks):
+            bad.append(f"{AM_ANSIBLE}: the play copies {dest}; it is hand-placed host state, root- and service-owned")
+    check = [t for t in tasks if "credential is shaped like one" in t]
+    if not check:
+        bad.append(f"{AM_ANSIBLE}: nothing checks that the two halves are shaped like a credential before auth is switched on")
+    else:
+        body = code(check[0])
+        if "basic_auth_users" not in body:
+            bad.append(f"{AM_ANSIBLE}: the credential check never looks for basic_auth_users")
+        if "{{ rootfs }}/etc/prometheus/prometheus.yml" not in body:
+            bad.append(f"{AM_ANSIBLE}: the credential check never reads the prometheus config, so a user the web config does not define passes")
+    for name in ("Install prometheus and blackbox exporter config", "Install the alertmanager options"):
+        task = [t for t in tasks if f"name: {name}" in t]
+        if not task:
+            bad.append(f"{AM_ANSIBLE}: no task named {name}")
+        elif "alertmanager_auth_ready" not in code(task[0]):
+            bad.append(f"{AM_ANSIBLE}: {name} installs a config that names the credential without waiting for both halves of the pair")
+    return bad
+
+
 def selftest():
     tree = {"receiver": "root", "repeat_interval": "24h", "routes": [
         {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True, "repeat_interval": "1h",
@@ -108,6 +200,27 @@ def selftest():
     assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    repo = Path(__file__).resolve().parents[1]
+    findings = alertmanager_auth(repo)
+    assert findings == [], findings
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp)
+        for rel in (AM_OPTIONS, AM_PROMETHEUS, AM_ANSIBLE):
+            (fixture / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fixture / rel).write_text((repo / rel).read_text())
+        doc = yaml.safe_load((fixture / AM_PROMETHEUS).read_text())
+        for entry in (doc.get("alerting") or {}).get("alertmanagers") or []:
+            entry.pop("basic_auth", None)
+        for job in doc.get("scrape_configs") or []:
+            if job.get("job_name") == "alertmanager":
+                job.pop("basic_auth", None)
+        (fixture / AM_PROMETHEUS).write_text(yaml.safe_dump(doc))
+        assert sum("has no basic_auth" in f for f in alertmanager_auth(fixture)) == 2, alertmanager_auth(fixture)
+        (fixture / AM_PROMETHEUS).write_text((repo / AM_PROMETHEUS).read_text())
+        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text().replace(
+            "      when: alertmanager_auth_ready | default(false) | bool\n      notify:\n        - Reload prometheus",
+            "      notify:\n        - Reload prometheus", 1))
+        assert any("without waiting for both halves" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
 
 
 def main(root):
@@ -159,6 +272,7 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    bad += alertmanager_auth(Path(__file__).resolve().parents[1])
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
@@ -170,6 +284,7 @@ def main(root):
             print(f"::error::{b}")
         return 1
     print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
+    print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_AUTH_FILE} from a host-only file")
     return 0
 
 
