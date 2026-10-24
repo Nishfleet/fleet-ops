@@ -1348,6 +1348,13 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
 
+A new runner unit needs no root step: `ansible/host.yml` renders
+`actions.runner.Nishfleet.netcup-agent-<N>.service` for the ids in
+`agent_runner_ids` from one template, and enables and starts a unit only when
+its directory holds both halves of a registration (`.runner` and
+`.credentials`). Registration is the one hand step left, because `config.sh`
+needs an org admin token the VPS key does not hold (#10236).
+
 ## Private detail scan
 
 Pull requests are scanned for private infrastructure detail: personal home
