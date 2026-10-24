@@ -1251,8 +1251,9 @@ So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agen
 only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
 at startup the `review` job never runs. What works is an approver's unedited
 `coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
-`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
-takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
+`hold-risky` read, which is how #10194 landed. `agent.yml`'s `workflow_dispatch` now takes
+`review_pr` and `review_sha`, so the reviewer runs by hand from `main` (fleet-ops#10199;
+docs/ARCHITECTURE.md has the command), and the deadlock is gone.
 
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
@@ -1381,7 +1382,9 @@ Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
-  newly stubbed repo cannot sit off by omission.
+  newly stubbed repo cannot sit off by omission. Start one by hand with
+  gh workflow run agent-dispatch.yml -f task=orchestrate -f issue=<N>
+  (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
