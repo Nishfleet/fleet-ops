@@ -625,14 +625,34 @@ jobs:
             # struck). The cursor-agent line in Worker discards stdout only, so this stderr reaches worker.err.
             # Like a router 429 it is the provider, not the packet, so it needs the same 0-ahead proof that
             # nothing was pushed. The Cursor cap stays 1.
-            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
+            # A 402/400 dead seat is infra too (fleet-ops#9007, #9011): the pinned router cools only
+            # 401/404/408/429 of the 4xx (_is_cooldown_required), a 402 maps to litellm.APIError, and no
+            # allowed_fails_policy field names it — so a row answering nothing but "Insufficient balance"
+            # (402) or "Model is unavailable" (400) keeps its full share of the shuffle. Bare 400 stays out:
+            # pi prints BadRequestError 400 for genuinely bad packets, and those must strike.
+            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b|\b402\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
               { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           # shellcheck disable=SC2016 # $v is a jq variable
           n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
           [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
-          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # Name the dead seat on the issue (fleet-ops#9011), not only in the proxy journal.
+          # The error text pi prints carries no model ("Insufficient balance. Your Cline
+          # Credits balance is $-0.00"), but the journal line for the same failure does, and
+          # the runner and the proxy share this host. Best-effort: no journal read, no seat named.
+          wall_hit=$(grep -oiE 'insufficient balance|model is unavailable' "$RUNNER_TEMP/worker.err" 2>/dev/null | head -1)
+          seat=""
+          if [ -n "$wall_hit" ]; then
+            seat=$(journalctl --user -u fleet-litellm-proxy --since "-60min" 2>/dev/null \
+              | grep -iF "$wall_hit" | tail -1 | grep -oE 'model=[A-Za-z0-9/_.:-]+' | head -1)
+          fi
+          seat="${seat#model=}"
+          seat_text=""
+          if [ -n "$seat" ]; then
+            seat_text=" - dead seat: $seat"
+          fi
+          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID$seat_text"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
