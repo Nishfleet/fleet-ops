@@ -75,6 +75,15 @@ def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
 
 
+def test_one_plain_number_caps_the_opencode_and_devin_lanes():
+    text = AGENT.read_text()
+    for lane in ("opencode", "devin"):
+        caps = {m.group(1) for m in re.finditer(rf'live {lane}\)"\s+-lt\s+(\S+)', text)}
+        assert len(caps) == 1, f"the {lane} lane has {len(caps)} caps, so the Gate and the Worker fall-through can drift apart: {sorted(caps)}"
+        cap = caps.pop()
+        assert cap.isdigit(), f"the {lane} cap is a switch, not a fixed number: {cap}"
+
+
 def permissions_block(block, where):
     assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
     return block or {}
