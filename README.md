@@ -91,13 +91,6 @@ script, or prompt lands unseen.
   again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
   deploy. Off switch: remove that step and its enable line, then
   `systemctl --user disable --now beacon-hermes-poll.service`.
-- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
-  /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
-  Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
-  no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
-  is the job; `config/retro-public-deny.txt` is the check every follow-up issue
-  must pass before it is filed; `config/retro-weekly-claude.json` is the tool
-  list. README "Weekly retro" has the run, off and delete steps.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
@@ -110,24 +103,33 @@ script, or prompt lands unseen.
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
   "Provider watch" has the run, off and delete steps.
 - `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
-  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
-  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
-  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
-  env line that picks the Tincan listener's own Claude login. They were hand-placed on the
+  `executor.service`, `syncthing.service` and `tigervnc.service` — stock vendor
+  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
-  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
-  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`
   and `enable --now`. The files match what ran before (only the two Amp
   `Description=` lines lost their account names), so adopting them restarted
   nothing: a unit edit applies at the unit's next restart (never restart
   `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
-  so only its parent unit is verified. Switch one off with
+  `systemd-analyze verify` on the five units. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
+- `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` — the live Agent Tincan
+  wake for claude-vps, a **root** unit (fleet-ops#9974): it runs as `nish` under
+  `ProtectSystem=strict` with an explicit bind list, and it sets its own
+  `Environment=CLAUDE_CONFIG_DIR=` line, so it needs no drop-in.
+  The user-level copy and its `10-nish-seat.conf` drop-in were deleted in
+  fleet-ops#10125 because nothing linked or ran them.
+  - Run it now: `systemctl start tincan-listen-claude-vps.service`, then
+    `journalctl -u tincan-listen-claude-vps.service -f`.
+  - Switch it on: `systemctl enable --now tincan-listen-claude-vps.service`.
+  - Switch it off: `systemctl disable --now tincan-listen-claude-vps.service`
+    (requests to claude-vps then queue until a session checks its inbox).
+  - Delete it: switch it off, delete the file here and `/etc/systemd/system/tincan-listen-claude-vps.service`,
+    then `systemctl daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
@@ -151,7 +153,7 @@ script, or prompt lands unseen.
   whole decision, so no model reads an issue body and there is no session to
   jail: only an issue authored by `nish3451` or the worker App is promoted, and
   an issue that already carries `agent-ready` or any park label is skipped.
-  `fleet-sync.service` step 2f links and enables it on every deploy. Off switch:
+  `fleet-sync.service` step 2e links and enables it on every deploy. Off switch:
   remove that step and its enable line, then `systemctl --user disable --now
   later-sweep.timer`.
 - `systemd/fleet-gh-login-check.service`, `.path` and `.timer` — fail, and so
@@ -339,6 +341,40 @@ the next sync overwrites it. The rest are refreshed by hand.
 systemctl start fleet-host-config.service    # polkit allows user nish; no sudo
 journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 ```
+
+### Root deploy units: run, off, delete
+
+Three root units carry a merge to the box. All three are installed by
+`fleet-host-config.service` itself from `rootfs/etc/systemd/system/`, so the
+bootstrap below is the only hand step.
+
+| unit | what it does | started by |
+| --- | --- | --- |
+| `fleet-sync.service` | user scope: fetch + `--ff-only` merge of the deploy clone | `fleet-deploy.service`, or by hand |
+| `fleet-host-config.service` | root scope: `ansible-pull` of `ansible/host.yml` from root's own clone of main, installs everything under `rootfs/` | `deploy-box.yml`, `fleet-deploy.service`, `fleet-host-config.timer` (daily), or by hand |
+| `fleet-deploy.path` | watches `/var/lib/fleet-deploy/request` and starts `fleet-deploy.service` | `paths.target` at boot |
+| `fleet-deploy.service` | oneshot chain: `fleet-sync.service`, then `fleet-host-config.service`, then writes the verdict line to `/var/lib/fleet-deploy/result` | `fleet-deploy.path` |
+
+- Run a deploy now: `systemctl start fleet-deploy.service`, then
+  `cat /var/lib/fleet-deploy/result` (the line names the request, the result,
+  the exit status and the UTC time) and
+  `journalctl -u fleet-deploy.service -u fleet-host-config.service --user-unit=fleet-sync.service -n 100 --no-pager`.
+- Switch off the deploy request path: `sudo systemctl disable --now fleet-deploy.path fleet-deploy.service`.
+  A push to main then deploys nothing, and `deploy-box.yml` polls a `result`
+  file that never changes.
+- Switch off the daily drift run: `sudo systemctl disable --now fleet-host-config.timer`.
+  Merges still apply through `deploy-box.yml`; only the daily catch of a hand
+  edit or a hand-installed `/etc` file stops.
+- Roll back a bad flag by hand (the next run would put it back from `rootfs/`):
+  `sudo sed -i 's/ --verify-commit//' /etc/systemd/system/fleet-{host-config,update}.service`,
+  then `sudo systemctl daemon-reload`.
+- Delete the deploy path: delete `fleet-deploy.service`, `fleet-deploy.path` and
+  `rootfs/etc/tmpfiles.d/fleet-deploy.conf` from this repo, add them to `retired`
+  in `ansible/host.yml`, and remove the live copies with
+  `sudo systemctl disable --now fleet-deploy.path fleet-deploy.service`,
+  `sudo rm /etc/systemd/system/fleet-deploy.{path,service}` and
+  `sudo systemctl daemon-reload`. After that a merge is applied by hand:
+  `systemctl start fleet-host-config.service`.
 
 Files kept off GitHub on purpose (they reveal access paths or backup targets)
 are listed in `/etc/fleet-ops/box-only` on the box, so the drift check skips
@@ -898,9 +934,7 @@ drop-in that carries only Beacon's OpenTelemetry `env` keys (telemetry on, OTLP 
 worker lanes run `--setting-sources project,local` and so never read `~/.claude/settings.json`
 where those keys live; managed settings are read whatever `--setting-sources` says, and the
 `env` block merges key by key with `/etc/claude-code/managed-settings.json`. It carries no
-hooks: workers keep `disableAllHooks`. Scope: every Claude Code process on the box, including
-`retro-weekly`, which runs without a network namespace to the host, so its exports fail
-locally and harmlessly. Nothing leaves the box: the endpoint is loopback and Beacon's
+hooks: workers keep `disableAllHooks`. Scope: every Claude Code process on the box. Nothing leaves the box: the endpoint is loopback and Beacon's
 collector only writes `~/.beacon/endpoint/logs/runtime.jsonl` (mode 0600).
 
 - Verify: a worker-style run (`claude -p --setting-sources project,local --settings
@@ -1246,41 +1280,6 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
 - The rules file is not named `.gitleaks.toml` on purpose, because gitleaks loads
   that name by itself and the full-history scans would start failing on old
   commits.
-
-## Weekly retro
-
-`retro-weekly.timer` starts `retro-weekly.service` every Monday at 07:00 IST.
-It is built so a fooled model cannot do harm, not so it is asked not to.
-
-- The model runs in a bwrap jail: the system is read-only, `/home` is an empty
-  tmpfs, and only the session logs and steering files are bound back read-only. The gh login, the Cloudflare tokens, the
-  seat files, the App key and the other Claude logins are not there.
-- It has no GitHub token. A later step in the unit files at most three
-  follow-up issues using the worker App's issues-only installation token
-  (`fleet-grafana-github-token.service` mints it) with an empty `gh` config
-  directory. Repo and labels are fixed in the unit.
-- The report goes to the vault's `_system/retro/` and syncs to the Mac. A
-  follow-up issue is a fixed five-line file (class, count, fix rung, owning
-  repo and fix kind, each from a list); the unit builds the public title and
-  body from a template, then `config/retro-public-deny.txt` must find no session
-  id, path, quote, time of day, link, email or secret shape in it. One refusal
-  fails the unit and files nothing.
-- The jail has no network. The only way out is `retro-weekly-api.socket`, served
-  by `systemd-socket-proxyd` to `api.anthropic.com:443` and nothing else.
-- Follow-up issues carry only the label `retro` (`needs-orchestrator` would start
-  a paid orchestrator run per issue), one open issue per class.
-- The call is Claude Code to the Anthropic API with the model pinned in the unit.
-  The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
-  it is not used. The pin check fails the unit if the call was anything else
-  and prints a `retro-provider:` line.
-
-- Run it now: `systemctl --user start retro-weekly.service`, then
-  `journalctl --user -u retro-weekly -f`.
-- Switch it on: `systemctl --user enable --now retro-weekly.timer`.
-- Switch it off: `systemctl --user disable --now retro-weekly.timer`.
-- Delete it: switch it off, delete the four units (service, timer, api socket and api service), `prompts/retro-weekly.md`, the two
-  `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
-  `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
 
 ## Provider watch
 
