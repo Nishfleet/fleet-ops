@@ -12,3 +12,13 @@
 # underlying content is ever rewritten.
 .fleet/bench7371/b-labels.jsonl:stripe-access-token:218
 .fleet/bench7371/b-corpus.json:stripe-access-token:1
+# gitleaks false positive by intent: the first commit of the fleet-keeper PR
+# (#10204) wrote three absolute home paths into prompts/fleet-keeper.md (the
+# enrolled-repo list, the packets directory, the worker launch line's pi path).
+# The next commit of the same PR rewrote them as $HOME/... and ~/.local/bin/pi,
+# but a pull-request scan reads every commit in the range and history cannot be
+# rewritten on an open PR, so the old blob still attributes to that commit.
+# Commit-less entries expire on their own once the squash lands the fixed file.
+prompts/fleet-keeper.md:private-home-path:26
+prompts/fleet-keeper.md:private-home-path:36
+prompts/fleet-keeper.md:private-home-path:37
