@@ -200,7 +200,7 @@ script, or prompt lands unseen.
   plugin lock and rotated logs came out group-writable. The playbook's own
   Devin CLI calls (`host.yml`'s chrome-devtools MCP reads and writes,
   `update.yml`'s version check and installer) start it under `umask 077`
-  themselves, and `host.yml` clears every group or other permission bit under
+  themselves, and `host.yml` clears the group and other write bits under
   `~/.local/share/devin` on every run, so another launcher's file is repaired
   on the next merge or daily run. `find ~/.local/share/devin -not -type l
   \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink always
