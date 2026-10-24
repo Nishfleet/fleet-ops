@@ -235,7 +235,8 @@ because the unit files name the backup targets and this repo is public
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
 section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box before wiping it.
+the repo — copy them off the live box to private storage before wiping it, and
+never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
