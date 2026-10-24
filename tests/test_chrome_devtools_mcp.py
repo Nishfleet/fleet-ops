@@ -408,3 +408,46 @@ def test_devin_and_cmd_entries_converge_in_any_output_format_and_missing_cli_is_
     assert state.read_text().strip() == want
     assert calls.read_text().split("\n")[:-1][3:] == ["mcp get", "mcp remove", "mcp add"]
     assert not (tmp_path / ".local/bin/cmd").exists()
+
+
+@NEED_ANSIBLE
+def test_the_playbook_starts_each_agent_cli_with_an_owner_only_umask(tmp_path):
+    seen = tmp_path / "umask"
+    _stub(
+        tmp_path / ".local/bin/devin",
+        f'printf "%s\\n" "$(umask)" >> {seen}\n'
+        'case "$1 $2" in\n'
+        '  "mcp get") echo "Command: none"; exit 1;;\n'
+        '  "mcp add") exit 0;;\n'
+        'esac\n',
+    )
+    _run_tasks(tmp_path, AGENT_CLI)
+    assert seen.read_text().split() == ["0077", "0077"]
+
+
+DEVIN_STATE_GATE = [
+    "Look for the Devin CLI state directory",
+    "Find group- or world-writable files in the Devin CLI state",
+    "Drop group and other write bits from the Devin CLI state",
+]
+
+
+@NEED_ANSIBLE
+def test_group_writable_devin_state_is_cleared_and_the_second_run_changes_nothing(tmp_path):
+    logs = tmp_path / ".local/share/devin/cli/logs"
+    logs.mkdir(parents=True)
+    log = logs / "devin_20260101-000000_1.log"
+    log.write_text("x")
+    log.chmod(0o664)
+    logs.chmod(0o775)
+    _run_tasks(tmp_path, DEVIN_STATE_GATE)
+    assert log.stat().st_mode & 0o022 == 0
+    assert logs.stat().st_mode & 0o022 == 0
+    assert "changed=0" in _run_tasks(tmp_path, DEVIN_STATE_GATE)
+
+
+@NEED_ANSIBLE
+def test_the_devin_state_gate_skips_a_host_with_no_devin_state_directory(tmp_path):
+    out = _run_tasks(tmp_path, DEVIN_STATE_GATE)
+    assert "Find group- or world-writable files in the Devin CLI state] ***" in out
+    assert "failed=0" in out

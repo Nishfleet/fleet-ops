@@ -825,6 +825,36 @@
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
+    # The Devin CLI writes its run logs, plugin index and session locks under
+    # its data dir with whatever umask it inherits. The systemd units that start
+    # it carry UMask=0077, but a launcher that de-elevates to nish through PAM
+    # gets pam_umask's 0002 instead (audit W1a, nish-vault#30), so those files
+    # came out group-writable. The playbook's own Devin CLI calls set the umask
+    # themselves; this clears what any other launcher wrote, and a symlink is
+    # skipped because it always shows mode 777.
+    - name: Look for the Devin CLI state directory
+      become: true
+      become_user: nish
+      ansible.builtin.stat:
+        path: "{{ agent_share }}/devin"
+      register: devin_state_dir
+
+    - name: Find group- or world-writable files in the Devin CLI state
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [find, "{{ agent_share }}/devin", -not, -type, l, "(", -perm, -g+w, -o, -perm, -o+w, ")"]
+      register: devin_writable
+      changed_when: false
+      when: devin_state_dir.stat.exists and devin_state_dir.stat.isdir
+
+    - name: Drop group and other write bits from the Devin CLI state
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [chmod, -R, go-w, "{{ agent_share }}/devin"]
+      when: devin_writable.stdout | default('') | length > 0
+
     # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
     # because per-user units silently ignore sandbox settings on this box. This
     # run never enables or starts tether-agent.service: it stays disabled until
@@ -1933,7 +1963,7 @@
       become_user: nish
       environment: "{{ nish_env }}"
       ansible.builtin.command:
-        argv: ["{{ item }}", mcp, get, chrome-devtools]
+        argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item }}", mcp, get, chrome-devtools]
       loop: "{{ [nish_home ~ '/.local/bin/devin', nish_home ~ '/.local/bin/cmd'] | select('file') | list }}"
       register: mcp_entry
       changed_when: false
@@ -1946,7 +1976,7 @@
       become_user: nish
       environment: "{{ nish_env }}"
       ansible.builtin.command:
-        argv: ["{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
+        argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
       loop: "{{ mcp_entry.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -1958,7 +1988,7 @@
       become_user: nish
       environment: "{{ nish_env }}"
       ansible.builtin.command:
-        argv: "{{ [item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
+        argv: "{{ ['bash', '-c', 'umask 077; exec \"$@\"', 'bash', item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
       loop: "{{ mcp_entry.results }}"
       loop_control:
         label: "{{ item.item }}"
