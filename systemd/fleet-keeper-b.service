@@ -1,0 +1,31 @@
+# Fleet keeper pass, seat B (fleet-ops#10204). The second Claude seat, on its own
+# login: CLAUDE_CONFIG_DIR=%h/.claude-vps, 30 minutes after seat A. Everything
+# else is the same unit as fleet-keeper-a.service, and the comment there explains
+# the prompt, the grant, the missing OnFailure=, the stripped environment, the one
+# date and the $$ / %% convention.
+#
+# The one difference that matters: UnsetEnvironment=CLAUDE_CONFIG_DIR would undo an
+# Environment=CLAUDE_CONFIG_DIR= (UnsetEnvironment= is applied last), so this seat
+# sets it with /usr/bin/env on the command line, where the sweep cannot reach it.
+#
+# Switch off: systemctl --user disable --now fleet-keeper-b.timer
+[Unit]
+Description=Fleet keeper pass, seat B, second login (fleet-ops#10204)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-keeper-b
+RuntimeDirectoryMode=0700
+WorkingDirectory=%h/workspaces
+# 30 min, the same cap as seat A; see the note on TimeoutStartSec= there.
+TimeoutStartSec=30min
+UMask=0077
+Environment=TZ=Asia/Kolkata
+Environment=LC_ALL=C.UTF-8
+Environment=FLEET_TASK_ID=fleet-keeper-b
+Environment=FLEET_KEEPER_REPO=%h/workspaces/tooling/fleet-ops-deploy-clone
+UnsetEnvironment=ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CONFIG_DIR CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_MAX_OUTPUT_TOKENS CLAUDE_CODE_MAX_TURNS CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SUBPROCESS_ENV_SCRUB CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_VERTEX CLAUDE_PROJECT_DIR GH_TOKEN GITHUB_TOKEN MAX_THINKING_TOKENS
+ExecStart=/bin/sh -c 'd=$$(date +%%F); export DELIVERABLE=%h/workspaces/docs/proof/$$d-pi-packets/keeper-b.md; mkdir -p "$$(dirname "$$DELIVERABLE")"; printf %%s "$$DELIVERABLE" > "$$RUNTIME_DIRECTORY/deliverable"; exec /usr/bin/env CLAUDE_CONFIG_DIR=%h/.claude-vps %h/.local/bin/claude -p --permission-mode dontAsk < "$$FLEET_KEEPER_REPO/prompts/fleet-keeper.md"'
+ExecStopPost=/bin/sh -c 'test -s "$$(cat "$$RUNTIME_DIRECTORY/deliverable" 2>/dev/null)" || { echo "fleet-keeper-b: the pass wrote no deliverable" >&2; exit 1; }'

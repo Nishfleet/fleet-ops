@@ -1044,3 +1044,214 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
+
+
+KEEPER_SEATS = ("fleet-keeper-a.service", "fleet-keeper-b.service")
+KEEPER_TIMERS = ("fleet-keeper-a.timer", "fleet-keeper-b.timer")
+KEEPER_ENV_SWEPT = (
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_MAX_TURNS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_PROJECT_DIR",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "MAX_THINKING_TOKENS",
+)
+
+
+def _unit_lines(path: Path) -> list[str]:
+    return [line for line in path.read_text().splitlines() if line and not line.startswith("#")]
+
+
+def _keeper_values(unit: str, key: str) -> list[str]:
+    prefix = f"{key}="
+    return [line[len(prefix) :] for line in _unit_lines(ROOT / "systemd" / unit) if line.startswith(prefix)]
+
+
+def test_both_keeper_seats_run_the_versioned_packet_through_claude_dontask() -> None:
+    for unit in KEEPER_SEATS:
+        lines = _unit_lines(ROOT / "systemd" / unit)
+        assert "Type=oneshot" in lines, f"{unit}: a pass is one job, not a daemon"
+        assert "TimeoutStartSec=30min" in lines, f"{unit}: a pass is capped at 30 minutes"
+        assert "WorkingDirectory=%h/workspaces" in lines, f"{unit}: the pass runs in the workspaces tree"
+        starts = [line for line in lines if line.startswith("ExecStart=")]
+        assert len(starts) == 1, f"{unit}: exactly one ExecStart, so a pass is not a retry loop"
+        assert starts[0].startswith("ExecStart=/bin/sh -c '"), f"{unit}: the date is computed in shell"
+        assert "claude -p --permission-mode dontAsk" in starts[0], f"{unit}: the packet runs through claude -p"
+        assert "prompts/fleet-keeper.md" in starts[0], f"{unit}: the prompt is read from the deploy clone, not a temp dir"
+        assert "date +%%F" in starts[0], f"{unit}: the report path carries the date, computed once in shell"
+        for env in _keeper_values(unit, "Environment"):
+            assert "%Y" not in env and "%m" not in env and "%d" not in env, (
+                f"{unit}: systemd does not expand a date specifier in Environment=, it produces a mangled path"
+            )
+
+
+def test_a_keeper_pass_that_wrote_nothing_fails_the_unit() -> None:
+    for unit in KEEPER_SEATS:
+        post = _keeper_values(unit, "ExecStopPost")
+        assert len(post) == 1, f"{unit}: one dead-man, and it is the only proof the pass ran"
+        assert "RUNTIME_DIRECTORY/deliverable" in post[0], f"{unit}: the dead-man reads the path the pass wrote"
+        assert "test -s" in post[0], f"{unit}: an empty or missing report is a failure, because claude -p exits 0 on a refusal"
+        seat = unit.split("-")[2][0]
+        assert _keeper_values(unit, "RuntimeDirectory") == [f"fleet-keeper-{seat}"], (
+            f"{unit}: the pass has its own runtime directory for the deliverable path"
+        )
+
+
+def test_the_keeper_pass_writes_its_report_owner_only() -> None:
+    for unit in KEEPER_SEATS:
+        assert _keeper_values(unit, "UMask") == ["0077"], (
+            f"{unit}: the user manager's default UMask is 0002, and the report holds findings and session text"
+        )
+
+
+def test_the_keeper_units_drop_every_claude_and_anthropic_variable() -> None:
+    for unit in KEEPER_SEATS:
+        unsets = _keeper_values(unit, "UnsetEnvironment")
+        assert len(unsets) == 1, f"{unit}: one UnsetEnvironment= line"
+        swept = set(unsets[0].split())
+        assert set(KEEPER_ENV_SWEPT) == swept, (
+            f"{unit}: the sweep list drifted. A desktop session leaked its CLAUDE_* and ANTHROPIC_* variables into "
+            "the user manager on 2026-10-24, and UnsetEnvironment= has no glob, so the list has to be written out."
+        )
+        assert "CLAUDE_CONFIG_DIR" in swept and "GH_TOKEN" in swept, f"{unit}: a seat swap and an App token are both silent failures"
+        assert "XDG_RUNTIME_DIR" not in swept and "HOME" not in swept and "PATH" not in swept, (
+            f"{unit}: the pass needs HOME, PATH and the runtime dir for the workers it starts"
+        )
+        assert not [line for line in _unit_lines(ROOT / "systemd" / unit) if line.startswith("Environment=CLAUDE_")], (
+            f"{unit}: UnsetEnvironment= is applied after Environment=, so no seat sets CLAUDE_* through Environment="
+        )
+
+
+def test_seat_b_points_claude_at_the_second_login_and_seat_a_uses_the_default() -> None:
+    assert "CLAUDE_CONFIG_DIR" not in _keeper_values("fleet-keeper-a.service", "ExecStart")[0], (
+        "seat A runs the default login at ~/.claude"
+    )
+    seat_b = _keeper_values("fleet-keeper-b.service", "ExecStart")[0]
+    assert "/usr/bin/env CLAUDE_CONFIG_DIR=%h/.claude-vps" in seat_b, (
+        "seat B sets its login with /usr/bin/env on the command line, where the sweep cannot reach it"
+    )
+
+
+def test_no_keeper_unit_starts_a_pass_of_its_own() -> None:
+    for unit in KEEPER_SEATS + KEEPER_TIMERS:
+        assert not [line for line in _unit_lines(ROOT / "systemd" / unit) if line.startswith("OnFailure=")], (
+            f"{unit}: a failed pass must not start another pass, or the failure handler becomes a loop"
+        )
+    starters = []
+    seen = set()
+    for path in sorted(ROOT.glob("systemd/*.service")) + sorted(ROOT.glob("systemd/*.timer")) + sorted(INSTALLED.glob("*.service")):
+        real = path.resolve()
+        if real in seen:
+            continue
+        seen.add(real)
+        for line in _unit_lines(path):
+            if "fleet-keeper-a.service" in line and line.startswith(("ExecStart", "ExecStartPre")) and "systemctl --user start" in line:
+                starters.append(path.name)
+    assert starters == ["fleet-unit-failed@.service"], (
+        f"fleet-unit-failed@.service is the only unit that starts a pass, found {starters}"
+    )
+
+
+def test_a_failed_fleet_unit_starts_one_keeper_pass_before_it_pages() -> None:
+    lines = _unit_lines(ROOT / "systemd" / "fleet-unit-failed@.service")
+    starts = [line for line in lines if line.startswith("ExecStart")]
+    keeper = [line for line in starts if "fleet-keeper-a.service" in line]
+    assert len(keeper) == 1, f"the handler starts one pass, found {keeper}"
+    assert keeper[0] == "ExecStart=-/usr/bin/systemctl --user start --no-block fleet-keeper-a.service", (
+        "the start is queued, not waited on, and a host with no keeper wired must still get its health ping"
+    )
+    ping = [line for line in starts if "HC_URL_RECONCILE" in line]
+    assert len(ping) == 1 and lines.index(keeper[0]) < lines.index(ping[0]), (
+        "the pass is queued before the page, so the pass is already running when the page lands"
+    )
+
+
+def test_the_keeper_timers_are_half_an_hour_apart_and_run_a_missed_pass_at_boot() -> None:
+    slots = {"fleet-keeper-a.timer": "*:07:00", "fleet-keeper-b.timer": "*:37:00"}
+    for unit, slot in slots.items():
+        lines = _unit_lines(ROOT / "systemd" / unit)
+        assert f"OnCalendar=*-*-* {slot}" in lines, f"{unit}: the seats sit at :07 and :37, so two passes never overlap"
+        assert "Persistent=true" in lines, f"{unit}: a pass missed while the VPS was down runs at boot"
+        assert "WantedBy=timers.target" in lines, f"{unit}: a linked timer that is not enabled is silently off"
+
+
+def test_the_deploy_links_the_keeper_and_retires_the_interim_timer_in_order() -> None:
+    lines = _unit_lines(ROOT / "systemd" / "fleet-sync.service")
+    links = [line for line in lines if line.startswith("ExecStart=") and "systemd/fleet-keeper-" in line and " link " in line]
+    assert len(links) == 1, f"fleet-sync.service links the keeper in one line, found {links}"
+    for name in KEEPER_SEATS + KEEPER_TIMERS:
+        assert f"systemd/{name}" in links[0], f"fleet-sync.service links {name}"
+    stops = [line for line in lines if line.startswith("ExecStart=") and "sec-coordinator-pass.timer" in line]
+    assert stops == ["ExecStart=-/usr/bin/systemctl --user stop sec-coordinator-pass.timer sec-coordinator-pass.service"], (
+        "the interim keeper was a transient timer with no file on disk, so stopping it is the whole retirement"
+    )
+    enables = [line for line in lines if line.startswith("ExecStart=") and "enable --now fleet-keeper-a.timer fleet-keeper-b.timer" in line]
+    assert len(enables) == 1, "a keeper timer that is linked but never enabled is silently off"
+    assert lines.index(links[0]) < lines.index(stops[0]) < lines.index(enables[0]), (
+        "the interim timer stops before the real seat A timer starts, because both fire at :07"
+    )
+
+
+def test_no_keeper_unit_pages_or_asks_for_a_key() -> None:
+    for unit in KEEPER_SEATS + KEEPER_TIMERS:
+        lines = _unit_lines(ROOT / "systemd" / unit)
+        for banned in ("HC_URL", "curl", "hermes", "token-minter"):
+            assert not [line for line in lines if banned in line], f"{unit}: the keeper is a worker, not a pager or a key holder"
+        assert not [line for line in lines if line.startswith("EnvironmentFile=")], f"{unit}: the keeper loads no key file"
+
+
+def test_the_keeper_prompt_carries_the_finish_line_and_the_never_list() -> None:
+    text = (ROOT / "prompts" / "fleet-keeper.md").read_text()
+    for needle in (
+        "fleet-keeper-a",
+        "fleet-keeper-b",
+        "needs-nish-decision",
+        "Never approve a PR",
+        "coordinator-approval",
+        "cap 25 min",
+    ):
+        assert needle in text, f"prompts/fleet-keeper.md names {needle}"
+    assert text.count("systemd-run") == 1, "the packet starts workers one way only"
+
+
+def test_the_keeper_prompt_names_only_workflows_this_repo_has() -> None:
+    text = (ROOT / "prompts" / "fleet-keeper.md").read_text()
+    named = set(re.findall(r"`([A-Za-z0-9._-]+\.yml)`", text)) | set(re.findall(r"-w ([A-Za-z0-9._-]+)", text))
+    assert "agent-dispatch.yml" in named, "prompts/fleet-keeper.md reads the dispatch workflow it has to watch"
+    for name in sorted(named):
+        stem = name[:-4] if name.endswith(".yml") else name
+        assert (ROOT / ".github" / "workflows" / f"{stem}.yml").is_file(), (
+            f"prompts/fleet-keeper.md names {name}, which this repo does not have"
+        )
+
+
+def test_the_keeper_prompt_starts_workers_on_the_minted_token_and_keeps_failures_listed() -> None:
+    text = (ROOT / "prompts" / "fleet-keeper.md").read_text()
+    launches = [line.strip() for line in text.splitlines() if line.strip().startswith("`systemd-run --user --unit keeper-")]
+    assert len(launches) == 1, f"prompts/fleet-keeper.md has one worker launch line, found {len(launches)}"
+    for needle in (
+        "Requires=fleet-worker-github-token@",
+        "After=fleet-worker-github-token@",
+        "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/",
+        "TemporaryFileSystem=$HOME/.config/gh",
+        "ExecStartPre=",
+        "ExecStopPost=",
+    ):
+        assert needle in launches[0], f"the launch line keeps {needle}"
+    assert "--collect" not in launches[0], "a failed worker must stay listed for the next pass to read"

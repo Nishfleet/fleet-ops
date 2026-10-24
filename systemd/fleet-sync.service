@@ -150,12 +150,29 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     beacon-hermes-poll.service was never linked (fleet-ops#9967).
 ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2y. The fleet keeper (fleet-ops#10204): link the two seats and their timers.
+#     sec-coordinator-pass.timer was the interim keeper, a transient
+#     `systemd-run --on-calendar=*:07` unit with no file on disk, so there is
+#     nothing to unlink or disable and stopping it is the whole retirement. The
+#     stop below runs before the enable because both it and the real seat A timer
+#     fire at :07: a deploy that enabled the keeper without stopping the interim
+#     one would run two passes at once. The `-` prefix covers a host where it is
+#     already gone. The keeper units read their prompt from this clone, so the
+#     link also upgrades the prompt on every sync.
+ExecStart=/bin/sh -c 'for f in fleet-keeper-a.service fleet-keeper-a.timer fleet-keeper-b.service fleet-keeper-b.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-keeper-a.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-keeper-a.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-keeper-b.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-keeper-b.timer
+ExecStart=-/usr/bin/systemctl --user stop sec-coordinator-pass.timer sec-coordinator-pass.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
 ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
+# The keeper timers are enabled on every sync, not once by hand: a timer that is
+# linked but silently off is the failure this ships to fix (fleet-ops#10204).
+# Off switch: delete this line, then `systemctl --user disable --now
+# fleet-keeper-a.timer fleet-keeper-b.timer`.
+ExecStart=/usr/bin/systemctl --user enable --now fleet-keeper-a.timer fleet-keeper-b.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service
 #    (rootfs/etc/systemd/system/, Ansible's ansible-pull of ansible/host.yml)

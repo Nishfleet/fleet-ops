@@ -1,0 +1,10 @@
+# Fleet keeper, seat A: the top of every hour, on the default login (fleet-ops#10204).
+# Persistent=true, so a pass missed while the VPS was down runs at boot: the fleet's
+# 16-hour outage on 2026-10-23 went unnoticed partly because a missed schedule
+# silently became a missed check.
+[Timer]
+OnCalendar=*-*-* *:07:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

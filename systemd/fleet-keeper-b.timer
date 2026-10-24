@@ -1,0 +1,9 @@
+# Fleet keeper, seat B: half past every hour, on the second login (fleet-ops#10204).
+# 30 minutes after seat A, so the two seats never overlap and a finding in one
+# pass is already written when the other seat reads the last three comments.
+[Timer]
+OnCalendar=*-*-* *:37:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

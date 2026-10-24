@@ -1349,3 +1349,53 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   `.agents/skills/verify-fleet/fleet-map.md` and step 2g of `systemd/fleet-sync.service`, then
   `rm` the two links in `~/.config/systemd/user/`, run `systemctl --user daemon-reload` and
   `rm -r ~/.local/state/provider-watch`.
+
+## Fleet keeper
+
+Two Claude seats keep a check on everything and fix what breaks (fleet-ops#10204). Nish,
+2026-10-24: "two claude accounts exist on the vps solely to fix such failures, inexcusable.
+please make it so that they keep a check on everything". The reason: on 2026-10-23 the
+work queue stopped at 18:53 IST and stayed down for over 16 hours, the nightly backup and
+the daily update failed, and 14 units sat failed while the watcher called them "other lanes".
+
+- `fleet-keeper-a.service` runs `prompts/fleet-keeper.md` through `claude -p
+  --permission-mode dontAsk` on the default login (`~/.claude`). `fleet-keeper-b.service`
+  runs the same packet on the second seat (`CLAUDE_CONFIG_DIR=~/.claude-vps`).
+  `fleet-keeper-a.timer` starts seat A at :07 IST and `fleet-keeper-b.timer` starts seat B
+  at :37, so the two passes never overlap. A pass is capped at 30 minutes by
+  `TimeoutStartSec=` and at 25 minutes by the packet itself.
+- Each pass reads the last pass, checks the list in step 3 of the packet (failed units in
+  both managers, stale timers, dispatch workflow runs and red main per enrolled repo, the
+  merge flow, restic snapshot age, the router, the host, the job manager environment, the
+  parked-issue labels and the nish-vault tracker), and starts one Pi worker per finding
+  nobody owns. Only what needs Nish's own decision becomes one `needs-nish-decision`
+  issue.
+- A failed fleet unit is the other trigger. `fleet-unit-failed@.service` queues one pass
+  before it pings healthchecks.io. The keeper units carry no `OnFailure=` of their own, so
+  a pass that dies cannot start another one, and the other seat's timer covers it 30
+  minutes later.
+- The pass runs as `nish` with the runner user's own gh login, not an App token, because
+  dispatching `agent-dispatch.yml` needs Actions write and `fleet-worker-github-token@` has
+  no Workflows permission. The packet's own "Never" list is the control on that grant: no
+  approval, no `coordinator-approval`, no owner key, no secret rotation. The workers it
+  starts are the usual minted-token ones, with the gh login blanked for each.
+- `UnsetEnvironment=` sweeps every `CLAUDE_*` and `ANTHROPIC_*` variable plus `GH_TOKEN`
+  and `GITHUB_TOKEN`. A desktop session leaked those into the user manager on 2026-10-24,
+  so a background unit inherited them: a leaked `ANTHROPIC_BASE_URL` sends the seat's calls
+  to the wrong provider and a leaked `CLAUDE_CONFIG_DIR` points the seat at the other
+  login. `UnsetEnvironment=` has no glob and is applied after `Environment=`, so seat B
+  sets its login with `/usr/bin/env` on the command line.
+- The report of a pass is `~/workspaces/docs/proof/<date>-pi-packets/keeper-<seat>.md`, and
+  `ExecStopPost=` fails the unit when it is missing or empty, because `claude -p` exits 0 on
+  a model refusal. The same text is posted as one comment on the keeper log issue.
+
+- Run it now: `systemctl --user start fleet-keeper-a.service`, then
+  `journalctl --user -u fleet-keeper-a -n 100`.
+- Switch it on: nothing to do. `fleet-sync.service` links the pair and enables both timers
+  on every deploy (step 2y).
+- Switch it off: `systemctl --user disable --now fleet-keeper-a.timer fleet-keeper-b.timer`.
+- Delete it: switch it off, delete `systemd/fleet-keeper-a.service`,
+  `systemd/fleet-keeper-a.timer`, `systemd/fleet-keeper-b.service`,
+  `systemd/fleet-keeper-b.timer`, `prompts/fleet-keeper.md` and step 2y of
+  `systemd/fleet-sync.service`, then `rm` the four links in `~/.config/systemd/user/` and
+  run `systemctl --user daemon-reload`. The keeper logs no state outside the proof tree.

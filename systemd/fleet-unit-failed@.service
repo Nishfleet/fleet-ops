@@ -6,9 +6,24 @@
 # down. Unset URL = SKIP exit 0. Do not OnFailure= this unit (recursive
 # chain, same man page). curl --config <(sed ...) keeps the UUID out of
 # argv (fleet-ops#8403).
+#
+# This unit is also the event trigger for the fleet keeper (fleet-ops#10204).
+# A fleet unit failing is the failure event the keeper waits for, so the handler
+# starts a keeper pass before it pings healthchecks.io. `--no-block` queues the
+# pass and returns immediately, and a start asked for while a pass is already
+# running is a no-op, so at most one pass runs at a time. The keeper units carry
+# no OnFailure= of their own, which is what keeps this edge the only one into a
+# pass and the chain acyclic: fleet-keeper-a.service fails, nothing starts it
+# again, and the other seat's timer covers it 30 minutes later.
+#
+# The `-` prefix on the start is the ignore-failure exception this repo's unit
+# tests allow: fleet-sync.service wires the keeper units on every deploy, and on
+# a host that predates them, or where Nish switched them off, a start that cannot
+# happen must not fail the health ping.
 [Unit]
 Description=Healthchecks.io fail ping for %i (fleet-ops#9033)
 
 [Service]
 Type=oneshot
+ExecStart=-/usr/bin/systemctl --user start --no-block fleet-keeper-a.service
 ExecStart=/bin/bash -c 'if ! grep -q "^HC_URL_RECONCILE=." /home/nish/.config/fleet-ops/keystone-hc.env; then echo SKIP: HC_URL_RECONCILE unset; exit 0; fi; exec /usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --data-raw "$1" --config <(sed -n "s|^HC_URL_RECONCILE=\\(.*\\)|url = \\1/fail|p" /home/nish/.config/fleet-ops/keystone-hc.env)' bash %i

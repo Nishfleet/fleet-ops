@@ -1,0 +1,67 @@
+# Fleet keeper pass, seat A (fleet-ops#10204). Nish, 2026-10-24: "two claude
+# accounts exist on the vps solely to fix such failures, inexcusable. please make
+# it so that they keep a check on everything". This unit is one of the two seats;
+# fleet-keeper-b.service is the other, 30 minutes later, on the second login.
+#
+# What runs: prompts/fleet-keeper.md through `claude -p`, twice an hour, with the
+# seat's own gh login (nish3451, ~/.config/gh/hosts.yml) and no App token. The
+# keeper dispatches work with `gh workflow run agent-dispatch.yml`, which needs
+# Actions write, and the nishfleet-worker App token of
+# fleet-worker-github-token@.service has no Workflows permission - so this unit
+# uses the runner user's own login the way fleet-pr-sweep@.service and
+# agent-dispatch.yml's orchestrate job already do. The packet's own "Never" list
+# is the control on that grant: no approval, no coordinator-approval, no owner
+# key, no secret rotation.
+#
+# No OnFailure= on this unit, on purpose. fleet-unit-failed@.service starts this
+# unit, so pointing this unit back at it would be a failure loop that pages and
+# starts passes forever. A pass that dies is caught two ways instead: the
+# ExecStopPost dead-man below fails the unit, which leaves it listed for the
+# other seat's step 3, and the other seat's own timer runs 30 minutes later.
+#
+# The environment is stripped. A desktop session leaked its CLAUDE_* and
+# ANTHROPIC_* variables into the user manager on 2026-10-24, so every background
+# unit inherited them: a leaked ANTHROPIC_BASE_URL sends this seat's calls to the
+# wrong provider, a leaked CLAUDE_CONFIG_DIR points the seat at the other login,
+# and a leaked GH_TOKEN swaps the login for an App token that cannot dispatch.
+# UnsetEnvironment= is applied as the last step, so it also undoes Environment=;
+# CLAUDE_CONFIG_DIR is therefore unset here and re-added on the command line by
+# the seat that needs it (fleet-keeper-b.service), never through Environment=.
+#
+# One date: ExecStart writes the deliverable path into the runtime directory
+# once, so a pass that crosses midnight IST names its report and its dead-man
+# with the same string.
+#
+# %%, $$: systemd expands % and $ itself before any shell runs, so every shell $
+# is written $$ and every shell % is written %% (ci.yml gate fleet-ops#8382).
+#
+# Switch off: systemctl --user disable --now fleet-keeper-a.timer
+# Delete: README "Fleet keeper" lists the files.
+[Unit]
+Description=Fleet keeper pass, seat A, default login (fleet-ops#10204)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-keeper-a
+RuntimeDirectoryMode=0700
+WorkingDirectory=%h/workspaces
+# 30 min is the cap for a pass. Type=oneshot runs its ExecStart in the start phase,
+# so RuntimeMaxSec= is ignored for this shape and TimeoutStartSec= is the directive
+# that bounds it, the same pairing retro-weekly.service uses. The packet's own cap
+# is 25 min, so a pass that reaches 30 min is one that is stuck.
+TimeoutStartSec=30min
+UMask=0077
+Environment=TZ=Asia/Kolkata
+Environment=LC_ALL=C.UTF-8
+Environment=FLEET_TASK_ID=fleet-keeper-a
+Environment=FLEET_KEEPER_REPO=%h/workspaces/tooling/fleet-ops-deploy-clone
+UnsetEnvironment=ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL CLAUDE_CONFIG_DIR CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_MAX_OUTPUT_TOKENS CLAUDE_CODE_MAX_TURNS CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SUBPROCESS_ENV_SCRUB CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_VERTEX CLAUDE_PROJECT_DIR GH_TOKEN GITHUB_TOKEN MAX_THINKING_TOKENS
+# The deliverable path is written once, here, and read by the dead-man below.
+# The user manager's default UMask is 0002, so the report of a pass (findings,
+# unit names, session text) would otherwise be group and world readable.
+ExecStart=/bin/sh -c 'd=$$(date +%%F); export DELIVERABLE=%h/workspaces/docs/proof/$$d-pi-packets/keeper-a.md; mkdir -p "$$(dirname "$$DELIVERABLE")"; printf %%s "$$DELIVERABLE" > "$$RUNTIME_DIRECTORY/deliverable"; exec %h/.local/bin/claude -p --permission-mode dontAsk < "$$FLEET_KEEPER_REPO/prompts/fleet-keeper.md"'
+# `claude -p` exits 0 on a model refusal, so the report on disk is the only
+# proof the pass ran. A pass that wrote nothing fails the unit here.
+ExecStopPost=/bin/sh -c 'test -s "$$(cat "$$RUNTIME_DIRECTORY/deliverable" 2>/dev/null)" || { echo "fleet-keeper-a: the pass wrote no deliverable" >&2; exit 1; }'
