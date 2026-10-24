@@ -161,6 +161,87 @@ alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody do
 leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
 that changed nothing running, because nothing read it (fleet-ops#9670).
 
+## Sentry monitors (org 0509-gg)
+
+Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
+Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
+the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+
+Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
+no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
+uptime monitors), read into a curl config fd so it never lands in argv:
+
+    SENTRY_ENV=~/.config/sentry/env
+    AUTH='s|^SENTRY_AUTH_TOKEN=\(.*\)|header = "Authorization: Bearer \1"|p'
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") https://sentry.io/api/0/organizations/0509-gg/uptime/
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") \
+      https://sentry.io/api/0/projects/0509-gg/drive/uptime/10494402/checks/
+
+The checks list lags: the 07:48:47Z check was still missing at 07:55Z and appeared at
+07:56Z, so an empty tail is not a dead monitor.
+
+Verified on 2026-10-24:
+
+| Kind | Name | id | Project | Target | Green means |
+|---|---|---|---|---|---|
+| uptime | Drive access wall (pre-launch, private) | 10494402 | drive | `https://drive-pricing.nishant345.workers.dev/` | Access answered: the last response carries `cf-access-domain` |
+| cron | liveness-ping | `f2dbf08e-6a6d-49d3-b0e2-2b657205d482` | five-to-nine | `*/5 * * * *`, UTC | 0509's check-in arrived. The other nine monitors in that project are disabled |
+
+Nothing in this repo reads a monitor: no unit, no workflow. So a red is read in Sentry, or
+from `/checks/`, and no fleet unit pages on it.
+
+### The checker follows redirects, and asserts on the last response
+
+Measured on 10494402 on 2026-10-24. It records the status of the first response and asserts
+on the last. A check at 07:28:47Z showed `httpStatusCode: 302` and still failed
+`status_code_check` with `equals` and `value` 302, because the checker had followed to the
+Access login page and compared that page's 200. Against the same 302 on the record, `equals`
+200 passed at 07:40:47Z and 07:41:47Z. So an assertion on the drive hostname has to describe
+the login page, never the redirect.
+
+### drive is private until launch, so the monitor watches the wall
+
+fleet-ops#9014 deleted the dead VPS probes; Sentry carries site up/down instead
+(`rootfs/etc/prometheus/prometheus.yml`, the 2026-10-01 block). For drive,
+`cloudflare.config.ts` and `test/access-wall.test.mjs` in Nishfleet/drive keep the hostname
+behind Access until launch. Access answers every path before the Worker runs (`/api/health`
+included, and `/.well-known/cloudflare-access-protected-resource/...` is the one exempt path),
+so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
+was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
+turned into a 302, so its last checks read green on the wall's answer rather than drive's.
+The app-level check it pretended to be is fleet-ops#10226.
+
+10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
+merges into the monitor, so send only the fields you change:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"assertion":{"root":{"op":"header_check",
+      "key_op":{"cmp":"equals"},"key_operand":{"header_op":"literal","value":"cf-access-domain"},
+      "value_op":{"cmp":"always"},"value_operand":{"header_op":"none"}}}}
+
+It reds if the wall is bypassed (drive's own page carries no `cf-access-domain`), if Access
+stops sending that header, or if the hostname stops answering. Proven both ways on
+2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
+with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
+from 07:42:47Z on.
+
+### The assertion shape
+
+`assertion` is not in the API reference, so the API's own deserialization errors are the
+spec. `op` is one of `and` (with `children`), `or`, `not` (with `operand`),
+`status_code_check`, `json_path` and `header_check`. A comparison is `{"cmp": "equals" |
+"not_equal" | "less_than" | "greater_than" | "always" | "never"}`, and `always` on a header
+value means the header exists. `status_code_check` holds `value` and `operator`.
+`header_check` holds `key_op`, `key_operand`, `value_op` and `value_operand`, where an
+operand is `{"header_op": "literal", "value": "<name>"}` or `{"header_op": "none"}`.
+Sending `cmp` where `value_op` belongs is a 400 and changes nothing.
+
+An assertion change takes effect on the first check that starts after the PUT, not in the
+history already written. Read `uptimeStatus` with care: it flips only after
+`downtimeThreshold` failures in a row, so one failed check leaves it at 1. The live values are
+`intervalSeconds` 300 and `downtimeThreshold` 3; while experimenting, drop the first to 60 and
+raise the second to 10, then put both back to 300 and 3.
+
 ## LiteLLM stack (rebuild reference)
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
