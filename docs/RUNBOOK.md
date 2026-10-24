@@ -227,9 +227,15 @@ crash-consistent and churned about 700 MiB a day). Restore with `pg_restore`.
 Retention is one policy for the backup and maintenance units, kept 7 daily,
 4 weekly and 3 monthly snapshots grouped by host and tags
 (`config/restic/retention.env`, `config/restic/README.md` "Retention"). The
-restic backup, verify and restore-test jobs are root units installed
-outside this repo (under `/etc/systemd/system/restic-r2-*`), with drop-ins from
-`rootfs/`, so this section does not schedule them.
+restic units are deliberately host-only, not an oversight: the backup,
+locked-copy, maintenance, restore-test and verify services, their timers and
+the size-guard service live only under `/etc/systemd/system/restic-r2-*`,
+because the unit files name the backup targets and this repo is public
+(Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
+`fleet-host-config.service`'s drift check skips them; this repo tracks only the
+additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
+section does not schedule them. A box rebuild cannot restore these units from
+the repo — copy them off the live box before wiping it.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
