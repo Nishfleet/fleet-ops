@@ -1026,7 +1026,8 @@ A job that calls `agent.yml` must grant every scope its jobs ask for, at or abov
 asked. A caller that grants less kills the whole run at startup with no job and no log, which
 is how 23 Oct took the fleet down: `agent.yml`'s `review` job began asking `contents: read`,
 and all 13 callers in `agent-dispatch.yml` died until #10194 landed the grant
-(fleet-ops#10192). `tests/test_workflow_caps.py` reads every workflow here, collects what
+(fleet-ops#10192). `tests/test_workflow_caps.py` reads every workflow under
+`.github/workflows/`, collects what
 `agent.yml` asks scope by scope, and fails the PR when any caller grants less. actionlint
 1.7.12 and zizmor 1.30.1 both pass on the broken commit, so this test is the gate.
 
