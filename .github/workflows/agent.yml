@@ -609,30 +609,30 @@ jobs:
           permission-pull-requests: write
       - name: Router wall
         id: wall
-        # A router seat wall or a Devin capacity refusal is infra, not a bad packet
-        # (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes
-        # anything, so a claim branch already ahead of main is requeued too. GITHUB_TOKEN on
-        # purpose: its label fires no workflow, so the issue waits for the next sweep instead
-        # of going straight back to the lane that refused it (0509#6133, ~50 runs an issue).
+        # Infra, not a bad packet (fleet-ops#8543): no strike, back to agent-ready. GITHUB_TOKEN fires no workflow (0509#6133).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
+          wall_re='insufficient balance|model is unavailable'
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
-            # Cursor's own stall (fleet-ops#9275: "Connection stalled repeatedly", exit 1, and the packet was
-            # struck). The cursor-agent line in Worker discards stdout only, so this stderr reaches worker.err.
-            # Like a router 429 it is the provider, not the packet, so it needs the same 0-ahead proof that
-            # nothing was pushed. The Cursor cap stays 1.
-            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
+            # Cursor's stall (fleet-ops#9275) and a 402/400 dead seat (fleet-ops#9007, #9011) are the
+            # provider, not the packet: the router cools only 401/404/408/429 of the 4xx, so a row that
+            # answers only these keeps its share. Bare 400 stays out: pi's own BadRequestError must strike.
+            { grep -qiE "no deployments available|ratelimiterror|rate limit exceeded|$wall_re|\b429\b|\b402\b" "$RUNNER_TEMP/worker.err" 2>/dev/null ||
               { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           # shellcheck disable=SC2016 # $v is a jq variable
           n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
           [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
-          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # The error carries no model, the journal line does (fleet-ops#9011): named only when 10 minutes agree on one.
+          wall_hit=$(grep -oiE "$wall_re" "$RUNNER_TEMP/worker.err" 2>/dev/null | tail -1) || true
+          seat=$( [ -n "$wall_hit" ] && { XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" journalctl --user -u fleet-litellm-proxy.service --since -10min 2>/dev/null | grep -iF "$wall_hit" | grep -oE 'model=[A-Za-z0-9/_.:@-]+' | sort -u; } ) || true
+          case "$(printf '%s\n' "$seat" | grep -c .)" in 1) seat="${seat#model=}";; *) seat="";; esac
+          gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID${seat:+ - dead seat: $seat}"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
