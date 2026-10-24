@@ -951,6 +951,39 @@
           changed_when: false
           ignore_errors: true
 
+        # GitHub's compare status is `diverged`, `ahead`, `behind` or `identical`
+        # (https://docs.github.com/en/rest/commits/commits#compare-two-commits):
+        # `behind` and `identical` pass, `ahead` and `diverged` fail, and no
+        # answer at all (404, no network, no gh login) fails too, because a
+        # check that waves itself through when it cannot run is not a check
+        # (fleet-ops#10144).
+        - name: Check every git extension pin is on its repo's default branch
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' /home/nish/.pi/agent/settings.json) || {
+                echo "could not read the git pins from settings.json"; exit 1; }
+              bad=0
+              while IFS= read -r spec; do
+                [ -n "${spec}" ] || continue
+                repo=${spec#git:github.com/}; repo=${repo%@*}; sha=${spec##*@}
+                if status=$(gh api "repos/${repo}/compare/HEAD...${sha}" --jq .status 2>&1); then
+                  case "${status}" in
+                    identical|behind) ;;
+                    *) echo "${spec} is not on the default branch (${status})"; bad=1 ;;
+                  esac
+                else
+                  echo "no answer from GitHub for ${spec}: ${status}"; bad=1
+                fi
+              done <<< "${specs}"
+              exit "${bad}"
+          register: off_branch_pins
+          changed_when: false
+          ignore_errors: true
+
       always:
         - name: Start the runner services this run stopped
           ansible.builtin.systemd_service:
@@ -1188,6 +1221,7 @@
                 upgraded: "{{ cua_upgrade | default(false) }}"
                 desk_busy: "{{ cua_desk_busy | default('unknown') }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
+              git_pins_off_default_branch: "{{ (off_branch_pins | default({})).stdout_lines | default([]) | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
         - name: Fail loudly if any step or check went wrong
@@ -1213,6 +1247,8 @@
               - "not (router_before_smoke | default({})).failed | default(false)"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
               - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
+              - "(off_branch_pins | default({})).rc | default(0) == 0"
+              - "(off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
               - "(dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
               - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
@@ -1231,6 +1267,7 @@
               tincan upgrade: {{ (tincan_upgrade | default({})).stderr | default('ok') | truncate(300) }};
               pi smoke: {{ (('reply ' ~ (pi_smoke.stdout | default('', true) | trim)) if (pi_smoke.stdout | default('', true) | trim) else ('no reply, stderr: ' ~ (pi_smoke.stderr | default('', true) | trim | truncate(300)))) if pi_smoke is defined else 'not run, an earlier step in the block failed' }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) if off_branch_pins is defined else 'not run, an earlier step in the block failed' }};
               Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
