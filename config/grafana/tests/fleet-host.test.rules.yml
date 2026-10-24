@@ -1,0 +1,13 @@
+groups:
+  - name: fleet-host
+    rules:
+      - alert: SystemUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          signal: host-unit
+          grafana_folder: fleet
+        annotations:
+          summary: 'Systemd unit {{ $labels.name }} is failed on the fleet host.'
+          description: '{{ $labels.name }} has been in the failed state for 5 minutes. Run systemctl status {{ $labels.name }} on the host to see why, restart or fix the unit, then close this issue. A failed unit here broke the nightly off-site backup silently before this alert filed issues (fleet-ops#10204).'

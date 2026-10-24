@@ -117,7 +117,7 @@ def test_only_a_day_red_is_critical_its_read_errors_are_muted_and_the_tree_pages
     assert muted["mute_time_intervals"] == ["deploy-failed-24h-errors"]
     assert not muted.get("continue")
     errors = next(r for r in policy["routes"] if r["receiver"] == "hermes-urgent" and ["alertname", "=~", "DatasourceError|DatasourceNoData"] in r["object_matchers"])
-    assert ["signal", "!=", "deploy-failed-24h"] in errors["object_matchers"]
+    assert ["signal", "!~", "deploy-failed-24h|queue-down-2h"] in errors["object_matchers"]
     critical = next(r for r in policy["routes"] if ["severity", "=", "critical"] in r["object_matchers"])
     assert (critical["receiver"], critical["repeat_interval"], critical["continue"]) == ("hermes-urgent", "1h", True)
     assert _yq(".muteTimes", POLICY) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
