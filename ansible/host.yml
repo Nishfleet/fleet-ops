@@ -45,8 +45,8 @@
     # values; a rollback is the revert of that PR. These two lines are the only
     # place the version and the hash are written.
     # 0.7.0 is the first release that uses its own Space's key from cua.env.
-    tether_version: 0.7.0
-    tether_sha256: 1c5d0bad9be0784a5fbf4dfc2b8cd0bd442c6f33a726722b5a9ece77b034b2e0
+    tether_version: 0.7.1
+    tether_sha256: b753ed661e96ccdf7fcfd71f15e00f77fe65d9aee6105fd6b320fa185633104a
     # Everything below derives from the two pins. The directory and the cached
     # file carry the version AND the first 12 hex of the hash, so a new hash at
     # the same version is a new name and never reuses old content. The root and
