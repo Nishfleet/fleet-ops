@@ -1240,8 +1240,8 @@ router_settings:
   # row served ~34k calls and xKiro's alpha row ~70 with no injection row, so the malformed SSE tracked the
   # reseller, not the model. The upstream ended the preview (402/403 from 10-06) and #9400, #9402, #9677 and
   # #9710 took every space-bunny row out by 10-13; zero injection rows since 2026-10-05 11:59 UTC (checked
-  # 10-24). A future stealth-preview row from any reseller should expect the same failure mode: no cooldown and
-  # no mid-stream fallback after content. A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
+  # 10-24). A future stealth-preview row from any reseller walks back into the failure mode described above.
+  # A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
   # strike adds strong-only). senior has one row (GLM-5.3-Flash on Synthetic, fleet-ops#10040) and no fallback of its own, so a judge call that
   # falls to senior ends there and cannot cycle.
   # W10c: worker-capable never falls to worker-cheap. Before the dead Ollama rows left (fleet-ops#10033), about 26% of worker-capable
