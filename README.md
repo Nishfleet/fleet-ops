@@ -224,6 +224,10 @@ script, or prompt lands unseen.
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
   `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
+  The chat id is the Telegram chat the bot posts to: read it from an existing
+  box's `telegram_chat_id`, or from the old `/etc/prometheus/alertmanager.yml`
+  if a box still has that copy (the play refuses to retire it while it is the
+  only source).
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
   config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl

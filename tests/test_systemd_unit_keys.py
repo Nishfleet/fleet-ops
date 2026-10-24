@@ -785,7 +785,16 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
         "the config the running service reads is not retired"
     )
     assert "Seed the telegram chat id file" not in host, (
-        "nothing reads the config the play now deletes"
+        "the seed task still reads the retired config"
+    )
+    guard = host.index("- name: Refuse to delete the old alertmanager config")
+    retire = host.index("- name: Remove retired host files")
+    assert guard < retire, (
+        "the chat id guard runs before the retire step, so the old config is never deleted while it holds the only id"
+    )
+    assert "telegram_chat_id" in host[guard:retire]
+    assert host.index("- name: Stop and disable the retired SMB bridge") < retire, (
+        "the bridge is stopped before its unit file goes"
     )
     assert not (ROOT / "rootfs/etc/prometheus/alertmanager.yml").exists(), (
         "fleet-ops ships no copy of the stale config"
