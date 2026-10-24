@@ -22,6 +22,12 @@ contactPoints:
             {{ .Annotations.summary }} {{ .Annotations.description }}
             {{ end }}
 
+deleteRules:
+  - orgId: 1
+    uid: ppi-ollama
+  - orgId: 1
+    uid: ppi-cline
+
 groups:
   - orgId: 1
     name: paid-plan-idle
