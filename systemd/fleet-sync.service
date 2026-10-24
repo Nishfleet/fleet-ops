@@ -163,6 +163,16 @@ ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy
 #     a restart drops whatever wake is in flight.
 ExecStart=/bin/sh -c 'for f in tincan-listen-command-code.service tincan-listen-cursor-vps.service tincan-listen-devin-vps.service tincan-listen-fleet-worker.service tincan-listen-opencode.service tincan-listen-pi.service cua-desk-daemon.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-command-code.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-cursor-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-devin-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-opencode.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/cua-desk-daemon.service
+# 2k. The gpg-agent OOM drop-in (fleet-ops#10138) moved into
+#     rootfs/etc/systemd/user/, which fleet-host-config.service installs as root
+#     into /etc/systemd/user. ~/.config/systemd/user shadows that directory, so
+#     the hand-placed copy has to go once the installed one exists, or the repo
+#     copy stays inert. The `test -f` guard keeps this a no-op until then, and the
+#     daemon-reload below makes the user manager read the installed one. The
+#     leading `-` matters: without it the step fails every deploy until
+#     fleet-host-config has run, and a failed step is a page. Off switch: delete
+#     this step and remove the hand-placed copy by hand.
+ExecStart=-/bin/sh -c 'test -f /etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf && rm -f %h/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf'
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer

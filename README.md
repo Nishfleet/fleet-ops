@@ -151,8 +151,8 @@ script, or prompt lands unseen.
   `systemctl --user disable --now tincan-listen-opencode.service`
   `systemctl --user disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
-  Delete one by removing its file here and the live link, then
-  `systemctl --user daemon-reload`.
+  Delete one by removing its line from `fleet-sync.service` step 2j, its file here
+  and the live link, then `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5

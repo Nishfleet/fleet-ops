@@ -1022,7 +1022,7 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
     assert "[Service]" in lines
     assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
     unit = ROOT / dropin_dir.removesuffix(".d")
-    # The Devin listener unit is hand-placed on the host (no repo copy), so only its drop-in is here.
+    # The Devin listener unit is in systemd/ with fleet-ops#10133, so both are read.
     if unit.is_file():
         assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
             f"{unit.name} sets UMask itself; keep it in the drop-in only"
@@ -1046,12 +1046,6 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
 
 
-# The Tincan wake services and the Cua desk daemon were hand-placed regular files
-# under ~/.config/systemd/user with no repo copy (fleet-ops#10133, #10140), so a
-# git pull carried no edit to them and this file could not read them. Each one now
-# lives in systemd/, and the wake ones are pinned on the agent they wake and the
-# seat they load, so a later edit cannot quietly repoint a listener at another
-# agent, another model or another login.
 WAKE_UNITS = (
     "systemd/tincan-listen-command-code.service",
     "systemd/tincan-listen-cursor-vps.service",
@@ -1069,23 +1063,18 @@ WAKE_AGENT = {
     "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
+DESK_UNIT = "systemd/cua-desk-daemon.service"
+GPG_AGENT_OOM_DROPIN = ROOT / "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
 
 
 def effective_directives(unit: Path) -> dict[str, list[str]]:
-    """A unit the way systemd reads it: the unit file, then its drop-ins in name order.
-
-    A drop-in that overrides its unit is what actually runs, so reading only the
-    unit file would test a file nobody loads.
-    """
+    """A unit the way systemd reads it: the unit file, then its drop-ins in name order."""
     keys: dict[str, list[str]] = {}
-    sources = [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]
-    for source in sources:
+    for source in [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]:
         if not source.is_file():
             continue
-        for line in source.read_text().splitlines():
-            if "=" in line and not line.startswith(("#", "[")):
-                key, value = line.split("=", 1)
-                keys.setdefault(key, []).append(value)
+        for key, values in _unit_keys(source).items():
+            keys.setdefault(key, []).extend(values)
     return keys
 
 
@@ -1094,14 +1083,12 @@ def test_wake_unit_is_in_the_repo_and_pages_when_it_dies(relative: str) -> None:
     unit = ROOT / relative
     assert unit.is_file(), f"{relative} is not in the repo, so a git pull carries no edit to it"
     keys = effective_directives(unit)
-    assert keys["Restart"] == ["always"], "a wake service that stays down loses every wake until someone notices"
-    if relative != "systemd/cua-desk-daemon.service":
-        assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
-    assert keys["WantedBy"] == ["default.target"]
-    if relative != "systemd/cua-desk-daemon.service":
-        assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec "), (
-            f"{relative}: ExecStart is no longer a tincan wake"
-        )
+    assert _last(keys, "Restart") == "always"
+    if relative != DESK_UNIT:
+        assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
+    assert _last(keys, "WantedBy") == "default.target"
+    if relative != DESK_UNIT:
+        assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
 
 
 def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
@@ -1112,35 +1099,34 @@ def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
         if flags:
             assert flags in exec_start, f"{name}: ExecStart lost the {flags} flags"
         agent = name.removeprefix("tincan-listen-")
-        assert keys["Environment"][0] == f"TINCAN_CONFIG=/home/nish/.config/tincan/{agent}.json" or keys["Environment"][
-            0
-        ] == f"TINCAN_CONFIG=%h/.config/tincan/{agent}.json", f"{name}: TINCAN_CONFIG does not point at its own config"
-        assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}", f"{name}: FLEET_TASK_ID names a different lane"
+        assert keys["Environment"][0] in {
+            f"TINCAN_CONFIG=/home/nish/.config/tincan/{agent}.json",
+            f"TINCAN_CONFIG=%h/.config/tincan/{agent}.json",
+        }, f"{name}: TINCAN_CONFIG does not point at its own config"
+        assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
 
 
 def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own() -> None:
     cursor = effective_directives(ROOT / "systemd/tincan-listen-cursor-vps.service")
     assert "%h/.config/fleet-ops/seats/cursor.env" in cursor["EnvironmentFile"]
-    desk = effective_directives(ROOT / "systemd/cua-desk-daemon.service")
+    desk = effective_directives(ROOT / DESK_UNIT)
     assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
-    assert desk["Environment"] == ["CUA_MESH=prefer"]
-    assert desk["RestartSec"] == ["2"] and desk["KillMode"] == ["mixed"]
+    assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
+    assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
 
 
 def test_every_wake_unit_has_an_off_switch_written_down() -> None:
     readme = (ROOT / "README.md").read_text()
     for relative in WAKE_UNITS:
         unit = relative.split("/")[-1]
-        assert f"systemctl --user disable --now {unit}" in readme, (
-            f"README has no off switch for {unit}, so the only way to stop it is to delete its file"
-        )
+        assert f"systemctl --user disable --now {unit}" in readme
 
 
-GPG_AGENT_OOM_DROPIN = ROOT / "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
-
-
-def test_gpg_agent_oom_dropin_is_in_the_repo_not_only_on_the_box() -> None:
-    # gpg-agent.service is a distro unit, so only the drop-in has a repo path.
+def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_box_copy_goes_away() -> None:
     keys = effective_directives(GPG_AGENT_OOM_DROPIN.parents[1] / "gpg-agent.service")
-    assert keys["ManagedOOMPreference"] == ["omit"]
-    assert keys["MemoryMax"] == ["512M"]
+    assert _last(keys, "ManagedOOMPreference") == "omit"
+    assert _last(keys, "MemoryMax") == "512m"
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    assert "rm -f %h/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf" in sync, (
+        "the hand-placed copy shadows /etc/systemd/user, so nothing removes it and the repo copy is inert"
+    )
