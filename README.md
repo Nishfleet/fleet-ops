@@ -411,6 +411,10 @@ skill wiring itself must never gate a deploy: delete the three LINK-GUARD
 `ExecStart=` lines in `systemd/fleet-sync.service`, then
 `systemctl --user daemon-reload`. Nothing else reads them.
 
+Global skills are updated by hand when wanted: `npx -y skills update -g -y`.
+There is no timer for it — the weekly skills-update timer was deleted on
+2026-10-24 (fleet-ops#10134), so nobody looks for one.
+
 ## systemd by default
 
 A backgrounded `pi` dies when the launching shell ends, and the four
