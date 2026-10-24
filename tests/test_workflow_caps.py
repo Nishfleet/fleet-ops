@@ -113,7 +113,8 @@ def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
         for scope, level in sorted(asked.items()):
             have = PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
             if have < PERMISSION_LEVELS[level]:
-                shortfalls.append(f"{fname} job {jname} grants {scope}: {granted.get(scope, 'none')} but agent.yml asks {scope}: {level}")
+                gives = f"{scope}: {granted.get(scope, 'none')}" if granted else "no permissions at all"
+                shortfalls.append(f"{fname} job {jname} grants {gives}, agent.yml asks {scope}: {level}")
     assert not shortfalls, (
         "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
         + "; ".join(shortfalls)

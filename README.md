@@ -1029,7 +1029,8 @@ and all 13 callers in `agent-dispatch.yml` died until #10194 landed the grant
 (fleet-ops#10192). `tests/test_workflow_caps.py` reads every workflow under
 `.github/workflows/`, collects what
 `agent.yml` asks scope by scope, and fails the PR when any caller grants less. actionlint
-1.7.12 and zizmor 1.30.1 both pass on the broken commit, so this test is the gate.
+1.7.12 and zizmor 1.30.1 both pass on the broken commit, so this test is the gate. It reads
+direct `uses:` callers, which is every caller today.
 
 So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agent.yml` is
 reachable only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while
