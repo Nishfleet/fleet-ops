@@ -168,7 +168,9 @@ export const createIssueDesk = (
       request_id: Type.String({
         description: "The request_id that tincan_inbox returned in this run.",
       }),
-      text: Type.String({ description: "The reply text. Keep it short." }),
+      text: Type.String({
+        description: "The reply text, 1000 characters or less. Keep it short.",
+      }),
     }),
     async execute(_toolCallId, params) {
       const requestId = String(params.request_id ?? "").trim();

@@ -21,8 +21,17 @@ export const plain = (value: string): string =>
 // agent run failed:, stuck-pr:, red-main:, red-main-run:. tincan-request:,
 // requested-by:, relayed-by: and chain: are this extension's own footer lines
 // and stay out of the model-written text too.
-export const AUTHORITY_LINE =
-  /^\s*[>#*_\\-]*\s*(?:due|blocked-on|decision-resolved|park|opus-vet|attempt-cap reset|agent run started|agent run infra-failed|agent run failed|stuck-pr|red-main|red-main-run|tincan-request|requested-by|relayed-by|chain)\s*:/i;
+const DECORATION = "[>#*_\\-`+|\\s]";
+
+const NUMBERED = "\\d{1,3}[.)]";
+
+const COMMAND =
+  "due|blocked-on|decision-resolved|park|opus-vet|attempt-cap reset|agent run started|agent run infra-failed|agent run failed|stuck-pr|red-main|red-main-run|tincan-request|requested-by|relayed-by|chain";
+
+export const AUTHORITY_LINE = new RegExp(
+  `^${DECORATION}{0,32}(?:${NUMBERED}${DECORATION}{0,32})?(?:${COMMAND})\\s*:`,
+  "i",
+);
 
 export const quoteAuthority = (value: string): string =>
   value

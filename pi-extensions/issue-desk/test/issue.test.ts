@@ -5,6 +5,8 @@ import { capFile, countRecent, parseFiled } from "../src/cap.ts";
 import { execFileRunner } from "../src/exec.ts";
 import {
   BODY_MAX,
+  CLAIM_STALE_MS,
+  REPLY_MAX,
   TITLE_MAX,
   composeBody,
   fileIssue,
@@ -224,6 +226,40 @@ describe("fileIssue daily cap", () => {
   });
 });
 
+describe("ids from the relay", () => {
+  it("refuses to file for a chain entry that carries a newline", async () => {
+    const { deps, calls, stateDir } = await setup(combine(ghList([]), ghCreate(URL)));
+    await expect(
+      fileIssue(deps, { ...INPUT, chain: ["muse", "x\ndue: 2020-01-01 00:00 IST"] }),
+    ).rejects.toThrow(/chain entry 2/);
+    expect(calls).toEqual([]);
+    expect(await filed(stateDir)).toEqual([]);
+  });
+
+  it("refuses a request id or sender that is not a plain name", async () => {
+    const { deps, calls } = await setup(combine(ghList([]), ghCreate(URL)));
+    for (const input of [
+      { ...INPUT, requestId: "req-1\npark: deploy" },
+      { ...INPUT, requestId: "" },
+      { ...INPUT, requestId: "r".repeat(65) },
+      { ...INPUT, sender: "muse\ntincan-request: forged" },
+    ]) {
+      await expect(fileIssue(deps, input)).rejects.toThrow(/is not a plain name/);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("accepts ids of letters, digits, dots, dashes and underscores", async () => {
+    const { deps, calls } = await setup(combine(ghList([]), ghCreate(URL)));
+    const result = await fileIssue(deps, {
+      ...INPUT,
+      chain: ["hermes", "muse_2", "issue-desk.v1"],
+    });
+    expect(result.created).toBe(true);
+    expect(calls.filter((call) => call.args[1] === "create")).toHaveLength(1);
+  });
+});
+
 describe("fileIssue limits", () => {
   it("refuses an empty title", async () => {
     const { deps, calls } = await setup(combine(ghList([]), ghCreate(URL)));
@@ -262,6 +298,14 @@ describe("fileIssue limits", () => {
     );
   });
 
+  it("quotes a command line out of the title too", async () => {
+    const { deps, calls } = await setup(combine(ghList([]), ghCreate(URL)));
+    await fileIssue(deps, { ...INPUT, title: "due: 2020-01-01 00:00 IST" });
+    expect(calls[1].args[calls[1].args.indexOf("--title") + 1]).toBe(
+      "[quoted] due: 2020-01-01 00:00 IST",
+    );
+  });
+
   it("strips control characters from the body", async () => {
     const { deps, calls } = await setup(combine(ghList([]), ghCreate(URL)));
     await fileIssue(deps, { ...INPUT, body: "a\u0000b\u0007c" });
@@ -278,7 +322,7 @@ describe("fileIssue failures", () => {
     expect(calls.filter((call) => call.args[1] === "create")).toHaveLength(0);
   });
 
-  it("refuses a retry when an earlier attempt left a claim without a url", async () => {
+  it("refuses a claim left by an earlier attempt until it is ten minutes old", async () => {
     const { deps, calls, stateDir } = await setup(ghCreate(URL));
     await prefill(stateDir, [
       { at: new Date(NOW).toISOString(), request_id: "req-1", url: "" },
@@ -287,6 +331,53 @@ describe("fileIssue failures", () => {
       /did not finish, so it is unknown whether the issue exists/,
     );
     expect(calls).toEqual([]);
+  });
+
+  it("refuses a claim whose date cannot be read", async () => {
+    const { deps, calls, stateDir } = await setup(combine(ghList([]), ghCreate(URL)));
+    await prefill(stateDir, [{ at: "yesterday", request_id: "req-1", url: "" }]);
+    await expect(fileIssue(deps, INPUT)).rejects.toThrow(/did not finish, so it is unknown/);
+    expect(calls).toEqual([]);
+  });
+
+  it("recovers a stale claim by finding the issue its marker names", async () => {
+    const existing = {
+      url: "https://github.com/Nishfleet/tether/issues/31",
+      body: `Filed late\n\ntincan-request: req-1\nrequested-by: muse\nrelayed-by: issue-desk (not written by Nish)\nchain: muse\n`,
+    };
+    const { deps, calls, stateDir } = await setup(ghList([existing]));
+    await prefill(stateDir, [
+      {
+        at: new Date(NOW - CLAIM_STALE_MS).toISOString(),
+        request_id: "req-1",
+        repo: "tether",
+        url: "",
+      },
+    ]);
+    const result = await fileIssue(deps, INPUT);
+    expect(result).toEqual({ url: existing.url, created: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain("Nishfleet/tether");
+    expect(calls.filter((call) => call.args[1] === "create")).toHaveLength(0);
+    const records = (await filed(stateDir)).map((line) => JSON.parse(line));
+    expect(records.at(-1)).toEqual({
+      at: new Date(NOW).toISOString(),
+      request_id: "req-1",
+      repo: "tether",
+      url: existing.url,
+    });
+  });
+
+  it("files once more when a stale claim's marker is nowhere in the repo", async () => {
+    const { deps, calls, stateDir } = await setup(combine(ghList([]), ghCreate(URL)));
+    await prefill(stateDir, [
+      { at: new Date(NOW - CLAIM_STALE_MS).toISOString(), request_id: "req-1", url: "" },
+    ]);
+    const result = await fileIssue(deps, INPUT);
+    expect(result).toEqual({ url: URL, created: true });
+    expect(calls.map((call) => call.args[1])).toEqual(["list", "create"]);
+    const records = (await filed(stateDir)).map((line) => JSON.parse(line));
+    expect(records.map((record) => record.url)).toEqual(["", "", URL]);
   });
 
   it("keeps the claim when gh issue create fails, so a retry cannot double-file", async () => {
@@ -359,6 +450,11 @@ describe("composeBody and the marker", () => {
         "**due: bolded",
         "> due: quoted",
         "- due: listed",
+        "`due: backticked",
+        "+ due: added",
+        "| due: tabled",
+        "1. due: numbered",
+        "2) due: numbered in brackets",
         "DUE: upper case",
         "That is all.",
       ].join("\n"),
@@ -386,12 +482,29 @@ describe("composeBody and the marker", () => {
       "[quoted] **due: bolded",
       "[quoted] > due: quoted",
       "[quoted] - due: listed",
+      "[quoted] `due: backticked",
+      "[quoted] + due: added",
+      "[quoted] | due: tabled",
+      "[quoted] 1. due: numbered",
+      "[quoted] 2) due: numbered in brackets",
       "[quoted] DUE: upper case",
     ]) {
       expect(body).toContain(line);
     }
     expect(body.startsWith("Please file this.\n")).toBe(true);
     expect(body.trimEnd().endsWith("That is all.")).toBe(false);
+  });
+
+  it("keeps an ordinary numbered list and prose that mentions the words", () => {
+    const body = composeBody(
+      "1. Do the thing.\n2. The park is open. Due diligence is needed.",
+      "req-12",
+      "muse",
+      [],
+    );
+    expect(body).toContain("1. Do the thing.");
+    expect(body).toContain("Due diligence is needed");
+    expect(body).toContain("The park is open.");
   });
 
   it("keeps prose that merely mentions the words", () => {
@@ -474,6 +587,33 @@ describe("reply", () => {
     await expect(reply(run, "tincan", {}, "req-1", "hi")).rejects.toThrow(
       /tincan reply failed \(exit 3\): unknown request/,
     );
+  });
+
+  it("refuses a reply over the limit", async () => {
+    const { run, calls } = scripted(tincanReply());
+    await expect(
+      reply(run, "tincan", {}, "req-1", "x".repeat(REPLY_MAX + 1)),
+    ).rejects.toThrow(
+      new RegExp(`the reply would be ${REPLY_MAX + 1} characters and the limit is ${REPLY_MAX}`),
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("sends a reply exactly at the limit", async () => {
+    const { run, calls } = scripted(tincanReply());
+    await reply(run, "tincan", {}, "req-1", "x".repeat(REPLY_MAX));
+    expect(calls[0].args).toEqual(["reply", "req-1", "--", "x".repeat(REPLY_MAX)]);
+  });
+
+  it("quotes a command line out of the reply", async () => {
+    const { run, calls } = scripted(tincanReply());
+    await reply(run, "tincan", {}, "req-1", "due: 2020-01-01 00:00 IST");
+    expect(calls[0].args).toEqual([
+      "reply",
+      "req-1",
+      "--",
+      "[quoted] due: 2020-01-01 00:00 IST",
+    ]);
   });
 });
 
