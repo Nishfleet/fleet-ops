@@ -1022,6 +1022,22 @@ sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs
 call `agent.yml` through `uses:` and inherit its limits, while its `list` and `close-claim`
 jobs run their own steps on `ubuntu-latest` with no `timeout-minutes`.
 
+A job that calls `agent.yml` must grant every scope its jobs ask for, at or above the level asked. A
+caller that grants less kills the whole run at startup with no job and no log, which is how 23 Oct
+took the fleet down: `agent.yml`'s `review` job began asking `contents: read`, and all 13 callers in
+`agent-dispatch.yml` died until #10194 landed the grant (fleet-ops#10192).
+`tests/test_workflow_caps.py` reads every workflow under `.github/workflows/`, collects what
+`agent.yml` asks scope by scope, and fails the PR when any caller grants less. It follows direct
+`uses:` callers, which is every caller today. actionlint 1.7.12 and zizmor 1.30.1 both pass on the
+broken commit, so this test is the gate.
+
+So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agent.yml` is reachable
+only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
+at startup the `review` job never runs. What works is an approver's unedited
+`coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
+`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
+takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
+
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
