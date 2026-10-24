@@ -195,6 +195,16 @@ script, or prompt lands unseen.
   `~/.config/systemd/user/tincan-listen-devin-vps.service.d/`, then
   `systemctl --user daemon-reload` and restart that listener, which only
   wakes Devin).
+  That drop-in covers only the listener. A launcher that de-elevates to nish
+  through PAM gets `pam_umask`'s 0002 instead, so the Devin CLI's run logs,
+  plugin lock and rotated logs came out group-writable. The playbook's own
+  Devin CLI calls (`host.yml`'s chrome-devtools MCP reads and writes,
+  `update.yml`'s version check and installer) start it under `umask 077`
+  themselves, and `host.yml` chmods every group- or other-accessible file it
+  owns under `~/.local/share/devin` back to 0600/0700 on every run, so another
+  launcher's file is repaired on the next merge or daily run. `find
+  ~/.local/share/devin -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l`
+  must print 0 (a symlink always shows mode 777, so it is excluded).
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
