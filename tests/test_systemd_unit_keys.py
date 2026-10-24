@@ -795,6 +795,17 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
     )
 
 
+def test_alertmanager_reads_the_repo_installed_config() -> None:
+    options = (ROOT / "rootfs/etc/default/prometheus-alertmanager").read_text()
+    assert "--config.file=/etc/alertmanager/alertmanager.yml" in options, (
+        "the service loads the config the repo installs, not the retired copy"
+    )
+    assert "/etc/prometheus/alertmanager.yml" not in options
+    host = HOST_YML.read_text()
+    assert 'src: "{{ rootfs }}/etc/default/prometheus-alertmanager"' in host
+    assert "dest: /etc/default/prometheus-alertmanager" in host
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {
