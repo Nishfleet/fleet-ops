@@ -421,13 +421,12 @@ def test_the_playbook_starts_each_agent_cli_with_an_owner_only_umask(tmp_path):
         'esac\n',
     )
     _run_tasks(tmp_path, AGENT_CLI)
-    assert seen.read_text().split() == ["0077", "0077"]
+    assert set(seen.read_text().split()) == {"0077"}
 
 
 DEVIN_STATE_GATE = [
     "Look for the Devin CLI state directory",
-    "Find group- or world-writable files in the Devin CLI state",
-    "Drop group and other write bits from the Devin CLI state",
+    "Keep the Devin CLI state files owner-only",
 ]
 
 
@@ -440,13 +439,40 @@ def test_group_writable_devin_state_is_cleared_and_the_second_run_changes_nothin
     log.chmod(0o664)
     logs.chmod(0o775)
     _run_tasks(tmp_path, DEVIN_STATE_GATE)
-    assert log.stat().st_mode & 0o022 == 0
-    assert logs.stat().st_mode & 0o022 == 0
+    assert log.stat().st_mode & 0o777 == 0o600
+    assert logs.stat().st_mode & 0o777 == 0o700
     assert "changed=0" in _run_tasks(tmp_path, DEVIN_STATE_GATE)
 
 
 @NEED_ANSIBLE
 def test_the_devin_state_gate_skips_a_host_with_no_devin_state_directory(tmp_path):
     out = _run_tasks(tmp_path, DEVIN_STATE_GATE)
-    assert "Find group- or world-writable files in the Devin CLI state] ***" in out
+    assert "skipping:" in out
+    assert "Keep the Devin CLI state files owner-only] ***" in out
     assert "failed=0" in out
+
+
+UPDATE_PLAY = json.loads(
+    subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/update.yml")], capture_output=True, text=True, check=True).stdout
+)[0]
+
+
+def _walk_tasks(node, found):
+    if isinstance(node, dict):
+        if "name" in node and ("ansible.builtin.command" in node or "ansible.builtin.shell" in node):
+            found[node["name"]] = node
+        for value in node.values():
+            _walk_tasks(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _walk_tasks(value, found)
+    return found
+
+
+def test_the_update_playbook_starts_the_devin_cli_with_an_owner_only_umask():
+    tasks = _walk_tasks(UPDATE_PLAY, {})
+    for name in ("Record tool versions before the update", "Check each tool still starts"):
+        argv = tasks[name]["ansible.builtin.command"]["argv"]
+        assert argv[:3] == ["bash", "-c", 'umask 077; exec "$@"'], name
+    installer = [u["argv"] for u in UPDATE_PLAY["vars"]["tool_updates"] if "cli.devin.ai" in u["argv"][-1]]
+    assert installer and installer[0][-1].startswith("umask 077; ")
