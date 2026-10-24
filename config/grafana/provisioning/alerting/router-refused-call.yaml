@@ -1,0 +1,66 @@
+# Router refused-call alarm (fleet-ops#9938, the sibling of router-dead-row.yaml).
+#
+# Why: many 402/403/404 failures carry no model_id, because LiteLLM refuses the call
+# itself before it picks a deployment: the key may not reach the model it asked for, or
+# the name is not in model_list at all (a row that was removed or renamed). There is no
+# deployment to cool and no row to remove, so the dead-row rule cannot report it, and a
+# rule that names rows must not pretend it can. This rule watches that class on its own
+# terms instead: which key, asking for which model.
+#
+# Seen 2026-10-21 13:00 IST: a key aliased inish-daily asked for deepseek-v4.1-flash,
+# which that key may not reach, six times in six seconds. Every answer was a 403
+# ProxyException with no model_id, the dead-row rule called the empty series a dead row,
+# and the issue came out titled "router dead row: " with no row named (fleet-ops#9938).
+#
+# Rule: more than 5 refusals in the last hour for one (requested_model, api_key_alias)
+# pair. 429 is never counted: a quota wall is a caller resting, not a broken route.
+# litellm_deployment_failure_responses_total is on the LiteLLM /metrics endpoint
+# Prometheus already scrapes; requested_model and api_key_alias are on the series.
+#
+# Route: severity warning, so it does not page; label signal=router-refused-call files a
+# fleet-ops issue through the policy tree in cloudflare-spend-contact.yaml, naming the
+# key and the model. The issue asks for the key's model scope or the model name to be
+# fixed, never for a router row to be removed.
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: router-refused-call
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: router-refused-call
+        title: Proxy refuses calls before a row is picked
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: sum by (requested_model, api_key_alias) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404", model_id=""}[1h]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions: [{evaluator: {params: [5], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'The proxy refused {{ with $labels.requested_model }}{{ . }}{{ else }}an unnamed model{{ end }} for the key {{ with $labels.api_key_alias }}{{ . }}{{ else }}an unnamed key{{ end }} {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times in the last hour'
+          description: 'No deployment was picked, so this is the caller or the model name, not a dead router row. A 403 on a key alias means the key''s model scope does not include the model it asked for. A 404 with a requested_model means that name is not in model_list, so it was removed, renamed, or never added. Fix the caller (the key''s models: list) or the model name. Do NOT remove or bench a router row to silence this (Nish, 2026-10-02).'
+          value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} refusals in the last hour'
+          threshold: 'more than 5 in 1 hour'
+        labels: {severity: warning, signal: router-refused-call}
+        isPaused: false

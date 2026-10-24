@@ -1,0 +1,16 @@
+# The deployed router-refused-call rule's A expression, inlined verbatim from
+# router-refused-call.yaml, wrapped in `> 5`.
+#
+# The wrapper reproduces Grafana's C threshold (`> 5` over A) the same way
+# router-dead-row.test.rules.yml reproduces its own: a case that fires here is a
+# case Grafana calls Alerting, and a case whose value stays at 5 or below is one
+# Grafana calls Normal.
+groups:
+- interval: 1m
+  name: router-refused-call
+  rules:
+  - alert: RouterRefusedCall
+    expr: "(sum by (requested_model, api_key_alias) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\", model_id=\"\"}[1h]))) > 5"
+    labels:
+      severity: warning
+      signal: router-refused-call

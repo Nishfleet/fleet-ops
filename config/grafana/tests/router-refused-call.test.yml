@@ -1,0 +1,71 @@
+# Gate for the router-refused-call rule (fleet-ops#9938).
+#
+# The class this rule covers is the one the dead-row rule must not report: 402, 403
+# or 404 failures with no model_id, where the proxy refused the call itself before
+# picking a deployment. On 2026-10-21 13:00 IST a key aliased inish-daily asked for
+# deepseek-v4.1-flash, which that key may not reach, six times in six seconds and got
+# a 403 each time. The dead-row rule counted those as rows and filed an issue naming
+# no row; the dead-row rule now ignores them, and this rule reports them by key and
+# model instead. Both halves are pinned here and in router-dead-row.test.yml.
+#
+# The cases:
+#
+#  - the incident shape, six refusals in six seconds for one key and model, fires and
+#    carries the key alias and the requested model in its labels, which is what the
+#    issue title is built from;
+#  - the same shape at 3 failures in the hour stays quiet;
+#  - a 429 is a quota wall on the caller, not a refusal, and stays quiet.
+#
+# Every low-count series is fed one failure per minute and then rests, so the reading
+# at 60m is 3 either way: the cases stand on which series the expression keeps.
+evaluation_interval: 1m
+rule_files:
+- router-refused-call.test.rules.yml
+tests:
+# 1. The incident: one key asking for one model it may not reach, refused every time.
+- alert_rule_test:
+  - alertname: RouterRefusedCall
+    eval_time: 60m
+    exp_alerts:
+    - exp_labels:
+        alertname: RouterRefusedCall
+        api_key_alias: inish-daily
+        requested_model: deepseek-v4.1-flash
+        severity: warning
+        signal: router-refused-call
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",exception_class="ProxyException",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x60
+  interval: 1m
+# 2. Three refusals in the hour are under the threshold.
+- alert_rule_test:
+  - alertname: RouterRefusedCall
+    eval_time: 60m
+    exp_alerts: []
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",exception_class="ProxyException",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x3 3x57
+  interval: 1m
+# 3. A 429 is a quota wall the caller hit, not a refusal by the proxy, and it is
+#    never counted (Nish 2026-10-02).
+- alert_rule_test:
+  - alertname: RouterRefusedCall
+    eval_time: 60m
+    exp_alerts: []
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="429",exception_class="RateLimitError",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x60
+  interval: 1m
+# 4. What the threshold reads: the key and the model, and only the no-model_id series.
+- promql_expr_test:
+  - expr: sum by (requested_model, api_key_alias) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404", model_id=""}[1h]))
+    eval_time: 60m
+    exp_samples:
+    - labels: '{api_key_alias="inish-daily",requested_model="deepseek-v4.1-flash"}'
+      value: 60
+  input_series:
+  - series: litellm_deployment_failure_responses_total{exception_status="403",exception_class="ProxyException",requested_model="deepseek-v4.1-flash",api_key_alias="inish-daily"}
+    values: 0+1x60
+  - series: litellm_deployment_failure_responses_total{exception_status="403",model_id="cline-ds41flash-worker-cheap"}
+    values: 0+1x60
+  interval: 1m

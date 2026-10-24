@@ -1,0 +1,16 @@
+# The deployed router-dead-row rule's A expression, inlined verbatim from
+# router-dead-row.yaml, wrapped in `> 5`.
+#
+# The wrapper reproduces Grafana's C threshold (`> 5` over A) the same way
+# prompt-cache-hit.test.rules.yml reproduces its `> 0`: a case that fires here is
+# a case Grafana calls Alerting, and a case whose value stays at 5 or below is one
+# Grafana calls Normal.
+groups:
+- interval: 1m
+  name: router-dead-row
+  rules:
+  - alert: RouterDeadRow
+    expr: "(sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\", model_id!=\"\"}[1h]))) > 5"
+    labels:
+      severity: warning
+      signal: router-dead-row

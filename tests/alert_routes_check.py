@@ -41,7 +41,8 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch"}
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch",
+               "router-refused-call-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
@@ -112,11 +113,16 @@ def selftest():
 
 def main(root):
     selftest()
-    rules, policy, contacts = [], None, set()
+    rules, policy, contacts, exprs = [], None, set(), set()
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for g in doc.get("groups") or []:
             rules += g["rules"]
+            for r in g["rules"]:
+                for d in r.get("data") or []:
+                    e = (d.get("model") or {}).get("expr")
+                    if e:
+                        exprs.add(" ".join(str(e).split()))
         for p in doc.get("policies") or []:
             policy = p
         for c in doc.get("contactPoints") or []:
@@ -124,6 +130,19 @@ def main(root):
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
     bad, paging = [], {}
+    # A promtool fixture carries a copy of the rule's expression, because a Grafana
+    # rule file (data[].model.expr) is not a Prometheus rule file promtool can load.
+    # Nothing tied the copy to the rule, so deleting the filter that a case depends on
+    # left every case green: fleet-ops#9938 shipped `model_id!=""` with no way to see
+    # it go missing again. Every fixture rule's expression must contain one the
+    # provisioning files deploy.
+    fixtures = Path(root).resolve().parents[1] / "tests"
+    for f in sorted(fixtures.glob("*.test.rules.yml")) if fixtures.is_dir() else []:
+        for g in yaml.safe_load(f.read_text()).get("groups") or []:
+            for r in g.get("rules") or []:
+                e = " ".join(str(r.get("expr", "")).split())
+                if e and not any(d in e for d in exprs):
+                    bad.append(f"{f.name}: {r.get('alert')} tests an expression no provisioning file deploys")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():

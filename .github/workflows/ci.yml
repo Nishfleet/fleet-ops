@@ -1825,13 +1825,13 @@ jobs:
           # contact point as it stands after the reload.
           folder=$(curl -fsS --config <(pwcfg) http://127.0.0.1:3998/api/folders | jq -er '.[]|select(.title=="drill")|.uid')
           jq -n --arg f "$folder" '{title: "drill dead row 2", ruleGroup: "drill-api", folderUID: $f, orgID: 1, condition: "B", for: "0s", noDataState: "OK", execErrState: "Error",
-            labels: {signal: "router-dead-row", model_id: "drill2"}, annotations: {summary: "drill", value: "1", threshold: "0", description: "drill"},
+            labels: {signal: "router-dead-row"}, annotations: {summary: "drill", value: "1", threshold: "0", description: "drill"},
             data: [{refId: "A", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "math", expression: "1", refId: "A"}},
                    {refId: "B", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "threshold", expression: "A", refId: "B", conditions: [{evaluator: {params: [0], type: "gt"}, operator: {type: "and"}, query: {params: ["B"]}, reducer: {params: [], type: "last"}, type: "query"}]}}]}' > "$d/rule2.json"
           curl -fsS -X POST --config <(pwcfg) -H 'content-type: application/json' --data @"$d/rule2.json" http://127.0.0.1:3998/api/v1/provisioning/alert-rules >/dev/null
           for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
           grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
-          sort "$d/sink.log" | uniq -c
+          for _ in $(seq 1 30); do grep -q '"title":"router dead row: unknown row"' "$d/sink.log" && break; sleep 3; done; grep -q '"title":"router dead row: unknown row"' "$d/sink.log" || { echo "::error::an alert with no model_id filed an issue that names no row instead of the unknown-row fallback title (fleet-ops#9938)"; sort "$d/sink.log" | uniq -c; exit 1; }
           # A rule with no route of its own lands on the policy root,
           # fleet-alert-dispatch: its payload must be a labelled fleet issue.
           for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
