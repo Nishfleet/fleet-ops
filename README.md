@@ -1266,6 +1266,49 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   `config/retro-*` files and step 2e of `systemd/fleet-sync.service`, then
   `systemctl --user unlink retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service`.
 
+## Digest prompts
+
+`config/hermes/digest-morning.md` and `config/hermes/digest-evening.md` are the
+prompts of the two Hermes cron jobs that report to Nish twice a day (08:00 and
+20:00 IST, to Telegram). `ansible/host.yml` applies them with the stock
+`hermes cron edit <job> --prompt` and fails the play when a live prompt differs
+from its file, so the file in git is the one that runs.
+
+Step 3 of each prompt lists what is waiting on Nish. One command walks every
+repo that has issues enabled and is not archived, lists the open issues carrying
+the `needs-nish-decision` label, and prints the counts itself, ahead of the
+listing so that a listing cut short cannot hide them: `WAITING_TOTAL`, then
+`WAITING_MORE` for the labelled backlog beyond the two items the reply names, or
+`COUNT FAILED` when a listing fails or nothing can be listed. The reply copies
+those printed numbers and never counts the lines itself. A count the model worked
+out from stored state drifted from the live backlog — a digest said 13 more
+waiting when 66 were unreported (fleet-ops#10072) — so the command owns the
+number now.
+
+- Check a live copy still matches its file, once per job: `diff <(jq -r '.jobs[] |
+  select(.name=="digest-evening") | .prompt' ~/.hermes/cron/jobs.json)
+  config/hermes/digest-evening.md`, then the same with `digest-morning` in both
+  places — no output means they match.
+- Switch the waiting lines off, with no prompt edit: remove the
+  `needs-nish-decision` label from every issue. The command then lists nothing,
+  the reply carries no waiting line and no overflow line, and relabelling one
+  issue brings its line back.
+- Switch only the overflow line off: delete the sentence that writes
+  `"and N more waiting"` from step 3 of both files and land it. The two named
+  waiting lines stay.
+- Switch the whole digest off: `hermes cron list` shows both jobs, then
+  `hermes cron pause <job id>` stops one without deleting it, and
+  `hermes cron resume <job id>` brings it back. The id is what the apply task
+  in `ansible/host.yml` passes to `hermes cron edit`, so it is the form the
+  other cron subcommands take too.
+- Tests: `tests/test_digest_checks.py` runs the step-3 command against a fake
+  `gh` and proves the printed total, the remainder, the empty backlog, the two
+  `COUNT FAILED` paths, the issues-enabled and not-archived filters, that the
+  counts come ahead of the listing, and that no command line matches the guard's
+  deny globs, uses a bracket test it cannot resolve, or carries a command
+  substitution inside a loop. `tests/test_digest_reply_shape.py` holds the
+  reply-shape checker.
+
 ## Provider watch
 
 Providers change their offerings and publish no change event (Command Code moved to

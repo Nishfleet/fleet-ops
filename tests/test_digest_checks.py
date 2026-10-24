@@ -16,6 +16,15 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
+- the waiting count is printed by the command that lists the backlog, ahead of
+  the listing, so the reply copies a number instead of computing one and a
+  listing cut short cannot hide it (fleet-ops#10072),
+- a repository with issues disabled never turns the waiting count into
+  COUNT FAILED, because the listing is filtered before it runs,
+- an archived repository is never counted, because the command asks gh for the
+  non-archived repos only,
+- no command line carries a command substitution inside a loop, which the guard
+  cannot resolve,
 - ansible/host.yml applies the prompts to the live jobs.
 """
 import datetime
@@ -36,6 +45,7 @@ CI = ROOT / ".github/workflows/ci.yml"
 
 _DENY = ["*curl*|*bash*", "*curl*|*sh*", "*wget*|*sh*", "*<<*", "*>*.sh*", "*>*.py*", "*>*.js*"]
 _BRACKET = re.compile(r"(^|[;&|(]\s*|\b(if|then|elif|while|until|do)\s+)\[ ")
+_LOOP = re.compile(r"\bfor\b[^;]*?\bdo\b(.*?);\s*done")
 
 
 def test_site_check_reads_the_real_feed():
@@ -60,11 +70,11 @@ def test_no_bare_bracket_test_in_commands():
             assert not _BRACKET.search(line), f"{prompt.name}:{n} uses a bracket test"
 
 
-def test_shipped_count_has_no_command_substitution_in_its_loop():
-    for prompt in (MORNING, EVENING):
-        line = next(x for x in prompt.read_text().splitlines() if "COUNT FAILED" in x and "for r in" in x)
-        loop = line[line.index("do "):line.index("; done")]
-        assert "$(" not in loop, prompt.name
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_no_command_substitution_inside_a_loop(prompt):
+    for n, line in enumerate(prompt.read_text().splitlines(), 1):
+        for body in _LOOP.findall(line):
+            assert "$(" not in body, f"{prompt.name}:{n}"
 
 
 def test_host_yml_applies_the_prompts_to_the_live_jobs():
@@ -79,16 +89,30 @@ def test_ci_runs_this_file():
 
 
 FAKE_GH = """#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys
 a = sys.argv[1:]
 d = json.load(open(os.environ["FAKE_GH"]))
 if a[:2] == ["repo", "list"]:
-    print("\\n".join(d["repos"]))
+    if "--jq" in a:
+        objs = [
+            {"name": n, "hasIssuesEnabled": n not in d.get("no_issues", []), "isArchived": n in d.get("archived", [])}
+            for n in d["repos"]
+            if "--no-archived" not in a or n not in d.get("archived", [])
+        ]
+        f = a[a.index("--jq") + 1]
+        print(subprocess.run(["jq", "-r", f], input=json.dumps(objs), capture_output=True, text=True).stdout.strip())
+    else:
+        print("\\n".join(d["repos"]))
 elif a[:2] == ["issue", "view"]:
     key = a[a.index("--repo") + 1] + "#" + a[2]
     if key not in d["issues"]:
         sys.exit(1)
     print(json.dumps(d["issues"][key]))
+elif a[:2] == ["issue", "list"]:
+    repo = a[a.index("--repo") + 1].split("/")[-1]
+    if repo in d.get("no_issues", []) or repo in d.get("broken_lists", []):
+        sys.exit(1)
+    print(json.dumps(d.get("lists", {}).get(repo, [])))
 elif a[:2] == ["run", "list"]:
     key = a[a.index("--repo") + 1]
     if "--workflow" in a:
@@ -328,6 +352,130 @@ def test_shipped_count_command_prints_a_total_or_fails_loudly(tmp_path):
         assert ok.stdout.splitlines() == ["alpha 3", "TOTAL 3 REPOS 2"], ok.stdout
         bad = subprocess.run(["bash", "-c", cmd], env={**env, "FAKE_FAIL": "1"}, capture_output=True, text=True, timeout=60)
         assert bad.stdout.splitlines()[-1] == "COUNT FAILED", bad.stdout
+
+
+def _run_3(prompt, tmp_path, gh):
+    assert any(x.startswith("set -o pipefail") for x in prompt.read_text().splitlines()), prompt.name
+    env = _fake_box(tmp_path, gh, "{}")
+    r = subprocess.run(["bash", "-c", _command(prompt, "set -o pipefail")], env=env, capture_output=True, text=True, timeout=60)
+    return r.stdout.splitlines()
+
+
+def _listed(number, title, url, *labels, last=""):
+    return {
+        "number": number,
+        "title": title,
+        "url": url,
+        "labels": [{"name": x} for x in labels],
+        "comments": ([{"body": last}] if last else []),
+    }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_prints_the_total_and_the_remainder(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "lists": {
+            "alpha": [_listed(1, "a one", "u1", "needs-nish-decision"), _listed(2, "a two", "u2", "needs-nish-decision")],
+            "beta": [_listed(3, "b one", "u3", "needs-nish-decision", "priority-now", last="still waiting")],
+        },
+    }
+    lines = _run_3(prompt, tmp_path, gh)
+    assert lines[:2] == ["WAITING_TOTAL 3", "WAITING_MORE 1"], lines
+    assert lines[2] == '{"r":"alpha","n":1,"t":"a one","u":"u1","l":["needs-nish-decision"],"last":""}'
+    assert lines[4] == '{"r":"beta","n":3,"t":"b one","u":"u3","l":["needs-nish-decision","priority-now"],"last":"still waiting"}'
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_skips_an_archived_repository(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "old"],
+        "archived": ["old"],
+        "lists": {
+            "alpha": [_listed(1, "a one", "u1", "needs-nish-decision")],
+            "old": [_listed(9, "never listed", "u9", "needs-nish-decision")],
+        },
+    }
+    lines = _run_3(prompt, tmp_path, gh)
+    assert lines == [
+        "WAITING_TOTAL 1",
+        '{"r":"alpha","n":1,"t":"a one","u":"u1","l":["needs-nish-decision"],"last":""}',
+    ], lines
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_skips_a_repository_with_issues_disabled(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "no_issues": ["beta"],
+        "lists": {
+            "alpha": [_listed(1, "a one", "u1", "needs-nish-decision")],
+            "beta": [_listed(9, "never listed", "u9", "needs-nish-decision")],
+        },
+    }
+    lines = _run_3(prompt, tmp_path, gh)
+    assert lines == [
+        "WAITING_TOTAL 1",
+        '{"r":"alpha","n":1,"t":"a one","u":"u1","l":["needs-nish-decision"],"last":""}',
+    ], lines
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_fails_loudly_when_a_repository_listing_fails(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "broken_lists": ["beta"],
+        "lists": {"alpha": [_listed(1, "a one", "u1", "needs-nish-decision")]},
+    }
+    lines = _run_3(prompt, tmp_path, gh)
+    assert lines[-1] == "COUNT FAILED", lines
+    assert not any(x.startswith("WAITING_TOTAL") for x in lines), lines
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_prints_zero_for_an_empty_backlog(prompt, tmp_path):
+    lines = _run_3(prompt, tmp_path, {"repos": ["alpha", "beta"], "lists": {}})
+    assert lines == ["WAITING_TOTAL 0"], lines
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_fails_loudly_when_the_repository_list_is_empty(prompt, tmp_path):
+    lines = _run_3(prompt, tmp_path, {"repos": [], "lists": {}})
+    assert lines == ["COUNT FAILED"], lines
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_command_has_no_command_substitution_in_its_loop(prompt):
+    line = next(x for x in prompt.read_text().splitlines() if x.startswith("set -o pipefail"))
+    loop = line[line.index("for r in"):line.index("; done")]
+    assert "$(" not in loop, prompt.name
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_the_waiting_overflow_count_is_copied_from_a_printed_line(prompt):
+    text = prompt.read_text()
+    step = text[text.index("3 WAITING ON NISH"):text.index("4 CHANGED SINCE LAST DIGEST")]
+    assert "WAITING_TOTAL" in step and "WAITING_MORE" in step
+    assert '"and N more waiting"' in step
+    assert "copied exactly from the WAITING_MORE line" in step
+    assert "Never count the printed lines" in step
+    assert "labelled backlog beyond the two named items" in step
+    assert "Re-run the whole command once if there is no WAITING_TOTAL line" in step
+    assert "WAITING_TOTAL <count> first" in step
+    assert "if more items are new" not in step
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_the_waiting_counts_are_printed_ahead_of_the_listing(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "lists": {
+            "alpha": [_listed(n, f"a {n}", f"u{n}", "needs-nish-decision") for n in range(1, 21)],
+        },
+    }
+    lines = _run_3(prompt, tmp_path, gh)
+    assert lines[:2] == ["WAITING_TOTAL 20", "WAITING_MORE 18"], lines
+    assert not any(x.startswith("WAITING_") for x in lines[2:]), lines
 
 
 FAKE_CURL = """#!/usr/bin/env python3
