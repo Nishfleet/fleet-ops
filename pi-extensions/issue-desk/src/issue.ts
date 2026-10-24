@@ -5,18 +5,34 @@ import { clip, firstLine, plain, quoteAuthority, singleLine } from "./text.ts";
 
 export const TITLE_MAX = 120;
 export const BODY_MAX = 8000;
+export const REPLY_MAX = 1000;
+
+export const CLAIM_STALE_MS = 10 * 60_000;
 
 export const INTAKE_LABEL = "needs-triage";
+
+const RELAY_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 export const ISSUE_URL = /https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/issues\/\d+/;
 
 export const RELAYED_BY = "relayed-by: issue-desk (not written by Nish)";
+
+const assertRelayId = (what: string, value: string): void => {
+  if (!RELAY_ID.test(value)) {
+    throw new Error(
+      `${what} ${JSON.stringify(clip(value, 80))} is not a plain name, so nothing was filed. Tell the sender a person must look at the relay record first.`,
+    );
+  }
+};
 
 export const footerFor = (
   requestId: string,
   sender: string,
   chain: readonly string[],
 ): string => {
+  assertRelayId("request id", requestId);
+  assertRelayId("sender", sender);
+  chain.forEach((entry, index) => assertRelayId(`chain entry ${index + 1}`, entry));
   const trail = chain.length > 0 ? chain.join(" > ") : sender;
   return [
     "",
@@ -170,7 +186,7 @@ export const fileIssue = async (
 ): Promise<FileIssueResult> => {
   await assertAllowedRepo(deps.repoRoot, input.repo);
 
-  const title = singleLine(input.title);
+  const title = quoteAuthority(singleLine(input.title));
   if (title === "") throw new Error("title is empty. Write a one-line title.");
   if (title.length > TITLE_MAX) {
     throw new Error(
@@ -193,21 +209,25 @@ export const fileIssue = async (
     const known = state.records
       .filter((record) => record.request_id === input.requestId)
       .at(-1);
+    let search = input.repo;
     if (known !== undefined) {
-      if (known.url === "") {
+      if (known.url !== "") return { url: known.url, created: false };
+      const age = deps.now() - Date.parse(known.at);
+      if (!Number.isFinite(age) || age < CLAIM_STALE_MS) {
         throw new Error(
           `an earlier attempt to file request ${input.requestId} in Nishfleet/${known.repo} did not finish, so it is unknown whether the issue exists. Do not file it again; tell the sender a person must check Nishfleet/${known.repo} first.`,
         );
       }
-      return { url: known.url, created: false };
+      search = typeof known.repo === "string" ? known.repo : "";
+      await assertAllowedRepo(deps.repoRoot, search);
     }
 
-    const found = await existing(deps, input.repo, input.requestId);
+    const found = await existing(deps, search, input.requestId);
     if (found !== null) {
       await state.append({
         at: new Date(deps.now()).toISOString(),
         request_id: input.requestId,
-        repo: input.repo,
+        repo: search,
         url: found,
       });
       return { url: found, created: false };
@@ -244,8 +264,14 @@ export const reply = async (
   requestId: string,
   text: string,
 ): Promise<void> => {
-  const message = text.trim();
-  if (message === "") throw new Error("reply text is empty.");
+  const body = text.trim();
+  if (body === "") throw new Error("reply text is empty.");
+  const message = quoteAuthority(body);
+  if (message.length > REPLY_MAX) {
+    throw new Error(
+      `the reply would be ${message.length} characters and the limit is ${REPLY_MAX}. Shorten it and call tincan_reply again.`,
+    );
+  }
   const result = await run(tincan, ["reply", requestId, "--", message], { env });
   if (result.code !== 0) {
     throw new Error(

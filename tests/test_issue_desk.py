@@ -189,6 +189,13 @@ def test_the_extension_tests_pass() -> None:
     )
     assert tests.returncode == 0, tests.stdout + tests.stderr
     clean = strip_ansi(tests.stdout)
-    assert "failed" not in clean, clean
-    assert re.search(r"Test Files\s+5 passed", clean), clean
-    assert re.search(r"Tests\s+\d+ passed", clean), clean
+
+    def summary(label: str) -> tuple[int, int]:
+        match = re.search(rf"^\s*{label}\s+(\d+) passed\b.*\((\d+)\)$", clean, re.MULTILINE)
+        assert match is not None, clean
+        passed, total = (int(value) for value in match.groups())
+        assert passed == total > 0, f"{passed} of {total} {label.lower()} passed\n{clean}"
+        return passed, total
+
+    assert summary("Test Files")[0] == 5, clean
+    assert summary("Tests")[0] > 0, clean

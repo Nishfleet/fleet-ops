@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { appendFile, link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -64,18 +64,82 @@ export interface CapState {
   append: (record: Filed) => Promise<void>;
 }
 
-const readOwnerToken = async (path: string): Promise<string | null> => {
+const parseToken = (raw: string): string | null => {
   try {
-    const value = JSON.parse(await readFile(path, "utf8")) as { token?: unknown };
+    const value = JSON.parse(raw) as { token?: unknown };
     return typeof value.token === "string" ? value.token : null;
   } catch {
     return null;
   }
 };
 
+const readOwnerToken = async (path: string): Promise<string | null> => {
+  try {
+    return parseToken(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+const inspectLock = async (
+  dir: string,
+): Promise<{ token: string | null; stale: boolean } | null> => {
+  const handle = await open(lockFile(dir), "r").catch((error: NodeJS.ErrnoException) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (handle === null) return null;
+  try {
+    const info = await handle.stat();
+    return {
+      token: parseToken(await handle.readFile("utf8")),
+      stale: Date.now() - info.mtimeMs > LOCK_STALE_MS,
+    };
+  } finally {
+    await handle.close();
+  }
+};
+
+export const reclaimStale = async (
+  dir: string,
+  token: string,
+  observed: string | null,
+): Promise<boolean> => {
+  const lock = lockFile(dir);
+  const displaced = join(dir, `${LOCK_FILE}.${token}.${randomUUID()}.displaced`);
+  try {
+    await rename(lock, displaced);
+  } catch {
+    return false;
+  }
+  if ((await readOwnerToken(displaced)) === observed) {
+    await unlink(displaced).catch(() => undefined);
+    return true;
+  }
+  try {
+    await link(displaced, lock);
+  } catch (error) {
+    await unlink(displaced).catch(() => undefined);
+    throw new Error(
+      `the issue-desk state lock in ${dir} was taken by another filing while a stale lock was being put back, so nothing was filed and two filings may be running. Try the request again in a minute.`,
+      { cause: error },
+    );
+  }
+  await unlink(displaced).catch(() => undefined);
+  return false;
+};
+
+const waitOrGiveUp = async (deadline: number, dir: string): Promise<void> => {
+  if (Date.now() >= deadline) {
+    throw new Error(
+      `the issue-desk state lock in ${dir} is held by another filing; try the request again in a minute`,
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+};
+
 const acquire = async (dir: string, token: string): Promise<void> => {
   const lock = lockFile(dir);
-  const staleCopy = join(dir, `${LOCK_FILE}.${token}.stale`);
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
     try {
@@ -85,24 +149,14 @@ const acquire = async (dir: string, token: string): Promise<void> => {
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-      const info = await stat(lock).catch(() => null);
-      if (info !== null && Date.now() - info.mtimeMs <= LOCK_STALE_MS) {
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `the issue-desk state lock in ${dir} is held by another filing; try the request again in a minute`,
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
-        continue;
-      }
-      try {
-        await rename(lock, staleCopy);
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
-        continue;
-      }
-      await unlink(staleCopy).catch(() => undefined);
     }
+    const held = await inspectLock(dir);
+    if (held === null || !held.stale) {
+      await waitOrGiveUp(deadline, dir);
+      continue;
+    }
+    if (await reclaimStale(dir, token, held.token)) continue;
+    await waitOrGiveUp(deadline, dir);
   }
 };
 
