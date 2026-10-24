@@ -1,12 +1,12 @@
 {
   "question": "digest reply shape: the cron digests' reply step must hold - at most 6 short plain lines, no sections, no internal names, commands, paths or config advice, no questions or asks, no routine all-green lines (Nishfleet/fleet-ops#9706)",
   "cases_file": "tests/evals/cases/digest_reply_shape.json",
-  "source": "five synthetic fixtures shaped like the digest replies that shipped to Telegram under the pre-fix prompt wording (REPLY rule unchanged since jobs.json.bak-9560, 2026-10-10T22:21): morning+evening of 2026-10-11 and 2026-10-12 and the morning of 2026-10-13; names, links and issue titles replaced because this repo is public",
+  "source": "seven synthetic fixtures shaped like the digest replies that shipped to Telegram under the pre-fix prompt wording (REPLY rule unchanged since jobs.json.bak-9560, 2026-10-10T22:21): morning+evening of 2026-10-11 and 2026-10-12 and the morning of 2026-10-13, plus the evening replies of 2026-10-19 and 2026-10-20 that shipped after the first fix (the regression in Nishfleet/fleet-ops#9921); names, links and issue titles replaced because this repo is public",
   "labeller": {
     "group": "judge",
     "served_model": "openai/qwen3.8-max",
     "calls": 1,
-    "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). One no-tools call labelled all five shipped replies against the shape spec (task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST)."
+    "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). One no-tools call labelled all five shipped replies against the shape spec (task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST). The two 2026-10-19 and 2026-10-20 shapes were labelled by a second non-Claude call recorded in the cases file (labeller_repeat), which also re-labelled the five and agreed with every stored label."
   },
   "scorer": {
     "endpoint": "tests/test_digest_reply_shape.py check_reply_shape",
@@ -15,10 +15,35 @@
     "repeats": "n/a",
     "request": "the fixture reply text; URLs are stripped before the name and number rules run, because the link carries the detail"
   },
-  "tuning": "the reply contract in config/hermes/digest-*.md and the checker's rules were written after the labels existed; the checker's rules were then fitted to the five labelled fixtures plus two clean fixtures (the post-fix reply and the quiet template), so the five are fitting cases, not held-out ones",
+  "tuning": "the reply contract in config/hermes/digest-*.md and the checker's rules were written after the labels existed; the checker's rules were then fitted to the five labelled fixtures plus two clean fixtures (the post-fix reply and the quiet template), so the five are fitting cases, not held-out ones. The two 2026-10-19 and 2026-10-20 fixtures are marked fitted for the same reason: they are the ground truth this change tunes against, and no third real digest reply existed when it was written, so nothing here is held out from it. The held-out test is the live one: the audit pass on the next three digests.",
+  "generation_eval": {
+    "question": "does the rewritten reply contract hold on the digests' own lane (worker-cheap, the free flash models the jobs actually run on) when the model writes the reply from a fact set",
+    "model": {
+      "group": "worker-cheap",
+      "served_model": "openai/z-ai/glm-5.3-flash",
+      "calls": 28,
+      "repeats": "2 to 4 per cell",
+      "task_id": "orch-fleet-ops-9921-eval",
+      "date": "2026-10-20"
+    },
+    "cells": [
+      "the real 2026-10-20 evening facts (execution 59de77f7) replayed against the full canonical prompt, old reply wording: 1/4 samples obey the gate (one wrote 'The daily page is up', one 'is passing again', two named a deploy token in text)",
+      "the same facts and the same full prompt, new reply wording: 4/4 obey",
+      "the same facts with only the reply step in the prompt, old wording: 3/4 obey (one named an internal check in text)",
+      "the same facts and only the reply step, new wording: 4/4 obey",
+      "the real 2026-10-19 evening facts, old wording: 4/4 obey; new wording: 4/4 obey",
+      "a quiet fact set (nothing merged, nothing broken, both services active), old wording: 2/2 obey; new wording: 2/2 obey, both sending exactly 'Quiet 12 hours, 0 merged.'"
+    ],
+    "aggregate": {
+      "before": "10/14 generated samples obey the gate under the old reply wording",
+      "after": "14/14 generated samples obey the gate under the new reply wording",
+      "what_changed": "the misses were lines whose only point was that something was up, passing or unchanged, and internal check names in text; the new wording bans those two classes in the reply step, next to the service check that produces them, and adds a pre-send re-read that deletes them"
+    },
+    "limits": "both shipped 2026-10-19 and 2026-10-20 replies fail the gate (2/2), yet replaying their fact sets did not reproduce the narration, bold-section or 'are both live' classes without the live tool output the real run had, so these numbers under-state the change. The deterministic gate catches every instance, and the live proof is the audit pass on the next three digests."
+  },
   "summary": {
-    "cases": 5,
-    "labelled_violation": 5,
+    "cases": 7,
+    "labelled_violation": 7,
     "labelled_obey": 0,
     "before": "0/5 replies obey the shape (the labeller found sections, internal names, and in one case an ask and config advice)",
     "after": "checker agreement with the labels 5/5 on the fitted fixtures; the first shipped post-fix reply (digest-evening execution 634b61c6, 2026-10-13T09:46 IST, delivered to Telegram) obeys: exactly 6 plain lines, 'and 2 more broken' overflow, links carry the detail, the step-1 failure produced the designed one-liner 'Merged count could not be read'",
