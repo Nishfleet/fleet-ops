@@ -1,11 +1,10 @@
-# Fleet alert rules: the dead-man heartbeat, failed units, the Hermes
-# gateway, node_exporter and config-reload health, stale or failed off-site
-# backups, public sites that stop answering, and a same-day AI spend line
-# (plus a page if that metric goes missing). Kept deliberately small. The
-# repair-dispatch machinery and the 12 rules that fed it were cut on
-# 2026-09-29 (fleet-ops#8958); nothing here brings back a repair worker or a
-# second page path. NodeExporterDown pages because a down node_exporter
-# gates HermesGatewayDown off.
+# Fleet alert rules: the dead-man heartbeat, the Hermes gateway, node_exporter
+# and config-reload health, stale or failed off-site backups, public sites that
+# stop answering, and a same-day AI spend line (plus a page if that metric goes
+# missing). Kept deliberately small. The repair-dispatch machinery and the 12
+# rules that fed it were cut on 2026-09-29 (fleet-ops#8958); nothing here
+# brings back a repair worker or a second page path. NodeExporterDown pages
+# because a down node_exporter gates HermesGatewayDown off.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,
 # unit-include covers .service and .timer), the blackbox exporter's
@@ -16,6 +15,11 @@
 #   severity=nish     -> Telegram (a real outage, immediately)
 #   anything else     -> no receiver; visible as the ALERTS series and in
 #                        Alertmanager, pages nobody
+#
+# SystemUnitFailed is not here: a warning can only ever route to no receiver,
+# so its failed units fired silently. The rule moved to
+# config/grafana/provisioning/alerting/fleet-host.yaml, where a firing alert
+# files a fleet-ops issue through the Grafana policy tree (fleet-ops#10204).
 groups:
   - name: fleet_watchdog
     rules:
@@ -30,18 +34,6 @@ groups:
         annotations:
           summary: "Watchdog heartbeat for the alerting pipeline"
           description: "Always firing. If this disappears, Prometheus or Alertmanager is dead."
-
-  - name: fleet_host
-    rules:
-      # Visible, not paged: a failed unit is not by itself an outage.
-      - alert: SystemUnitFailed
-        expr: node_systemd_unit_state{state="failed"} == 1
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "system unit {{ $labels.name }} failed"
-          description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
   - name: fleet_hermes
     rules:
@@ -74,7 +66,7 @@ groups:
           severity: nish
         annotations:
           summary: "node_exporter is not being scraped"
-          description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
+          description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown cannot see."
 
   - name: fleet_config
     rules:

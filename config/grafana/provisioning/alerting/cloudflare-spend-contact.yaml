@@ -6,6 +6,15 @@
 # only) that expires after one hour, so fleet-grafana-github-token.timer
 # re-mints it every 20 min and reloads provisioning. Every rule carries a
 # severity label (critical or warning) and the policy tree below routes on it.
+#
+# One issue per firing alert (fleet-ops#10204). The webhook receiver is
+# create-only: every notification it sends opens a new issue, and a resolved
+# notification would open a second one, so disableResolveMessage stays true and
+# the issue cadence is set with repeat_interval. A rule that fires, then flaps
+# (resolves and fires again), is a new alert instance and files again; the
+# stock receiver cannot search GitHub for the open issue and comment on it (it
+# cannot learn the issue number), so the fleet's resolution record is the fixing
+# worker's close receipt, not a resolve notification.
 apiVersion: 1
 
 contactPoints:
@@ -89,7 +98,7 @@ policies:
       - receiver: hermes-urgent
         object_matchers:
           - [severity, "=", critical]
-          - [signal, "!=", deploy-failed-24h]
+          - [signal, "!~", "deploy-failed-24h|queue-down-2h"]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
         group_by: [alertname, product, plan, requested_model]
         group_wait: 0s
@@ -117,6 +126,26 @@ policies:
           - [signal, "=", deploy-failed-24h]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
         mute_time_intervals: [deploy-failed-24h-errors]
+      # Same mute for the queue-down-2h rules: the queue-down rule on the same
+      # query files the repo's one issue on a read error.
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [signal, "=", queue-down-2h]
+          - [alertname, "=~", "DatasourceError|DatasourceNoData"]
+        mute_time_intervals: [deploy-failed-24h-errors]
+      # The host-unit and queue-down rules file ONE issue per firing alert
+      # (fleet-ops#10204): they are the failures a machine fixes, so the issue is
+      # the work item, and a fresh one every 24h started a second worker on the
+      # same failure. A week is the safety net: a failure still firing then has
+      # an unfixed or closed-without-a-fix issue, and one more is due. Terminal,
+      # so a queue-down-2h alert still reaches hermes-urgent above and stops here.
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [signal, "=~", "host-unit|queue-down|queue-down-2h"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 7d
       # A plan out of credit keeps this rule firing until the balance is refilled,
       # and the remedy (top up, cancel, bench the rows) is Nish's call, so its
       # daily issue re-filed the same alert every 24h: fleet-ops#9845, #9857,
@@ -140,8 +169,9 @@ policies:
         group_interval: 5m
         repeat_interval: 24h
 
-# The deploy-failed-24h rules' read errors (route above): the deploy-failed rule
-# on the same query files that repo's one issue.
+# The deploy-failed-24h and queue-down-2h rules' read errors (routes above):
+# the deploy-failed and queue-down rules on the same queries file each repo's
+# one issue.
 muteTimes:
   - orgId: 1
     name: deploy-failed-24h-errors

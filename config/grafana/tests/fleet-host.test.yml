@@ -1,0 +1,70 @@
+# Gate for the fleet-host rule's A expression (fleet-ops#10204).
+#
+# SystemUnitFailed moved from rootfs/etc/prometheus/fleet_rules.yml into a
+# Grafana rule so a firing alert files a fleet-ops issue instead of firing
+# with severity warning, which Alertmanager routes to no receiver. The
+# expression, the 5 minute hold and the severity label are the ones the
+# Prometheus rule had; these cases pin that a failed unit fires after the hold
+# and that a healthy unit stays silent. The threshold is Grafana's stock gt 0
+# over the expression, which promql_expr_test pins below.
+evaluation_interval: 1m
+rule_files:
+- fleet-host.test.rules.yml
+tests:
+- interval: 1m
+  input_series:
+  - series: 'node_systemd_unit_state{name="restic-r2-backup.service",state="failed",type="oneshot"}'
+    values: '0+0x4 1+0x10'
+  alert_rule_test:
+  - alertname: SystemUnitFailed
+    eval_time: 4m
+    exp_alerts: []
+  - alertname: SystemUnitFailed
+    eval_time: 10m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        name: restic-r2-backup.service
+        severity: warning
+        signal: host-unit
+        state: failed
+        type: oneshot
+      exp_annotations:
+        summary: 'Systemd unit restic-r2-backup.service is failed on the fleet host.'
+        description: 'restic-r2-backup.service has been in the failed state for 5 minutes. Run systemctl status restic-r2-backup.service on the host to see why, restart or fix the unit, then close this issue. A failed unit here broke the nightly off-site backup silently before this alert filed issues (fleet-ops#10204).'
+  promql_expr_test:
+  - expr: 'node_systemd_unit_state{state="failed"} == 1'
+    eval_time: 10m
+    exp_samples:
+    - labels: 'node_systemd_unit_state{name="restic-r2-backup.service",state="failed",type="oneshot"}'
+      value: 1
+- interval: 1m
+  input_series:
+  - series: 'node_systemd_unit_state{name="restic-r2-backup.service",state="active",type="oneshot"}'
+    values: '1+0x30'
+  alert_rule_test:
+  - alertname: SystemUnitFailed
+    eval_time: 30m
+    exp_alerts: []
+  promql_expr_test:
+  - expr: 'node_systemd_unit_state{state="failed"} == 1'
+    eval_time: 30m
+    exp_samples: []
+- interval: 1m
+  input_series:
+  - series: 'node_systemd_unit_state{name="restic-r2-backup.service",state="failed",type="oneshot"}'
+    values: '1+0x2 0 1+0x10'
+  alert_rule_test:
+  - alertname: SystemUnitFailed
+    eval_time: 14m
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        name: restic-r2-backup.service
+        severity: warning
+        signal: host-unit
+        state: failed
+        type: oneshot
+      exp_annotations:
+        summary: 'Systemd unit restic-r2-backup.service is failed on the fleet host.'
+        description: 'restic-r2-backup.service has been in the failed state for 5 minutes. Run systemctl status restic-r2-backup.service on the host to see why, restart or fix the unit, then close this issue. A failed unit here broke the nightly off-site backup silently before this alert filed issues (fleet-ops#10204).'
