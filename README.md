@@ -261,7 +261,7 @@ script, or prompt lands unseen.
   the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the pages. Prometheus loads ten rules:
+  — the dead-man and the pages. Prometheus loads twelve rules:
   `Watchdog` (always firing),
   `NodeExporterDown` (the `node` target down for 5 minutes, severity nish),
   `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
@@ -271,7 +271,11 @@ script, or prompt lands unseen.
   30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
   `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
-  `AISpendMetricMissing` (that spend metric absent for a day). Every one but
+  `AISpendMetricMissing` (that spend metric absent for a day),
+  `RouterStrongGroupNoHealthyRow` (no healthy worker-capable router row answers
+  for 5 minutes while the group is being called) and
+  `RouterStrongGroupFailing` (more than 5% of worker-capable calls fail for 10
+  minutes). Every one but
   the first pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat

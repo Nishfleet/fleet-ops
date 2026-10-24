@@ -15,7 +15,7 @@ NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
 REPOS = (
     "Nishfleet/0509", "Nishfleet/TinyStudio.io-public", "Nishfleet/aiconverter-app",
     "Nishfleet/drive", "Nishfleet/fleet-ops", "Nishfleet/rera-report-card",
-    "Nishfleet/siterep-public",
+    "Nishfleet/siterep-public", "Nishfleet/tether",
 )
 DATASOURCE = {"Nishfleet": "fleet-github"}
 
@@ -92,6 +92,8 @@ def test_the_issue_group_covers_every_queued_repo_and_the_2h_group_holds_the_sam
     issue = {r["labels"]["repo"]: r for r in groups["queue-down"]}
     page = {r["labels"]["repo"]: r for r in groups["queue-down-2h"]}
     assert set(issue) == set(page) == set(REPOS)
+    intake = {f"Nishfleet/{r['name']}" for r in json.loads((ROOT / "config/intake-repos.json").read_text())["repos"]}
+    assert set(REPOS) == intake | {"Nishfleet/fleet-ops", "Nishfleet/drive"}
     for repo, r in issue.items():
         assert (r["labels"]["signal"], r["for"], r["execErrState"], r["noDataState"]) == ("queue-down", "0s", "Error", "Alerting")
         assert "cannot read GitHub runs" in r["annotations"]["summary"]
@@ -144,7 +146,9 @@ def test_every_window_covers_three_hours_of_runs():
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "completed", "stale")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "completed", "action_required")], [0]),
     ([(1, "2026-10-10T11:55:00Z", "completed", "cancelled")], [0]),
-    ([(1, "2026-10-10T11:55:00Z", "completed", "skipped")], []),
+    ([(1, "2026-10-10T11:55:00Z", "completed", "skipped")], [0]),
+    ([(1, "2026-10-10T11:55:00Z", "queued", None)], [0]),
+    ([(1, "2026-10-10T11:55:00Z", "in_progress", None)], [0]),
     ([], []),
 ])
 def test_the_sql_reads_a_startup_failure_at_once_or_a_failing_streak_30_minutes_old(runs, want):
@@ -160,6 +164,8 @@ def test_the_sql_reads_a_startup_failure_at_once_or_a_failing_streak_30_minutes_
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:25:00Z", "completed", "cancelled"), (3, "2026-10-10T11:55:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "cancelled")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "in_progress", None)], [0]),
+    ([(1, "2026-10-10T11:55:00Z", "completed", "skipped")], [0]),
+    ([(1, "2026-10-10T11:55:00Z", "queued", None)], [0]),
     ([], []),
 ])
 def test_the_2h_sql_pages_only_on_a_failing_streak_two_hours_old_or_a_startup_failure(runs, want):
@@ -179,3 +185,9 @@ def test_the_sql_returns_two_rows_so_grafana_errors_when_a_failing_streak_has_no
 def test_the_empty_window_returns_zero_rows_so_grafana_treats_it_as_nodata():
     assert _down([]) == []
     assert _down_for_2h([]) == []
+
+
+def test_a_window_whose_runs_are_all_unfinished_or_skipped_reads_zero_not_nodata():
+    backlog = [(1, "2026-10-10T09:55:00Z", "queued", None), (2, "2026-10-10T10:55:00Z", "in_progress", None), (3, "2026-10-10T11:55:00Z", "completed", "skipped")]
+    assert _down(backlog) == [0]
+    assert _down_for_2h(backlog) == [0]

@@ -16,20 +16,24 @@
 # machinery correctly filtering an event, e.g. FLEET_DISPATCH_PAUSED), the same
 # choice deploy-failed.yaml makes. The queue-down group reads 1 when the newest
 # finished run is a startup_failure (fires at once) or the newest finished run
-# has been failing for 30 minutes. The queue-down-2h group reads 1 on the same
+# has been failing for about 30 minutes (the group evaluates every 10 minutes,
+# so detection lags by up to that). The queue-down-2h group reads 1 on the same
 # startup_failure clause or a 2 hour failing streak; it pages because a queue
 # down for 2 hours is the outage the queue exists to prevent (URGENT in
-# tests/alert_routes_check.py). An empty window returns zero rows, so the
-# queue-down rule fires on NoData (noDataState: Alerting): sweeps that stop
-# producing runs at all are the case the 30 minute clause cannot see. An
-# undated failing streak returns two rows, which Grafana refuses for alerting,
-# so the rule shows Error (same tradeoff deploy-failed-24h documents). The SQL
-# engine runs a fixed keyword allowlist and refuses EXISTS, so the row count is
-# read with a scalar subquery instead.
-#
-# Not enrolled here: tether (enrolled in config/intake-repos.json but its
-# .github/workflows does not exist yet, so the rule would fire NoData on a
-# repo that cannot dispatch at all). Add it when its dispatch workflow lands.
+# tests/alert_routes_check.py). A window with no runs at all returns zero rows,
+# so the queue-down rule fires on NoData (noDataState: Alerting): sweeps that
+# stop producing runs at all are the case the 30 minute clause cannot see. A
+# window whose runs are all queued, in_progress or skipped reads 0, not NoData:
+# a runner backlog is a busy queue, not a blind read, and seven workers sent at
+# saturated runners would be the wrong fix. An undated failing streak returns
+# two rows, which Grafana refuses for alerting, so the rule shows Error (same
+# tradeoff deploy-failed-24h documents). The SQL engine runs a fixed keyword
+# allowlist and refuses EXISTS, so the row counts are read with scalar
+# subqueries instead. The data source fetches the newest 100 runs (per_page), so
+# a repo sustaining more than 100 finished runs in 3 hours keeps the 30 minute
+# rule firing while the fetched span can keep the 2 hour rule short of its
+# threshold; that is beyond any dispatch volume seen, and the warning still
+# files its issue.
 #
 # One incident files one issue: the policy route for these signals refiles it
 # only after a week, so a queue down for a day does not start a second worker
@@ -85,18 +89,19 @@ groups:
                   FROM runs
                   WHERE id > COALESCE((SELECT MAX(id) FROM runs WHERE ok = 1), 0)
                 )
-                SELECT CASE WHEN
+                SELECT CASE WHEN (SELECT COUNT(*) FROM runs) = 0 THEN 0
+                  WHEN
                   (SELECT conclusion FROM runs ORDER BY id DESC LIMIT 1) = 'startup_failure'
                   OR UNIX_TIMESTAMP() - streak_start >= 1800
                 THEN 1 ELSE 0 END AS queue_down
                 FROM streak
                 JOIN (SELECT 1 AS k UNION ALL SELECT 2) AS copies
-                  ON (copies.k = 1 AND (SELECT COUNT(*) FROM runs) > 0) OR (failures > 0 AND streak_start IS NULL)
+                  ON (copies.k = 1 AND (SELECT COUNT(*) FROM A) > 0) OR (failures > 0 AND streak_start IS NULL)
         noDataState: Alerting
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/fleet-ops is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/fleet-ops, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/fleet-ops is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/fleet-ops, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/fleet-ops, workflow: agent-dispatch.yml}
         isPaused: false
@@ -121,7 +126,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/0509 is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/0509, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/0509 is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/0509, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/0509/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/0509, workflow: agent-dispatch.yml}
         isPaused: false
@@ -146,7 +151,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/drive is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/drive, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/drive is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/drive, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/drive/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/drive, workflow: agent-dispatch.yml}
         isPaused: false
@@ -171,7 +176,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/TinyStudio.io-public is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/TinyStudio.io-public, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/TinyStudio.io-public is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/TinyStudio.io-public, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/TinyStudio.io-public/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/TinyStudio.io-public, workflow: agent-dispatch.yml}
         isPaused: false
@@ -196,7 +201,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/aiconverter-app is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/aiconverter-app, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/aiconverter-app is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/aiconverter-app, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/aiconverter-app/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/aiconverter-app, workflow: agent-dispatch.yml}
         isPaused: false
@@ -221,7 +226,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/rera-report-card is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/rera-report-card, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/rera-report-card is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/rera-report-card, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/rera-report-card/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/rera-report-card, workflow: agent-dispatch.yml}
         isPaused: false
@@ -246,9 +251,34 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/siterep-public is a startup failure, or its newest finished run has been failing for 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/siterep-public, so its queue check is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/siterep-public is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/siterep-public, so its queue check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: warning, signal: queue-down, repo: Nishfleet/siterep-public, workflow: agent-dispatch.yml}
+        isPaused: false
+
+      - uid: queue-down-tether
+        title: Agent dispatch down Nishfleet/tether
+        condition: C
+        data:
+          - &q-tether
+            refId: A
+            relativeTimeRange: {from: 10800, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: tether
+              options: {owner: Nishfleet, repository: tether, workflow: agent-dispatch.yml, branch: main}
+              refId: A
+          - *queue-down-latest
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Agent dispatch down: the newest run of agent-dispatch.yml on main in Nishfleet/tether is a startup failure, or its newest finished run has been failing for about 30 minutes.{{ else }}The fleet cannot read GitHub runs for Nishfleet/tether, so its queue check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}The agent queue for this repo is not taking work. Runs: https://github.com/Nishfleet/tether/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
+        labels: {severity: warning, signal: queue-down, repo: Nishfleet/tether, workflow: agent-dispatch.yml}
         isPaused: false
 
   - orgId: 1
@@ -286,13 +316,14 @@ groups:
                   FROM runs
                   WHERE id > COALESCE((SELECT MAX(id) FROM runs WHERE ok = 1), 0)
                 )
-                SELECT CASE WHEN
+                SELECT CASE WHEN (SELECT COUNT(*) FROM runs) = 0 THEN 0
+                  WHEN
                   (SELECT conclusion FROM runs ORDER BY id DESC LIMIT 1) = 'startup_failure'
                   OR UNIX_TIMESTAMP() - streak_start >= 7200
                 THEN 1 ELSE 0 END AS queue_down_for_2h
                 FROM streak
                 JOIN (SELECT 1 AS k UNION ALL SELECT 2) AS copies
-                  ON (copies.k = 1 AND (SELECT COUNT(*) FROM runs) > 0) OR (failures > 0 AND streak_start IS NULL)
+                  ON (copies.k = 1 AND (SELECT COUNT(*) FROM A) > 0) OR (failures > 0 AND streak_start IS NULL)
         noDataState: OK
         execErrState: Error
         for: 10m
@@ -391,3 +422,19 @@ groups:
           description: '{{ if $values }}The agent queue for this repo has been down for about 2 hours and the repo is falling behind. Runs: https://github.com/Nishfleet/siterep-public/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
         labels: {severity: critical, signal: queue-down-2h, repo: Nishfleet/siterep-public, workflow: agent-dispatch.yml}
         isPaused: false
+
+      - uid: queue-down-2h-tether
+        title: Agent dispatch down for 2h Nishfleet/tether
+        condition: C
+        data:
+          - *q-tether
+          - *queue-down-2h
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: '{{ if $values }}Agent dispatch down for 2 hours: the newest run of agent-dispatch.yml on main in Nishfleet/tether is a startup failure, or its newest finished run has been failing for 2 hours.{{ else }}The fleet cannot read GitHub runs for Nishfleet/tether, so its queue check is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}The agent queue for this repo has been down for about 2 hours and the repo is falling behind. Runs: https://github.com/Nishfleet/tether/actions/workflows/agent-dispatch.yml?query=branch%3Amain{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }}'
+        labels: {severity: critical, signal: queue-down-2h, repo: Nishfleet/tether, workflow: agent-dispatch.yml}
+        isPaused: false
+
