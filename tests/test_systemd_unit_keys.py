@@ -866,6 +866,55 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
+GLUE_AUDIT_HOST_LEFTOVERS = (
+    "/etc/prometheus/alertmanager.yml",
+    "/etc/systemd/system/tiny-studio-smb-bridge.service",
+    '"{{ nish_home }}/workspaces/products/.githooks"',
+    '"{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"',
+    '"{{ nish_home }}/.cache/tincan-relink-once.sh"',
+)
+
+
+def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() -> None:
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    for path in GLUE_AUDIT_HOST_LEFTOVERS:
+        assert f"- {path}\n" in retired.group(1), f"host.yml deletes {path} from the host"
+    assert "- /etc/alertmanager/alertmanager.yml\n" not in retired.group(1), (
+        "the config the running service reads is not retired"
+    )
+    assert "Seed the telegram chat id file" not in host, (
+        "the seed task still reads the retired config"
+    )
+    guard = host.index("- name: Refuse to delete the old alertmanager config")
+    retire = host.index("- name: Remove retired host files")
+    assert guard < retire, (
+        "the chat id guard runs before the retire step, so the old config is never deleted while it holds the only id"
+    )
+    assert "telegram_chat_id" in host[guard:retire]
+    assert host.index("- name: Stop and disable the retired SMB bridge") < retire, (
+        "the bridge is stopped before its unit file goes"
+    )
+    assert not (ROOT / "rootfs/etc/prometheus/alertmanager.yml").exists(), (
+        "fleet-ops ships no copy of the stale config"
+    )
+    assert not (ROOT / "rootfs/etc/systemd/system/tiny-studio-smb-bridge.service").exists(), (
+        "fleet-ops ships no copy of the SMB bridge"
+    )
+
+
+def test_alertmanager_reads_the_repo_installed_config() -> None:
+    options = (ROOT / "rootfs/etc/default/prometheus-alertmanager").read_text()
+    assert "--config.file=/etc/alertmanager/alertmanager.yml" in options, (
+        "the service loads the config the repo installs, not the retired copy"
+    )
+    assert "/etc/prometheus/alertmanager.yml" not in options
+    host = HOST_YML.read_text()
+    assert 'src: "{{ rootfs }}/etc/default/prometheus-alertmanager"' in host
+    assert "dest: /etc/default/prometheus-alertmanager" in host
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {

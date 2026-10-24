@@ -135,6 +135,22 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # The old hand-placed Alertmanager config (#10146): the running service
+      # reads /etc/alertmanager/alertmanager.yml, which the repo ships, and the
+      # only reader of this copy was the first-run chat-id seed, removed below.
+      # The guard above keeps this line from deleting a box's only chat id.
+      - /etc/prometheus/alertmanager.yml
+      # The TinyStudio SMB bridge (#10146): disabled, inactive, with no wants
+      # link, and no repo shipped it. The tasks above stop it first anyway. The
+      # SMB server (smbd.service) stays.
+      - /etc/systemd/system/tiny-studio-smb-bridge.service
+      # Leftovers the 2026-10-23 glue audit named (#10125, #10146): the products
+      # hook dir execs /Users/nish/Vibecoded projects/... and the vault's
+      # .git/hooks are macOS-only no-ops, and no checkout sets core.hooksPath;
+      # the one-shot tincan relink script's PR merged 2026-10-04.
+      - "{{ nish_home }}/workspaces/products/.githooks"
+      - "{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"
+      - "{{ nish_home }}/.cache/tincan-relink-once.sh"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -434,19 +450,7 @@
 
     # The Telegram chat id has no file option in Alertmanager, so it is kept out
     # of the repo: the repo copy holds chat_id 1 and the installed copy gets the
-    # id from a hand-placed file. First run only: the id is taken from the
-    # alertmanager.yml the box already has, so nothing needs placing by hand.
-    - name: Seed the telegram chat id file from the installed alertmanager config
-      ansible.builtin.shell: |
-        set -o pipefail
-        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\) *\(#.*\)\?$/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
-        [ -n "$id" ] && [ "$id" != 0 ] || exit 3
-        install -o root -g root -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
-      args:
-        executable: /bin/bash
-        creates: /etc/prometheus/telegram_chat_id
-      register: chat_seed
-      failed_when: chat_seed.rc not in [0, 3]
+    # id from the hand-placed /etc/prometheus/telegram_chat_id.
 
     # Root-owned and not writable by the service: its bytes go into a root-owned
     # config, so the prometheus user must not be able to change them.
@@ -1721,6 +1725,42 @@
         seofixkit_timer_disable.rc != 0
         and 'not loaded' not in seofixkit_timer_disable.stderr | lower
         and 'does not exist' not in seofixkit_timer_disable.stderr | lower
+
+    # The old hand-placed alertmanager config is the Telegram chat id's only
+    # source on a box that never seeded the id file (#10146). Refuse to delete
+    # it while that is true: with no chat id, alertmanager does not start and
+    # the dead-man heartbeat and pages stop.
+    - name: Stat the retired alertmanager copy and the chat id file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/prometheus/alertmanager.yml
+        - /etc/prometheus/telegram_chat_id
+      register: retired_alertmanager
+
+    - name: Refuse to delete the old alertmanager config while it holds the only chat id
+      ansible.builtin.assert:
+        that:
+          - not (retired_alertmanager.results[0].stat.exists and not retired_alertmanager.results[1].stat.exists)
+        fail_msg: >-
+          /etc/prometheus/alertmanager.yml is the only copy of the Telegram chat
+          id (/etc/prometheus/telegram_chat_id is missing). Copy the id into the
+          id file, then rerun; the old config is left in place until then.
+
+    # The bridge was disabled and inactive when the audit found it, but stop it
+    # first anyway, so a box that still had it running loses the listener before
+    # the unit file goes. smbd.service and its Tailscale drop-in stay.
+    - name: Stat the retired SMB bridge unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/tiny-studio-smb-bridge.service
+      register: retired_smb_bridge
+
+    - name: Stop and disable the retired SMB bridge
+      ansible.builtin.systemd_service:
+        name: tiny-studio-smb-bridge.service
+        state: stopped
+        enabled: false
+      when: retired_smb_bridge.stat.exists
 
     # Files the repo used to leave live and now removes, and files a session
     # hand-installed that the repo or a product repo now owns. Each path is named,
