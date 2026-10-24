@@ -55,11 +55,17 @@ jobs:
     if: inputs.ref
     runs-on: [self-hosted, agent]
     timeout-minutes: 60
-    # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
-    # else here uses it. No job outputs: the strike runs in this job (below),
-    # so nothing reads them across jobs (fleet-ops#9275).
+    # Router wall and the strike step relabel with GITHUB_TOKEN. Arm auto-merge
+    # and Deliverable read the claim PR's checks and statuses with it too (checks
+    # and statuses read, pull-requests read for the PR lookup): the runner user's
+    # gh login is a fine-grained token that cannot read a private repo's checks.
+    # No job outputs: the strike runs in this job (below), so nothing reads them
+    # across jobs (fleet-ops#9275).
     permissions:
       issues: write
+      pull-requests: read
+      checks: read
+      statuses: read
     concurrency:
       group: agent-${{ github.repository }}-${{ inputs.ref }}
       cancel-in-progress: false
@@ -639,6 +645,7 @@ jobs:
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          WF_TOKEN: ${{ github.token }}
         run: |
           # The merge closes the issue only through a closing keyword, and
           # workers drop it often enough that merged work stayed claimed
@@ -662,13 +669,14 @@ jobs:
               # the strike step requeues the issue and the next run arms the fixed head. Pending
               # checks still arm (nothing re-arms a head that later goes green; the required checks
               # hold the merge). No required checks judges all of them; an unreadable result is
-              # red. The runner user's gh login reads the checks: the App token has no checks: read.
+              # red. The run's own token (WF_TOKEN) reads the checks: the App token has no checks: read,
+              # and the runner user's gh login cannot read a private repo's checks.
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-              red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+              red=$(GH_TOKEN="$WF_TOKEN" gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq still printed any red names, empty if none
                 *) case ${red,,} in
                      *"no required checks reported"*)
-                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                       red=$(GH_TOKEN="$WF_TOKEN" gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
                          case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
                      *"no checks reported"*) red= ;;
                      *) red="unreadable ($red)" ;;
@@ -694,6 +702,7 @@ jobs:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
           MISS: ${{ steps.gate.outputs.miss }}
           ISSUE_N: ${{ steps.gate.outputs.issue }}
+          WF_TOKEN: ${{ github.token }}
         run: |
           i=${ISSUE_N:-}
           [ -n "$i" ] || { i=${REF#claim/issue-}; i=${i%%-*}; }
@@ -720,7 +729,7 @@ jobs:
           # Fail it, so the strike step strikes and requeues it. Pending checks pass here. A red
           # result from the workflow named CI fires rework (agent-dispatch's workflow_run lists
           # only CI); a red check from another workflow fires nothing and holds the merge only if
-          # required (fleet-ops#9315). The runner user's gh login reads the checks (no checks: read).
+          # required (fleet-ops#9315). The run's own token (WF_TOKEN) reads the checks: the App token has no checks: read, and the runner user's gh login cannot read a private repo's checks.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
           if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
@@ -728,12 +737,12 @@ jobs:
             exit 1
           fi
           rc=0
-          checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
+          checks=$(GH_TOKEN="$WF_TOKEN" gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
           # A repo with no required checks judges all of them; no checks
           # reported yet is pending, not red. Exit 8 is gh's pending code.
           if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then
             case ${checks,,} in
-              *"no required checks reported"*) rc=0; checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
+              *"no required checks reported"*) rc=0; checks=$(GH_TOKEN="$WF_TOKEN" gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
             esac
           fi
           case ${checks,,} in *"no checks reported"*) exit 0 ;; esac
