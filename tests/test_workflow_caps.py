@@ -9,6 +9,8 @@ AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
 SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework", "miss-stalled")
 AGENT_RUNNERS_MEASURED_2026_10_23 = 22
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+WORKFLOWS = ROOT / ".github/workflows"
 
 
 def yaml_json(path):
@@ -71,3 +73,49 @@ def test_review_concurrency_stays_inside_the_judge_seats():
 
 def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
+
+
+def permissions_block(block, where):
+    assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
+    return block or {}
+
+
+def agent_yml_requests():
+    agent = yaml_json(AGENT)
+    default = permissions_block(agent.get("permissions"), "agent.yml")
+    asked = {}
+    for name, job in agent["jobs"].items():
+        block = permissions_block(job.get("permissions", default), f"agent.yml job {name}")
+        for scope, level in block.items():
+            assert level in PERMISSION_LEVELS, f"agent.yml job {name} asks {scope}: {level}; extend PERMISSION_LEVELS"
+            asked[scope] = max(asked.get(scope, "none"), level, key=PERMISSION_LEVELS.get)
+    return asked
+
+
+def agent_yml_callers():
+    found = []
+    for path in sorted(WORKFLOWS.rglob("*.y*ml")):
+        wf = yaml_json(path)
+        for name, job in (wf.get("jobs") or {}).items():
+            if str(job.get("uses") or "").split("@")[0].endswith("/agent.yml"):
+                found.append((path.relative_to(ROOT).as_posix(), name, job, wf))
+    return found
+
+
+def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
+    asked = agent_yml_requests()
+    assert asked, "agent.yml jobs request no permissions, so the caller grant check would pass vacuously"
+    callers = agent_yml_callers()
+    assert callers, "no workflow job calls agent.yml, so the caller grant check would pass vacuously"
+    shortfalls = []
+    for fname, jname, job, wf in callers:
+        granted = permissions_block(job.get("permissions", wf.get("permissions")), f"{fname} job {jname}")
+        for scope, level in sorted(asked.items()):
+            have = PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
+            if have < PERMISSION_LEVELS[level]:
+                gives = f"{scope}: {granted.get(scope, 'none')}" if granted else "no permissions at all"
+                shortfalls.append(f"{fname} job {jname} grants {gives}, agent.yml asks {scope}: {level}")
+    assert not shortfalls, (
+        "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
+        + "; ".join(shortfalls)
+    )
