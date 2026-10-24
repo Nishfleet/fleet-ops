@@ -1053,7 +1053,7 @@ WAKE_UNITS = (
     "systemd/tincan-listen-fleet-worker.service",
     "systemd/tincan-listen-opencode.service",
     "systemd/tincan-listen-pi.service",
-    "systemd/cua-desk-daemon.service",
+    "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 WAKE_AGENT = {
     "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
@@ -1063,7 +1063,7 @@ WAKE_AGENT = {
     "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
-DESK_UNIT = "systemd/cua-desk-daemon.service"
+DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
 GPG_AGENT_OOM_DROPIN = ROOT / "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
 
 
@@ -1127,6 +1127,6 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_box_copy_goes_away() -> Non
     assert _last(keys, "ManagedOOMPreference") == "omit"
     assert _last(keys, "MemoryMax") == "512m"
     sync = (ROOT / "systemd/fleet-sync.service").read_text()
-    assert "rm -f %h/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf" in sync, (
-        "the hand-placed copy shadows /etc/systemd/user, so nothing removes it and the repo copy is inert"
+    assert "cua-desk-daemon.service; do test -e /etc/systemd/user" in sync, (
+        "the hand-placed copies shadow /etc/systemd/user, so nothing removes them and the repo copies are inert"
     )

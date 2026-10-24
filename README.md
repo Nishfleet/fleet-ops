@@ -131,19 +131,24 @@ script, or prompt lands unseen.
 - `systemd/tincan-listen-command-code.service`,
   `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
   `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
-  `tincan-listen-pi.service` and `systemd/cua-desk-daemon.service` — the six
-  Tincan wake services and the Cua desk daemon (fleet-ops#10133, #10140). Each
-  wake service runs `tincan listen` for one agent: command-code, Cursor, Devin,
-  the free pi worker, OpenCode and the paid pi seat, each reading its own
+  `tincan-listen-pi.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
+  and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
+  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
+  OpenCode and the paid pi seat, each reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
   `~/.local/state/tincan-listen-<agent>`. `cua-desk-daemon.service` is the Cua
   daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
-  They were hand-placed regular files under `~/.config/systemd/user` with no repo
-  copy, so a git pull carried no edit to them; the files here are the bytes that
-  ran before, and `fleet-sync.service` step 2j links each one on every deploy
-  (the `default.target.wants` links already point at these paths, so a hand
-  disable stays off). A unit edit applies at that unit's next restart. Off
-  switch, one unit at a time:
+  The six wake services were hand-placed regular files under
+  `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
+  them; the files here are the bytes that ran before, and `fleet-sync.service`
+  step 2j links each one on every deploy (the `default.target.wants` links
+  already point at these paths, so a hand disable stays off). The desk daemon is
+  root-owned, installed from `rootfs/etc/systemd/user/` by
+  `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
+  bundled `cua` binary; step 2k retires its hand-placed copy once the installed
+  one is there. A unit edit applies at that unit's next restart. Off switch, one
+  unit at a time:
   `systemctl --user disable --now tincan-listen-command-code.service`
   `systemctl --user disable --now tincan-listen-cursor-vps.service`
   `systemctl --user disable --now tincan-listen-devin-vps.service`
@@ -151,8 +156,10 @@ script, or prompt lands unseen.
   `systemctl --user disable --now tincan-listen-opencode.service`
   `systemctl --user disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
-  Delete one by removing its line from `fleet-sync.service` step 2j, its file here
-  and the live link, then `systemctl --user daemon-reload`.
+  Delete one of the six wake services by removing its name from
+  `fleet-sync.service` step 2j, its file here and the live link, then
+  `systemctl --user daemon-reload`. Delete the desk daemon by removing its file
+  under `rootfs/etc/systemd/user/` and the wants link.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
