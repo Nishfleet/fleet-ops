@@ -49,8 +49,8 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
-      - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
+      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL. The token-shape file is the second rule of the same machine: a token-shaped string in a tracked file reaches every agent session that opens this repo (fleet-ops#10157).
+      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/token-store-shapes.yml --metrics=off --error
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
         # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
@@ -235,13 +235,13 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
-      - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, unknown keys (fleet-ops#9967)
+      - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, unknown keys, token shapes (fleet-ops#9967, #10157)
         # Runs fleet-sync.service's own agent installs, the real
         # systemd-tmpfiles --user --create and the link check against a temp
         # home: both lanes read through ~/.claude-max/agents, and a hand-made
-        # dir in the link's place fails the sync.
+        # dir in the link's place fails the sync. The token-redact extension's vitest suite runs here too, and its pytest holds the three shape lists in step.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_token_store_scan.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
