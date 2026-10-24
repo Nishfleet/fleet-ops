@@ -217,6 +217,8 @@ groups:
       - alert: RouterSeniorFailing
         expr: |
           sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
+          and sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
+            == sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
           and sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
           and on() (up{job="litellm"} == 1)
         for: 5m

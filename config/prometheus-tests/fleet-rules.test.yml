@@ -389,7 +389,6 @@ tests:
               description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
 
   # RouterSeniorFailing (fleet-ops#9054): the senior tier is one row with no fallback and
-  # RouterSeniorFailing (fleet-ops#9054): the senior tier is one row with no fallback and
   # sparse traffic (about one call an hour), so unlike the strong group's 15-minute / 5%
   # gate it fires when every call in 6 hours went unanswered and at least 2 failed.
   # The series run on 1m steps because the offline lookback window is 5 minutes.
@@ -424,6 +423,21 @@ tests:
         values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
       - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
         values: '0x14'
+      - series: 'up{job="litellm"}'
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts: []
+
+  # RouterSeniorFailing: a mixed window (one call answered between the failures) is not
+  # a dead row, so failed < total over the window and it stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 0 1 2 2 2 3 3 3 3 3 3 3 3'
       - series: 'up{job="litellm"}'
         values: '1x14'
     alert_rule_test:
