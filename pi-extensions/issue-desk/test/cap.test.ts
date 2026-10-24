@@ -100,7 +100,6 @@ describe("withStateLock", () => {
     await unlink(lock);
   }, 30_000);
 
-
   it("recovers a stale lock left by a dead holder", async () => {
     const dir = await mkdtemp(`${tmpdir()}/issue-desk-stale-`);
     const lock = await plantStale(dir);

@@ -84,7 +84,10 @@ const readOwnerToken = async (path: string): Promise<string | null> => {
 const inspectLock = async (
   dir: string,
 ): Promise<{ token: string | null; stale: boolean } | null> => {
-  const handle = await open(lockFile(dir), "r").catch(() => null);
+  const handle = await open(lockFile(dir), "r").catch((error: NodeJS.ErrnoException) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
   if (handle === null) return null;
   try {
     const info = await handle.stat();
@@ -113,7 +116,15 @@ export const reclaimStale = async (
     await unlink(displaced).catch(() => undefined);
     return true;
   }
-  await link(displaced, lock).catch(() => undefined);
+  try {
+    await link(displaced, lock);
+  } catch (error) {
+    await unlink(displaced).catch(() => undefined);
+    throw new Error(
+      `the issue-desk state lock in ${dir} was taken by another filing while a stale lock was being put back, so nothing was filed and two filings may be running. Try the request again in a minute.`,
+      { cause: error },
+    );
+  }
   await unlink(displaced).catch(() => undefined);
   return false;
 };

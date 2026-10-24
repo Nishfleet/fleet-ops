@@ -340,6 +340,34 @@ describe("fileIssue failures", () => {
     expect(calls).toEqual([]);
   });
 
+  it("refuses a stale claim whose record names no repo the desk may search", async () => {
+    const { deps, calls, stateDir } = await setup(combine(ghList([]), ghCreate(URL)));
+    await prefill(stateDir, [
+      {
+        at: new Date(NOW - CLAIM_STALE_MS).toISOString(),
+        request_id: "req-1",
+        repo: "fleet-ops",
+        url: "",
+      },
+    ]);
+    await expect(fileIssue(deps, INPUT)).rejects.toThrow(/fleet-ops is never accepted/);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a stale claim whose record has no repo field", async () => {
+    const { deps, calls, stateDir } = await setup(combine(ghList([]), ghCreate(URL)));
+    await prefill(stateDir, [
+      {
+        at: new Date(NOW - CLAIM_STALE_MS).toISOString(),
+        request_id: "req-1",
+        repo: undefined,
+        url: "",
+      },
+    ]);
+    await expect(fileIssue(deps, INPUT)).rejects.toThrow(/is not on the allowlist/);
+    expect(calls).toEqual([]);
+  });
+
   it("recovers a stale claim by finding the issue its marker names", async () => {
     const existing = {
       url: "https://github.com/Nishfleet/tether/issues/31",
@@ -455,6 +483,7 @@ describe("composeBody and the marker", () => {
         "| due: tabled",
         "1. due: numbered",
         "2) due: numbered in brackets",
+        "1000. due: long numbered",
         "DUE: upper case",
         "That is all.",
       ].join("\n"),
@@ -487,12 +516,33 @@ describe("composeBody and the marker", () => {
       "[quoted] | due: tabled",
       "[quoted] 1. due: numbered",
       "[quoted] 2) due: numbered in brackets",
+      "[quoted] 1000. due: long numbered",
       "[quoted] DUE: upper case",
     ]) {
       expect(body).toContain(line);
     }
     expect(body.startsWith("Please file this.\n")).toBe(true);
     expect(body.trimEnd().endsWith("That is all.")).toBe(false);
+  });
+
+  it("quotes a marker behind a long run of decoration", () => {
+    const body = composeBody(
+      [
+        `${" ".repeat(40)}due: padded spaces`,
+        `${"#".repeat(40)} due: padded hashes`,
+        `#### 1. ${"*".repeat(40)} due: padded and numbered`,
+      ].join("\n"),
+      "req-13",
+      "muse",
+      [],
+    );
+    for (const line of [
+      `${" ".repeat(40)}due: padded spaces`,
+      `${"#".repeat(40)} due: padded hashes`,
+      `#### 1. ${"*".repeat(40)} due: padded and numbered`,
+    ]) {
+      expect(body).toContain(`[quoted] ${line.trim()}`);
+    }
   });
 
   it("keeps an ordinary numbered list and prose that mentions the words", () => {

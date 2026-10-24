@@ -218,7 +218,8 @@ export const fileIssue = async (
           `an earlier attempt to file request ${input.requestId} in Nishfleet/${known.repo} did not finish, so it is unknown whether the issue exists. Do not file it again; tell the sender a person must check Nishfleet/${known.repo} first.`,
         );
       }
-      search = known.repo;
+      search = typeof known.repo === "string" ? known.repo : "";
+      await assertAllowedRepo(deps.repoRoot, search);
     }
 
     const found = await existing(deps, search, input.requestId);

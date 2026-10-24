@@ -23,13 +23,13 @@ export const plain = (value: string): string =>
 // and stay out of the model-written text too.
 const DECORATION = "[>#*_\\-`+|\\s]";
 
-const NUMBERED = "\\d{1,3}[.)]";
+const NUMBERED = "\\d+[.)]";
 
 const COMMAND =
   "due|blocked-on|decision-resolved|park|opus-vet|attempt-cap reset|agent run started|agent run infra-failed|agent run failed|stuck-pr|red-main|red-main-run|tincan-request|requested-by|relayed-by|chain";
 
 export const AUTHORITY_LINE = new RegExp(
-  `^${DECORATION}{0,32}(?:${NUMBERED}${DECORATION}{0,32})?(?:${COMMAND})\\s*:`,
+  `^${DECORATION}*(?:${NUMBERED}${DECORATION}*)?(?:${COMMAND})\\s*:`,
   "i",
 );
 

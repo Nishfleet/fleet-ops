@@ -8,6 +8,10 @@ const [dir, token, observed] = process.argv.slice(2);
 await mkdir(dir, { recursive: true });
 const reclaimed = await reclaimStale(dir, token, observed);
 if (reclaimed) {
-  await writeFile(join(dir, LOCK_FILE), `${JSON.stringify({ token, pid: process.pid })}\n`, "utf8");
+  await writeFile(
+    join(dir, LOCK_FILE),
+    `${JSON.stringify({ token, pid: process.pid })}\n`,
+    { encoding: "utf8", flag: "wx" },
+  );
 }
 process.stdout.write(`${JSON.stringify({ tag: token, reclaimed })}\n`);
