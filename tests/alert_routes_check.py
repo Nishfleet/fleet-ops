@@ -37,6 +37,11 @@ URGENT = {
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
         "Nishfleet/mailbox", "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
+    # outage: the agent queue cannot take work, so the repo falls behind
+    **{f"Agent dispatch down for 2h {r}": "outage: the agent queue cannot run for that repo" for r in (
+        "Nishfleet/0509", "Nishfleet/TinyStudio.io-public", "Nishfleet/aiconverter-app",
+        "Nishfleet/drive", "Nishfleet/fleet-ops", "Nishfleet/rera-report-card",
+        "Nishfleet/siterep-public")},
 }
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
@@ -48,6 +53,12 @@ GENERIC_SINK = "fleet-alert-dispatch"
 # #9857, #9876 and #9897 are one Pareto credit wall across four issues. Paging is
 # unchanged, a critical plan alert still reaches hermes-urgent at 1h.
 PLAN_REPEAT = 604800
+# The host-unit and queue-down rules are the failures a worker fixes, and the
+# issue is the work item: one issue per firing alert, refiled only after a week,
+# so a failure left unfixed does not start a second worker on the same failure
+# every day (fleet-ops#10204). Paging is unchanged.
+ONE_ISSUE_REPEAT = 604800
+ONE_ISSUE_SIGNALS = ("host-unit", "queue-down", "queue-down-2h")
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -154,11 +165,15 @@ def main(root):
         if severity == "critical" and (not pages or any(rep is None or rep > CRITICAL_REPEAT for rep in pages)):
             bad.append(f"{title}: critical alert must page {PAGE} with repeat_interval <= {CRITICAL_REPEAT}s, got {pages}")
         sinks = {rc.removesuffix("#muted"): rep for rc, rep in route(policy, {**labels, "alertname": title})}
-        want = PLAN_REPEAT if "plan" in labels else DEFAULT_REPEAT
+        if "plan" in labels:
+            want, why = PLAN_REPEAT, "a paid plan"
+        elif labels.get("signal") in ONE_ISSUE_SIGNALS:
+            want, why = ONE_ISSUE_REPEAT, "a failure a worker fixes"
+        else:
+            want, why = DEFAULT_REPEAT, "any other rule"
         got = sinks.get(GENERIC_SINK)
         if got is not None and got != want:
-            bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
-                       f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+            bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s ({why}), got {got}")
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):

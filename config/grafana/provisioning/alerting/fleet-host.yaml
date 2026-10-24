@@ -1,0 +1,61 @@
+# Host systemd-unit failures that must file fleet-ops issues.
+#
+# Why: SystemUnitFailed lived in rootfs/etc/prometheus/fleet_rules.yml with
+# severity warning, which Alertmanager routes to no receiver, so a failed unit
+# (live case: the restic backup units, fleet-ops#10204) stayed failed with no
+# signal anywhere. The rule moved here so a firing alert files an agent-ready
+# issue through the same Grafana policy tree as every other fleet alert, with
+# one copy of the rule. Prometheus keeps only the rules that must page or stay
+# silent (Watchdog dead-man and severity=nish); see that file's header.
+#
+# One failure files one issue: the policy route for signal=host-unit refiles it
+# only after a week, so a unit left broken does not start a second worker on the
+# same failure every day (fleet-ops#10204). To switch this rule off: set
+# isPaused: true here, or silence it in the Grafana UI for a short pause (the
+# file is mounted read-only, so the UI cannot save that edit).
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: fleet-host
+    folder: fleet
+    interval: 1m
+    rules:
+      - uid: host-systemd-unit-failed
+        title: SystemUnitFailed
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: 'Systemd unit {{ $labels.name }} is failed on the fleet host.'
+          description: '{{ $labels.name }} has been in the failed state for 5 minutes. Run systemctl status {{ $labels.name }} on the host to see why, restart or fix the unit, then close this issue. A failed unit here broke the nightly off-site backup silently before this alert filed issues (fleet-ops#10204).'
+        labels: {severity: warning, signal: host-unit}
+        isPaused: false
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: node_systemd_unit_state{state="failed"} == 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold

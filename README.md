@@ -64,7 +64,15 @@ script, or prompt lands unseen.
   files go under `provisioning/` (Grafana loads every file there and stops on
   a bad one); promtool fixtures live in `config/grafana/tests/`.
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
-  the UI cannot save edits.
+  the UI cannot save edits. Off switch for one alert rule: `isPaused: true` on
+  that rule in a PR (the file is mounted read-only, so the UI cannot save it),
+  and a pause of an hour or a day without a merge is a silence in the Grafana
+  UI (Alerting, Silences). The rules that file queue work each carry that line
+  in their header: `fleet-host.yaml` (a failed systemd unit,
+  `signal=host-unit`) and `queue-down.yaml` (agent-dispatch down for a repo,
+  `signal=queue-down`, and its 2 hour page). A rule there files one
+  `agent-ready` fleet-ops issue per firing alert and refiles after a week, so a
+  failure left unfixed does not start a second worker on it (fleet-ops#10204).
 - `config/claude-agents/` — the `helper` and `scout` subagent files
   `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
   the Max config dir").
@@ -253,8 +261,8 @@ script, or prompt lands unseen.
   the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the pages. Prometheus loads eleven rules:
-  `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody),
+  — the dead-man and the pages. Prometheus loads ten rules:
+  `Watchdog` (always firing),
   `NodeExporterDown` (the `node` target down for 5 minutes, severity nish),
   `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
   minutes while the `node` target is up), `PrometheusConfigReloadFailed`
@@ -264,7 +272,7 @@ script, or prompt lands unseen.
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
   `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
   `AISpendMetricMissing` (that spend metric absent for a day). Every one but
-  the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  the first pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
@@ -273,6 +281,11 @@ script, or prompt lands unseen.
   box's `telegram_chat_id`, or from the old `/etc/prometheus/alertmanager.yml`
   if a box still has that copy (the play refuses to retire it while it is the
   only source).
+  `SystemUnitFailed` (a systemd unit in the failed state for 5 minutes) moved
+  out of this file to `config/grafana/provisioning/alerting/fleet-host.yaml`,
+  because a warning can only route to no receiver here, so its failed units
+  fired silently; as a Grafana rule it files an `agent-ready` issue instead
+  (fleet-ops#10204).
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
   config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl

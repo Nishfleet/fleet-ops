@@ -102,13 +102,16 @@ jobs:
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
-      # The dead-man Watchdog, SystemUnitFailed and HermesGatewayDown rules and
-      # the Alertmanager routing the host installs from rootfs/etc/prometheus.
-      # check config also loads the rule file named by rule_files. Neither check
-      # opens url_file or bot_token_file (verified with both paths missing), so
-      # a runner without the box's credential files passes. The routes tests
-      # prove the matchers: Watchdog reaches the dead-man, severity=nish reaches
-      # Telegram, a plain warning reaches neither.
+      # The dead-man Watchdog and HermesGatewayDown rules and the Alertmanager
+      # routing the host installs from rootfs/etc/prometheus. SystemUnitFailed
+      # is not among them: a warning can only route to no receiver here, so it
+      # moved to config/grafana/provisioning/alerting/fleet-host.yaml, where it
+      # files issues (fleet-ops#10204). check config also loads the rule file
+      # named by rule_files. Neither check opens url_file or bot_token_file
+      # (verified with both paths missing), so a runner without the box's
+      # credential files passes. The routes tests prove the matchers: Watchdog
+      # reaches the dead-man, severity=nish reaches Telegram, a plain warning
+      # reaches neither.
       - name: promtool and alertmanager config checks, promtool test rules (rootfs/etc/prometheus)
         if: always()
         run: |
@@ -118,7 +121,7 @@ jobs:
           cfg=rootfs/etc/alertmanager/alertmanager.yml
           amtool config routes test --config.file=$cfg --verify.receivers=deadman alertname=Watchdog severity=none
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
-          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
+          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=AnyWarning severity=warning
           promtool test rules config/prometheus-tests/*.test.yml
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
@@ -1615,7 +1618,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|tests/test_queue_down_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
             run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -1841,7 +1844,7 @@ jobs:
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py tests/test_queue_down_rule.py tests/test_queue_down_engine.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
