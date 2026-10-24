@@ -1234,7 +1234,14 @@ router_settings:
   # failing) that raised MidStreamFallbackError and found "No fallback model group". v1.98.0 never cools an
   # APIConnectionError (cooldown_handlers._is_cooldown_required ignores that string) and only runs a
   # mid-stream fallback before any content was generated, so this switch never splices two models into one
-  # answer. A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
+  # answer. Closed (fleet-ops#9290): the injection was the cloaked stealth/space-bunny-alpha preview as resold by
+  # OpenRouter, Cline and CommandCode - 2,021 of 2,127 spend-log rows 09-24..10-05 (OpenRouter 1,006, Cline 923,
+  # CommandCode 105), so the failures were spread across all three resellers, not one of them; Zen's space-bunny
+  # row served ~34k calls and xKiro's alpha row ~70 with no injection row, so the malformed SSE tracked the
+  # reseller, not the model. The upstream ended the preview (402/403 from 10-06) and #9400, #9402, #9677 and
+  # #9710 took every space-bunny row out by 10-13; zero injection rows since 2026-10-05 11:59 UTC (checked
+  # 10-24). A future stealth-preview row from any reseller walks back into the failure mode described above.
+  # A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
   # strike adds strong-only). senior has one row (GLM-5.3-Flash on Synthetic, fleet-ops#10040) and no fallback of its own, so a judge call that
   # falls to senior ends there and cannot cycle.
   # W10c: worker-capable never falls to worker-cheap. Before the dead Ollama rows left (fleet-ops#10033), about 26% of worker-capable
