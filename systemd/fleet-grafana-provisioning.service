@@ -1,6 +1,14 @@
 [Unit]
 Description=Reload Grafana alerting and datasource provisioning (fleet-ops#9449 follow-up)
 Documentation=https://grafana.com/docs/grafana/latest/developers/http_api/admin/#reload-provisioning-configurations
+# A Grafana restart leaves a window where the container is active and its HTTP
+# port still refuses calls (2026-10-23 18:01:57 IST, fleet-ops#10171: this unit
+# and fleet-grafana-github-token.service both ended failed). Restart=on-failure
+# below re-runs the reload every 10 s; the start limit (6 starts in 5 min) stops
+# a real outage from looping, and the unit then fails and alerts as before.
+# OnFailure= fires only after the last try.
+StartLimitIntervalSec=300
+StartLimitBurst=6
 OnFailure=fleet-unit-failed@%N.service
 
 [Service]
@@ -19,3 +27,5 @@ ExecStartPre=/bin/sleep 5
 # the password file is missing or empty, or either call answers non-2xx.
 ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
 TimeoutStartSec=120
+Restart=on-failure
+RestartSec=10s

@@ -1044,3 +1044,18 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
+
+
+def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
+    """fleet-ops#10171: a reload during a Grafana restart must retry, not leave the unit failed."""
+    unit = ROOT / "systemd/fleet-grafana-provisioning.service"
+    keys: dict[str, str] = {}
+    for line in unit.read_text().splitlines():
+        if "=" in line and not line.startswith(("#", "[")):
+            key, value = line.split("=", 1)
+            keys.setdefault(key, value)
+    assert keys["Restart"] == "on-failure"
+    assert keys["RestartSec"] == "10s"
+    # The retries must outlast a Grafana start (about 1 min) and still stop on a real outage.
+    assert int(keys["StartLimitBurst"]) >= 3
+    assert int(keys["StartLimitIntervalSec"]) >= int(keys["StartLimitBurst"]) * 10
