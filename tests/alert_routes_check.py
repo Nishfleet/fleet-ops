@@ -41,7 +41,7 @@ URGENT = {
     **{f"Agent dispatch down for 2h {r}": "outage: the agent queue cannot run for that repo" for r in (
         "Nishfleet/0509", "Nishfleet/TinyStudio.io-public", "Nishfleet/aiconverter-app",
         "Nishfleet/drive", "Nishfleet/fleet-ops", "Nishfleet/rera-report-card",
-        "Nishfleet/siterep-public")},
+        "Nishfleet/siterep-public", "Nishfleet/tether")},
 }
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")

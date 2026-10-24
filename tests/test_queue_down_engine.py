@@ -24,7 +24,6 @@ QUADLET = ROOT / "containers/quadlet/fleet-grafana.container"
 DOCKER = shutil.which("docker") or shutil.which("podman")
 YQ = shutil.which("yq")
 
-# minutes ago, conclusion — oldest first. Expected: (queue_down, queue_down_for_2h).
 SCENARIOS = {
     "healthy": ([("success", 65), ("success", 5)], 0, 0),
     "startup-failure-newest": ([("success", 65), ("startup_failure", 5)], 1, 1),
@@ -35,6 +34,8 @@ SCENARIOS = {
     "cancel-superseded": ([("success", 65), ("cancelled", 30), ("success", 5)], 0, 0),
     "cancel-newest": ([("success", 65), ("cancelled", 45)], 1, 0),
     "undated-failure": ([("success", 65), ("failure", None)], "error", "error"),
+    "backlog-queued-and-in-progress": ([("queued", 30), ("in_progress", 5)], 0, 0),
+    "skipped-only": ([("skipped", 30)], 0, 0),
     "no-runs": ([], "nodata", "nodata"),
 }
 SEEN = []
@@ -42,8 +43,9 @@ SEEN = []
 
 def _run(number, conclusion, minutes):
     created = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ") if minutes is not None else None
-    return {"id": 1000 + number, "name": "agent-dispatch", "head_branch": "main", "status": "completed",
-            "conclusion": conclusion, "created_at": created, "run_number": number + 1}
+    unfinished = conclusion in ("queued", "in_progress")
+    return {"id": 1000 + number, "name": "agent-dispatch", "head_branch": "main", "status": conclusion if unfinished else "completed",
+            "conclusion": None if unfinished else conclusion, "created_at": created, "run_number": number + 1}
 
 
 class _GitHub(http.server.BaseHTTPRequestHandler):
@@ -210,7 +212,7 @@ def test_grafana_stores_every_rules_annotations_labels_and_title_as_the_file_wri
     base, auth, _ = grafana
     stored = {r["uid"]: r for r in json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/provisioning/alert-rules", headers=auth), timeout=10))}
     file = json.loads(subprocess.run([YQ, "-o=json", "[.groups[].rules[]]", str(RULES)], capture_output=True, text=True, check=True).stdout)
-    assert len(file) == 14
+    assert len(file) == 16
     for rule in file:
         assert "{{ if $values }}" in rule["annotations"]["summary"]
         got = stored[rule["uid"]]

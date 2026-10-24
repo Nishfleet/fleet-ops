@@ -1618,7 +1618,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|tests/test_queue_down_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|tests/test_queue_down_(rule|engine)\.py$|tests/test_fleet_host_rule\.py$|\.github/workflows/ci\.yml$)'; then
             run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -1844,7 +1844,7 @@ jobs:
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py tests/test_queue_down_rule.py tests/test_queue_down_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py tests/test_queue_down_rule.py tests/test_queue_down_engine.py tests/test_fleet_host_rule.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
