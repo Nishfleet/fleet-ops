@@ -150,6 +150,19 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     beacon-hermes-poll.service was never linked (fleet-ops#9967).
 ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2j. The six Tincan wake services and the Cua desk daemon (fleet-ops#10133,
+#     #10140) were hand-placed regular files under ~/.config/systemd/user with no
+#     repo copy, so a git pull carried no edit to them and the unit-key test could
+#     not read them. Each is linked here the way 2h links its pair: a regular
+#     file, or a link to anywhere else, blocks `link`, so it is removed first. The
+#     default.target.wants links already point at these paths, so no `enable` runs
+#     here and a hand `systemctl --user disable --now` stays off. Off switch:
+#     delete this step, then `systemctl --user disable --now` each unit and
+#     `systemctl --user unlink` it by hand. A unit edit applies at that unit's next
+#     restart, so no restart line runs here: these listeners are woken by work and
+#     a restart drops whatever wake is in flight.
+ExecStart=/bin/sh -c 'for f in tincan-listen-command-code.service tincan-listen-cursor-vps.service tincan-listen-devin-vps.service tincan-listen-fleet-worker.service tincan-listen-opencode.service tincan-listen-pi.service cua-desk-daemon.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-command-code.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-cursor-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-devin-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-opencode.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/cua-desk-daemon.service
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
