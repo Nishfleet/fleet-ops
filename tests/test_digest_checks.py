@@ -10,6 +10,11 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- the stored-item command creates the notepad key only when the notepad answers
+  the read with its own missing-key message, reads the empty object back before
+  it trusts it, and writes nothing when the read fails for any other reason, so
+  a missing key is populated instead of repeating every item for ever and no
+  failed read can empty the store (fleet-ops#9555),
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
@@ -103,10 +108,32 @@ else:
 FAKE_HERMES = """#!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]
+if os.environ.get("FAKE_NOTEPAD_DOWN"):
+    sys.stdout.write("notepad unavailable")
+    sys.exit(1)
 if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
-    sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
+    if os.environ.get("FAKE_TRANSIENT_READ_FAIL"):
+        seen = os.environ["FAKE_STORE"] + ".seen"
+        if not os.path.exists(seen):
+            open(seen, "w").write("x")
+            sys.stderr.write("hermes: the notepad did not answer")
+            sys.exit(1)
+    if os.environ.get("FAKE_READBACK_FAIL") and os.path.exists(os.environ["FAKE_STORE"] + ".noread"):
+        sys.stderr.write("hermes: the notepad did not answer")
+        sys.exit(1)
+    if os.environ.get("FAKE_NOTEPAD_READ_FAIL"):
+        sys.stderr.write("hermes: the notepad did not answer")
+        sys.exit(1)
+    p = os.environ["FAKE_STORE"]
+    if not os.path.exists(p):
+        sys.stdout.write(os.environ.get("FAKE_MISSING_MESSAGE", "No notepad key sent"))
+        sys.exit(1)
+    sys.stdout.write(open(p).read())
 elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
+    open(os.environ["FAKE_STORE"], "w").write(a[5])
     open(os.environ["FAKE_SAVED"], "w").write(a[5])
+    if os.environ.get("FAKE_READBACK_FAIL"):
+        open(os.environ["FAKE_STORE"] + ".noread", "w").write("x")
 else:
     sys.exit(2)
 """
@@ -116,16 +143,17 @@ def _command(prompt, start):
     return next(x for x in prompt.read_text().splitlines() if x.startswith(start))
 
 
-def _fake_box(tmp_path, gh, store):
+def _fake_box(tmp_path, gh, store, missing_key=False, notepad_down=False, read_fail=False):
     if shutil.which("jq") is None:
         pytest.skip("jq is not installed")
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(exist_ok=True)
     for name, body in (("gh", FAKE_GH), ("hermes", FAKE_HERMES)):
         (bindir / name).write_text(body)
         (bindir / name).chmod(0o755)
     (tmp_path / "gh.json").write_text(json.dumps(gh))
-    (tmp_path / "store.json").write_text(store)
+    if not missing_key:
+        (tmp_path / "store.json").write_text(store)
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
@@ -133,14 +161,35 @@ def _fake_box(tmp_path, gh, store):
         "FAKE_STORE": str(tmp_path / "store.json"),
         "FAKE_SAVED": str(tmp_path / "saved.json"),
     }
+    if notepad_down:
+        env["FAKE_NOTEPAD_DOWN"] = "1"
+    if read_fail:
+        env["FAKE_NOTEPAD_READ_FAIL"] = "1"
     return env
 
 
-def _run_2a(prompt, tmp_path, gh, store):
-    env = _fake_box(tmp_path, gh, store)
-    r = subprocess.run(["bash", "-c", _command(prompt, "R=$(hermes cron notepad")], env=env, capture_output=True, text=True, timeout=60)
+def _run_command(cmd, env):
+    saved = pathlib.Path(env["FAKE_SAVED"])
+    if saved.exists():
+        saved.unlink()
+    return subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=60)
+
+
+def _run_2a_in(prompt, env):
+    r = _run_command(_command(prompt, "R=$(hermes cron notepad"), env)
     saved = pathlib.Path(env["FAKE_SAVED"])
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
+
+
+def _run_2a(prompt, tmp_path, gh, store, missing_key=False, notepad_down=False, read_fail=False):
+    env = _fake_box(tmp_path, gh, store, missing_key=missing_key, notepad_down=notepad_down, read_fail=read_fail)
+    return _run_2a_in(prompt, env)
+
+
+def _add_command(prompt):
+    text = prompt.read_text()
+    start = text.index("s=$(gh issue view <n> --repo Nishfleet/<repo>")
+    return text[start:text.index("\n", start)].replace("<repo>", "alpha").replace("<n>", "9")
 
 
 def _issue(state, *labels):
@@ -308,9 +357,109 @@ def test_broken_item_with_a_run_still_in_progress_is_unchanged(prompt, tmp_path)
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
 def test_stored_item_command_writes_nothing_when_the_store_is_unreadable(prompt, tmp_path):
+    kept = json.dumps({"broken:alpha:Build": "failure"})
+    lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, kept, notepad_down=True)
+    assert "STORED-UNREADABLE" in lines
+    assert saved is None
+    assert (tmp_path / "store.json").read_text() == kept
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_a_failed_notepad_read_never_writes_the_store(prompt, tmp_path):
+    kept = json.dumps({"wait:alpha#9": "open|needs-nish-decision", "broken:alpha:Build": "failure"})
+    env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, kept, read_fail=True)
+    lines, saved = _run_2a_in(prompt, env)
+    assert "STORED-UNREADABLE" in lines
+    assert saved is None
+    assert (tmp_path / "store.json").read_text() == kept
+
+    gh = {"repos": [], "issues": {"Nishfleet/alpha#9": _issue("OPEN", "needs-nish-decision")}, "runs": {}}
+    env = _fake_box(tmp_path, gh, kept, read_fail=True)
+    add = _run_command(_add_command(prompt), env)
+    assert (tmp_path / "store.json").read_text() == kept
+    assert not pathlib.Path(env["FAKE_SAVED"]).exists()
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_a_read_that_fails_once_is_retried_and_used(prompt, tmp_path):
+    kept = json.dumps({"wait:alpha#9": "open|needs-nish-decision"})
+    gh = {"repos": [], "issues": {"Nishfleet/alpha#9": _issue("OPEN", "needs-nish-decision")}, "runs": {}}
+    env = _fake_box(tmp_path, gh, kept)
+    env["FAKE_TRANSIENT_READ_FAIL"] = "1"
+    lines, saved = _run_2a_in(prompt, env)
+    assert "STORED-UNREADABLE" not in lines
+    assert "ROW wait:alpha#9 UNCHANGED" in lines
+    assert saved == json.loads(kept)
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_a_create_whose_read_back_fails_saves_no_items(prompt, tmp_path):
+    gh = {"repos": ["alpha"], "issues": {}, "runs": {"Nishfleet/alpha": [_run_row("failure", "Build", 1)]}}
+    env = _fake_box(tmp_path, gh, "{}", missing_key=True)
+    env["FAKE_READBACK_FAIL"] = "1"
+    lines, saved = _run_2a_in(prompt, env)
+    assert "STORED-UNREADABLE" in lines
+    assert saved == {}
+    assert (tmp_path / "store.json").read_text() == "{}"
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_a_corrupt_store_is_reported_unreadable_and_left_alone(prompt, tmp_path):
     lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, "not json")
     assert "STORED-UNREADABLE" in lines
     assert saved is None
+    assert (tmp_path / "store.json").read_text() == "not json"
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_only_the_missing_key_answer_creates_the_key(prompt, tmp_path):
+    gh = {"repos": ["alpha"], "issues": {}, "runs": {"Nishfleet/alpha": [_run_row("failure", "Build", 1)]}}
+    env = _fake_box(tmp_path, gh, "{}", missing_key=True)
+    env["FAKE_MISSING_MESSAGE"] = "hermes: the notepad did not answer"
+    lines, saved = _run_2a_in(prompt, env)
+    assert "STORED-UNREADABLE" in lines
+    assert saved is None
+    assert not (tmp_path / "store.json").exists()
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_a_missing_notepad_key_is_created_and_populated(prompt, tmp_path):
+    gh = {"repos": ["alpha"], "issues": {}, "runs": {"Nishfleet/alpha": [_run_row("failure", "Build", 1)]}}
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}", missing_key=True)
+    assert "ROW broken:alpha:Build NEW https://example.com/Build/1" in lines
+    assert "STORED-SAVED" in lines
+    assert saved == {"broken:alpha:Build": "failure"}
+    assert json.loads((tmp_path / "store.json").read_text()) == {"broken:alpha:Build": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_an_added_waiting_item_is_unchanged_on_the_next_digest(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {"Nishfleet/alpha#9": _issue("OPEN", "needs-nish-decision")},
+        "runs": {
+            "Nishfleet/alpha": [_run_row("failure", "Build", 1)],
+            "Nishfleet/alpha::Build": [_run_row("failure", "Build", 1)],
+        },
+    }
+    env = _fake_box(tmp_path, gh, "{}", missing_key=True)
+    lines, saved = _run_2a_in(prompt, env)
+    assert "ROW broken:alpha:Build NEW https://example.com/Build/1" in lines
+    assert saved == {"broken:alpha:Build": "failure"}
+
+    added = _run_command(_add_command(prompt), env)
+    assert added.returncode == 0, added.stderr
+    assert json.loads((tmp_path / "store.json").read_text()) == {
+        "broken:alpha:Build": "failure",
+        "wait:alpha#9": "open|needs-nish-decision",
+    }
+
+    lines, saved = _run_2a_in(prompt, env)
+    assert "ROW wait:alpha#9 UNCHANGED" in lines
+    assert "ROW broken:alpha:Build UNCHANGED" in lines
+    assert not any("NEW " in l or "CHANGED " in l for l in lines)
+    assert "UNCHANGED_TOTAL 2" in lines
+    assert saved == {"broken:alpha:Build": "failure", "wait:alpha#9": "open|needs-nish-decision"}
 
 
 def test_shipped_count_command_prints_a_total_or_fails_loudly(tmp_path):
@@ -341,8 +490,8 @@ else:
 _FEED = "<rss><channel><lastBuildDate>Thu, 15 Oct 2026 02:00:00 +0000</lastBuildDate><item><pubDate>Thu, 15 Oct 2026 02:00:00 +0000</pubDate></item></channel></rss>"
 
 
-def _run_2b(tmp_path, store, code, feed):
-    env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
+def _run_2b(tmp_path, store, code, feed, read_fail=False):
+    env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store, read_fail=read_fail)
     (tmp_path / "bin/curl").write_text(FAKE_CURL)
     (tmp_path / "bin/curl").chmod(0o755)
     env = {**env, "FAKE_CODE": code, "FAKE_FEED": feed, "TZ": "UTC"}
@@ -353,7 +502,7 @@ def _run_2b(tmp_path, store, code, feed):
 
 def _site_command():
     text = EVENING.read_text()
-    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); test -z \"$R\" && R='{}'; W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
+    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent)")
     return text[start:text.index("\n", start)]
 
 
@@ -378,3 +527,11 @@ def test_site_check_with_a_failing_page_is_unknown(tmp_path):
     lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
     assert lines == ["ROW site UNKNOWN"]
     assert saved is None
+
+
+def test_site_check_with_an_unreadable_store_prints_store_unreadable_and_saves_nothing(tmp_path):
+    kept = json.dumps({"wait:a#1": "open|x", "site": "200|2026-10-14"})
+    lines, saved = _run_2b(tmp_path, kept, "200", _FEED, read_fail=True)
+    assert lines == ["ROW site STORE-UNREADABLE"]
+    assert saved is None
+    assert (tmp_path / "store.json").read_text() == kept

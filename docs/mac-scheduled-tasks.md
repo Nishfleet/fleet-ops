@@ -114,6 +114,34 @@ previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
 prompts (copy the old `prompt` value back with the same `hermes cron edit`
 command).
 
+### The change-detection state on the notepad (fleet-ops#9555)
+
+Both digests keep their change detection in one notepad key, `sent`, on the job
+`3acce3a945cb`: `hermes cron notepad 3acce3a945cb get sent` prints one JSON
+object whose keys are `wait:<repo>#<n>`, `broken:<repo>:<workflow>` and `site`.
+Step 2a owns that key. It reads it, and when the notepad answers with its
+own missing-key message (`No notepad key sent`) it creates the key with an
+empty object and reads that back before it uses it, so a key that was never
+created is populated on the next run instead of being reported as an unreadable
+store for ever. Any other failed read — the notepad unreachable, a value that is
+not a JSON object — writes nothing at all and prints `STORED-UNREADABLE`, and
+step 4 then adds nothing. That empty-object create is the only write no
+successful read precedes, and it needs the notepad's own missing-key answer, so
+no other failed read can replace a good stored object with an empty one and
+re-report every item as new. A read that fails once is retried, and the retry's
+answer is used when it is a JSON object.
+
+The step-2b site check and the step-4 waiting-item command write the same key.
+Both read it first and save nothing unless that read answered a JSON object, so
+a failed read there cannot drop the `wait:` and `broken:` items either. When
+step 2b read the page but could not read the store, it prints
+`ROW site STORE-UNREADABLE`, which is a different fact from `ROW site UNKNOWN`
+(the page itself could not be read).
+
+To reset the change detection by hand, write an empty object to the key:
+`hermes cron notepad 3acce3a945cb set sent '{}'`. The next digest then reports
+every tracked item once more.
+
 ## Checked, not assumed
 
 Every reason above was checked against live state during the run that added this
