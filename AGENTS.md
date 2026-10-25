@@ -94,9 +94,10 @@ must be performed, not skipped:
    jail masks the user manager (fleet-ops#9983): that error is the jail, not a
    host fault, and the `root:root` mode-000 socket it reports is systemd's
    inaccessible placeholder (`findmnt -T /run/user/1000/bus` names
-   `tmpfs[/systemd/inaccessible/sock]`). Flag the step as not run from inside
-   the jail and read `systemctl --failed` (system scope) instead — it works
-   from any shell and names the failed system units (fleet-ops#10217).
+   `tmpfs[/systemd/inaccessible/sock]`). From inside the jail the step stays
+   not run — say so, the user-scope half needs an unjailed session. A partial
+   fallback does work from any shell: `systemctl --failed` (system scope)
+   names the failed system units only (fleet-ops#10217).
 4. `curl -s 127.0.0.1:4000/health/readiness`, then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one gauge
    per deployment (0 healthy, 1 partial, 2 complete outage).
@@ -314,8 +315,8 @@ a finding):
 - run command: `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`
   — the fleet's timers are the product running; from a jailed shell this ends
   `Failed to connect to bus: Permission denied` (the jail masks the user
-  manager, fleet-ops#9983) — name that and use `systemctl --failed` (system
-  scope) and step 4 instead;
+  manager, fleet-ops#9983) — mark the timer check not run and use step 4 plus
+  the partial fallback `systemctl --failed` (system scope, any shell);
 - health route: `curl -s 127.0.0.1:4000/health/readiness` — expect
   `{"status":"healthy","db":"connected"}`;
 - test login: there is none — the fleet has no end-user login; seat keys under
