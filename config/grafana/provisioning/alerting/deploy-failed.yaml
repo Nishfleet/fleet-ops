@@ -63,7 +63,9 @@
 # (newest 2026-10-24), so it has no red history to page on yet. Adding its 24h
 # rule is a separate decision, because a 24h rule pages Nish.
 #
-# A repo with no production deploy left gets no rule, in either group.
+# A repo with no production deploy left gets no rule, in either group. Nothing in
+# this file or its tests checks that, so this line records the intent and the
+# incident below, not a gate.
 # inish-mail-filter had one from 2026-10-16 to 2026-10-23: its last run of
 # deploy-production.yml on main failed at startup on 2026-10-15, and main then
 # deleted the worker, wrangler.jsonc and that workflow on 2026-10-23 (glue
@@ -73,8 +75,7 @@
 # the rule files a "cannot read GitHub runs" issue for ever. Drop the rule
 # with the deploy path it watches, never pause it: a paused rule still shows in
 # the list and the next reader learns nothing from it. Dropping it means two
-# edits, the rule and its uid in deleteRules below, because file provisioning
-# never deletes a rule that only leaves the file.
+# edits, the rule and its uid in deleteRules below.
 #
 # One rule per repo: the plugin reads its queries one after another, so one
 # rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
