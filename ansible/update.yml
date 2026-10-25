@@ -111,8 +111,6 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
-      - argv: [amp, update]
-        stdin: ""
     cua_cli: /opt/Cua Spaces/resources/native/cua
     cua_release_prefix: cua-spaces-v
     # A Cua Spaces release is taken only once it is this many hours old.
@@ -136,7 +134,7 @@
     # Hermes's own install dir keeps a driver the owner declined; an update or
     # an install must never bring it back.
     hermes_banned_tool_glob: "cua-driver-*"
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, amp, syncthing]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
