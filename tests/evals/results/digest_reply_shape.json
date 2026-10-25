@@ -6,7 +6,7 @@
     "group": "judge",
     "served_model": "model judge (litellm)",
     "calls": 1,
-    "note": "held-out group: the labeller sits on the judge seat, task id orch-fleet-ops-9580-labels, 2026-10-25, one no-tools call wrote and labelled all six held-out samples before the tooling classes were widened; the judge seat is a non-Claude family and the builder graded none and wrote none"
+    "note": "held-out group: the labeller sits on the judge seat, task id orch-fleet-ops-9580-labels, 2026-10-25, one no-tools call wrote and labelled all six held-out samples before the tooling classes were widened; the judge seat is a non-Claude family and the builder graded none and wrote none. The fitted set's own labeller is recorded in the cases file (field labeller, group judge, served model openai/qwen3.8-max, task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST)"
   },
   "scorer": {
     "endpoint": "tests/test_digest_reply_shape.py check_reply_shape",
