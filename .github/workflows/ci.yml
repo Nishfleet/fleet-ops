@@ -180,9 +180,7 @@ jobs:
           cat "$d/log"
           pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_worker_github_token.py
       - name: Grafana token wiring is consistent across unit, quadlet and contact points
-        # The unit's RuntimeDirectory, the quadlet's mount and the $__file{} path
-        # in the contact points must name the same directory, and Grafana must
-        # start after the unit; any one drifting means a 401 at the next alert.
+        # RuntimeDirectory, quadlet mount and $__file{} must name one directory.
         if: always()
         run: |
           set -euo pipefail
@@ -213,10 +211,8 @@ jobs:
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
       - name: The report survives a skipped registration (fleet-ops#9340)
-        # The report task renders every registered var with (var | default({})).results | default([]).
-        # A skipped non-looped registration has no 'results' key, so the old pattern (x | default({'results': []})).results
-        # killed the run at its last task. This play reproduces that registration, renders the report expressions,
-        # and asserts no old pattern is left in ansible/update.yml.
+        # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
+        # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
       - name: Chrome DevTools MCP is pinned once and wired into every agent
@@ -235,13 +231,15 @@ jobs:
         # or a backup.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
-      - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, unknown keys (fleet-ops#9967)
-        # Runs fleet-sync.service's own agent installs, the real
-        # systemd-tmpfiles --user --create and the link check against a temp
-        # home: both lanes read through ~/.claude-max/agents, and a hand-made
-        # dir in the link's place fails the sync.
+      - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_litellm_proxy_stop_not_failure.py
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, unknown keys, issue-desk's no-tools unit (fleet-ops#9967)
+        # Runs fleet-sync.service's own agent installs and its link check against a temp home.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_litellm_proxy_stop_not_failure.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
@@ -665,6 +663,8 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
+      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
         # The headless claude in systemd/tincan-listen-claude-vps.service loads only
         # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
@@ -1196,7 +1196,7 @@ jobs:
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1
           printf '%b\n' "$FIRST"
           MOCK
-          printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
+          printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/pi" "$t/bin/git" "$t/bin/claude"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y

@@ -96,8 +96,12 @@ echo "cursor TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset} CCD=${CLAUDE_CONFIG_DIR-unset}
 # Every other engine is a no-op: PATH is only the fakes plus the system dirs, so a
 # real pi, devin or opencode from the developer's own bin is never started.
 NOOP = """#!/bin/bash
+me=$(basename "$0")
 echo "$0 $*" >> "$STATE/noop.log"
-echo "$(basename "$0") TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset} CCD=${CLAUDE_CONFIG_DIR-unset} OTHER=${OTHER-unset}" >> "$STATE/fallback-env.log"
+echo "$me TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset} CCD=${CLAUDE_CONFIG_DIR-unset} OTHER=${OTHER-unset}" >> "$STATE/fallback-env.log"
+[ "$me" = "${NOOP_FAIL:-}" ] || exit 0
+[ -z "${NOOP_ERR:-}" ] || echo "$NOOP_ERR" >&2
+exit 1
 """
 # Jev stub: JEV_FAIL makes it exit non-zero; otherwise it answers JEV_CHOICE with JEV_P.
 CURL = """#!/bin/bash
@@ -272,7 +276,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0"):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None, noop_fail="", noop_err=""):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -314,6 +318,9 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "CLAUDE_OUT": claude_out,
         "CLAUDE_ERR": claude_err,
         "LIVE_cursor_agent": str(cursor_live),
+        **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()},
+        "NOOP_FAIL": noop_fail,
+        "NOOP_ERR": noop_err,
         "RUNNER_NAME": runner_name,
         "CLAUDE_BAD_TOKENS": bad_tokens,
         "AHEAD": ahead,
@@ -467,6 +474,20 @@ def test_rate_limit_seen_only_on_stderr_still_gets_the_429_line(tmp_path):
     r, _, _, cursor, _, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_err="usage limit reached", cursor_live=1)
     assert r.returncode == 1 and cursor == ""
     assert "claude: 429 rate limit, cursor lane full" in r.stderr
+
+
+def test_a_refused_devin_run_takes_no_opencode_slot_beyond_the_cap(tmp_path):
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "devin", live={"opencode": 2}, noop_fail="devin", noop_err="free model rate limit")
+    assert r.returncode == 0, r.stderr
+    assert ran == ["devin", "pi"]
+    assert "fallthrough: pi" in r.stdout
+
+
+def test_a_refused_devin_run_takes_the_free_opencode_slot(tmp_path):
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "devin", live={"opencode": 1}, noop_fail="devin", noop_err="free model rate limit")
+    assert r.returncode == 0, r.stderr
+    assert ran == ["devin", "opencode"]
+    assert "fallthrough: opencode" in r.stdout
 
 
 @pytest.mark.parametrize("engine", ["cursor", "pi", "opencode", "devin"])
