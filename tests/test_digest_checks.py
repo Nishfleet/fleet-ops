@@ -91,15 +91,23 @@ import json, os, sys
 a = sys.argv[1:]
 d = json.load(open(os.environ["FAKE_GH"]))
 if a[:2] == ["repo", "list"]:
+    if d.get("failrepos"):
+        print("the repositories could not be read", file=sys.stderr)
+        sys.exit(1)
     repos = d["repos"]
-    jq = a[a.index("--jq") + 1] if "--jq" in a else ""
-    if "hasIssuesEnabled" in jq:
-        repos = [r for r in repos if r not in d.get("noissues", [])]
-    print("\\n".join(repos))
+    if "--jq" in a:
+        jq = a[a.index("--jq") + 1]
+        if "hasIssuesEnabled" in jq:
+            repos = [r for r in repos if r not in d.get("noissues", [])]
+        print("\\n".join(repos))
+    else:
+        print(json.dumps([{"name": r, "hasIssuesEnabled": r not in d.get("noissues", [])} for r in repos]))
 elif a[:2] == ["issue", "list"]:
     repo = a[a.index("--repo") + 1]
     if repo.split("/")[-1] in d.get("faillist", []):
         print("the repository could not be read", file=sys.stderr)
+        sys.exit(1)
+    if repo.split("/")[-1] in d.get("silentfail", []):
         sys.exit(1)
     out = []
     for key, obj in d["issues"].items():
@@ -317,10 +325,60 @@ def test_waiting_discovery_skips_a_repository_with_issues_disabled(prompt, tmp_p
     assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
 
 
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_is_loud(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD all" in lines
+    assert not any(l.startswith("ROW wait:") for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "silentfail": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_names_a_stored_issue_once(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = [l for l in lines if l.startswith("ROW wait:alpha#6 ")]
+    assert rows == ["ROW wait:alpha#6 UNCHANGED"]
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision"}
+
+
+def test_both_digests_run_the_same_waiting_discovery():
+    segs = []
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        segs.append(seg[:seg.index("; done)") + len("; done)")])
+    assert segs[0] == segs[1]
+
+
 def test_waiting_discovery_loop_has_no_command_substitution_in_its_body():
     for prompt in (MORNING, EVENING):
-        line = next(x for x in prompt.read_text().splitlines() if "D=$(for r in" in x)
-        seg = line[line.index("D=$(for r in"):]
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
         body = seg[seg.index("do "):seg.index("; done")]
         assert "$(" not in body, prompt.name
 
