@@ -1,5 +1,5 @@
-# The deployed ppi-alibaba and ppi-commandcode A expressions, inlined from
-# paid-plan-idle.yaml, each wrapped in `(...) > 0`.
+# The deployed ppi-alibaba, ppi-commandcode and ppi-minimax A expressions,
+# inlined from paid-plan-idle.yaml, each wrapped in `(...) > 0`.
 #
 # The wrapper reproduces Grafana's C threshold the way
 # prompt-cache-hit.test.rules.yml does: the closing paren sits directly after
@@ -7,10 +7,10 @@
 # unwrapped `A or B > 0` would parse as `A or (B > 0)` and let the idle
 # branch's raw 0 reach the engine.
 #
-# The union joins its two branches with `*`, not `and`: `and` keeps the left
+# The union joins its branches with `*`, not `and`: `and` keeps the left
 # element whenever the right side has a series with matching labels, whatever
-# that series' value, so `(increase == bool 0) and (now == bool offset)` pages
-# on a moved counter. `*` multiplies the two 0/1 conditions instead.
+# that series' value, so `and` pages on a counter a restart moved. `*`
+# multiplies the two 0/1 conditions instead.
 # https://prometheus.io/docs/prometheus/latest/querying/operators/
 #
 # absent_over_time still leads: `or` prefers the left element, so with the idle
@@ -30,4 +30,10 @@ groups:
     labels:
       grafana_folder: fleet
       plan: commandcode
+      severity: critical
+  - alert: MiniMaxIdle
+    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[24h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[24h])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"} offset 24h) or vector(0)))\n))\n> 0"
+    labels:
+      grafana_folder: fleet
+      plan: minimax
       severity: critical

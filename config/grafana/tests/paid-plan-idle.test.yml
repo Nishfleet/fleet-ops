@@ -1,32 +1,16 @@
-# Gate for the ppi-commandcode and ppi-alibaba A expressions (fleet-ops#9880,
-# which supersedes the #9865 gate that covered ppi-alibaba alone).
+# Gate for the ppi-commandcode, ppi-minimax and ppi-alibaba A expressions
+# (fleet-ops#9880, which supersedes the #9865 gate that covered ppi-alibaba
+# alone).
 #
-# The rule family pages a plan that serves zero calls in its idle window. The
-# old idle branch read only `sum(increase(...)) == bool 0`, and a counter
-# satisfies that without being idle in two ways: a counter series starts at its
-# first value, so one success in a day reads as zero, and a proxy restart
-# resets the counter and takes the series away, so a plan that served calls an
-# hour ago also reads as zero. That is the #9879 page: CommandCode's balance
-# was drained, its counter sat flat, and the rule fired 50 seconds after the
-# provider answered a real 200 OK.
+# The old idle branch read only `sum(increase(...)) == bool 0`, and a counter
+# satisfies that while the plan serves: a series is created at its first value,
+# so one success in a day reads as zero, and a proxy restart resets the counter
+# and takes the series away. That is the #9879 page - CommandCode fired 50
+# seconds after the provider answered a real 200 OK.
 #
-# The idle branch now also requires the plan's total to equal its total one
-# idle window back, which only a plan that genuinely did nothing can satisfy.
-# Each side is `or vector(0)` so an absent series compares as 0 rather than
-# dropping the comparison to an empty result. These cases pin the behaviour:
-#
-#  - the #9879 shape stays silent: the counter is flat, the row's series is
-#    gone (the restart), and the total now differs from the total 24h back;
-#  - a row whose counter just started stays silent: one success per caller
-#    lifts the total, and the 24h-back total is 0;
-#  - a genuinely idle row still fires: flat counter, live series, equal totals;
-#  - a row that vanishes from the router still fires after 24h of absence even
-#    when its counter moved within the idle window;
-#  - a row whose last sample is exactly one idle window before the eval stays
-#    silent, because the range window includes that sample;
-#  - the #9865 alibaba cases keep their behaviour: the incident shape (a gap
-#    over 24h and under 7d) stays silent, 7 days of silence fires, and a
-#    vanished row fires.
+# The idle branch now also requires the plan total to equal its total one idle
+# window back. Each side is `or vector(0)`, so an absent series compares as 0
+# rather than dropping the comparison to an empty result.
 #
 # Structure follows prompt-cache-hit.test.yml: alert_rule_test answers "does
 # Grafana's threshold call it Alerting", promql_expr_test pins the values the
@@ -35,8 +19,8 @@ evaluation_interval: 1h
 rule_files:
 - paid-plan-idle.test.rules.yml
 tests:
-# #9879: flat counter, the row's series gone, one success that had not been
-# scraped yet. Old expression: Alerting.
+# #9879: flat counter, the row's series gone, one success not scraped yet.
+# Old expression: Alerting.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
@@ -51,9 +35,8 @@ tests:
     exp_samples:
     - labels: '{}'
       value: 0
-# A counter series is created at its first value, and the series carries
-# per-caller labels (user_agent, client_ip, hashed_api_key), so one call per
-# caller per 24h sums to an increase of 0. Old expression: Alerting.
+# One success per caller, the per-caller labels the issue names
+# (user_agent, client_ip, hashed_api_key). Old expression: Alerting.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1",user_agent="pi/1.4.0"}'
@@ -109,8 +92,8 @@ tests:
     exp_samples:
     - labels: '{}'
       value: 1
-# Last sample exactly 24h before the eval: the range window still holds it,
-# so the absence branch is quiet; and with that one sample alone in the window
+# Last sample exactly 24h before the eval: the range window still holds it, so
+# the absence branch is quiet, and with that one sample alone in the window
 # there is no rate to extrapolate, so the idle branch returns nothing at all.
 - interval: 1h
   input_series:
@@ -124,6 +107,41 @@ tests:
   - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
     eval_time: 44h
     exp_samples: []
+# MiniMax: the same restart shape, on the busiest of the four plans the #9879
+# incident did not name. Old expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '500+0x46'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 47h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 24h) or vector(0)))))'
+    eval_time: 47h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+# MiniMax: genuinely idle, so the row still pages.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '500+0x47'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 47h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: minimax
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 24h) or vector(0)))))'
+    eval_time: 47h
+    exp_samples:
+    - labels: '{}'
+      value: 1
 # The #9865 incident shape: present, last call 91h back, outside the old 24h
 # idle branch and inside the 7d one.
 - interval: 1h

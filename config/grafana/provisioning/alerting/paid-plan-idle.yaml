@@ -9,21 +9,17 @@
 # The idle test in every rule below is two conditions multiplied, not
 # `and`ed, because a success counter that has not increased is not the same
 # thing as a plan that served nothing (fleet-ops#9879: CommandCode paged 50
-# seconds after a real 200 OK, 90 seconds before its first sample after the
-# router restart, with its pre-restart samples flat). `and` keeps the left
-# element whenever the right side has a series with matching labels, whatever
-# that series' value, so `(increase == bool 0) and (now == bool offset)` pages
-# on a moved counter; `*` multiplies the two 0/1 conditions instead
+# seconds after a real 200 OK, with its counter flat and its series gone after
+# a router restart). `and` keeps the left element whenever the right side has a
+# series with matching labels, whatever that series' value, so `and` pages on
+# a moved counter; `*` multiplies the two 0/1 conditions instead
 # (https://prometheus.io/docs/prometheus/latest/querying/operators/).
 #
-#  - increase() misses a caller's first call after a restart. LiteLLM labels a
-#    deployment's series only once it has reported, so that first success
-#    creates the series at 1 and the counter never shows the 0 -> 1 step
-#    increase() counts. A plan called once reads increase == 0 forever.
-#  - the plan total is what moves instead. Comparing the total now against the
-#    same total one idle window back catches both halves: a restart takes every
-#    series away (0 against a non-zero total) and a new caller's series lifts
-#    the total with no increase at all.
+# increase() misses a caller's first call after a restart, because a series is
+# created at its first value, so one success in a day reads as zero. The plan
+# total is what moves instead, so the second condition compares the total now
+# against the same total one idle window back: a restart takes every series
+# away, and a new caller's series lifts the total with no increase at all.
 #
 # Each side of that comparison carries `or vector(0)`, so an absent side reads
 # 0 instead of an empty vector that would make `== bool` return nothing. The
