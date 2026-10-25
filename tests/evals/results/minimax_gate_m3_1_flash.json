@@ -3,7 +3,7 @@
   "cases_file": "tests/evals/cases/needs_judgment.json",
   "source": "tests/evals/cases/needs_judgment.json (unchanged): 60 0509 issues labelled agent-ready, labelled by the judge group (openai/qwen3.8-max, a non-Claude family), split test",
   "split_use": "this decision spends the split: choosing between the two MiniMax variants on these 60 cases means they are no longer a clean held-out set for a later change to either MiniMax row. A later change to those rows needs cases written and labelled after 2026-10-20.",
-  "decision": "no router weight for the added id. The provider list grew one id on 2026-10-20; the probe answered, and on the Gate's own held-out cases it routed 47/60 against 50/60 for the id already in rotation, so it takes no row: it scores below the row it would join (issue #9915's acceptance (c): \"a model that scores lower than the one it replaces gets no extra weight\"), and a row for it would in any case need Nish's yes first, because the approved-models list at the top of config/litellm-proxy.yaml names MiniMax: M3.1-Flash-Preview only (2026-09-28). No row and no setting in config/litellm-proxy.yaml changes: the four MiniMax rows are exactly as they were, and the only change to that file is a comment recording these numbers.",
+  "decision": "no router weight for the added id. The provider list grew one id on 2026-10-20, and a row for it would need Nish's yes first: the approved-models list at the top of config/litellm-proxy.yaml names MiniMax: M3.1-Flash-Preview only (2026-09-28). The eval was run to see whether there was a case for asking, and there is not: on the Gate's own 60 held-out cases, one read per case, the two ids are not measurably different (routing agreement 47/60 against 50/60, choice matching the label 46/60 against 49/60; the 3-case gaps are 9 and 7 discordant pairs, McNemar exact p 0.51 and 0.45, sampling noise at this n), and the added id is ahead on one band only (5 mechanical cases banded to the Claude lane against 6). So no row and no setting in config/litellm-proxy.yaml changes: the four MiniMax rows are exactly as they were, and the only change to that file is a comment pointing here.",
   "case_record": "tests/evals/cases/needs_judgment.json is the case set and is unchanged by this PR. The rows scored here are held once, in this file, so nothing can drift between two copies; a worker that enumerates tests/evals/cases/ finds case sets only.",
   "labeller": {
     "group": "judge",
@@ -20,7 +20,7 @@
     ],
     "calls": "120 scored (60 cases x 2 variants, one read each); the discarded 256-token pass was another 120 on the same flat plan",
     "repeats": 1,
-    "request": "the Gate's own question and choice criteria from agent.yml's judgment_p, verbatim, over title + the first 6000 chars of body",
+    "request": "the /jev typed-choice schema the Gate itself sends cannot cross a provider's anthropic path (that path takes plain messages), so the request was a plain messages call carrying the Gate's own question and choice criteria from agent.yml's judgment_p, verbatim, over title + the first 6000 chars of body, identical for both variants. The head-to-head between the two variants is valid on that shape; the absolute numbers are one harness's shape and are not comparable to the Gate's real Jev routing",
     "reading": "choice and probability parsed from the reply text; a case with no JSON gets no band and is counted as middle (the free lane), the way a Jev error routes"
   },
   "tuning": "none on either side: the question, the criteria and the case labels are the shipped ones, and neither variant's prompt was tuned. max_tokens was raised from 256 to 1024 after a first pass because both variants emit a thinking block first and 256 truncated it before any JSON text arrived; that was a harness artefact on both sides, so both variants were rescored at the same value. The discarded 256-token pass cost another 120 reads on the same flat plan and is disclosed here rather than dropped.",
@@ -84,8 +84,9 @@
       "MiniMax-M3.1-Flash-Preview": 6,
       "MiniMax-M3.1-Flash": 5
     },
-    "read": "the added id is ahead on one band only (5 mechanical cases sent to the Claude lane against 6) and below the served id on the two the score counts (routing agreement 47/60 against 50/60, choice matching the label 46/60 against 49/60), so overall it scores below the model it would sit beside and gets no weight"
+    "read": "the two ids are not measurably different on the Gate's bands at n=60, one read per case: the served id is ahead 50/60 to 47/60 on routing agreement and 49/60 to 46/60 on choice matching the label (9 and 7 discordant pairs, McNemar exact p 0.51 and 0.45 — sampling noise), and the added id is ahead on one band only (5 mechanical cases banded to the Claude lane against 6). The eval gives no case for adding a row; the approved-models list is the binding reason none was added"
   },
+  "legend": "n = the 60 held-out cases; parsed = replies whose choice text arrived (err = the rest, parse_fail true, banded middle); agree = choice matches the label; routing = the lane the band routes to (the claude band, else the free lanes) matches the lane the label implies (judgment, else the free lanes); claude_n / free_n = cases in that band; claude_ok / free_ok = in-band cases whose choice matches the label; sent_to_claude = mechanical-labelled cases banded claude, i.e. the mechanical cases the Claude lane would have taken; middle = middle-band cases; middle_mech = mechanical-labelled cases in the middle band",
   "rows": {
     "MiniMax-M3.1-Flash-Preview": [
       {
@@ -161,7 +162,8 @@
       {
         "id": "0509#2293",
         "label": "judgment",
-        "choice": "parse-fail (banded as middle)",
+        "choice": null,
+        "parse_fail": true,
         "p_judgment": null,
         "band": "middle"
       },
@@ -667,7 +669,8 @@
       {
         "id": "0509#3617",
         "label": "mechanical",
-        "choice": "parse-fail (banded as middle)",
+        "choice": null,
+        "parse_fail": true,
         "p_judgment": null,
         "band": "middle"
       },
@@ -793,7 +796,8 @@
       {
         "id": "0509#4482",
         "label": "mechanical",
-        "choice": "parse-fail (banded as middle)",
+        "choice": null,
+        "parse_fail": true,
         "p_judgment": null,
         "band": "middle"
       },

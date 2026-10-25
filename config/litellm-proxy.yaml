@@ -713,14 +713,11 @@ model_list:
 # per-minute burst does not park it but a quota wall does) and is re-probed. A 402 or other billing error is not
 # retried (router_settings.num_retries: 0). The idle guard is grafana ppi-minimax (paid-plan-idle.yaml): zero calls
 # in 24 h means the plan is going to waste.
-# 2026-10-20: the provider list grew one id (MiniMax-M3.1-Flash) and it takes no row here. A real call on the
-# provider's anthropic path answered HTTP 200 with that id in the reply, and on the Gate's own 60 held-out cases
-# (labels written by the judge group, before this, split test) it routed 47/60 against 50/60 for the id these four
-# rows serve and matched the label 46/60 against 49/60, ahead on one band only (5 mechanical cases sent to the
-# Claude lane against 6), so it scores below the served id and issue #9915's acceptance (c) gives "a model that
-# scores lower than the one it replaces" no extra weight. A row for it would in any case need Nish's yes first:
-# the approved-models list at the top of this file names MiniMax: M3.1-Flash-Preview only (2026-09-28). No row or
-# setting below changed. Numbers and per-case rows: tests/evals/results/minimax_gate_m3_1_flash.json.
+# 2026-10-20: the provider list grew one id (MiniMax-M3.1-Flash) and it takes no row here. A row for it would need
+# Nish's yes first: the approved-models list at the top of this file names MiniMax: M3.1-Flash-Preview only
+# (2026-09-28). The probe + Gate eval gave no case for asking: on the Gate's own 60 held-out cases the two ids are
+# not measurably different, and the added id was ahead on no band that counts. Numbers and per-case rows (the only
+# copy): tests/evals/results/minimax_gate_m3_1_flash.json. No row or setting below changed.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
