@@ -70,7 +70,7 @@ You take over one issue, and you do the work yourself in this session. A spawned
 
 ## Already done
 
-If the acceptance is already met on `origin/main` — a merged delivery PR, or `gh api repos/<owner>/<repo>/compare/main...<sha>` reporting `ahead_by=0` — do not rebuild it. Post the receipt (`orchestrator: already delivered by <PR or sha>`), remove `needs-orchestrator`, remove the issue's other labels, and close the issue — a delivered issue is closed and unlabelled in the same run, never parked (fleet-ops#9268) — then exit 0 with no PR.
+If the acceptance is already met on `origin/main` — a merged delivery PR, or `gh api repos/<owner>/<repo>/compare/main...<sha>` reporting `ahead_by=0` — do not rebuild it. Post the receipt (`orchestrator: already delivered by <PR or sha>`), remove `needs-orchestrator`, remove the issue's other labels, and close the issue — a delivered issue is closed and unlabelled in the same run, never parked (fleet-ops#9268) — then exit 0 with no PR. The receipt cites the default branch's state at close, using the two reads in `prompts/worker.md` step 3a, and a red line does not stop this close: the worker lane refuses one and parks the issue, and this lane closes it with that line in the receipt and the red-main issue that owns it named, because this lane ends with no PR only by handing the issue to a person (fleet-ops#9268, #9316).
 
 ## Needs Nish
 
