@@ -79,12 +79,15 @@ contactPoints:
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
-          maxAlerts: 1
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
-                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+              {{- $$units := "" -}}
+              {{- range $$.Alerts -}}
+              {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance) (.StartsAt.Format "2006-01-02 15:04:05") -}}
+              {{- end -}}
+              {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nGrafana link: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
               {{- end -}}
 
@@ -136,8 +139,8 @@ policies:
         object_matchers:
           - [signal, "=", prometheus]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: ['...']
-        group_wait: 0s
+        group_by: [prom_alertname]
+        group_wait: 30s
         group_interval: 5m
         # 24h, not 168h: a worker that closes the issue without fixing the cause
         # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
