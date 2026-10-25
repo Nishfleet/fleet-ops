@@ -925,6 +925,38 @@ def test_alertmanager_reads_the_repo_installed_config() -> None:
     assert "dest: /etc/default/prometheus-alertmanager" in host
 
 
+def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
+    cfg = (ROOT / "rootfs/etc/alertmanager/alertmanager.yml").read_text()
+    assert "\n  routes:\n" in cfg, "the root route has no child routes"
+    routes = cfg.split("\n  routes:\n", 1)[1].split("\nreceivers:", 1)[0]
+    nish = []
+    for route in re.split(r"(?m)^    - ", routes)[1:]:
+        matchers = re.findall(r"(?m)^        - (\S+)$", route)
+        wait = re.search(r"(?m)^      group_wait: (\S+)$", route)
+        if 'severity="nish"' in matchers:
+            nish.append((matchers, wait.group(1) if wait else None))
+    assert len(nish) == 2, (
+        f"want exactly two severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
+    )
+    fixable = [r for r in nish if 'alertname=~"BackupStale|BackupFailed|SiteDown"' in r[0]]
+    assert len(fixable) == 1, (
+        f"want one severity=nish route for BackupStale, BackupFailed and SiteDown, got {len(fixable)}"
+    )
+    rest = [r for r in nish if r is not fixable[0]]
+    assert nish[0] is fixable[0], (
+        "the worker-fixable route must come before the catch-all: Alertmanager takes the first "
+        "route that matches and stops there, so a catch-all above it pages the three at once"
+    )
+    assert fixable[0][1] == "2h", (
+        f"BackupStale, BackupFailed and SiteDown wait {fixable[0][1]!r} before they text Nish, "
+        "want 2h, because the fleet's own issue needs two hours to land a fix"
+    )
+    assert rest[0][1] == "30s", (
+        f"the other severity=nish alerts wait {rest[0][1]!r} before they page Nish, want 30s, "
+        "because they stop the fleet from fixing anything"
+    )
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
     blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
     by_path = {
