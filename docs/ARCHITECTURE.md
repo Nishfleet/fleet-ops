@@ -48,9 +48,10 @@ glue."_ The rule, held by the `ci` check (`.github/workflows/ci.yml` runs
 sends every script to Nish. It sends him the merge guard, the no-glue rule and
 the scanners with their ignore files, the jail and token tests, the alert and
 admission gates, deny lists, root-run host config, seat keys, credentials and
-CODEOWNERS itself. Other edits to existing `tests/` and script files no longer
-need person review: they merge on the automated review, which is weaker than a
-code-owner review, and guard edits still need both automated reviewers.
+CODEOWNERS itself. Other edits to `tests/` and script files (new files
+included) no longer need person review: they merge on the automated review,
+which is weaker than a code-owner review, and guard edits need the review job
+plus two more reviewers from other model families.
 
 - **No new scripts, helpers, hooks or extensions anywhere** — no added file
   under `bin/`, `lib/`, `libexec/`, `scripts/`, `ops/`, `hooks/`,

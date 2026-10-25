@@ -1,21 +1,24 @@
 # fleet-ops#9605: Nish said yes on 2026-10-12 14:24 UTC (recorded by nish3451
 # in the #9605 thread the same day). Worker code (.py, .sh, bin/, scripts/)
-# merges on the automated review; only the guard paths (.github/,
-# config/risky-paths.json, prompts/risky-review.md, credentials/) need both
-# automated reviews (config/risky-paths.json "guard"). New script files under
+# merges on the automated review; the guard paths (.github/,
+# config/risky-paths.json, prompts/risky-review.md, credentials/) need the
+# review job plus two more reviewers from other model families (three in all,
+# config/risky-paths.json "guard"). New script files under
 # bin/, scripts/ and the other glue dirs are still refused by the `ci` check
 # (.semgrep/no-glue.yml). A new file under tests/ is not refused there (the
 # scanner skips test dirs), so the tests below keep Nish's review. Nish's
 # review stays on the safety rules and their scanners, the tests that prove
 # the agent jail and the alert and admission gates, deny lists, root-run host
 # config, seat keys and credentials. Public repos refuse push rulesets, so
-# this uses CODEOWNERS + require_code_owner_review.
+# this uses CODEOWNERS + require_code_owner_review. The last matching line
+# wins, as in every CODEOWNERS file.
 
 # The merge guard and its review prompt.
 /config/risky-paths.json @nish3451
 /prompts/risky-review.md @nish3451
 # The no-glue rule and the secret and private-detail scanners, with their ignore files.
 /.semgrep/ @nish3451
+# Not in the tree today; this line fires the day a repo-level ignore file is added.
 /.semgrepignore @nish3451
 /.gitleaksignore @nish3451
 /.github/gitleaks-private-detail.toml @nish3451
