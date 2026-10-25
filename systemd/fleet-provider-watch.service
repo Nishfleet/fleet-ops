@@ -88,6 +88,9 @@ EnvironmentFile=-%E/fleet-ops/seats/minimax.env
 EnvironmentFile=-%E/fleet-ops/seats/ollama.env
 EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
 EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
+# Straitly (fleet-ops#9788): its key lives in %h/.config/straitly/straitly.env, not a seat file, and config/provider-watch.json marks it listing none, so the watch skips it before it looks for a key. The line keeps tests/test_provider_watch.py::test_every_router_key_has_an_environment_file_in_the_unit true.
+EnvironmentFile=-%E/fleet-ops/seats/straitly.env
+EnvironmentFile=-%E/fleet-ops/seats/anthropic.env
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; st="$$STATE_DIRECTORY"; snap="$$st/catalog.json"; ign="$$st/ignore.txt"; re="^~?[A-Za-z0-9._:/-]{1,64}$$"; bad=0; ready=0; filed=0; mkdir -p "$$d/gh" "$$st/changes"; \
 test -s "$$WATCH_CONFIG" || { echo "provider-watch: config/provider-watch.json missing"; exit 1; }; \
 test -s "$$snap" || echo "{}" > "$$snap"; \

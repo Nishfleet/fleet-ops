@@ -10,6 +10,13 @@ rail are in `README.md`; design and enforced rules are in
    deliberately down; respect it. Otherwise step 2 is the truth.
 2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
 3. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
+   From a shell inside a worker or runner jail this ends `Failed to connect to
+   bus: Permission denied` because the jail masks the user manager
+   (fleet-ops#9983): the error is the jail, not a host fault, and the
+   `root:root` mode-000 socket it reports is systemd's inaccessible
+   placeholder. From inside the jail the step stays not run and can never be
+   cleared. Partial fallback from any shell: `systemctl --failed` (system
+   scope), failed system units only.
 4. `curl -s 127.0.0.1:4000/health/readiness` (expect
    `{"status":"healthy","db":"connected"}`), then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
@@ -53,6 +60,19 @@ gone (fleet-ops#8238).
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
+
+### Shell startup files
+
+Interactive shells do not read `~/.config/environment.d`. The systemd user
+manager does, for user units, so a value only a unit needs goes there. Do not
+add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
+a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
+not from an interactive shell (README, "systemd by default").
+
+The loader that ran the systemd environment generator in those files from
+2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
+was retired (`fleet-ops#10224`), which left the loader with nothing to carry, so
+it is deleted (`fleet-ops#10143`).
 
 ## Runner guard (fleet-ops#9317)
 
@@ -106,15 +126,19 @@ window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `
 macros, run it, then restore the file; close the test issue at once, the dispatcher claims it.
 
 Who gets paged (fleet-ops#9445). Nish's contract is that only a real outage, a money problem,
-or something only he can act on interrupts him. `hermes-urgent` (Telegram) therefore serves the
-cost alarm, its delivery-failed rule (it counts every failed webhook, fleet issues too), the
-nine paid-plan-idle rules, prompt-cache-hit (a route that stopped caching pays full price) and
-cost rules that cannot evaluate. The policy root is `fleet-alert-dispatch`, a webhook that files a fleet-ops issue
-labelled `agent-ready` (one per alert instance, repeated at most daily); router-dead-row,
-cpu-pressure and any new rule land there. `tests/alert_routes_check.py` (CI)
-fails when a rule outside its urgent list can reach `hermes-urgent`; to make a new rule page,
-add it there with the reason. Switch off the fleet route: point the policy root back at
-`hermes-urgent` in `cloudflare-spend-contact.yaml`.
+or something only he can act on interrupts him. Every alert rule carries a `severity` label and
+the one policy tree in `cloudflare-spend-contact.yaml` routes on it. `critical` is exactly the
+urgent list in `tests/alert_routes_check.py`: the cost alarm, its delivery-failed rule, the nine
+paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They page `hermes-urgent`
+(Telegram) again every hour until they resolve, and cost, plan and cache rules that cannot evaluate
+page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
+rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
+a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
+router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
+new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+without being on the urgent list (or the reverse), or a critical alert would re-send slower than
+hourly. To make a new rule page, add it to the list there with the reason and label it critical.
+Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -156,6 +180,87 @@ of a month if CI should run on Blacksmith. There is no automatic guard: the vend
 alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody does. The retirement
 leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
 that changed nothing running, because nothing read it (fleet-ops#9670).
+
+## Sentry monitors (org 0509-gg)
+
+Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
+Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
+the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+
+Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
+no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
+uptime monitors), read into a curl config fd so it never lands in argv:
+
+    SENTRY_ENV=~/.config/sentry/env
+    AUTH='s|^SENTRY_AUTH_TOKEN=\(.*\)|header = "Authorization: Bearer \1"|p'
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") https://sentry.io/api/0/organizations/0509-gg/uptime/
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") \
+      https://sentry.io/api/0/projects/0509-gg/drive/uptime/10494402/checks/
+
+The checks list lags: the 07:48:47Z check was still missing at 07:55Z and appeared at
+07:56Z, so an empty tail is not a dead monitor.
+
+Verified on 2026-10-24:
+
+| Kind | Name | id | Project | Target | Green means |
+|---|---|---|---|---|---|
+| uptime | Drive access wall (pre-launch, private) | 10494402 | drive | `https://drive-pricing.nishant345.workers.dev/` | Access answered: the last response carries `cf-access-domain` |
+| cron | liveness-ping | `f2dbf08e-6a6d-49d3-b0e2-2b657205d482` | five-to-nine | `*/5 * * * *`, UTC | 0509's check-in arrived. The other nine monitors in that project are disabled |
+
+Nothing in this repo reads a monitor: no unit, no workflow. So a red is read in Sentry, or
+from `/checks/`, and no fleet unit pages on it.
+
+### The checker follows redirects, and asserts on the last response
+
+Measured on 10494402 on 2026-10-24. It records the status of the first response and asserts
+on the last. A check at 07:28:47Z showed `httpStatusCode: 302` and still failed
+`status_code_check` with `equals` and `value` 302, because the checker had followed to the
+Access login page and compared that page's 200. Against the same 302 on the record, `equals`
+200 passed at 07:40:47Z and 07:41:47Z. So an assertion on the drive hostname has to describe
+the login page, never the redirect.
+
+### drive is private until launch, so the monitor watches the wall
+
+fleet-ops#9014 deleted the dead VPS probes; Sentry carries site up/down instead
+(`rootfs/etc/prometheus/prometheus.yml`, the 2026-10-01 block). For drive,
+`cloudflare.config.ts` and `test/access-wall.test.mjs` in Nishfleet/drive keep the hostname
+behind Access until launch. Access answers every path before the Worker runs (`/api/health`
+included, and `/.well-known/cloudflare-access-protected-resource/...` is the one exempt path),
+so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
+was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
+turned into a 302, so its last checks read green on the wall's answer rather than drive's.
+The app-level check it pretended to be is fleet-ops#10226.
+
+10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
+merges into the monitor, so send only the fields you change:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"assertion":{"root":{"op":"header_check",
+      "key_op":{"cmp":"equals"},"key_operand":{"header_op":"literal","value":"cf-access-domain"},
+      "value_op":{"cmp":"always"},"value_operand":{"header_op":"none"}}}}
+
+It reds if the wall is bypassed (drive's own page carries no `cf-access-domain`), if Access
+stops sending that header, or if the hostname stops answering. Proven both ways on
+2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
+with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
+from 07:42:47Z on.
+
+### The assertion shape
+
+`assertion` is not in the API reference, so the API's own deserialization errors are the
+spec. `op` is one of `and` (with `children`), `or`, `not` (with `operand`),
+`status_code_check`, `json_path` and `header_check`. A comparison is `{"cmp": "equals" |
+"not_equal" | "less_than" | "greater_than" | "always" | "never"}`, and `always` on a header
+value means the header exists. `status_code_check` holds `value` and `operator`.
+`header_check` holds `key_op`, `key_operand`, `value_op` and `value_operand`, where an
+operand is `{"header_op": "literal", "value": "<name>"}` or `{"header_op": "none"}`.
+Sending `cmp` where `value_op` belongs is a 400 and changes nothing.
+
+An assertion change takes effect on the first check that starts after the PUT, not in the
+history already written. Read `uptimeStatus` with care: it flips only after
+`downtimeThreshold` failures in a row, so one failed check leaves it at 1. The live values are
+`intervalSeconds` 300 and `downtimeThreshold` 3; while experimenting, drop the first to 60 and
+raise the second to 10, then put both back to 300 and 3.
 
 ## LiteLLM stack (rebuild reference)
 
@@ -215,11 +320,24 @@ not that key; the cap takes effect when the key is minted and that seat file
 holds it. LiteLLM v1.98 has no declarative key list, so minting is one
 admin-API call, not a config edit.
 
-Backup: `pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U
-litellm litellm | gzip > .../litellm-<ts>.sql.gz` in the restic backup path.
-The restic backup, verify and restore-test jobs are root units installed
-outside this repo (under `/etc/systemd/system/restic-r2-*`), so this section
-does not schedule them.
+Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
+into `agent-state/backups/litellm.dump` before every run, and that dump is the
+only LiteLLM Postgres copy in restic: the raw data dir is not in
+`config/restic/include.txt` (a file copy of a running Postgres is not
+crash-consistent and churned about 700 MiB a day). Restore with `pg_restore`.
+Retention is one policy for the backup and maintenance units, kept 7 daily,
+4 weekly and 3 monthly snapshots grouped by host and tags
+(`config/restic/retention.env`, `config/restic/README.md` "Retention"). The
+restic units are deliberately host-only, not an oversight: the backup,
+locked-copy, maintenance, restore-test and verify services, their timers and
+the size-guard service live only under `/etc/systemd/system/restic-r2-*`,
+because the unit files name the backup targets and this repo is public
+(Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
+`fleet-host-config.service`'s drift check skips them; this repo tracks only the
+additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
+section does not schedule them. A box rebuild cannot restore these units from
+the repo — copy them off the live box to private storage before wiping it, and
+never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
@@ -368,6 +486,22 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+
+## Rebuild the box from nothing
+
+The step order for a fresh netcup box (user, SSH over Tailscale, `vps-fleet`
+key, deploy clone, `ansible-playbook ansible/host.yml`, fleet-sync, runners,
+credential files, restic restore, verification) lives in the private vault,
+not in this public repo — this repo holds no credentials and no restore
+steps. On this host the vault checkout is
+`~/workspaces/tooling/nish-vault/05 Playbooks/rebuild-from-nothing.md`
+(fleet-ops#9777); from anywhere else, the `nish3451/nish-vault` GitHub repo,
+same path. The first stage of that plan (fresh box up to a passing
+`ansible-playbook --syntax-check ansible/host.yml`) was rehearsed on a
+scratch ubuntu:24.04 rootfs on 2026-10-25: the syntax check passed and the
+rehearsal caught a uid-1000 collision in the user-creation step, which the
+plan now fixes. Data restore is that vault's
+`restic-r2-recovery-runbook.md`; lockout is its `break-glass.md`.
 
 ## Main has no ruleset bypass (2026-10-12)
 

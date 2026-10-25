@@ -195,3 +195,280 @@ tests:
             exp_annotations:
               summary: "node_exporter is not being scraped"
               description: "up{job=\"node\"} has been 0 for 5 minutes, so HermesGatewayDown and SystemUnitFailed cannot see."
+
+  # BackupStale: a timer that triggered 29h ago is fine; once it is past 30h
+  # and stays there for 15m, it pages. A missing timer series pages too.
+  - interval: 30m
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 29h
+        alertname: BackupStale
+        exp_alerts: []
+      - eval_time: 31h
+        alertname: BackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: restic-r2-backup.timer
+            exp_annotations:
+              summary: "off-site backup has not run for over 30 hours"
+              description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
+  - interval: 30m
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}'
+        values: '0+1800x80'
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: BackupStale
+        exp_alerts: []
+  # A reboot resets a non-persistent timer's last trigger to 0; the last real
+  # trigger 5 hours earlier still counts, so nothing pages.
+  - interval: 1h
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-backup.timer"}'
+        values: '0+3600x30 0x10'
+    alert_rule_test:
+      - eval_time: 35h
+        alertname: BackupStale
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="other.timer"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: restic-r2-backup.timer
+            exp_annotations:
+              summary: "off-site backup has not run for over 30 hours"
+              description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
+
+  # BackupFailed: a one-off failure that recovers within the hour is silent;
+  # a unit that stays failed for an hour pages.
+  - interval: 5m
+    input_series:
+      - series: 'node_systemd_unit_state{name="restic-r2-backup.service",state="failed"}'
+        values: '1x24'
+      - series: 'node_systemd_unit_state{name="restic-r2-locked-copy.service",state="failed"}'
+        values: '1x6 0x18'
+      - series: 'node_systemd_unit_state{name="restic-r2-backupX.service",state="failed"}'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: BackupFailed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              name: restic-r2-backup.service
+              state: failed
+            exp_annotations:
+              summary: "backup unit restic-r2-backup.service has been failed for 1 hour"
+              description: "Systemd unit restic-r2-backup.service is in the failed state, so last night's off-site backup did not complete."
+
+  # SiteDown: a site that fails one probe is silent; one that fails every
+  # probe for 10 minutes pages. Jobs not named site-* are ignored.
+  - interval: 30s
+    input_series:
+      - series: 'probe_success{job="site-0509",instance="https://0509.io/"}'
+        values: '1x10 0 1x30'
+      - series: 'probe_success{job="site-rera",instance="https://example.test/"}'
+        values: '1x10 0x40'
+      - series: 'probe_success{job="blackbox-other",instance="https://other.test/"}'
+        values: '0x50'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SiteDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: SiteDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: site-rera
+              instance: https://example.test/
+            exp_annotations:
+              summary: "https://example.test/ has not answered for 10 minutes"
+              description: "Every blackbox probe of https://example.test/ (job site-rera) failed, or could not run, for 10 minutes."
+
+  # SiteDown when the blackbox exporter itself is down: the scrape fails, so
+  # up is 0 and probe_success is missing. A short scrape gap stays silent.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="site-products",instance="https://example.test/"}'
+        values: '1x10 0x40'
+      - series: 'up{job="site-0509",instance="https://0509.io/"}'
+        values: '1x10 0 1x30'
+      - series: 'up{job="prometheus",instance="localhost:9090"}'
+        values: '0x50'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SiteDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: SiteDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: site-products
+              instance: https://example.test/
+            exp_annotations:
+              summary: "https://example.test/ has not answered for 10 minutes"
+              description: "Every blackbox probe of https://example.test/ (job site-products) failed, or could not run, for 10 minutes."
+
+  # SiteDown on a newly added target: three failed probes are not enough
+  # samples to page; ten minutes of them at the one-minute site-products
+  # interval are.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="site-products",instance="https://new.test/"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SiteDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SiteDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: site-products
+              instance: https://new.test/
+            exp_annotations:
+              summary: "https://new.test/ has not answered for 10 minutes"
+              description: "Every blackbox probe of https://new.test/ (job site-products) failed, or could not run, for 10 minutes."
+
+  # AISpendHigh: 1 USD an hour (24 USD a day) never fires; 3 USD an hour
+  # crosses 40 USD within the day and pages.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_spend_metric_total{model="a"}'
+        values: '0+1x48'
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: AISpendHigh
+        exp_alerts: []
+  - interval: 15m
+    input_series:
+      - series: 'litellm_spend_metric_total{model="a"}'
+        values: '0+0.75x120'
+    alert_rule_test:
+      - eval_time: 10h
+        alertname: AISpendHigh
+        exp_alerts: []
+      - eval_time: 20h
+        alertname: AISpendHigh
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "AI spend is over 40 USD in the last 24 hours"
+              description: "sum(increase(litellm_spend_metric_total[24h])) is 60.00 USD, above the 40 USD daily line."
+
+  # AISpendMetricMissing: a counter that stops for a few hours is silent; a
+  # whole day with no series pages.
+  - interval: 1h
+    input_series:
+      - series: 'litellm_spend_metric_total{model="a"}'
+        values: '0+1x5 _x40'
+    alert_rule_test:
+      - eval_time: 20h
+        alertname: AISpendMetricMissing
+        exp_alerts: []
+      - eval_time: 33h
+        alertname: AISpendMetricMissing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "AI spend metric has been missing for over a day"
+              description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
+
+  # RouterSeniorFailing (fleet-ops#9054): the senior tier is one row with no fallback and
+  # sparse traffic (about one call an hour), so unlike the strong group's 15-minute / 5%
+  # gate it fires when every call in 6 hours went unanswered and at least 2 failed.
+  # The series run on 1m steps because the offline lookback window is 5 minutes.
+  - interval: 1m
+    input_series:
+      # calls fail at 3m and 4m: the counter crosses 2 at 4m, then the 5m hold
+      # ends and it fires; 8m is still inside the hold.
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 0 0 1 2 2 2 2 2 2 2 2 2 2'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 0 0 1 2 2 2 2 2 2 2 2 2 2'
+      - series: 'up{job="litellm"}'
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: RouterSeniorFailing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              group: senior
+            exp_annotations:
+              summary: "senior has no row that answers"
+              description: "Every senior call in the last 6 hours failed (2 or more calls) for 5 minutes. The senior group has one row and no fallback, so every call dies on it: fix or remove the dead row in config/litellm-proxy.yaml."
+
+  # RouterSeniorFailing: calls answered, so the failure counter stays level and it stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0x14'
+      - series: 'up{job="litellm"}'
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts: []
+
+  # RouterSeniorFailing: a mixed window (one call answered between the failures) is not
+  # a dead row, so failed < total over the window and it stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 0 1 2 2 2 3 3 3 3 3 3 3 3'
+      - series: 'up{job="litellm"}'
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts: []
+
+  # RouterSeniorFailing: one transient failure (a single parked 5xx) never crosses the 2.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'up{job="litellm"}'
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts: []
+
+  # RouterSeniorFailing: a failing pattern while the scrape is down is unobserved, not paged.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
+        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
+      - series: 'up{job="litellm"}'
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: RouterSeniorFailing
+        exp_alerts: []

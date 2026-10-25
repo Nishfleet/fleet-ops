@@ -52,5 +52,7 @@ receivers:
     telegram_configs:
       - bot_token_file: /etc/prometheus/telegram_bot_token
         chat_id: 1  # placeholder; ansible/host.yml fills in the id from /etc/prometheus/telegram_chat_id
-        message: '[{{ .Status }}] {{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        # Range over the alerts: two sites down at once share alertname but not
+        # summary, and CommonAnnotations would then be empty.
+        message: '[{{ .Status }}] {{ .CommonLabels.alertname }}:{{ range $i, $a := .Alerts }}{{ if $i }};{{ end }} {{ $a.Annotations.summary }}{{ end }}'
         send_resolved: true

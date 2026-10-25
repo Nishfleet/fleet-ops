@@ -32,10 +32,19 @@
 /home/nish/.hermes
 /home/nish/.pi/agent
 
-# Service state with no git remote for its data. The restic unit pg_dumps
-# LiteLLM first (restic-r2-backup.service ExecStartPre), but a raw copy of the
-# data dir is what survives a corrupt or failing dump.
-/home/nish/.local/share/fleet-litellm-postgres
+# Product working trees. Most of this is a git clone with a remote, but not
+# all of it: uncommitted edits, local-only branches and repos with no remote
+# yet live only here (2026-10-15: one repo with no remote, one unpushed
+# branch, uncommitted edits in three more). About 74 MiB without the build
+# outputs and dependency trees that exclude.txt drops. ansible/host.yml
+# renders this file as a template, so the home directory is filled in there.
+{{ nish_home }}/workspaces/products
+
+# Service state with no git remote for its data. LiteLLM Postgres is backed up
+# as the pg_dump the restic unit takes first (restic-r2-backup.service
+# ExecStartPre, landing in agent-state/backups above). The raw data dir is not
+# listed: a file copy of a running Postgres is not crash-consistent, and its
+# churn (about 700 MiB a day) is what grew the repository.
 /home/nish/.local/share/fleet-litellm-redis
 /home/nish/.local/share/fleet-grafana
 /home/nish/.local/share/drive

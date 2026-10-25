@@ -1,16 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_url is required: session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
+  "$comment": "Hard gate for config/litellm-proxy.yaml (fleet-ops#8653). Nish 2026-09-28: no benching unless he says so. A failed row is never taken out of rotation: no bench list. Row cooldown_time: <=900 s is for ordinary transients. Values over 900 s, up to the 86400 s cap, are reserved for rows with a named, self-refilling wall (a daily or monthly quota that outlasts 900 s) - the row stays live, parked, and re-probes itself; each such row cites its issue in a comment (fleet-ops#8398/#9075). A row on openrouter.ai/api/v1 must set model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0, because its 429s are OpenRouter's named daily free-tier wall and the row has to park on the first one (fleet-ops#9248). Router-level cooldown_time holds a failed row for at most 60 s. Every model_list row must declare its cache capability: model_info.supports_prompt_caching (boolean) and model_info.cache_proof (non-empty string, date plus measured cached tokens or a doc link), because ~0% cache-read on four provider groups was 70% of uncached router tokens and no rule forced a new seat to say which case it is (fleet-ops#9365). A worker-group row whose supports_prompt_caching is false must set litellm_params.order: 2 so long sessions fall to it only as overflow (order filtering is applied after the cooldown filter in LiteLLM v1.98.0 router.py, proven by tests/test_router_order2_overflow.py). router_settings.redis_host, redis_port and redis_password (os.environ/REDIS_PASSWORD) are required and redis_url is forbidden (v1.98.0 drops the password when redis_url is set; the cache has requirepass): session_affinity pins live in the Router cache, and without Redis each of the proxy's 2 worker processes keeps its own pin, so a session flips between rows with no failure (fleet-ops#9015). LiteLLM v1.98.0 never reads a redis_url under general_settings. router_settings.allowed_fails_policy.NotFoundErrorAllowedFails must be 0 (fleet-ops#9469): a 404 is a withdrawn free model or a dead model id, and the per-exception threshold falls back to the router-level allowed_fails (1) for a key the policy does not name, so without it a dead lane needs two 404s to park and leaks one to the next caller. See the allowed_fails_policy property for the mechanism and for what the 404 cooldown costs on the 7 quota-walled rows.",
   "type": "object",
   "required": ["model_list", "router_settings"],
+  "if": { "properties": { "model_list": { "contains": { "$ref": "#/$defs/tetherGroupRow" } } } },
+  "then": {
+    "$comment": "A tether row without its fallback would leave Tether unanswered on any Claude failure (Nish 2026-10-22: any Claude failure falls through to assistant).",
+    "properties": { "router_settings": { "properties": { "fallbacks": { "contains": { "$ref": "#/$defs/tetherFallsToAssistant" } } } } }
+  },
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
-    "seniorBackupRow": {
-      "$comment": "fleet-ops#9596: the one row senior falls back to. Pinned to the same model as the Pareto senior row, on Synthetic's own key, so senior never falls back down and the fallback sits behind a different provider's wall.",
+    "seniorRow": {
+      "$comment": "fleet-ops#10040: the one senior row, GLM-5.3-Flash on Synthetic's own key (the Pareto rows were removed, Nish 2026-10-22). Pinned so a weaker model or another provider cannot take the senior seat unreviewed.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
-        "model_name": { "const": "senior-backup" },
+        "model_name": { "const": "senior" },
         "litellm_params": {
           "type": "object",
           "required": ["model", "api_base", "api_key"],
@@ -21,6 +26,44 @@
           }
         }
       }
+    },
+    "tetherRow": {
+      "$comment": "Tether's Claude Sonnet 5.5 row (Nish 2026-10-22, fleet-ops#9980; 2026-10-23, Nishfleet/tether#7). The group, the model and the key are pinned together: the tether group answers only from claude-sonnet-5-5 on the Anthropic key, and that key serves no other group, so no routing group or fallback other than tether reaches the prepaid credit. The row carries a 50 USD/day wall (Nish 2026-10-23), and raising it is a deliberate change with its own issue. A caller holding the proxy master key can still name the group, so Tether's own virtual key is the only key that should list it.",
+      "type": "object",
+      "required": ["model_name", "litellm_params"],
+      "properties": {
+        "model_name": { "const": "tether" },
+        "litellm_params": {
+          "type": "object",
+          "required": ["model", "api_key", "max_budget", "budget_duration"],
+          "properties": {
+            "model": { "const": "anthropic/claude-sonnet-5-5" },
+            "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" },
+            "max_budget": { "const": 50 },
+            "budget_duration": { "const": "1d" }
+          }
+        }
+      }
+    },
+    "anthropicKeyRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_key"], "properties": { "api_key": { "const": "os.environ/ANTHROPIC_API_KEY" } } } }
+    },
+    "tetherGroupRow": {
+      "type": "object",
+      "required": ["model_name"],
+      "properties": { "model_name": { "const": "tether" } }
+    },
+    "tetherFallsToAssistant": {
+      "type": "object",
+      "required": ["tether"],
+      "properties": { "tether": { "const": ["assistant"] } }
+    },
+    "straitlyRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.straitly.ai/v1" } } } }
     },
     "syntheticRow": {
       "type": "object",
@@ -121,7 +164,7 @@
       ]
     },
     "retryPolicy": {
-      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; proposed (0,1,1) caps the worker group at one attempt before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. RateLimitErrorRetries/TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it is a forward bound only). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
+      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; proposed (0,1,1) caps the worker group at one attempt before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. RateLimitErrorRetries/TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it was a forward bound only, and it went live with the v1.105.0 image move (fleet-ops#10071). fleet-ops#9050 adds NotFoundErrorRetries and DefaultRetries, both live on 1.105.0: the policy is read before should_retry_this_error, NotFoundErrorRetries covers a status-404 answer, and DefaultRetries covers every class the policy does not name (a 402 maps to APIError with no named key; a 403 from an openai-compatible provider arrives as BadRequestError carrying status 403, which BadRequestErrorRetries already granted on both 1.98.0 and 1.105.0). Whether the granted retry reaches a different row depends on rotation: a 404 parks the row on NotFoundErrorAllowedFails 0, so the retry went to a live peer; a 403 cools nothing, so the session pin overrides the skip list and the granted attempt re-picks the same row (both drilled on 1.105.0 in tests/test_router_retry_policy_no_cross_seat.py). Both are capped at 1 like the other retry keys; named keys keep precedence, so 401/content-policy stay 0 and 429 stays same-row. All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -130,7 +173,9 @@
         "TimeoutErrorRetries",
         "InternalServerErrorRetries",
         "BadRequestErrorRetries",
-        "ContentPolicyViolationErrorRetries"
+        "ContentPolicyViolationErrorRetries",
+        "NotFoundErrorRetries",
+        "DefaultRetries"
       ],
       "properties": {
         "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
@@ -138,7 +183,9 @@
         "TimeoutErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
         "InternalServerErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
         "BadRequestErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
-        "ContentPolicyViolationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 }
+        "ContentPolicyViolationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "NotFoundErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "DefaultRetries": { "type": "integer", "minimum": 0, "maximum": 1 }
       }
     }
   },
@@ -148,14 +195,20 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#9596: router_settings.fallbacks sends senior to senior-backup, so exactly one senior-backup row exists and it is GLM-5.3-Flash on Synthetic. A fallback that names a missing group, or a weaker model, fails here.",
+          "$comment": "fleet-ops#10040: exactly one senior row exists and it is GLM-5.3-Flash on Synthetic. A missing row, a second row or a weaker model fails here.",
           "allOf": [
-            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior-backup" } } }, "minContains": 1, "maxContains": 1 },
-            { "contains": { "$ref": "#/$defs/seniorBackupRow" }, "minContains": 1 }
+            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior" } } }, "minContains": 1, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/seniorRow" }, "minContains": 1 }
           ]
         },
         {
-          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and senior-backup sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
+          "$comment": "fleet-ops#9788: Straitly is free credit only (balance 20 USD, no top-up). At most two rows, each capped at 9.5 USD, so the rows together stop routing at 19 USD and Straitly never answers 402 quota_exceeded, which LiteLLM v1.98.0 neither retries nor cools. A third row would raise the ceiling past the balance.",
+          "contains": { "$ref": "#/$defs/straitlyRow" },
+          "minContains": 0,
+          "maxContains": 2
+        },
+        {
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and the senior row sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
           "contains": { "$ref": "#/$defs/syntheticRow" },
           "minContains": 0,
           "maxContains": 8,
@@ -163,6 +216,21 @@
             "if": { "$ref": "#/$defs/syntheticRow" },
             "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
           }
+        },
+        {
+          "$comment": "Tether's Claude row: every row named tether is the pinned row, every row on the Anthropic key is a tether row, and there is at most one of each, so a second tether row, a tether row on another model or provider, or the Anthropic key on another group all fail here. Absence is allowed (the schema's own reject cases are built without it); router_settings.fallbacks requires tether -> assistant whenever the row exists.",
+          "allOf": [
+            { "contains": { "$ref": "#/$defs/tetherGroupRow" }, "minContains": 0, "maxContains": 1 },
+            { "contains": { "$ref": "#/$defs/anthropicKeyRow" }, "minContains": 0, "maxContains": 1 },
+            {
+              "items": {
+                "allOf": [
+                  { "if": { "$ref": "#/$defs/tetherGroupRow" }, "then": { "$ref": "#/$defs/tetherRow" } },
+                  { "if": { "$ref": "#/$defs/anthropicKeyRow" }, "then": { "$ref": "#/$defs/tetherRow" } }
+                ]
+              }
+            }
+          ]
         },
         {
           "$comment": "fleet-ops#9374: the judge group used to shuffle all three rows, so the paid Alibaba Token Plan seat answered 22 of 1,054 judge calls in 14 days to 2026-10-07 while both OpenCode Go rows carried the traffic - the same family the builders use, which memory grader-never-builder-family forbids for the grader. Exactly three judge rows: one paid row on order 1 and the two fallbacks on order 2. LiteLLM v1.98.0 keeps only the lowest order group (utils._get_order_filtered_deployments) and applies that filter after the cooldown filter (router.py), so the paid row answers every judge call and the pair answers while it is cooled - measured 200/200 and 200/100 on the real Router, with every row back on order 1 spreading 30/40/30. A fourth judge row, a third order-1 row, or the fallbacks on order 1 all fail here.",
@@ -256,6 +324,23 @@
                 }
               }
             }
+          },
+          {
+            "$comment": "fleet-ops#9788: a row on api.straitly.ai/v1 serves public-repo Pi jobs only (agent.yml picks worker-public from the repo's visibility), so it sits in worker-public. Its LiteLLM cap must trip before Straitly's own: max_budget is required and at most 9.5, and budget_duration is required because v1.98.0 registers a deployment budget only when both are set (budget_limiter._init_deployment_budgets), so a row without it has no cap at all. 30d outlasts the 2026-10-23 end date, so the budget is a lifetime cap. The prices let LiteLLM count the spend.",
+            "if": { "$ref": "#/$defs/straitlyRow" },
+            "then": {
+              "properties": {
+                "model_name": { "const": "worker-public" },
+                "litellm_params": {
+                  "required": ["max_budget", "budget_duration", "input_cost_per_token", "output_cost_per_token"],
+                  "properties": {
+                    "max_budget": { "type": "number", "exclusiveMinimum": 0, "maximum": 9.5 },
+                    "budget_duration": { "const": "30d" },
+                    "api_key": { "const": "os.environ/STRAITLY_API_KEY" }
+                  }
+                }
+              }
+            }
           }
         ],
         "properties": {
@@ -287,7 +372,8 @@
     "benched": false,
     "router_settings": {
       "type": "object",
-      "required": ["redis_url", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
+      "not": { "required": ["redis_url"] },
+      "required": ["redis_host", "redis_port", "redis_password", "fallbacks", "deployment_affinity_ttl_seconds", "optional_pre_call_checks", "allowed_fails_policy", "retry_policy"],
       "properties": {
         "cooldown_time": { "type": "integer", "minimum": 1, "maximum": 60 },
         "allowed_fails_policy": {
@@ -304,20 +390,19 @@
           }
         },
         "fallbacks": {
-          "$comment": "fleet-ops#9596: senior is one Pareto row, and a 429 credit wall on it left the group with no fallback. It must fall back to senior-backup (the same GLM-5.3-Flash on Synthetic, equal strength; senior never falls back down). The backup group must not name a fallback of its own, so judge -> senior -> senior-backup cannot cycle back to judge or senior. Every entry that names senior is pinned to senior-backup: contains only asked that some senior entry existed, so a second senior entry naming judge passed the gate and turned senior -> judge -> senior into the cycle the issue names. judge is deliberately not pinned. judge: [senior] is the live layout and it reaches senior-backup only because LiteLLM 1.98.0 re-enters the senior group's fallbacks (fallback_depth + 1, cap 5); judge: [senior, senior-backup] spells both rungs out and needs no such re-entry. Which spelling is right is a separate call, so this gate takes neither. The deliberate worker-capable <-> worker-cheap two-way pair is left alone for the same reason.",
+          "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether, so the Claude credit is spent by Tether alone. fleet-ops#10040: senior is one row and has no fallback, so no entry may be keyed senior or name senior-backup (no such group exists), which also keeps judge -> senior from cycling. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
-          "items": {
-            "if": { "type": "object", "required": ["senior"] },
-            "then": { "properties": { "senior": { "const": ["senior-backup"] } } }
-          },
-          "contains": {
-            "type": "object",
-            "required": ["senior"],
-            "properties": { "senior": { "const": ["senior-backup"] } }
-          },
-          "not": { "contains": { "type": "object", "required": ["senior-backup"] } }
+          "not": { "anyOf": [
+            { "contains": { "type": "object", "required": ["senior"] } },
+            { "contains": { "type": "object", "required": ["senior-backup"] } },
+            { "contains": { "type": "object", "required": ["worker-capable"], "properties": { "worker-capable": { "contains": { "enum": ["worker-cheap", "worker-public", "assistant"] } } } } },
+            { "contains": { "type": "object", "required": ["tether"], "not": { "$ref": "#/$defs/tetherFallsToAssistant" } } },
+            { "contains": { "type": "object", "minProperties": 1, "patternProperties": { ".*": { "contains": { "const": "tether" } } } } }
+          ] }
         },
-        "redis_url": { "type": "string", "pattern": "^redis://" },
+        "redis_host": { "const": "127.0.0.1" },
+        "redis_port": { "const": 6379 },
+        "redis_password": { "const": "os.environ/REDIS_PASSWORD" },
         "deployment_affinity_ttl_seconds": { "type": "integer", "minimum": 300, "maximum": 600 },
         "optional_pre_call_checks": {
           "type": "array",

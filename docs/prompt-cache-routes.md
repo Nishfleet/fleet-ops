@@ -1,7 +1,8 @@
 # Prompt-cache routes: per-vendor verdicts and the Pi zero-cache cause
 
 Read-only research for fleet-ops#9357. Every number below was read off this
-box on 2026-10-07 and can be re-read with the command printed under it.
+box, on the date its section gives, and can be re-read with the command printed
+under it.
 
 ## 1. The metric pair is the right denominator
 
@@ -54,7 +55,10 @@ carries one of three keys (`litellm/types/utils.py`, the `Usage` constructor):
 - `prompt_cache_hit_tokens` (DeepSeek shape)
 
 If the provider sends none of them, `prompt_tokens_details` stays `None` and
-there is no cache number to report. Nothing in fleet-ops config changes this:
+there is no cache number to report. One route is a second case: Ollama's own
+API reports a cache counter in a field LiteLLM never reads, so there the
+provider does cache and the router still reports nothing. Section 3 has the
+proof. Nothing in fleet-ops config changes this:
 for an OpenAI-compatible chat endpoint, prompt caching is server-side and
 automatic, and LiteLLM actively **strips** the Anthropic-only `cache_control`
 marker before sending (`remove_cache_control_flag_from_messages_and_tools` in
@@ -92,7 +96,7 @@ The same 80-minute window, so the rows are directly comparable:
 | --- | --- | --- |
 | cline | **Unsupported / not reported.** Not a fleet bug. | Every one of 230 calls on `cline-lagunas21-worker-capable` in the window has `prompt_tokens_details: null`. The Cline free/quota API returns a bare `usage.prompt_tokens`. No config change can make a vendor report a number it does not send. |
 | zai | **Unsupported / not reported.** | Real traffic rows (e.g. `zai-glm53flashg-worker-capable`, prompt_tokens 32927 / 78952 / 32266) all carry `"prompt_tokens_details": null`. The row already declares `cache_read_input_token_cost`, which is a cost hint, not a request flag. |
-| ollama | **Unsupported / not reported, and LiteLLM cannot surface it.** | The row uses `ollama_chat/`, whose transformation builds `litellm.Usage(prompt_tokens, completion_tokens, total_tokens)` with no `prompt_tokens_details` at all (`litellm/llms/ollama/chat/transformation.py`). Ollama's own `prompt_eval_count` is a single already-aggregated number with no cache field split out, so there is nothing for LiteLLM to read even if Ollama caches. |
+| ollama | **Caches, but LiteLLM cannot surface it.** | The row uses `ollama_chat/`, whose transformation builds `litellm.Usage(prompt_tokens, completion_tokens, total_tokens)` with no `prompt_tokens_details` at all (`litellm/llms/ollama/chat/transformation.py`: `prompt_tokens = response_json.get("prompt_eval_count", ...)`). Ollama's cache counter is a **separate** field, `prompt_eval_cached_count`, and no LiteLLM through 1.105.1 reads it, so the router reports 0 cached while Ollama caches. Re-probed on this box 2026-10-17: one 8839-token prompt posted twice to `https://ollama.com/api/chat` reads `prompt_eval_cached_count: 0` on the first call and **8710 of 8839** on the second, and a real 48-call burst on `ollama_chat/deepseek-v4.1-flash` carries `prompt_tokens_details: null` on every row. Upstream: berriai/litellm#45021. This section's earlier verdict, that `prompt_eval_count` "is a single already-aggregated number with no cache field split out", was wrong: the field exists and is split out, LiteLLM just does not read it (fleet-ops#9881). |
 | openrouter | **Unsupported / not reported.** | Real rows on `openrouter-nemotronultra-worker-capable` carry `"prompt_tokens_details": null`. OpenRouter does return cache fields on models that support them, so this is a property of the specific `:free` rows this fleet uses, not of LiteLLM's OpenAI-compatible path. |
 
 Together these four vendors carry about 5.4e8 input tokens, and served 425 of
@@ -108,6 +112,11 @@ over the same query without the `model_id` filter.
 `cache_read_input_token_cost` where a provider documents a cached-read price,
 which is the only cache-shaped knob an OpenAI-compatible row has. Adding
 anything else would be a flag LiteLLM ignores.
+
+The `opencodego2-ds41flash-worker-capable` row above (134 calls, 0 null, 134
+with cache details) still read a 91-95% daily share in section 6's spend-log
+query through 2026-10-19, and stopped reporting on its streamed path on
+2026-10-20; see section 6.
 
 ## 4. Why two Pi sessions read exactly zero
 
@@ -170,10 +179,20 @@ above are final, read after the sessions ended on 2026-10-07.
 ## 5. What the alert does and does not cover
 
 `config/grafana/provisioning/alerting/prompt-cache-hit.yaml` watches the share
-per `requested_model`. It deliberately does **not** alert on the four vendors
-above, because a total-zero cache for a vendor that reports no cache field is
-not a regression. If a vendor that does report caching today stops, the share
-for its alias falls and the rule fires.
+per `requested_model`, over the rows whose cache the router can **measure**.
+Both sides of the ratio are pinned to that row set with an `and on (model_id)`
+filter: the denominator keeps the input rows that also carry a cached-token
+series, and the numerator keeps the cached rows that also carry an input series,
+so the two sets are identical and a row present in only one metric cannot skew
+the alias either way. That counter is sparse — LiteLLM instantiates a
+deployment's label set only on its first non-zero `cached_tokens` — so the
+filter is exactly "rows this router can measure", and it is what stops the four
+vendors above from diluting an alias.
+A row that *had* a cached series keeps exporting it flat, so a caching route
+that drops to 0 still fires. Before this filter, a single unmeasurable row
+carrying most of an alias's input could hold the alias under 50% and page on a
+route whose cache was working, which is what happened on 2026-10-17
+(fleet-ops#9881, and its earlier duplicate #9856).
 
 The rule is unit-tested with `promtool`. The fixture
 `config/grafana/tests/prompt-cache-hit.test.yml` carries the
@@ -191,8 +210,8 @@ provisioning, so a promtool file there stops Grafana at startup ("failure to map
 file ... rule group has no folder set"). CI runs this test in the `ci` job and
 boots the quadlet's Grafana in the `grafana-boot` job.
 
-It covers nine cases in two kinds, because they check different things. The
-six `alert_rule_test` cases run the rule through the Prometheus alert engine,
+It covers twelve cases in two kinds, because they check different things. The
+seven `alert_rule_test` cases run the rule through the Prometheus alert engine,
 which fires on any series the expression returns, so they answer "which lanes are
 in the result":
 
@@ -203,29 +222,46 @@ in the result":
 4. a broken lane beside a healthy one in the same scrape fires for the broken
    one only, so the `and on (requested_model)` does not cross lanes;
 5. a **total** cache failure (cached series present and exactly 0) fires;
-6. a lane whose **cached series vanished entirely** while input kept flowing
-   fires, via the `or (0 * input)` branch.
+6. the 2026-10-17 page as a case: an unmeasurable row carries 828 of the alias's
+   1039 input tok/s with no cached series, which the old query read as a 0.083
+   share and a page, while the filtered query leaves 211 tok/s, under the floor,
+   so the lane is held off;
+7. the same shape with the measurable row above the floor: 900 cached of 1200
+   input tok/s is a healthy 0.75, and the unmeasurable row's 800 tok/s must not
+   drag the alias to 0.45.
 
-The three `promql_expr_test` cases answer what the alert_rule_test cases cannot:
+The five `promql_expr_test` cases answer what the alert_rule_test cases cannot:
 not which series appear, but **what Grafana's threshold step then reads**.
 Grafana's C is a threshold of `> 0` over A, so a lane reads Alerting at 1 and
 Normal at 0:
 
-7. a total cache failure, share exactly 0, returns **1**, so it pages;
-8. a healthy busy lane returns **0** beside a broken one at **1**, and a
+8. a total cache failure, share exactly 0, returns **1**, so it pages;
+9. a healthy busy lane returns **0** beside a broken one at **1**, and a
    sub-floor lane is absent from the result entirely (which is what makes
    `noDataState: OK` the right policy for an idle fleet);
-9. a vanished cached series with input still flowing returns **1**.
+10. case 7's shape returns **0**, where the old query returned **1**;
+11. a row whose provider never sent a cache number returns **nothing**: it is
+    not a lane in the ratio at all, and the per-model drill-down is what covers
+    it;
+12. the two sides are pinned to one row set: a measurable row caching 1200 of
+    its 20000 input tok/s is a 0.06 breach that returns **1**, while a
+    cached-only row adding 30000 cached tok/s must not lift the bare ratio to
+    1.56 and read as healthy. That case fails on the pre-fix query, which
+    returned **0**.
+
+Every series in the fixture carries the `model_id` label the deployment rows
+carry, because the filter matches on it: a fixture without `model_id` would let
+`and on (model_id)` match on an empty label and prove nothing.
 
 That split is load-bearing. Query A ends in `bool`, so it returns the 0/1 breach
 verdict rather than the ratio, and the inlined test rule wraps it in `> 0` to
 reproduce the threshold the Prometheus engine does not have. The `bool` is what
-makes case 7 fire at all:
+makes case 8 fire at all:
 
 ```
-# pre-fix A (no `bool`), case 7's series, threshold applied by hand (fires iff > 0):
+# pre-fix A (no `bool`), case 8's series, threshold applied by hand (fires iff > 0):
 #   exp 1E+00   got 0E+00        -> a 0% share read 0, `0 > 0` is false, Grafana held it Normal
-# current A, all nine cases -> SUCCESS
+# current A, all twelve cases -> SUCCESS
 ```
 
 Without `bool` only shares strictly between 0 and 0.5 would have paged, and the
@@ -257,8 +293,10 @@ knowing what caused that dip before treating a page as a regression. At that
 instant 43.8% of worker input ran on `cline-ds41flash-worker-capable` and about
 15% on the `ollama-*` rows, both of section 3's no-cache-field vendors, so the
 alias's share fell because the **mix** leaned on vendors that cannot report a
-cache number, not because a caching route broke. A page therefore wants the
-per-model drill-down first:
+cache number, not because a caching route broke. That is the mix-shift cause the
+`and on (model_id)` filter now excludes, and the 2026-10-17 page was the same
+cause with one row instead of two. A page therefore wants the per-model
+drill-down first:
 
 ```
 sum by (model_id) (rate(litellm_input_cached_tokens_metric_total[1h]))
@@ -266,6 +304,164 @@ sum by (model_id) (rate(litellm_input_cached_tokens_metric_total[1h]))
 ```
 
 One deployment that stops caching shows as a `model_id` whose share drops while
-the rest hold. A fleet-wide mix shift toward section 3's vendors shows as
-several of them rising at once, which is a routing question rather than a cache
-regression.
+the rest hold. A fleet-wide mix shift toward section 3's vendors used to show as
+several of them rising at once; since fleet-ops#9881 those rows are outside the
+ratio, so that pattern no longer pages and what is left in the drill-down is a
+real drop on a row that does report a cache number.
+
+Coverage limit, stated rather than hidden: a row that stops reporting its cache
+**and** loses its cached-token series in the same window is not covered, because
+one scrape cannot tell it from a row that never reported one. In-process that is
+not reachable — a sparse counter keeps being exported once instantiated, so a
+route that stops reporting reads a flat series and still fires — and hiding it
+takes a proxy restart. `docs/prompt-cache-routes.md` section 3's vendor table
+stays the record of which rows can report a cache at all, so a row moving into
+that list is a documentation and router change rather than an alert one.
+
+Section 6 records a page where the lane never stopped caching at the vendor: the
+reporting path did, which the rule cannot tell apart from a real drop.
+
+## 6. 2026-10-20: the OpenCode Go lane stopped reporting cache on streamed usage
+
+The rule from section 5 went critical on `worker-capable` at 2026-10-21
+06:57:50Z (fleet-ops#9935). The lane still caches and the counter stopped
+seeing it.
+
+**What the spend log shows.** `opencodego2-ds41flash-*` held a cache-read
+share of 91-95% every day from 2026-10-12 to 2026-10-19 (93.14%, 91.54%,
+91.64%, 93.30%, 94.58%, 93.47%, 93.40%, 91.17%), 0.35% on 2026-10-20 and 0.21%
+on 2026-10-21. The last row that carried a cache number on real traffic is
+2026-10-20 06:50:49Z, a `sk-fleet-worker` call on
+`opencodego2-ds41flash-worker-capable`: 69,904 prompt tokens, 69,888 cached.
+Since then the lane has 415 rows and the only five that carry a cache field are
+hand-made probe calls from this investigation, four of which read
+`cached_tokens: 0` because the probe sent a cold prefix on purpose. Nothing on
+this side changed: the proxy process started 2026-10-17 18:19 IST and
+`config/litellm-proxy.yaml` last changed on 2026-10-17, so this is not a fleet
+deploy.
+
+Both numbers above come from the spend log, which keeps the provider usage
+block under `metadata->'usage_object'`:
+
+```
+psql "postgresql://litellm@localhost:5432/litellm" -At -F'|' -c "
+  SELECT to_char(date_trunc('day', \"startTime\"), 'MM-DD'), count(*),
+         round(100.0 * sum(coalesce((metadata->'usage_object'->'prompt_tokens_details'->>'cached_tokens')::bigint, 0))
+               / nullif(sum(prompt_tokens), 0), 2),
+         count(*) FILTER (WHERE metadata->'usage_object'->'prompt_tokens_details'->>'cached_tokens' IS NOT NULL)
+    FROM \"LiteLLM_SpendLogs\"
+   WHERE model_id LIKE 'opencodego2-ds41flash%' AND prompt_tokens > 0 AND \"startTime\" >= '2026-10-11'
+   GROUP BY 1 ORDER BY 1"
+```
+
+The five probe rows and the 415-row count are the same query without the
+`GROUP BY`, filtered to `"startTime" > '2026-10-20 06:50:49'` and cut down to
+`count(*)`, `min("startTime")` and `max("startTime")`. Test the field with
+`->>'cached_tokens' IS NOT NULL`, never with `->` alone: in `jsonb`,
+`'null'::jsonb IS NOT NULL` is true.
+
+**The prefix did not break.** Pi's request bodies were captured at the proxy
+boundary: a throwaway forwarder on 127.0.0.1:4001 that logs each request body
+and passes it to 127.0.0.1:4000, with `PI_CODING_AGENT_DIR` pointed at a copy of
+the agent config whose `litellm` base URL names 4001. The sizes are `wc -c` of
+those captures. Two consecutive turns of one session were 61.9 KB and 62.2 KB,
+and
+their common messages were byte-identical: the second request only appends
+the assistant turn and its tool result, which is the shape a provider prefix
+cache needs. Replayed straight to `https://opencode.ai/zen/go/v1/chat/completions`
+with the same key and the same `x-opencode-session` header, those two bodies
+read back `cached_tokens` 15,488 of 15,586 (99.4%) and 15,616 of 15,638 (99.9%).
+A later turn of the same session, 106 KB and 27,715 prompt tokens, read back
+27,648, which is 99.8%.
+
+**The field is missing only on the streamed answer the proxy gets.** The
+106 KB body, same session header, same `worker-capable` key:
+
+| path | `prompt_tokens` | cache field |
+| --- | --- | --- |
+| direct to the vendor, `stream: true` | 27,715 | `cached_tokens: 27,648` |
+| through the proxy, `stream: false` | 27,715 | `cached_tokens: 27,648` |
+| through the proxy, `stream: true` | 24,536 | absent |
+
+The 24,536 is not the vendor's number: it falls 3,179 tokens short of the
+27,715 the vendor itself reports for the same bytes, and a count taken by the
+wrapper instead of read from the provider's `usage` block is the only cause that
+fits. That reading is inferred from the gap, not measured. The tokens are
+cached, the counter cannot see it, and the rule reads a flat zero.
+
+Every captured body carries `"stream": true` and
+`"stream_options": {"include_usage": true}`, so each call asks for the usage
+block. To re-read the table: the first row is the first command unchanged, the
+third row is the second command unchanged, and the second row is the second
+command with `"stream": false` in a copy of the body. The proxy answer names
+its row in the `x-litellm-model-id` header.
+
+```
+curl -sS --config <(sed -n 's|^OPENCODE_API_KEY_2=\(.*\)|header = "Authorization: Bearer \1"|p' \
+      ~/.config/fleet-ops/seats/opencode-2.env) \
+     -H 'Content-Type: application/json' -H 'x-opencode-session: fleet2-worker-capable' \
+     --data-binary @body.json https://opencode.ai/zen/go/v1/chat/completions | tail -2
+
+curl -sS --config <(sed -n 's|^LITELLM_INISH_DAILY_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' \
+      ~/.config/fleet-ops/seats/inish-daily.env) \
+     -H 'Content-Type: application/json' -H 'x-litellm-session-id: sa' \
+     --data-binary @body.json http://127.0.0.1:4000/v1/chat/completions
+```
+
+**Ruled out, one run each on this box 2026-10-21.** Each is the first command
+above with one flag or one body field changed: `-H 'User-Agent: litellm/1.98.0'`,
+`-H 'User-Agent: python-httpx/0.28.1' -H 'Accept-Encoding: gzip, deflate, br,
+zstd'`, `--http1.1`, `--resolve opencode.ai:443:<ip>` for each of the four A
+records (172.65.90.20 to .23), `store` dropped, `reasoning_effort` dropped, a
+body with a tool call and its result appended, and
+`stream_options.continuous_usage_stats` added. All keep the field. The control
+that matters is a miss, not a hit: the same prefix read twice in one minute in
+the spend log, 2026-10-21 07:09:43 and 07:09:54, logged `cached_tokens` 0 and
+then 13,440. A miss reports 0, so an absent field is not a miss, it is a field
+the caller never got.
+
+**What the vendor sends now.** Its streamed usage block rides on the chunk that
+carries the last of the reply, instead of on a trailing chunk with no content.
+A 13,538-token probe answered in two chunks plus `[DONE]` (the tail of the first
+command above, `stream: true`):
+
+```
+data: {"choices":[{"delta":{"reasoning_content":"docs","role":"assistant"}}],...}
+data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":13538,
+       "completion_tokens":2,"prompt_tokens_details":{"cached_tokens":13440}}}
+data: [DONE]
+```
+
+A row that still reports, `commandcode-glm53flashb-worker-cheap`, ends its
+stream the other way: seven content chunks, then two with an empty delta, and
+the `usage` block on the second of those. Same box, same proxy, minutes apart:
+
+```
+data: {"choices":[{"index":0,"delta":{}}],...}
+data: {"choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":13521,
+       "prompt_tokens_details":{"cached_tokens":0}}}
+data: [DONE]
+```
+
+That answer was a cold prefix, and it still carries the field, set to 0. So
+streaming does not drop the field by itself. The visible difference between the
+row that reports and the row that does not is where the usage block sits: on the
+empty-delta tail chunk, or on the chunk that carries the last content. The
+drop follows that difference, which makes it the placement, not the streaming
+and not the cache.
+
+**No in-repo lever exists.** LiteLLM v1.98.0 cannot force a non-streaming
+upstream call for a streaming caller (the note at
+`config/litellm-proxy.yaml:50`, fleet-ops#8923), and no row parameter changes
+the shape a gateway returns its streamed usage in. An OpenAI-compatible row has
+`cache_read_input_token_cost` and nothing else cache-shaped. The levers that
+would restore the counter both change what production does, so neither is taken
+here: the image bump is tracked at fleet-ops#9384, and re-weighting the lane off
+rows that do not report changes a provider row, which needs Nish's yes first
+(`config/litellm-proxy.yaml:51`).
+
+**For the next page.** Section 5's drill-down names the row but not the cause.
+Add one non-streamed replay of any captured request: if
+`prompt_tokens_details.cached_tokens` comes back, the vendor still reports and
+the loss is on the streamed path; if it stays absent, the vendor stopped
+reporting.
