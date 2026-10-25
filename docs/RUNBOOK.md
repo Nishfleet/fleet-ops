@@ -54,6 +54,19 @@ After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
+### Shell startup files
+
+Interactive shells do not read `~/.config/environment.d`. The systemd user
+manager does, for user units, so a value only a unit needs goes there. Do not
+add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
+a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
+not from an interactive shell (README, "systemd by default").
+
+The loader that ran the systemd environment generator in those files from
+2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
+was retired (`fleet-ops#10224`), which left the loader with nothing to carry, so
+it is deleted (`fleet-ops#10143`).
+
 ## Runner guard (fleet-ops#9317)
 
 A guard against habit, not a security boundary. The refusal names the tool to
