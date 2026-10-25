@@ -473,6 +473,69 @@ tests:
         alertname: RouterSeniorFailing
         exp_alerts: []
 
+  - interval: 5m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{mountpoint="/",device="/dev/sda1",fstype="ext4"}'
+        values: '1000000000-10000000x84'
+      - series: 'node_filesystem_avail_bytes{mountpoint="/steady",device="/dev/sdb1",fstype="ext4"}'
+        values: '1000000000x84'
+      - series: 'node_filesystem_avail_bytes{mountpoint="/run",device="tmpfs",fstype="tmpfs"}'
+        values: '1000000000-10000000x84'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DiskWillFill
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: DiskWillFill
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              mountpoint: /
+              device: /dev/sda1
+              fstype: ext4
+            exp_annotations:
+              summary: "/ will fill within 24 hours"
+              description: "At the rate of the last 6 hours, / (/dev/sda1) runs out of space within 24 hours."
+
+  - interval: 5m
+    input_series:
+      - series: 'node_memory_SwapTotal_bytes'
+        values: '8000000000x24'
+      - series: 'node_memory_SwapFree_bytes'
+        values: '4000000000x6 1000000000x18'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SwapPressure
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: SwapPressure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Swap is more than 75% used"
+              description: "Swap use has stayed above 75% for 30 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+
+  - interval: 1m
+    input_series:
+      - series: 'node_vmstat_oom_kill'
+        values: '8x10 9x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: OOMKill
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: OOMKill
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "The kernel OOM killer ran"
+              description: "node_vmstat_oom_kill rose in the last 15 minutes: the kernel killed a process for lack of memory."
+      - eval_time: 40m
+        alertname: OOMKill
+        exp_alerts: []
+
   # GrafanaDown: up for 10m never fires; down fires once it has been down 5m.
   - interval: 30s
     input_series:

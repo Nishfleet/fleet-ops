@@ -84,7 +84,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
-                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300.\n\nFix the cause, prove the alert resolved, then close this issue." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
               {{- end -}}
 
