@@ -716,10 +716,11 @@ model_list:
 # 2026-10-20: the provider list grew one id (MiniMax-M3.1-Flash) and it takes no row here. A real call on the
 # provider's anthropic path answered HTTP 200 with that id in the reply, and on the Gate's own 60 held-out cases
 # (labels written by the judge group, before this, split test) it routed 47/60 against 50/60 for the id these four
-# rows serve, sending 5 mechanical cases to the Claude lane against 6. A model that scores lower than the one it
-# would sit beside gets no extra weight, so the row was not added and no row or setting below changed. Numbers and
-# per-case rows: tests/evals/results/minimax_gate_m3_1_flash.json. The id appears in this comment and in that file
-# only, never in issue, PR or commit text.
+# rows serve and matched the label 46/60 against 49/60, ahead on one band only (5 mechanical cases sent to the
+# Claude lane against 6), so it scores below the served id and issue #9915's acceptance (c) gives "a model that
+# scores lower than the one it replaces" no extra weight. A row for it would in any case need Nish's yes first:
+# the approved-models list at the top of this file names MiniMax: M3.1-Flash-Preview only (2026-09-28). No row or
+# setting below changed. Numbers and per-case rows: tests/evals/results/minimax_gate_m3_1_flash.json.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview

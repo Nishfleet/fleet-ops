@@ -2,7 +2,8 @@
   "question": "needs_judgment (agent.yml Gate, typed choice judgment|mechanical): which MiniMax variant answers the Gate best on the shipped held-out cases",
   "cases_file": "tests/evals/cases/needs_judgment.json",
   "source": "tests/evals/cases/needs_judgment.json (unchanged): 60 0509 issues labelled agent-ready, labelled by the judge group (openai/qwen3.8-max, a non-Claude family), split test",
-  "decision": "no router weight for the added id. The provider list grew one id on 2026-10-20; the probe answered, and on the Gate's own held-out cases it routed 47/60 against 50/60 for the id already in rotation, so under the config/litellm-proxy.yaml header rule (a model that scores lower than the one it would sit beside gets no extra weight) it takes no row. No row and no setting in config/litellm-proxy.yaml changes: the four MiniMax rows are exactly as they were, and the only change to that file is a comment recording these numbers.",
+  "split_use": "this decision spends the split: choosing between the two MiniMax variants on these 60 cases means they are no longer a clean held-out set for a later change to either MiniMax row. A later change to those rows needs cases written and labelled after 2026-10-20.",
+  "decision": "no router weight for the added id. The provider list grew one id on 2026-10-20; the probe answered, and on the Gate's own held-out cases it routed 47/60 against 50/60 for the id already in rotation, so it takes no row: it scores below the row it would join (issue #9915's acceptance (c): \"a model that scores lower than the one it replaces gets no extra weight\"), and a row for it would in any case need Nish's yes first, because the approved-models list at the top of config/litellm-proxy.yaml names MiniMax: M3.1-Flash-Preview only (2026-09-28). No row and no setting in config/litellm-proxy.yaml changes: the four MiniMax rows are exactly as they were, and the only change to that file is a comment recording these numbers.",
   "case_record": "tests/evals/cases/needs_judgment.json is the case set and is unchanged by this PR. The rows scored here are held once, in this file, so nothing can drift between two copies; a worker that enumerates tests/evals/cases/ finds case sets only.",
   "labeller": {
     "group": "judge",
@@ -14,8 +15,8 @@
   "scorer": {
     "endpoint": "POST https://api.minimax.io/anthropic/v1/messages (the provider's own anthropic-compatible path, key from the seat file through a 0600 header file, never argv)",
     "served_model": [
-      "anthropic/MiniMax-M3.1-Flash-Preview (the id the router serves today)",
-      "anthropic/MiniMax-M3.1-Flash (the id the provider list added 2026-10-20)"
+      "MiniMax-M3.1-Flash-Preview (the id the router serves today; sent bare on the direct call, the anthropic/ prefix on the router rows is LiteLLM notation)",
+      "MiniMax-M3.1-Flash (the id the provider list added 2026-10-20, sent bare on the direct call)"
     ],
     "calls": "120 scored (60 cases x 2 variants, one read each); the discarded 256-token pass was another 120 on the same flat plan",
     "repeats": 1,
@@ -30,15 +31,15 @@
   },
   "probe": {
     "endpoint": "POST https://api.minimax.io/anthropic/v1/messages, the provider's own anthropic-compatible path",
-    "model_sent": "anthropic/MiniMax-M3.1-Flash (the id the provider list added 2026-10-20)",
-    "model_reported_by_provider": "anthropic/MiniMax-M3.1-Flash (the id the provider list added 2026-10-20)",
+    "model_sent": "MiniMax-M3.1-Flash (the bare id, the way the provider's anthropic path takes it; the anthropic/ prefix on the router rows is LiteLLM notation and is not part of the call)",
+    "model_reported_by_provider": "MiniMax-M3.1-Flash (verbatim from the reply's model field; re-checked 2026-10-25: HTTP 200, model MiniMax-M3.1-Flash, stop_reason end_turn, base_resp.status_code 0)",
     "http_status": 200,
     "listing_status": {
       "GET /anthropic/v1/models": 200,
       "GET /v1/models": 200
     },
     "result": "stop_reason end_turn, base_resp.status_code 0, one short answer",
-    "billing": "config/provider-watch.json records this seat as billing flat, so the read and the 240 scored reads sit inside the plan (config/paid-plans.json lists it as a subscription) and add no per-token spend"
+    "billing": "config/provider-watch.json records this seat as billing flat, so the one read, the 120 scored reads and the 120 discarded first-pass reads (see tuning) sit inside the plan (config/paid-plans.json lists it as a subscription) and add no per-token spend"
   },
   "summary": {
     "MiniMax-M3.1-Flash-Preview": {
@@ -83,7 +84,7 @@
       "MiniMax-M3.1-Flash-Preview": 6,
       "MiniMax-M3.1-Flash": 5
     },
-    "read": "the added id is not above the model it would sit beside on any band the Gate routes by, so it gets no weight"
+    "read": "the added id is ahead on one band only (5 mechanical cases sent to the Claude lane against 6) and below the served id on the two the score counts (routing agreement 47/60 against 50/60, choice matching the label 46/60 against 49/60), so overall it scores below the model it would sit beside and gets no weight"
   },
   "rows": {
     "MiniMax-M3.1-Flash-Preview": [
