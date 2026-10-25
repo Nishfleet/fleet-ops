@@ -1,5 +1,5 @@
 # Scripts, wrappers and script dirs no longer wait for Nish (fleet-ops#10336, Nish 2026-10-25:
-# "I need claude vps to be my tech head"). config/risky-paths.json holds them for the automatic review.
+# "I need claude vps to be my tech head"). config/risky-paths.json holds them, and its guard list makes all three reviewers approve.
 /.github/CODEOWNERS @nish3451
 # Paid-plan lock (fleet-ops#9224): removing a paid plan from the router needs Nish's yes. CI fails when a listed plan loses its last row.
 /config/paid-plans.json @nish3451
