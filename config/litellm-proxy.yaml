@@ -50,7 +50,7 @@
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Cline/Pareto "You've reached today's free-model token quota" 429s are a day-long wall, not a transient (fleet-ops#9075, 2026-10-02): a 900 s cool re-failed into worker groups every ~15 min - 13 of 60 probe calls at 09:53 UTC, ~14 quota-429s reached workers in 24 h. Quota-dominated rows now cool 21600 s, a quarter-day park that re-probes ~4x/day so a quota reset is picked up within hours. (Both Cline lanes, cline-lagunas21 and cline-ds41flash, were removed on 2026-10-23; the next sentences are the record of how they were tuned.) The cline :free rows (cline-lagunas21, 2 rows) parked on the first 429 (RateLimitErrorAllowedFails: 0; LiteLLM resolves the field via `is not None`, so 0 means immediate). Prepaid cline-ds41flash mixes the daily wall with per-minute bursts, and LiteLLM's fail counter TTL is the row's own cooldown_time (21600 s), so RateLimitErrorAllowedFails: 3 parks it on the 4th 429 inside any 6 h window - a per-minute burst rarely totals 4 in 6 h, while a quota wall 429s every call and reaches 4 quickly. pareto now cools 21600 s too (fleet-ops#9876): its 429s are a depleted prepaid balance, not a transient - at or above max_tokens 40960 the provider returns budget_error/credit_insufficient ("Insufficient credits for this request. Reduce max_tokens.") while the affordable ceiling drifts down as the balance drains, and direct probes found no parallel-key cap (fleet-ops#8458's 3-parallel explanation did not reproduce: 4 parallel small requests all returned 200). It parks on the first 429 (RateLimitErrorAllowedFails: 0), so a drained lane costs callers nothing: 0 caller-facing 429s in the 24 h to 2026-10-17 while worker-capable fell back to worker-cheap. Cline and Pareto answer only stream:true upstream (fleet-ops#8923) and LiteLLM v1.98.0 cannot force a stream a caller did not ask for (the request's stream flag always overrides litellm_params; LiteLLM_Params has no stream field), so a non-streaming caller still 400/500s on those rows - every fleet caller (Pi) streams.
 # Nish 2026-10-02: removing or benching any provider, model or row needs his explicit yes first. Provider quotas refresh hourly, daily, weekly or monthly, so a quota or limit error never justifies it. When a provider has ended a model, open an issue labelled needs-nish-decision with the evidence: the 8am and 8pm digests ask him again every day until he answers. The removals recorded above each had his yes.
-# Selection share (weighted; the Command Code rows removed 2026-10-15 are listed in the record above): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". Command Code left DeepSeek on 2026-10-15 (#9744), so the 2 OpenCode Go ds41flash rows in each worker group (opencodego-, opencodego2-) carry a litellm_params weight and every other worker row carries weight 1, the Command Code GLM-5.3-Flash rows included. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=2, n=28, w=10 gives 20/46 = 43.5% (was 20/47 = 42.6% at n=29 before the 2 Cline free rows left on 2026-10-23, 20/48 = 41.7% at n=30 before the 3 Cline Pass rows left the same day, and 20/59 = 33.9% at n=41 before the 10 Ollama rows and the Pareto row left on 2026-10-22, and 40/79 = 50.6% with the 4 DS rows); worker-cheap k=2, n=11, w=3 gives 6/15 = 40.0% (was 6/16 = 37.5% at n=12 before the Cline free row left, 6/17 = 35.3% at n=13, and 12/23 = 52.2%). The weights are unchanged; the share moves only with n (it rose from 33.9% to 41.7% when the 11 rows left). Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 30-60%).
+# Selection share (weighted; the Command Code rows removed 2026-10-15 are listed in the record above): Nish 2026-10-13, "OC has 2 keys, and both are unlimited usage along with cc but only on ds4.1 flash". Command Code left DeepSeek on 2026-10-15 (#9744), so the 2 OpenCode Go ds41flash rows in each worker group (opencodego-, opencodego2-) carry a litellm_params weight and every other worker row carries weight 1, the Command Code GLM-5.3-Flash rows included. v1.98.0 simple-shuffle (litellm/router_strategy/simple_shuffle.py:43-59) weights the pick only when the FIRST healthy row has a weight and reads a missing weight as 0, so every worker row must carry one (the schema requires an integer >= 1). Share = k*w/(k*w + n-k) for k preferred rows among n: worker-capable k=2, n=29, w=10 gives 20/47 = 42.6%; worker-cheap k=2, n=12, w=3 gives 6/16 = 37.5%. History: worker-capable 20/46 = 43.5% at n=28 and worker-cheap 6/15 = 40.0% at n=11 before the 2 OpenCode Go key-2 b lanes landed 2026-10-25 (fleet-ops#9417); worker-capable 20/47 = 42.6% at n=29 before the 2 Cline free rows left on 2026-10-23 (today's figures again, from 2 rows removed rather than 2 added), 20/48 = 41.7% at n=30 before the 3 Cline Pass rows left the same day, and 20/59 = 33.9% at n=41 before the 10 Ollama rows and the Pareto row left on 2026-10-22, and 40/79 = 50.6% with the 4 DS rows; worker-cheap 6/16 = 37.5% at n=12 before the Cline free row left, 6/17 = 35.3% at n=13, and 12/23 = 52.2%. The weights are unchanged; the share moves only with n (it rose from 33.9% to 41.7% when the 11 rows left). Per pick with every row healthy; a parked row leaves the draw, so the preferred share rises, and a session keeps its first row (session_affinity). Adding or removing a worker row changes n: redo the sum (tests/test_router_weights.py fails when a group's share leaves 30-60%).
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only (fleet-ops#9744). Every row has a 10 USD/day max_budget (unlimited is not confirmed for GLM).
 # To take the b lane out of the shuffle, remove its rows (ids commandcode-glm53flashb-worker-capable and
@@ -254,6 +254,64 @@ model_list:
     id: opencodego2-ds41flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+# fleet-ops#9417 (the deferred OpenCode Go leg of the #9378 A/B): a second DeepSeek
+# V4.1 Flash worker-capable lane on the second OpenCode Go key, same shape as the lane
+# above it, so the key whose rows keep the 900 s transient cooldown instead of the 6 h
+# monthly-quota park (#9122) carries more of the DS-Flash share. Additive only: the lane
+# above is untouched. Probed direct on https://opencode.ai/zen/go/v1/chat/completions
+# 2026-10-25 with x-opencode-session: fleet2-worker-capable-b on OPENCODE_API_KEY_2:
+# HTTP 200, model deepseek-v4.1-flash, billing_source "go".
+#
+# The session header is required upstream (a call without it answers HTTP 400
+# MissingSessionID) but its value is not checked (a nonsense value also answers 200,
+# probed the same day), so a distinct value here is for our own per-session accounting,
+# not an upstream constraint.
+#
+# weight 1, not the 10 the two weighted rows carry. tests/test_router_weights.py
+# holds Nish 2026-10-13's pin exactly: each worker group has two rows with weight > 1,
+# both matching ^opencodego2?-ds41flash-worker-(capable|cheap)$ and sharing one weight.
+# This row's id carries a b before -worker-, so it cannot take a weight - a weighted b
+# row is a third heavy row outside that pattern and the test fails. It joins the shuffle
+# as a peer at the lowest weight the schema allows, and worker-capable goes to n=29,
+# share 20/47 = 42.6%.
+#
+# No max_budget: both OpenCode Go keys are unlimited on DS-4.1 flash (Nish 2026-10-12
+# and 2026-10-13) and the direct probe above reported cost 0 on the Go plan. No
+# RateLimitErrorAllowedFails either: the sibling lane above sets neither, and
+# #9378 asked for the sibling row's shape copied exactly, so a 429 on this lane parks it
+# for the 900 s cooldown the same way its sibling does.
+#
+# The cache_proof is the sibling's #9357 figure, inherited because gateway, model and key
+# are identical. It is not a measurement of this session value: a new session starts with
+# no cache reuse and the #9418 day-3 measurement is where this lane's own number lands.
+#
+# To take this lane out of the shuffle, remove this row (id
+# opencodego2-ds41flashb-worker-capable) in a one-line config change. fleet-sync copies
+# the file and the proxy restarts to load it: about 101 s end to end on this host, with a
+# 30 s drain of in-flight calls. POST /model/block cannot do this: it answers HTTP 400
+# "Model updates only supported for DB-stored models" for a config-file row.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet2-worker-capable-b
+    tags:
+    - prepaid
+    - opencode-go
+    order: 1
+    weight: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
+    id: opencodego2-ds41flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -274,6 +332,34 @@ model_list:
     supports_prompt_caching: true
     cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
     id: opencodego2-ds41flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+# The worker-cheap lane of fleet-ops#9417, same shape and same probe as the lane above it
+# (HTTP 200 on OPENCODE_API_KEY_2 with x-opencode-session: fleet2-worker-cheap-b,
+# 2026-10-25). worker-cheap goes to n=12, share 6/16 = 37.5%. Its cache_proof is the
+# sibling's #9357 figure, inherited for the same gateway, model and key, not a
+# measurement of this session value. Removal: drop this row (id
+# opencodego2-ds41flashb-worker-cheap) the way the lane above describes.
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY_2
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet2-worker-cheap-b
+    tags:
+    - prepaid
+    - opencode-go
+    order: 1
+    weight: 1
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic."
+    id: opencodego2-ds41flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge
