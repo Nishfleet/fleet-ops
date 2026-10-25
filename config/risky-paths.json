@@ -22,6 +22,9 @@
       "(^|/)scripts/"
     ],
     "Nishfleet/fleet-ops": [
+      "\\.(sh|py|bash|zsh)$",
+      "(^|/)bin/",
+      "(^|/)scripts/",
       "^\\.github/",
       "^docs/(REBUILD-|engines/|quality-bar\\.md)",
       "(^|/)AGENTS\\.md$",
@@ -114,6 +117,7 @@
     {"id": "mixed-one-risky", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 3, "files": ["app/routes/a.tsx", "app/components/b.tsx", "core/billing.js"], "patches": [{"file": "app/routes/a.tsx", "patch": "+x"}, {"file": "app/components/b.tsx", "patch": "+x"}]},
     {"id": "fleet-ops-policy-doc", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["docs/quality-bar.md"]},
     {"id": "fleet-ops-github-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"]},
+    {"id": "fleet-ops-script", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["tests/test_alerts.py"]},
     {"id": "drive-multiline-update", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["migrations/drive/0110_x.sql"], "patches": [{"file": "migrations/drive/0110_x.sql", "patch": "@@ -0,0 +1,2 @@\n+UPDATE users\n+SET plan = 'free';"}]},
     {"id": "drive-stripe-dir", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/stripe/webhook.ts"], "patches": [{"file": "src/stripe/webhook.ts", "patch": "@@ -1 +1 @@\n+x"}]},
     {"id": "drive-wrangler-action", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": [".github/workflows/cd.yml"], "patches": [{"file": ".github/workflows/cd.yml", "patch": "@@ -1 +1 @@\n+      - uses: cloudflare/wrangler-action@v3"}]},
