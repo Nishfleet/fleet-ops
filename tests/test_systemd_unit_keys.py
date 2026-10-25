@@ -1341,6 +1341,32 @@ def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
 
 
+def test_the_opencode_listener_loads_its_own_router_key() -> None:
+    opencode = effective_directives(ROOT / "systemd/tincan-listen-opencode.service")
+    assert opencode["EnvironmentFile"] == ["%h/.config/fleet-ops/seats/tincan-opencode.env"], (
+        "this lane is woken by mail from other agents, so a prompt-injected message can read its "
+        "environment: the key in it must be the lane's own worker-cheap virtual key (fleet-ops#10221)"
+    )
+
+
+def test_no_unit_loads_the_litellm_master_key() -> None:
+    units = {
+        path
+        for pattern in ("systemd/*.service", "rootfs/etc/systemd/system/*.service", "rootfs/etc/systemd/user/*.service")
+        for path in ROOT.glob(pattern)
+    }
+    offenders = [
+        str(unit.relative_to(ROOT))
+        for unit in sorted(units)
+        if any("litellm-master-key.env" in value for value in effective_directives(unit).get("EnvironmentFile", []))
+    ]
+    assert offenders == [], (
+        f"these units put the router's admin credential in their own environment: {offenders}. "
+        "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
+        "quadlet container is the one place that may load it."
+    )
+
+
 def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
     readme = (ROOT / "README.md").read_text()
     assert "systemctl --user start <unit>" in readme, "the README lost the run line"

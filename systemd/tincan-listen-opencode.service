@@ -7,7 +7,11 @@ OnFailure=fleet-unit-failed@%N.service
 Environment=TINCAN_CONFIG=%h/.config/tincan/opencode.json
 Environment=FLEET_TASK_ID=tincan-opencode
 # OpenCode seat keys expired 2026-10-22; route through the fleet LiteLLM proxy instead.
-EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
+# The key in there is this lane's own virtual key: worker-cheap only, with a daily spend cap and a
+# rate limit, revoked with /key/delete. It is named LITELLM_MASTER_KEY because that is the variable the
+# lane's opencode config reads, as inish-daily binds its per-run key (fleet-ops#9634); the proxy's admin
+# key is not in this unit's environment (fleet-ops#10221).
+EnvironmentFile=%h/.config/fleet-ops/seats/tincan-opencode.env
 Environment=OPENCODE_CONFIG=%h/.config/tincan/opencode-litellm.jsonc
 StateDirectory=tincan-listen-opencode
 WorkingDirectory=%S/tincan-listen-opencode

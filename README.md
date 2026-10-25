@@ -137,7 +137,12 @@ script, or prompt lands unseen.
   `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
   OpenCode and the paid pi seat, each reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
-  `~/.local/state/tincan-listen-<agent>`. `cua-desk-daemon.service` is the Cua
+  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
+  router with a virtual key of its own, kept in the fleet's local seat directory
+  (worker-cheap only, capped per day), minted with `POST /key/generate` like
+  every other consumer credential, because a prompt-injected message in that
+  lane could make the run print its environment. The router's master key is not
+  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
   daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
   The six wake services were hand-placed regular files under
   `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
@@ -152,7 +157,12 @@ script, or prompt lands unseen.
   does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
   are enabled already (the wants link names the unit, and step 2j keeps the six
   wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. Off switch, one unit at a time:
+  restart. The OpenCode lane will not start without its own key file, so mint
+  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
+  limit) into the fleet's seat directory before its first start, the way the
+  Cursor lane's seat file is provisioned: a missing file fails the unit and
+  pages, which is the point, because the lane has no fallback to the admin key.
+  Off switch, one unit at a time:
   `systemctl --user disable --now tincan-listen-command-code.service`
   `systemctl --user disable --now tincan-listen-cursor-vps.service`
   `systemctl --user disable --now tincan-listen-devin-vps.service`
