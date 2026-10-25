@@ -1626,6 +1626,7 @@ jobs:
             # picks the slot; a hand-off waits up to 50 min for it, then fails loud.
             slots="$HOME/workspaces/agent-worktrees/.orch-mirror"
             mkdir -p "$slots"
+            echo "orchestrate: Pi slot $((ISSUE_N % 4)) of 4"
             rc=0
             flock -w 3000 -E 75 "$slots/pi-slot-$((ISSUE_N % 4)).lock" \
               env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
