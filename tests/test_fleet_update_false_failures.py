@@ -28,13 +28,27 @@ def matches(cmdline):
 
 
 def test_a_long_lived_npm_exec_is_not_install_activity():
-    assert not matches("npm exec @modelcontextprotocol/server-filesystem /srv/notes")
+    for cmdline in ("npm exec @modelcontextprotocol/server-filesystem /srv/notes",
+                    "npm exec -y @modelcontextprotocol/server-filesystem -- /srv/notes",
+                    "npm run build"):
+        assert not matches(cmdline), cmdline
 
 
 def test_a_real_npm_install_or_update_still_stops_the_removal():
     for cmdline in ("npm install -g @openai/codex", "npm update --global", "npm ci",
                     "/usr/bin/npm i -g tincan",
                     "node /usr/lib/node_modules/npm/bin/npm-cli.js i -g tincan"):
+        assert matches(cmdline), cmdline
+
+
+def test_a_flag_before_the_subcommand_is_still_install_activity():
+    for cmdline in ("npm -g install", "npm --global update", "npm -g install @openai/codex",
+                    "npm --global update --no-audit", "npm --prefix /srv install"):
+        assert matches(cmdline), cmdline
+
+
+def test_the_other_global_writing_subcommands_are_install_activity():
+    for cmdline in ("npm rebuild", "npm prune"):
         assert matches(cmdline), cmdline
 
 

@@ -194,6 +194,10 @@
           node /usr/lib/node_modules/npm/bin/npm-cli.js i -g tincan
           npm run build
           npm exec @modelcontextprotocol/server-filesystem /srv/notes
+          npm -g install
+          npm --global update
+          npm rebuild
+          npm prune
       register: npm_install_lines
       failed_when: false
       changed_when: false
@@ -217,17 +221,19 @@
           - npm_check.argv[1] == '-u'
           - npm_check.argv[2] == 'nish'
           - npm_check.argv[3] == '-f'
-          # Five of the seven lines above are install activity: the three
-          # global updates, the bare `npm ci`, and the same by bin name and
-          # by npm-cli.js. `npm run` and `npm exec` are not, and they are
-          # what the long-lived MCP file servers run as.
-          - npm_install_lines.stdout | trim == "5"
+          # Nine of the eleven lines above are install activity: the three
+          # global updates, the bare `npm ci`, the same by bin name and by
+          # npm-cli.js, and the four forms the #10074 narrowing dropped (a
+          # flag before the subcommand, plus rebuild and prune).
+          # `npm run` and `npm exec` are not, and they are what the
+          # long-lived MCP file servers run as.
+          - npm_install_lines.stdout | trim == "9"
           - npm_exec_lines.rc == 1
         fail_msg: >-
           The npm check in ansible/update.yml no longer separates install
           activity from a long-lived `npm exec`, so the MCP file servers on
           this box fail the run again (grep counted
-          {{ npm_install_lines.stdout | trim }} of 5 install lines and exited
+          {{ npm_install_lines.stdout | trim }} of 9 install lines and exited
           {{ npm_exec_lines.rc }} on the two exec lines).
 
     - name: Read the removal guard out of ansible/update.yml
