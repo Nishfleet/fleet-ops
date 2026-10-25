@@ -89,15 +89,17 @@ must be performed, not skipped:
 
 3. `systemctl --user list-units --state=failed` — must be EMPTY (set
    `XDG_RUNTIME_DIR=/run/user/$(id -u)`, or it silently returns nothing).
-   From a shell inside a worker or runner jail (`actions.runner.*.service`
-   cgroup) it ends `Failed to connect to bus: Permission denied` because the
-   jail masks the user manager (fleet-ops#9983): that error is the jail, not a
-   host fault, and the `root:root` mode-000 socket it reports is systemd's
-   inaccessible placeholder (`findmnt -T /run/user/1000/bus` names
+   From a shell inside a worker or runner jail (spot it with `grep
+   actions.runner /proc/self/cgroup`) it ends `Failed to connect to bus:
+   Permission denied` because the jail masks the user manager
+   (fleet-ops#9983): that error is the jail, not a host fault, and the
+   `root:root` mode-000 socket it reports is systemd's inaccessible
+   placeholder (`findmnt -T /run/user/$(id -u)/bus` names
    `tmpfs[/systemd/inaccessible/sock]`). From inside the jail the step stays
-   not run — say so, the user-scope half needs an unjailed session. A partial
-   fallback does work from any shell: `systemctl --failed` (system scope)
-   names the failed system units only (fleet-ops#10217).
+   not run and can never be cleared, because the user-scope half needs an
+   unjailed session. A partial fallback works from any shell:
+   `systemctl --failed` (system scope), failed system units only
+   (fleet-ops#10217).
 4. `curl -s 127.0.0.1:4000/health/readiness`, then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one gauge
    per deployment (0 healthy, 1 partial, 2 complete outage).
@@ -313,10 +315,9 @@ the live-state check above — a fleet-ops PR quotes their real output under
 a finding):
 
 - run command: `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`
-  — the fleet's timers are the product running; from a jailed shell this ends
-  `Failed to connect to bus: Permission denied` (the jail masks the user
-  manager, fleet-ops#9983) — mark the timer check not run and use step 4 plus
-  the partial fallback `systemctl --failed` (system scope, any shell);
+  — the fleet's timers are the product running. From a jailed shell this ends
+  `Failed to connect to bus: Permission denied`: the jail masks the user
+  manager, so mark the timer check not run and see step 3 for what that means.
 - health route: `curl -s 127.0.0.1:4000/health/readiness` — expect
   `{"status":"healthy","db":"connected"}`;
 - test login: there is none — the fleet has no end-user login; seat keys under
