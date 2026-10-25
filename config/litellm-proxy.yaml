@@ -799,6 +799,11 @@ model_list:
 # per-minute burst does not park it but a quota wall does) and is re-probed. A 402 or other billing error is not
 # retried (router_settings.num_retries: 0). The idle guard is grafana ppi-minimax (paid-plan-idle.yaml): zero calls
 # in 24 h means the plan is going to waste.
+# 2026-10-20: the provider list grew one id (MiniMax-M3.1-Flash) and it takes no row here. A row for it would need
+# Nish's yes first: the approved-models list at the top of this file names MiniMax: M3.1-Flash-Preview only
+# (2026-09-28). The probe + Gate eval gave no case for asking: on the Gate's own 60 held-out cases the two ids are
+# not measurably different, and the added id was ahead on no band that counts. Numbers and per-case rows (the only
+# copy): tests/evals/results/minimax_gate_m3_1_flash.json. No row or setting below changed.
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
