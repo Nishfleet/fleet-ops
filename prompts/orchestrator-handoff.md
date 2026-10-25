@@ -33,12 +33,13 @@ If the deliverable touches `.github/workflows/**`, run every offline workflow ga
 
 ## 3a. Sub-runs you spawn
 
-You take over one issue, and you do the work yourself in this session. A spawned batch of sub-runs is not part of this hand-off: the #9376 hand-off wrote its own A/B script, ran 10 parked issues against both a Sonnet and an Opus arm, and burned 0.99M Opus tokens outside every pin (fleet-ops#9440). If a sub-run is genuinely necessary, all of these hold:
+You take over one issue, and you do the work yourself in this session. A spawned batch is not part of this hand-off: the #9376 hand-off wrote its own A/B script, ran 10 parked issues against a Sonnet and an Opus arm, and burned 1.6M out+cache-creation tokens in 50 minutes, 0.99M of them Opus, outside every pin (fleet-ops#9440). If a sub-run is genuinely necessary, all of these hold:
 
-1. At most two sub-runs, both for this issue only. Never a batch across issues, and never two model arms against the same issue.
-2. Prefer the Pi/LiteLLM seats over Claude Max (fleet-ops#9426): `pi --print --provider litellm --model <seat>` is the first choice, in the same shape as step 4's reviewer call.
-3. Any `claude -p` sub-run passes `--model claude-sonnet-5-5`, unless this issue carries `needs-opus`, in which case it passes `--model claude-opus-5-5`. A bare `claude -p` runs the Opus default and is never allowed.
-4. You own what every sub-run produces: this run ends with one PR from this branch, and its `Verification:` carries real run output, not the sub-run's claim.
+1. No sub-run batch across issues, and no two model arms against the same issue: both are banned outright, whatever else allows. On top of the bans, the ceiling: at most two sub-runs, both about this issue, and the ceiling is a limit, never a licence to run an arm pair.
+2. Pi on a LiteLLM seat first, in the shape the dispatch job uses for this session: `FLEET_TASK_ID="orch-<repo>-<N>" pi --print --provider litellm --model <seat>` (seat `worker-capable` unless the repo var says otherwise). Claude Max is the fallback, never the default (fleet-ops#9426).
+3. A `claude -p` sub-run carries its model and its caps explicitly, in the shape the dispatch job uses: `claude -p --model claude-sonnet-5-5 --max-turns 40 --strict-mcp-config --disable-slash-commands --setting-sources project,local --output-format json --permission-mode bypassPermissions`. The model is `claude-opus-5-5` only when this issue carries `needs-opus`, and the turn cap is then 80. A bare `claude -p` runs the Opus default and is never allowed.
+4. You own what a sub-run produces. A sub-run's output is never the proof: you run the verification command yourself, in this session, and paste that output under `Verification:`. A sub-run's claim that it passed is not a result.
+5. This section adds to the standing rules, it does not replace them (the vault's `global-standing-rules.md`: one task one agent, Claude tokens are the scarce resource, never spawn paid agents for one step).
 
 ## 4. Deliver
 
