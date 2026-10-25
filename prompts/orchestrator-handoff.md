@@ -31,6 +31,15 @@ The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: 
 
 If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 
+## 3a. Sub-runs you spawn
+
+You take over one issue, and you do the work yourself in this session. A spawned batch of sub-runs is not part of this hand-off: the #9376 hand-off wrote its own A/B script, ran 10 parked issues against both a Sonnet and an Opus arm, and burned 0.99M Opus tokens outside every pin (fleet-ops#9440). If a sub-run is genuinely necessary, all of these hold:
+
+1. At most two sub-runs, both for this issue only. Never a batch across issues, and never two model arms against the same issue.
+2. Prefer the Pi/LiteLLM seats over Claude Max (fleet-ops#9426): `pi --print --provider litellm --model <seat>` is the first choice, in the same shape as step 4's reviewer call.
+3. Any `claude -p` sub-run passes `--model claude-sonnet-5-5`, unless this issue carries `needs-opus`, in which case it passes `--model claude-opus-5-5`. A bare `claude -p` runs the Opus default and is never allowed.
+4. You own what every sub-run produces: this run ends with one PR from this branch, and its `Verification:` carries real run output, not the sub-run's claim.
+
 ## 4. Deliver
 
 1. Commit and `git push origin orch/issue-<N>`.
