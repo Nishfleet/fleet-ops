@@ -125,14 +125,14 @@ policies:
         object_matchers:
           - [signal, "=", deploy-failed-24h]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
-        mute_time_intervals: [deploy-failed-24h-errors]
+        mute_time_intervals: [deploy-failed-24h-and-queue-down-2h-errors]
       # Same mute for the queue-down-2h rules: the queue-down rule on the same
       # query files the repo's one issue on a read error.
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [signal, "=", queue-down-2h]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
-        mute_time_intervals: [deploy-failed-24h-errors]
+        mute_time_intervals: [deploy-failed-24h-and-queue-down-2h-errors]
       # The host-unit and queue-down rules file ONE issue per firing alert
       # (fleet-ops#10204): they are the failures a machine fixes, so the issue is
       # the work item, and a fresh one every 24h started a second worker on the
@@ -174,7 +174,7 @@ policies:
 # one issue.
 muteTimes:
   - orgId: 1
-    name: deploy-failed-24h-errors
+    name: deploy-failed-24h-and-queue-down-2h-errors
     time_intervals:
       - times:
           - start_time: "00:00"

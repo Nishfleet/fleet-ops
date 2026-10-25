@@ -43,7 +43,7 @@
 #    state: over the same counted runs, the failures after the newest success
 #    exist and the oldest of them is at least 24 hours old (so no success in
 #    the last day either). for: 10m only absorbs a passing read error. Its
-#    DatasourceError is muted (mute timing deploy-failed-24h-errors): the
+#    DatasourceError is muted (mute timing deploy-failed-24h-and-queue-down-2h-errors): the
 #    deploy-failed rule on the same query files the repo's one issue for a read
 #    error. A red streak whose start has no date makes the SQL return two rows,
 #    which Grafana refuses for alerting, so the rule shows Error, never a silent

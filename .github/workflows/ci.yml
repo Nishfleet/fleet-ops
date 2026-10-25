@@ -121,7 +121,7 @@ jobs:
           cfg=rootfs/etc/alertmanager/alertmanager.yml
           amtool config routes test --config.file=$cfg --verify.receivers=deadman alertname=Watchdog severity=none
           amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
-          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=AnyWarning severity=warning
+          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=AnyWarning severity=warning  # AnyWarning is a stand-in name: any warning must reach no receiver
           promtool test rules config/prometheus-tests/*.test.yml
       - name: stub host-only binaries for systemd-analyze verify
         if: always()

@@ -2,8 +2,11 @@
 # and config-reload health, stale or failed off-site backups, public sites that
 # stop answering, and a same-day AI spend line (plus a page if that metric goes
 # missing). Kept deliberately small. The repair-dispatch machinery and the 12
-# rules that fed it were cut on 2026-09-29 (fleet-ops#8958); nothing here
-# brings back a repair worker or a second page path. NodeExporterDown pages
+# rules that fed it were cut on 2026-09-29 (fleet-ops#8958). Nothing in this
+# file brings back a repair worker or a second page path. Nish reopened exactly
+# one case on 2026-10-24 (fleet-ops#10204: every failure a machine can fix
+# becomes queue work): a failed systemd unit. That rule does not live here, so
+# this file stays a read-only signal set. NodeExporterDown pages
 # because a down node_exporter gates HermesGatewayDown off.
 #
 # Stock sources only: node_exporter's systemd collector (node_systemd_unit_state,

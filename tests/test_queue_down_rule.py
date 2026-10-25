@@ -96,10 +96,11 @@ def test_the_issue_group_covers_every_queued_repo_and_the_2h_group_holds_the_sam
     assert set(REPOS) == intake | {"Nishfleet/fleet-ops", "Nishfleet/drive"}
     for repo, r in issue.items():
         assert (r["labels"]["signal"], r["for"], r["execErrState"], r["noDataState"]) == ("queue-down", "0s", "Error", "Alerting")
-        assert "cannot read GitHub runs" in r["annotations"]["summary"]
+        assert "No agent-dispatch run on main" in r["annotations"]["summary"] and "the fleet is paused" in r["annotations"]["summary"]
+        assert "what NoData means here" in r["annotations"]["description"]
     for repo, r in page.items():
         assert (r["labels"]["signal"], r["for"], r["execErrState"], r["noDataState"]) == ("queue-down-2h", "10m", "Error", "OK")
-        assert "cannot read GitHub runs" in r["annotations"]["summary"]
+        assert "No agent-dispatch run on main" in r["annotations"]["summary"] and "noDataState: OK" in r["annotations"]["summary"]
         assert _query(r) == _query(issue[repo])
 
 
@@ -121,13 +122,13 @@ def test_only_the_2h_group_is_critical_its_read_errors_are_muted_and_the_tree_pa
     muted = matched[0]
     assert muted["receiver"] == "fleet-alert-dispatch"
     assert sorted(muted["object_matchers"]) == [["alertname", "=~", "DatasourceError|DatasourceNoData"], ["signal", "=", "queue-down-2h"]]
-    assert muted["mute_time_intervals"] == ["deploy-failed-24h-errors"]
+    assert muted["mute_time_intervals"] == ["deploy-failed-24h-and-queue-down-2h-errors"]
     assert not muted.get("continue")
     errors = next(r for r in policy["routes"] if r["receiver"] == "hermes-urgent" and ["alertname", "=~", "DatasourceError|DatasourceNoData"] in r["object_matchers"])
     assert ["signal", "!~", "deploy-failed-24h|queue-down-2h"] in errors["object_matchers"]
     critical = next(r for r in policy["routes"] if ["severity", "=", "critical"] in r["object_matchers"])
     assert (critical["receiver"], critical["repeat_interval"], critical["continue"]) == ("hermes-urgent", "1h", True)
-    assert _yq(".muteTimes", POLICY) == [{"orgId": 1, "name": "deploy-failed-24h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
+    assert _yq(".muteTimes", POLICY) == [{"orgId": 1, "name": "deploy-failed-24h-and-queue-down-2h-errors", "time_intervals": [{"times": [{"start_time": "00:00", "end_time": "24:00"}]}]}]
 
 
 def test_every_window_covers_three_hours_of_runs():
@@ -140,6 +141,7 @@ def test_every_window_covers_three_hours_of_runs():
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:45:00Z", "completed", "failure")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "failure")], [1]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "completed", "startup_failure")], [1]),
+    ([(1, "2026-10-10T10:55:00Z", "completed", "startup_failure"), (2, "2026-10-10T11:55:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "failure"), (3, "2026-10-10T11:55:00Z", "in_progress", None)], [1]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "failure"), (2, "2026-10-10T11:55:00Z", "completed", "neutral")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "completed", "timed_out")], [0]),
@@ -160,6 +162,7 @@ def test_the_sql_reads_a_startup_failure_at_once_or_a_failing_streak_30_minutes_
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T10:50:00Z", "completed", "failure")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "failure")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:55:00Z", "completed", "startup_failure")], [1]),
+    ([(1, "2026-10-10T10:55:00Z", "completed", "startup_failure"), (2, "2026-10-10T11:55:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "failure"), (3, "2026-10-10T11:55:00Z", "completed", "skipped")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:25:00Z", "completed", "cancelled"), (3, "2026-10-10T11:55:00Z", "completed", "success")], [0]),
     ([(1, "2026-10-10T10:55:00Z", "completed", "success"), (2, "2026-10-10T11:15:00Z", "completed", "cancelled")], [0]),

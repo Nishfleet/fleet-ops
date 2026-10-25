@@ -10,9 +10,22 @@
 #
 # One failure files one issue: the policy route for signal=host-unit refiles it
 # only after a week, so a unit left broken does not start a second worker on the
-# same failure every day (fleet-ops#10204). To switch this rule off: set
-# isPaused: true here, or silence it in the Grafana UI for a short pause (the
-# file is mounted read-only, so the UI cannot save that edit).
+# same failure every day (fleet-ops#10204). keep_firing_for covers the flap that
+# would defeat that: a nightly unit (the restic backups) leaves the failed state
+# while it runs, so without it the alert resolves and the next failure is a new
+# alert instance, which files a fresh issue every night. It stays firing for 2
+# hours after the condition clears, longer than a backup run, so one broken
+# nightly unit is one alert and one issue a week.
+#
+# A mass failure files one issue per failed unit, once: each failed unit is its
+# own repair and the issue is its work item, so the route does not group them
+# away. That is bounded by the 7d repeat per unit and by the fleet's dispatch
+# concurrency; the alternative, grouping them into one issue, would drop the
+# units it does not name, and #10204 asks for all of them.
+#
+# To switch this rule off: set isPaused: true here, or silence it in the Grafana
+# UI for a short pause (the file is mounted read-only, so the UI cannot save
+# that edit).
 apiVersion: 1
 groups:
   - orgId: 1
@@ -24,6 +37,7 @@ groups:
         title: SystemUnitFailed
         condition: C
         for: 5m
+        keepFiringFor: 2h
         noDataState: OK
         execErrState: Error
         annotations:

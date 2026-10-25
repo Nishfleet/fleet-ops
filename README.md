@@ -67,7 +67,10 @@ script, or prompt lands unseen.
   the UI cannot save edits. Off switch for one alert rule: `isPaused: true` on
   that rule in a PR (the file is mounted read-only, so the UI cannot save it),
   and a pause of an hour or a day without a merge is a silence in the Grafana
-  UI (Alerting, Silences). The rules that file queue work each carry that line
+  UI (Alerting, Silences). A long pause that stops the sweep timers makes the
+  `queue-down.yaml` rules read NoData, which is what the 30 minute rule files,
+  so pause those rules in the same change. The rules that file queue work each
+  carry that line
   in their header: `fleet-host.yaml` (a failed systemd unit,
   `signal=host-unit`) and `queue-down.yaml` (agent-dispatch down for a repo,
   `signal=queue-down`, and its 2 hour page). A rule there files one
