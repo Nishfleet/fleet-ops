@@ -10,6 +10,13 @@ rail are in `README.md`; design and enforced rules are in
    deliberately down; respect it. Otherwise step 2 is the truth.
 2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
 3. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
+   From a shell inside a worker or runner jail this ends `Failed to connect to
+   bus: Permission denied` because the jail masks the user manager
+   (fleet-ops#9983): the error is the jail, not a host fault, and the
+   `root:root` mode-000 socket it reports is systemd's inaccessible
+   placeholder. From inside the jail the step stays not run and can never be
+   cleared. Partial fallback from any shell: `systemctl --failed` (system
+   scope), failed system units only.
 4. `curl -s 127.0.0.1:4000/health/readiness` (expect
    `{"status":"healthy","db":"connected"}`), then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
@@ -53,6 +60,19 @@ gone (fleet-ops#8238).
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
+
+### Shell startup files
+
+Interactive shells do not read `~/.config/environment.d`. The systemd user
+manager does, for user units, so a value only a unit needs goes there. Do not
+add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
+a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
+not from an interactive shell (README, "systemd by default").
+
+The loader that ran the systemd environment generator in those files from
+2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
+was retired (`fleet-ops#10224`), which left the loader with nothing to carry, so
+it is deleted (`fleet-ops#10143`).
 
 ## Runner guard (fleet-ops#9317)
 
