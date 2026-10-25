@@ -42,8 +42,10 @@
 #   2026-09-28 sign-in e2e (5,976 a day, about 250/h) still fires in its first
 #   hour. Accepted blind spot: a leak under 100/h stays silent; bounded at
 #   2,400/day.
-#   R2: total Standard storage over 30 GB, or a bucket up 2 GB within 24h
-#   (last value minus the 24h low, so a prune followed by regrowth still counts).
+#   R2: total Standard storage over 30 GB, a bucket up 2 GB within 24h
+#   (last value minus the 24h low, so a prune followed by regrowth still counts),
+#   or the account total up more than 4 GB in 30 days (warning, so it files an
+#   issue and never pages).
 #
 # Floor on the median leg (fleet-ops, incident 2026-10-06): the rule is
 #   ($D > 3 x allowance) || ($D > 3 x median && $D > 1 x allowance)
@@ -467,6 +469,96 @@ groups:
           threshold: 'over 2 GB growth in 24 hours'
           top: 'bucket {{ $labels.resource }}'
         labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
+        isPaused: false
+      # The middle tier (fleet-ops#9825). A leak that adds under 2 GB a day to
+      # each of several buckets is invisible to cf-r2-bucket-growth, which
+      # compares one bucket against itself, and the total page fires only once
+      # the account crosses 30 GB. This compares the account total against the
+      # same hour 30 days ago, so a spread or trickling leak shows up as growth
+      # whatever any single bucket does. Query B is the hour ending 30 days
+      # back, the same shape as cf-r2-bucket-growth's 24-hour-back B.
+      # Severity warning, not critical: cloudflare-spend-contact.yaml sends
+      # only critical to hermes-urgent, so this rule files a fleet-ops issue
+      # and never pages. tests/alert_routes_check.py holds that: a rule outside
+      # its URGENT list must be warning.
+      - uid: cf-r2-total-growth
+        title: Cloudflare R2 Standard storage 30-day growth
+        condition: F
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: A
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: B
+            relativeTimeRange: {from: 2595600, to: 2592000}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: B
+              root_selector: '$map([data.viewer.accounts[0]], function($a){{"total": $sum($a.r2StorageAdaptiveGroups.max.payloadSize)}})'
+              columns: [{selector: total, text: value, type: number}]
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 10000, filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: T
+            relativeTimeRange: {from: 3600, to: 0}
+            datasourceUid: fleet-cloudflare
+            model:
+              <<: *cf-last-hour-total
+              refId: T
+              root_selector: data.viewer.accounts[0].r2StorageAdaptiveGroups
+              columns:
+                - {selector: dimensions.bucketName, text: resource, type: string}
+                - {selector: max.payloadSize, text: value, type: number}
+              url_options:
+                method: POST
+                body_type: graphql
+                body_content_type: application/json
+                body_graphql_query: |-
+                  query { viewer { accounts(filter: {accountTag: "f670a698e17bf160c8e4679823e68916"}) {
+                    r2StorageAdaptiveGroups(limit: 1, orderBy: [max_payloadSize_DESC], filter: {storageClass: "Standard", datetime_geq: "${__timeFrom:date:iso}", datetime_lt: "${__timeTo:date:iso}"}) { dimensions { bucketName } max { payloadSize } }
+                  } } }
+          - refId: E
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $A - $B}
+          - refId: R
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
+          - refId: F
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: F
+              expression: R
+              conditions: [{evaluator: {params: [4000000000], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'R2 Standard storage grew {{ $values.E.Value | humanize }}B in 30 days'
+          description: 'The account total grew by more than 4 GB against the same hour 30 days ago. It is the middle tier between cf-r2-bucket-growth, which compares one bucket against itself 24 hours ago and so misses a leak that adds under 2 GB a day to each of several buckets, and cf-r2-standard-total, which pages at 30 GB. Measured 2026-10-21 (fleet-ops#9943): the account holds about 23 GB, the restic live repository and its 30-day-locked copy held about 10 GB each before the retention prune, whose kept set is about 1.5 GiB, and the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950), which is about 1 GB a month. The line sits about 4x above that designed ramp, and the drain of the locked copy to 2026-11-21 shrinks the total, so neither the designed growth nor the drain fires it. Severity warning: it files a fleet-ops issue through the cloudflare-spend contact point and never reaches hermes-urgent.'
+          value: '{{ $values.E.Value | humanize }}B growth in 30 days'
+          threshold: 'over 4 GB (4000000000 bytes) growth in 30 days'
+          top: 'bucket {{ $labels.resource }}'
+        labels: {severity: warning, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
 
   # D1 write spike (Nish, 2026-10-15). A flat line, not the 3x scheme above: on
