@@ -140,8 +140,8 @@ policies:
         group_wait: 0s
         group_interval: 5m
         # 24h, not 168h: a worker that closes the issue without fixing the cause
-        # must not silence the alert for 7 days (fleet-ops#10321, orchestrator-
-        # specified, cost of one daily run per unfixed alert accepted).
+        # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
+        # one strong-seat run per still-firing alert per day.
         repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
