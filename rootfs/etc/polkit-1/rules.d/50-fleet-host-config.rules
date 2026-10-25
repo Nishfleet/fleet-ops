@@ -10,11 +10,14 @@
 // restic-r2-backup.service: the nightly backup oneshot; BackupFailed texts
 // Nish after 2h, so a re-run after the fix clears it.
 // restic-r2-size-guard.service: the backup size check oneshot; same reason.
+// fleet-canary.service: the self-repair canary (fleet-ops#10324); the worker
+// that fixes its value re-runs it so SystemUnitFailed resolves.
 var fleetStartableUnits = [
     "fleet-host-config.service",
     "fleet-update.service",
     "restic-r2-backup.service",
-    "restic-r2-size-guard.service"
+    "restic-r2-size-guard.service",
+    "fleet-canary.service"
 ];
 
 polkit.addRule(function(action, subject) {

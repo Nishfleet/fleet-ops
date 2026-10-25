@@ -1,0 +1,13 @@
+# Daily reconcile of fleet-canary.service. A deploy that changes the file runs
+# the unit at once (ansible/host.yml); this timer only catches what has no event:
+# a hand edit of /etc/fleet-ops/canary/value.
+[Unit]
+Description=Daily self-repair canary check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

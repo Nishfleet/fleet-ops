@@ -1,0 +1,15 @@
+# Canary for the self-repair chain (fleet-ops#10324). It exits 1 when
+# /etc/fleet-ops/canary/value (config/canary/value, installed by ansible/host.yml)
+# does not hold exactly 1, so a PR that sets the file to 0 is a real fault:
+# SystemUnitFailed fires, an issue is filed, a worker fixes the file, the deploy
+# installs it, and a re-run of this unit clears the alert. It runs on a deploy
+# that changes the file (handler in ansible/host.yml) and daily from
+# fleet-canary.timer. polkit lets user nish start it (50-fleet-host-config.rules).
+# To switch it off: delete this file, fleet-canary.timer and config/canary/, remove
+# the canary tasks from ansible/host.yml, and add the two units to `retired`.
+[Unit]
+Description=Self-repair canary: fails when /etc/fleet-ops/canary/value is not 1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/grep -qx 1 /etc/fleet-ops/canary/value

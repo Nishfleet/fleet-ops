@@ -1634,6 +1634,36 @@
       # Under --check the copy above did not really install the unit yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # The self-repair canary (fleet-ops#10324): config/canary/value is the fault
+    # the chain must repair. The unit runs after the play when the value changed;
+    # its verdict is the SystemUnitFailed alert, so a failing run must not fail
+    # this deploy as well.
+    - name: Create the canary directory
+      ansible.builtin.file:
+        path: /etc/fleet-ops/canary
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the canary value
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../config/canary/value"
+        dest: /etc/fleet-ops/canary/value
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Run the canary
+
+    - name: Enable the daily canary
+      ansible.builtin.systemd_service:
+        name: fleet-canary.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      # Under --check the copy above did not really install the timer yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
     - name: Enable the daily drift run
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer
@@ -2420,6 +2450,10 @@
 
 
   handlers:
+    - name: Run the canary
+      ansible.builtin.command: /usr/bin/systemctl start fleet-canary.service
+      failed_when: false
+
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
