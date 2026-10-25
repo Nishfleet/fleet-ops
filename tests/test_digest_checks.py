@@ -16,6 +16,11 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
+- a failed notepad read never writes the stored object, so a silent read
+  failure cannot empty the saved list, and every run ends with one STORED-CHECK
+  receipt carrying its UTC time, source, item counts and save outcome, written
+  to the notepad key check as it prints, so an audit re-reads what the run did
+  instead of recording the run as unverifiable (fleet-ops#9774),
 - ansible/host.yml applies the prompts to the live jobs.
 """
 import datetime
@@ -101,12 +106,21 @@ else:
 """
 
 FAKE_HERMES = """#!/usr/bin/env python3
-import os, sys
+import os, pathlib, sys
 a = sys.argv[1:]
+calls = pathlib.Path(os.environ["FAKE_GET_CALLS"])
 if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
+    n = int(calls.read_text()) + 1 if calls.exists() else 1
+    calls.write_text(str(n))
+    if os.environ.get("FAKE_GET_FAIL") == a[4]:
+        sys.exit(1)
+    if os.environ.get("FAKE_GET_FAIL_FIRST") == a[4] and n == 1:
+        sys.exit(1)
     sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
 elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
-    open(os.environ["FAKE_SAVED"], "w").write(a[5])
+    if os.environ.get("FAKE_SET_FAIL") == a[4]:
+        sys.exit(1)
+    open(os.environ["FAKE_SAVED" if a[4] == "sent" else "FAKE_CHECKED"], "w").write(a[5])
 else:
     sys.exit(2)
 """
@@ -116,7 +130,7 @@ def _command(prompt, start):
     return next(x for x in prompt.read_text().splitlines() if x.startswith(start))
 
 
-def _fake_box(tmp_path, gh, store):
+def _fake_box(tmp_path, gh, store, **extra):
     if shutil.which("jq") is None:
         pytest.skip("jq is not installed")
     bindir = tmp_path / "bin"
@@ -132,12 +146,15 @@ def _fake_box(tmp_path, gh, store):
         "FAKE_GH": str(tmp_path / "gh.json"),
         "FAKE_STORE": str(tmp_path / "store.json"),
         "FAKE_SAVED": str(tmp_path / "saved.json"),
+        "FAKE_CHECKED": str(tmp_path / "checked.txt"),
+        "FAKE_GET_CALLS": str(tmp_path / "get_calls.txt"),
     }
+    env.update(extra)
     return env
 
 
-def _run_2a(prompt, tmp_path, gh, store):
-    env = _fake_box(tmp_path, gh, store)
+def _run_2a(prompt, tmp_path, gh, store, **extra):
+    env = _fake_box(tmp_path, gh, store, **extra)
     r = subprocess.run(["bash", "-c", _command(prompt, "R=$(hermes cron notepad")], env=env, capture_output=True, text=True, timeout=60)
     saved = pathlib.Path(env["FAKE_SAVED"])
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
@@ -145,6 +162,19 @@ def _run_2a(prompt, tmp_path, gh, store):
 
 def _issue(state, *labels):
     return {"state": state, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
+
+
+_SOURCES = {MORNING: "morning", EVENING: "evening"}
+
+
+def _check_key(tmp_path):
+    receipt = tmp_path / "checked.txt"
+    return receipt.read_text() if receipt.exists() else None
+
+
+def _receipt_is_fresh(receipt):
+    stamp = datetime.datetime.strptime(receipt.split()[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    return abs((datetime.datetime.now(datetime.timezone.utc) - stamp).total_seconds()) < 120
 
 
 def _run_row(conclusion, name, days_ago=1):
@@ -212,7 +242,8 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "broken:beta:Build": "NEW",
     }
     assert "UNCHANGED_TOTAL 5" in lines
-    assert lines[-1] == "STORED-SAVED"
+    assert "STORED-SAVED" in lines
+    assert lines[-1].startswith("STORED-CHECK ") and " state=executed " in lines[-1]
     assert saved == {
         "wait:alpha#2": "open|needs-nish-decision,priority-now",
         "wait:alpha#3": "open|needs-nish-decision",
@@ -223,6 +254,55 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "broken:alpha:Slow": "failure",
         "broken:beta:Build": "failure",
     }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_records_a_check_receipt(prompt, tmp_path):
+    gh = {"repos": [], "issues": {"Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision")}, "runs": {}}
+    store = json.dumps({"wait:alpha#1": "open|needs-nish-decision", "site": "200|2026-10-14"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store)
+    receipt = _check_key(tmp_path)
+    assert lines[-1] == f"STORED-CHECK {receipt}"
+    assert receipt.split(" ", 1)[1] == (
+        f"source={_SOURCES[prompt]} state=executed before=2 items=2 rows=1 unchanged=1 save=ok"
+    )
+    assert _receipt_is_fresh(receipt)
+    assert saved == {"wait:alpha#1": "open|needs-nish-decision", "site": "200|2026-10-14"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_keeps_the_saved_list_when_the_read_fails(prompt, tmp_path):
+    store = json.dumps({"wait:alpha#1": "open|x"})
+    lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, store, FAKE_GET_FAIL="sent")
+    assert "STORED-UNREADABLE" in lines
+    assert not any(l.startswith("STORED-SAVED") or l.startswith("STORED-SAVE-FAILED") for l in lines)
+    assert not any(l.startswith("UNCHANGED_TOTAL") for l in lines)
+    assert saved is None
+    receipt = _check_key(tmp_path)
+    assert receipt.split(" ", 1)[1] == f"source={_SOURCES[prompt]} state=skipped reason=stored-read-failed"
+    assert lines[-1] == f"STORED-CHECK {receipt}"
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_retries_a_failed_store_read(prompt, tmp_path):
+    gh = {"repos": [], "issues": {"Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision")}, "runs": {}}
+    store = json.dumps({"wait:alpha#1": "open|needs-nish-decision"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store, FAKE_GET_FAIL_FIRST="sent")
+    assert "ROW wait:alpha#1 UNCHANGED" in lines
+    assert saved == {"wait:alpha#1": "open|needs-nish-decision"}
+    assert " state=executed " in _check_key(tmp_path)
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_records_a_failed_save(prompt, tmp_path):
+    gh = {"repos": [], "issues": {"Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision")}, "runs": {}}
+    store = json.dumps({"wait:alpha#1": "open|needs-nish-decision"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store, FAKE_SET_FAIL="sent")
+    assert "STORED-SAVE-FAILED" in lines
+    assert saved is None
+    receipt = _check_key(tmp_path)
+    assert receipt.endswith(" save=failed")
+    assert lines[-1] == f"STORED-CHECK {receipt}"
 
 
 _WINDOW_PUSHES = 30
@@ -341,8 +421,8 @@ else:
 _FEED = "<rss><channel><lastBuildDate>Thu, 15 Oct 2026 02:00:00 +0000</lastBuildDate><item><pubDate>Thu, 15 Oct 2026 02:00:00 +0000</pubDate></item></channel></rss>"
 
 
-def _run_2b(tmp_path, store, code, feed):
-    env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
+def _run_2b(tmp_path, store, code, feed, **extra):
+    env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store, **extra)
     (tmp_path / "bin/curl").write_text(FAKE_CURL)
     (tmp_path / "bin/curl").chmod(0o755)
     env = {**env, "FAKE_CODE": code, "FAKE_FEED": feed, "TZ": "UTC"}
@@ -351,9 +431,15 @@ def _run_2b(tmp_path, store, code, feed):
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
 
 
+def test_site_check_never_saves_when_the_store_read_fails(tmp_path):
+    lines, saved = _run_2b(tmp_path, json.dumps({"wait:a#1": "open|x"}), "200", _FEED, FAKE_GET_FAIL="sent")
+    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVE-FAILED"]
+    assert saved is None
+
+
 def _site_command():
     text = EVENING.read_text()
-    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); test -z \"$R\" && R='{}'; W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
+    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent", text.index("2b DAILY PAGE"))
     return text[start:text.index("\n", start)]
 
 

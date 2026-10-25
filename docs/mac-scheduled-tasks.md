@@ -114,6 +114,25 @@ previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
 prompts (copy the old `prompt` value back with the same `hermes cron edit`
 command).
 
+What the digest stores on the job's notepad (job `3acce3a945cb`), and how to
+turn it off (fleet-ops#9774):
+
+- `sent` holds the item list the digest re-checks: `wait:<repo>#<n>` and
+  `broken:<repo>:<workflow>` keys, plus `site`. A run that could not read it
+  writes nothing to it, so a failed read can no longer empty the list.
+- `check` holds the last run's receipt, the payload of that run's
+  `STORED-CHECK` line:
+  `<UTC time> source=morning|evening state=executed before=<n> items=<n>
+  rows=<n> unchanged=<n> save=ok|failed`, or `state=skipped
+  reason=stored-read-failed`. An audit reads this instead of re-deriving what
+  the run did.
+- Both are ordinary notepad keys, read and written by the stock `hermes cron
+  notepad 3acce3a945cb get <key>` and `hermes cron notepad 3acce3a945cb set
+  <key> <value>` that the prompts themselves call. `hermes cron pause
+  3acce3a945cb` stops all writes to both. `3acce3a945cb` is the morning job and
+  `682de9846caa` the evening one, and both write the same `sent` and `check`
+  keys, so pausing only one still leaves the other writing them.
+
 ## Checked, not assumed
 
 Every reason above was checked against live state during the run that added this
