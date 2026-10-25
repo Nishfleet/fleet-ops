@@ -43,6 +43,32 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
+      - alert: DiskWillFill
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} will fill within 24 hours"
+          description: "At the rate of the last 6 hours, {{ $labels.mountpoint }} ({{ $labels.device }}) runs out of space within 24 hours."
+
+      - alert: SwapPressure
+        expr: (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes) > 0.75 and node_memory_SwapTotal_bytes > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swap is more than 75% used"
+          description: "Swap use has stayed above 75% for 30 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+
+      - alert: OOMKill
+        expr: increase(node_vmstat_oom_kill[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The kernel OOM killer ran"
+          description: "node_vmstat_oom_kill rose in the last 15 minutes: the kernel killed a process for lack of memory."
+
   - name: fleet_hermes
     rules:
       # Not active for 5 minutes. max_over_time rather than `for:` so a crash
