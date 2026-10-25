@@ -497,24 +497,31 @@ tests:
               summary: "/ will fill within 24 hours"
               description: "At the rate of the last 6 hours, / (/dev/sda1) runs out of space within 24 hours."
 
-  - interval: 5m
+  - interval: 1m
     input_series:
-      - series: 'node_memory_SwapTotal_bytes'
-        values: '8000000000x24'
-      - series: 'node_memory_SwapFree_bytes'
-        values: '4000000000x6 1000000000x18'
+      - series: 'node_pressure_memory_waiting_seconds_total'
+        values: '0+7x40'
     alert_rule_test:
-      - eval_time: 25m
-        alertname: SwapPressure
+      - eval_time: 10m
+        alertname: MemoryPressure
         exp_alerts: []
-      - eval_time: 90m
-        alertname: SwapPressure
+      - eval_time: 30m
+        alertname: MemoryPressure
         exp_alerts:
           - exp_labels:
               severity: warning
             exp_annotations:
-              summary: "Swap is more than 75% used"
-              description: "Swap use has stayed above 75% for 30 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+              summary: "Tasks are stalled waiting for memory"
+              description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+
+  - interval: 1m
+    input_series:
+      - series: 'node_pressure_memory_waiting_seconds_total'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MemoryPressure
+        exp_alerts: []
 
   - interval: 1m
     input_series:
