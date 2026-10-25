@@ -7,9 +7,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
-# Podman 4.9.3 has no Memory= key for quadlets and rejects an unknown key in [Container], so the
-# cap is the unit's [Service] MemoryMax=; --memory= through [Container] PodmanArgs= is the stock
-# spelling podman does accept.
+# Podman 4.9.3 quadlets have no Memory= key and reject an unknown [Container] key
+# (https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html; Memory= exists only in
+# later podman), so the cap is the unit's [Service] MemoryMax= or --memory= in [Container] PodmanArgs=.
 CAP_KEYS = {"Service": {"MemoryMax"}}
 
 
@@ -58,7 +58,7 @@ def test_has_memory_cap(path: Path) -> None:
         for value in values(sections, section, key)
         if value.lower() not in {"", "infinity", "0"}
     ]
-    explicit_podman = [v for v in values(sections, "Container", "PodmanArgs") if v.startswith(("--memory=", "--memory "))]
+    explicit_podman = [v for v in values(sections, "Container", "PodmanArgs") if re.search(r"--memory[= ]", v)]
     assert caps or explicit_podman, f"{path.name}: needs [Service] MemoryMax= (or [Container] PodmanArgs=--memory=)"
 
 
@@ -69,11 +69,14 @@ def test_image_is_pinned_by_digest(path: Path) -> None:
     assert DIGEST.search(images[0]), f"{path.name}: Image={images[0]} must end in @sha256:<64 hex>"
 
 
+SIZE = re.compile(r"(\d+)\s*([KMGTPE]?)", re.IGNORECASE)
+
+
 def size_bytes(value: str) -> int:
-    """A systemd size (5G, 5120M, 512) in bytes, so equal caps in different units compare equal."""
-    match = re.fullmatch(r"(\d+)([KMGT]?)", value)
+    """A systemd size (5G, 5120m, 512) in bytes, so equal caps in different units compare equal."""
+    match = SIZE.fullmatch(value.strip())
     assert match, f"not a systemd size: {value}"
-    return int(match[1]) * 1024 ** " KMGT".index(match[2])
+    return int(match[1]) * 1024 ** " KMGTPE".index(match[2].upper())
 
 
 def test_proxy_cap_equals_its_slice() -> None:
