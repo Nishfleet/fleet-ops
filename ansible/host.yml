@@ -143,6 +143,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
+      # directory, which shadows the installed one in /etc/systemd/user, so the
+      # bytes the repo ships were inert. The file, not the directory: a retired
+      # path is deleted, and the directory stays for the next drop-in. The user
+      # manager is reloaded below so it forgets the drop-in, and gpg-agent picks
+      # the installed one up at its next start.
+      - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
       # The old hand-placed Alertmanager config (#10146): the running service
       # reads /etc/alertmanager/alertmanager.yml, which the repo ships, and the
       # only reader of this copy was the first-run chat-id seed, removed below.

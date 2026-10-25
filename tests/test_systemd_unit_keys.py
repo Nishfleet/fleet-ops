@@ -208,6 +208,16 @@ def _last(keys: dict[str, list[str]], key: str) -> str:
     return keys[key][-1].lower()
 
 
+def effective_directives(unit: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for source in [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]:
+        if not source.is_file():
+            continue
+        for key, values in _unit_keys(source).items():
+            keys.setdefault(key, []).extend(values)
+    return keys
+
+
 def test_the_hermes_checks_read_every_dropin_the_repo_ships() -> None:
     shipped = _shipped_dropins()
     dirs = sorted(path.name for path in INSTALLED.glob("hermes*.service.d") if path.is_dir())
@@ -1175,6 +1185,43 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
         assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
             f"{unit.name} sets UMask itself; keep it in the drop-in only"
         )
+
+
+GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
+GPG_AGENT_OOM_DROPIN = "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
+GPG_AGENT_HOST_COPY = '"{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"'
+BOX_ONLY_DROPINS = ("ssh.socket.d/override.conf", "smbd.service.d/tailscale.conf")
+
+
+def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired() -> None:
+    assert (ROOT / GPG_AGENT_OOM_DROPIN).is_file(), f"{GPG_AGENT_OOM_DROPIN} is not in the repo, so a git pull carries no edit to it"
+    assert not GPG_AGENT_UNIT.exists(), "gpg-agent.service is a distro unit; the drop-in is the only repo copy"
+    keys = effective_directives(GPG_AGENT_UNIT)
+    assert _last(keys, "ManagedOOMPreference") == "omit", "systemd-oomd would select the credential cache"
+    assert _last(keys, "MemoryMax") == "512m", "the ceiling the senior auditor set is gone"
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
+        "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
+    )
+    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
+
+
+def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
+    for rel in BOX_ONLY_DROPINS:
+        for base in (ROOT / "rootfs/etc/systemd/system", ROOT / "rootfs/etc/systemd/user", ROOT / "systemd"):
+            assert not (base / rel).exists(), f"{base.name}/{rel} would publish an access path the box keeps off this repo"
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_systemd_analyze_accepts_the_gpg_agent_oom_dropin(tmp_path: Path) -> None:
+    (tmp_path / "gpg-agent.service.d").mkdir()
+    shutil.copy(ROOT / GPG_AGENT_OOM_DROPIN, tmp_path / "gpg-agent.service.d/20-oom-omit.conf")
+    (tmp_path / "gpg-agent.service").write_text("[Unit]\nDescription=GnuPG agent\n\n[Service]\nExecStart=/bin/true\n")
+    proc = subprocess.run(["systemd-analyze", "verify", "--man=no", "./gpg-agent.service"], cwd=tmp_path, capture_output=True, text=True, check=False)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0 and "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
 
 
 CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
