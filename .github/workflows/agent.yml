@@ -469,7 +469,7 @@ jobs:
               fi
             fi
             unset claude_tok
-            [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"
+            [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"; [ ! -f "$RUNNER_TEMP/try.out" ] || { claude_final="${RUNNER_TEMP%/*}/claude-final/$FLEET_TASK_ID.txt"; { mkdir -p "${claude_final%/*}" && cp "$RUNNER_TEMP/try.out" "$claude_final" && echo "claude lane: final answer kept on the VPS at $claude_final ($(wc -c <"$claude_final") bytes)"; } || echo "::warning::claude lane: could not keep the final answer"; } # print mode's final answer stays off the public log (fleet-ops#10309)
             if [ "$rc" != 0 ] && refused && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
