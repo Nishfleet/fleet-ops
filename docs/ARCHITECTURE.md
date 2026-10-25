@@ -143,13 +143,29 @@ The rules still in force:
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
-  not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
+  not armed. Coordinator approval is a **required status check**: the
+  `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
+  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
+  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  resolves every PR in the queue entry from the group ref, reads the CLASSIFY
+  and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
+  commit, and fails a risky PR whose current head sha carries no approval. A
+  hand enqueue is caught by it as well, because a queue entry cannot merge
+  while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
+  unapproved before the check existed; the job ran from 2026-10-07 but the
+  ruleset did not require it until later, so a failing check still let the
+  entry merge). This ruleset grants no bypass actor (`bypass_actors` is empty),
+  so no login skips its required checks that way; the path that is not a check
+  is a direct `PUT pulls/<PR>/merge`, which the ruleset does not permit. agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
   status on it (0509#7092). A person's Approve review counts toward the
   ruleset's required review, not toward this gate, and there is no relay that
-  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
+  re-arms on it (the one-tap relay of fleet-ops#9505 is removed). That disarm
+  is now redundant on fleet-ops and stays only until 0509 and drive have the
+  check: their `agent-dispatch.yml` stubs call this shared workflow and their
+  rulesets require no `coordinator-approval`.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
@@ -189,8 +205,9 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`
 and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
-on the host (`/etc/systemd/system/restic-r2-*`, installed outside this repo)
-and publish restore proofs.
+on the host (`/etc/systemd/system/restic-r2-*`, deliberately host-only —
+RUNBOOK, "LiteLLM stack (rebuild reference)" records the decision and the
+rebuild warning) and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,
 no second dispatcher, no Kubernetes.

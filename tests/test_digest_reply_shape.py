@@ -8,9 +8,15 @@ questions. The fix lives in the canonical prompts under config/hermes/
 holds the machine side:
 
 - the canonical prompts must carry the fixed reply contract,
-- the shape checker must flag all five fixtures shaped like the shipped replies
-  from before the fix (labels written by a non-Claude model before the rewrite, in
-  tests/evals/cases/digest_reply_shape.json - the builder graded none),
+- a reply that is a sentence about the tools instead of the digest (the 08:00
+  IST morning run of 2026-10-11, execution prefix e078ee1c, shipped a single
+  sentence about which tools to use) flags under a named tooling-meta class,
+- the shape checker must flag all five fitted fixtures shaped like the shipped replies
+  from before the fix plus the judge seat's six held-out samples (labels written
+  by non-Claude model families before the class was fitted to the fitted set,
+  in tests/evals/cases/digest_reply_shape.json: the first labeller labelled the
+  fitted fixtures, the second wrote and labelled the held-out group - the
+  builder graded none),
 - the first shipped reply after the fix (digest-evening execution 634b61c6,
   2026-10-13T09:46 IST, delivered to Telegram) must pass clean,
 - the reply shapes that shipped on 2026-10-19 (execution 682de9846caa run
@@ -85,6 +91,14 @@ _NARRATION_RES = [
     re.compile(r"\bi have everything\b", re.IGNORECASE),
     re.compile(r"\bhere (is|are) the (reply|digest|summary)\b", re.IGNORECASE),
 ]
+_TOOLING_META_RES = [
+    re.compile(r"\btools?\b", re.IGNORECASE),
+    re.compile(r"\bbuilt-ins?\b", re.IGNORECASE),
+    re.compile(r"\btoolset\b", re.IGNORECASE),
+    re.compile(r"\bcapabilit(?:ies|y)\b", re.IGNORECASE),
+    re.compile(r"\bweb[- ]?(?:fetch|browser|extract)\b", re.IGNORECASE),
+    re.compile(r"\bcached cop(?:y|ies)\b", re.IGNORECASE),
+]
 _PERSON_RES = re.compile(r"\bI\b|\b(I'll|I've|I'm|me|my|myself)\b", re.IGNORECASE)
 _BULLET_RES = re.compile(r"^\s*[-*•]\s")
 _HEADER_RES = re.compile(r"^\s*#{1,6}\s")
@@ -122,6 +136,8 @@ def check_reply_shape(reply: str) -> list[str]:
         violations.append("narration")
     if _PERSON_RES.search(text):
         violations.append("first-person")
+    if any(r.search(text) for r in _TOOLING_META_RES):
+        violations.append("tooling-meta")
     return sorted(set(violations))
 
 
@@ -136,6 +152,8 @@ def _required_contract():
         "never speak as",
         "Never ask Nish a question, never propose or recommend a change or fix",
         "could not be read",
+        "If the terminal tool itself will not run",
+        "A sentence about the tools used to collect the facts is never part of the reply",
         "no cause, no tool or setting name, no suggestion",
         "never its cause, never a tool, setting, profile or permission name",
         "Quiet 12 hours",
@@ -160,7 +178,12 @@ def test_labelled_replies_flag():
     """Every fixture shaped like a shipped reply the outside labeler called a violation must flag here."""
     data = json.loads(CASES.read_text())
     assert data["labeller"]["calls"] == 1
-    assert {c["id"] for c in data["cases"]} == {"m11", "e11", "m12", "e12", "m13", "e20", "e19"}, (
+    assert data["labeller"]["calls"] == 1
+    assert data["labeller_repeat"]["calls"] == 1
+    assert data["heldout_labeller"]["calls"] == 1
+    assert {c["id"] for c in data["cases"]} == {
+        "m11", "e11", "m12", "e12", "m13", "e20", "e19", "h1", "h2", "h3", "h4", "h5", "h6",
+    }, (
         "a labelled case went missing: the gate weakens silently"
     )
     for case in data["cases"]:
@@ -198,6 +221,17 @@ def test_plain_status_lines_pass():
         "And 2 more waiting; 47 items unchanged.",
     ]:
         assert check_reply_shape(reply) == [], reply
+
+
+def test_tool_chatter_reply_flags_tooling_meta():
+    """The 2026-10-11 morning failure (execution e078ee1c) is a tooling sentence with no digest content."""
+    shipped = "I need to use the caller's tools rather than my own built-ins."
+    got = check_reply_shape(shipped)
+    assert "tooling-meta" in got, f"the tool-chatter class escaped the gate: {got}"
+    assert "first-person" in got
+    assert check_reply_shape("The caller's tools must run instead of the agent's built-ins.") == [
+        "tooling-meta"
+    ]
 
 
 def test_issue_number_in_text_flags():

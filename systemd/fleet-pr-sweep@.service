@@ -3,7 +3,7 @@
 # GitHub; this unit only asks for it. gh reads ~/.config/gh/hosts.yml (the
 # user manager has no GH_TOKEN) and acts as nish3451, who may dispatch
 # workflows in every Nishfleet repo; no credential is in this file or argv.
-# gh is found on the user manager's PATH (/usr/local/bin/gh on the box)
+# gh is found on the user manager's PATH (/usr/bin/gh on the box, apt)
 # through env, so the unit names no home path and verifies on a CI runner.
 # Second ExecStart (fleet-ops#9668): a run that ends in startup_failure has no
 # job, so nothing inside the workflow can report it and the dispatch above
