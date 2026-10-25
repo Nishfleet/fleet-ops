@@ -16,7 +16,11 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
-- ansible/host.yml applies the prompts to the live jobs.
+- ansible/host.yml applies the prompts to the live jobs,
+- every evening run stores the site check's code, newest edition date and UTC
+  timestamp in the shared stored object, even when the page could not be read,
+  so the audit can verify the publish claim without its own HTTP check
+  (fleet-ops#9862).
 """
 import datetime
 import fnmatch
@@ -357,24 +361,47 @@ def _site_command():
     return text[start:text.index("\n", start)]
 
 
+def _checked(saved):
+    code, edition, stamp = saved["site_checked"].split("|")
+    when = datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    age = abs((datetime.datetime.now(datetime.timezone.utc) - when).total_seconds())
+    assert age < 120, f"site check timestamp is {age}s away from now"
+    return code, edition
+
+
+def _without_checked(saved):
+    return {k: v for k, v in saved.items() if k != "site_checked"}
+
+
 def test_site_check_stores_the_newest_edition_date(tmp_path):
     lines, saved = _run_2b(tmp_path, json.dumps({"inish": "200|2026-09-29", "wait:a#1": "open|x"}), "200", _FEED)
     assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVED"]
-    assert saved == {"wait:a#1": "open|x", "site": "200|2026-10-15"}
+    assert _without_checked(saved) == {"wait:a#1": "open|x", "site": "200|2026-10-15"}
+    assert _checked(saved) == ("200", "2026-10-15")
 
 
 def test_site_check_with_the_same_edition_is_unchanged(tmp_path):
-    lines, _ = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
-    assert lines[0] == "ROW site UNCHANGED 200|2026-10-15"
+    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
+    assert lines == ["ROW site UNCHANGED 200|2026-10-15", "STORED-SAVED"]
+    assert _without_checked(saved) == {"site": "200|2026-10-15"}
+    assert _checked(saved) == ("200", "2026-10-15")
 
 
-def test_site_check_without_a_feed_date_is_unknown_and_saves_nothing(tmp_path):
+def test_site_check_without_a_feed_date_still_stores_a_checked_row(tmp_path):
     lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14"}), "200", "<html></html>")
-    assert lines == ["ROW site UNKNOWN"]
-    assert saved is None
+    assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
+    assert _without_checked(saved) == {"site": "200|2026-10-14"}
+    assert _checked(saved) == ("200", "none")
 
 
-def test_site_check_with_a_failing_page_is_unknown(tmp_path):
+def test_site_check_with_a_failing_page_still_stores_a_checked_row(tmp_path):
     lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
-    assert lines == ["ROW site UNKNOWN"]
+    assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
+    assert saved.keys() == {"site_checked"}
+    assert _checked(saved) == ("500", "none")
+
+
+def test_site_check_stores_nothing_when_the_store_is_unreadable(tmp_path):
+    lines, saved = _run_2b(tmp_path, "not json", "200", _FEED)
+    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-UNREADABLE"]
     assert saved is None
