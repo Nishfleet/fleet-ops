@@ -1,0 +1,21 @@
+# Gate for the prometheus-alerts rule's A expression (fleet-ops#10300): a firing
+# alert is returned with prom_alertname copied from its alertname, and Watchdog
+# and pending alerts are not. promql_expr_test is used because a Prometheus
+# alert rule would overwrite the alertname label this expression reads. The live
+# case is SystemUnitFailed fleet-update.service.
+evaluation_interval: 1m
+tests:
+- interval: 1m
+  input_series:
+  - series: 'ALERTS{alertname="SystemUnitFailed", alertstate="firing", name="fleet-update.service", severity="warning"}'
+    values: '1x5'
+  - series: 'ALERTS{alertname="Watchdog", alertstate="firing", severity="none"}'
+    values: '1x5'
+  - series: 'ALERTS{alertname="SiteDown", alertstate="pending", instance="https://example.test/", severity="nish"}'
+    values: '1x5'
+  promql_expr_test:
+  - expr: 'label_join(ALERTS{alertstate="firing", alertname!="Watchdog"}, "prom_alertname", ",", "alertname")'
+    eval_time: 3m
+    exp_samples:
+    - labels: 'ALERTS{alertname="SystemUnitFailed", alertstate="firing", name="fleet-update.service", severity="warning", prom_alertname="SystemUnitFailed"}'
+      value: 1
