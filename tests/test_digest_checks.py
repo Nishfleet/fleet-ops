@@ -317,6 +317,22 @@ def test_stored_item_command_writes_nothing_when_the_store_is_unreadable(prompt,
     assert saved is None
 
 
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_carries_the_site_checked_row(prompt, tmp_path):
+    store = json.dumps(
+        {
+            "site": "200|2026-10-15",
+            "site_checked": "200|2026-10-15|2026-10-15T20:00:00Z",
+        }
+    )
+    lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
+    assert "STORED-SAVED" in lines
+    assert saved == {
+        "site": "200|2026-10-15",
+        "site_checked": "200|2026-10-15|2026-10-15T20:00:00Z",
+    }
+
+
 def test_shipped_count_command_prints_a_total_or_fails_loudly(tmp_path):
     gh = {"repos": ["alpha", "beta"], "issues": {}, "runs": {}}
     env = _fake_box(tmp_path, gh, "{}")
