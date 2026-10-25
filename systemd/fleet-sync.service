@@ -75,12 +75,13 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
 ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
-# 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
-#     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
-#     so the user manager reads it on this run.
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/environment.d/60-pi-xai-client-version.conf /home/nish/.config/environment.d/60-pi-xai-client-version.conf
+# 2b. Retired the Grok client-version pin (fleet-ops#9223): pi-grok 0.13 does
+#     its own lookup of https://x.ai/cli/stable, so the file and its install
+#     line are gone, and this rm drops the copy earlier hosts still carry.
+#     Delete this step once every host has synced it.
+ExecStart=/bin/rm -f %h/.config/environment.d/60-pi-xai-client-version.conf
 # 2c. The leviathan index units, their configs and the tmpfiles rule are
-#     user-scope COPYs (fleet-ops#9313), same class as 2b/6/7/8: the
+#     user-scope COPYs (fleet-ops#9313), same class as 6/7/8: the
 #     leviathan-index@.timer runs every 15 minutes, so the config must exist
 #     before the PR that ships the units merges (a git merge refuses a clone
 #     with untracked files in the way, so no unit may read its config from the
@@ -114,7 +115,7 @@ ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-wee
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
-#     edits to it. The install is a user-scope COPY, same class as 2b/2c/6/7:
+#     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
 #     the timer runs every 15 minutes and must not read its list out of the
 #     deploy clone. The timer is enabled on every deploy like 2a, unlike 2e,
 #     because a timer that is silently off is the failure this ships to fix

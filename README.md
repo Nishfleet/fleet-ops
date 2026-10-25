@@ -205,6 +205,26 @@ script, or prompt lands unseen.
   launcher's file is repaired on the next merge or daily run. `find
   ~/.local/share/devin -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l`
   must print 0 (a symlink always shows mode 777, so it is excluded).
+- `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
+  teammate that turns one request into one queued issue (`needs-triage`, so the
+  [admission job](#triage-admission-needs-triage) decides whether a worker starts)
+  and answers with its URL. Stock `tincan listen --exec`, and the three tools it
+  may use live in `pi-extensions/issue-desk/` (its README has the allowlist, the cap, the off
+  switch and the delete steps). Pi starts with no built-in tools, no other
+  extensions, no MCP and no skills, so the model cannot run anything else. Install
+  by hand from the deploy clone (link, then `enable --now`): it is not enabled by
+  `fleet-sync.service`.
+- `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
+  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+- `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
+  `gpg-agent.service`, the stock GPG credential cache every signing unit loads
+  (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
+  `MemoryMax=512M`). It was a hand-placed file under `~/.config/systemd/user`
+  (fleet-ops#10138), which shadows `/etc/systemd/user`, so the repo copy would
+  have been inert: `ansible/host.yml` lists that file in `retired`, so
+  `fleet-host-config.service` deletes the live copy and reloads nish's user
+  manager, and gpg-agent reads these bytes at its next start. The unit file is
+  the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
@@ -223,6 +243,10 @@ script, or prompt lands unseen.
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
   `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
+  The chat id is the Telegram chat the bot posts to: read it from an existing
+  box's `telegram_chat_id`, or from the old `/etc/prometheus/alertmanager.yml`
+  if a box still has that copy (the play refuses to retire it while it is the
+  only source).
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
   config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl
@@ -420,6 +444,10 @@ throwaway target there is still fatal. Nine such links held every push red for
 skill wiring itself must never gate a deploy: delete the three LINK-GUARD
 `ExecStart=` lines in `systemd/fleet-sync.service`, then
 `systemctl --user daemon-reload`. Nothing else reads them.
+
+Global skills are updated by hand when wanted: `npx -y skills update -g -y`.
+There is no timer for it — the weekly skills-update timer was deleted on
+2026-10-24 (fleet-ops#10134), so nobody looks for one.
 
 ## systemd by default
 
@@ -654,12 +682,11 @@ token was tried (#10102) and never worked: the daemon writes a new token to its
 own `daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and
 `--daemon-token`. It is retired: `host.yml` lists the drop-in directory
 `/etc/systemd/user/cua-desk-daemon.service.d` in `retired` (so it is deleted and
-nish's user manager reloaded), removes `/etc/tether/cua.env`,
-`/etc/fleet-ops/cua-daemon-token` and nish's `fleet-ops/cua/daemon.env` by name,
-and then removes that last directory only when it is empty. The tether unit no
-longer loads `cua.env` and the nftables table has no Cua port. The daemon is
-restarted only by a newer Cua Spaces release (the idle-desk check, restart and
-desk recreate above), never for a config change.
+nish's user manager reloaded), removes `/etc/fleet-ops/cua-daemon-token` and
+nish's `fleet-ops/cua/daemon.env` by name, and then removes that last directory
+only when it is empty. The daemon is restarted only by a newer Cua Spaces
+release (the idle-desk check, restart and desk recreate above), never for a
+config change. What tether can reach instead is its own Space, below.
 
 `Restart=on-failure` brings a killed process back with the durable runtime's
 last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
@@ -724,6 +751,107 @@ in `ansible/host.yml`, and adds the unit path to `retired`.
 In-band, without root, Nish's own off-switch is the `STOP` text. The app that
 handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is
 proved there, not by this repo.
+
+### Tether's own Cua Space
+
+tether can reach one Cua Space, `local:tether`, and nothing else on Cua. Its key
+is that Space's own `cua-spacesd` token: it opens that Space's `spacesd` only
+(checked: the same token against the desk Space's port answers
+`unauthenticated`). It is not the server's Cua login. What the Space itself can
+see, the Cua Volume included, follows Cua's own grants (`cua volume`), not this
+repo.
+
+`host.yml` does this as nish, like the other Cua tasks, unless the off marker
+exists:
+
+- creates the Space with `cua spaces create linux --name tether --on local`
+  only when `cua sandbox ls --local` does not list it. An existing Space is
+  never recreated, so its files and token stay;
+- runs `cua spaces start local:tether` when it is stopped or suspended;
+- reads the token from `/run/cua/env-token` in the Space (the documented
+  `spacesd` location) and the address from `cua --embedded sandbox info`;
+- renders `/etc/tether/cua.env` (`TETHER_SPACE_URL`, `TETHER_SPACE_TOKEN`,
+  `root:tether 0640`, `no_log`, no diff), which the tether unit loads, and
+  restarts tether when it changed;
+- adds `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port to
+  `tether.nft.j2`, before the loopback drop. No other loopback port opens;
+- reads the Space container's network, restart policy and privileged flag from
+  Docker (`docker inspect` on the container id `cua sandbox info` reports). It
+  must have restart policy `no`, not be privileged, and have one network, one
+  IPv4 address and no IPv6 address, or the step fails and pages. It also reads
+  the container's veth: the peer index of `eth0` in the container's network
+  namespace (`nsenter`), and the host interface with that index. It then renders
+  and loads `tether-space.nft` (the fence below) from the address and veth,
+  before it reads the token and renders the env file. If the step fails before
+  the fence is loaded, the rescue stops the Space (`cua spaces stop`, or `docker
+  stop` when the Cua daemon is the failure), so it never runs unfenced; a failure
+  after the fence is loaded leaves it running and fenced.
+
+The Space is a Docker container on the default bridge, next to the desk Space
+and the host. Cua has no network option for a local container (`--network none`
+is for a QEMU VM only), so `tether-space.nft.j2` fences it, in its own file and
+tables (`bridge tether_space`, `inet tether_space`), by its host-side veth and
+also by its address. The veth is what a forged source address cannot change: the
+bridge prerouting hook marks every frame that enters on it, and the IP hooks
+drop on that mark as well as on the address. From the Space, nothing reaches the
+host's own addresses (inet input), nothing is routed to 10/8, 127/8, 169.254/16,
+172.16/12, 192.168/16 or 100.64/10 (inet forward; a host-local destination goes
+to input, not forward), and every frame to another bridge port is dropped
+(bridge forward, no connection tracking: the host loads no `br_netfilter`, so
+bridged traffic skips both IP hooks). Replies to connections others open (the
+published port, `sandbox exec`) pass; the internet stays open. The Space's DNS
+servers are the host's public upstream resolvers, so no DNS exception is needed
+(if they ever move into a private range, name lookups in the Space fail until an
+exception is added). Checked on the box with a throwaway Space: before the fence
+the desk Space's `:3211` answered from inside it, after it only the internet did.
+Cua gives the Space `CapAdd SYS_ADMIN` and cannot drop `NET_RAW`; in a runsc
+Space root still has neither `NET_RAW` nor `NET_ADMIN` (`ip addr add` and raw and
+packet sockets fail with `Operation not permitted`), and the interface match
+holds even if that changed.
+
+The fence file is not part of tether's off marker: the marker removes
+`tether.nft`, not `tether-space.nft`. A failed Space step leaves the last
+rendered fence as it is (only tether's port allow goes). Docker's restart policy
+for the Space is `no`, so after a reboot it stays stopped until the boot run
+starts it, and the fence file loaded at boot holds its last address. If Docker
+gives that address to another container first, that container's private
+destinations are blocked, which is the safe direction; the boot run then
+renders the Space's real address. A manual `docker restart` of the Space can
+give it a new address and the fence follows on the next run.
+
+The port is read live on each run because Docker publishes `spacesd` on a random
+loopback port that changes whenever the container starts. A pause and resume
+(`cua spaces stop` and `start`) keeps it. A container stop, which is what a
+reboot does (Docker restart policy `no`), does not: after `docker stop` and
+`cua spaces start` the port was new, the token was the same, and the Cua daemon
+kept answering with the old port, so `cua sandbox info` and `cua sandbox exec`
+without `--embedded` fail. `--embedded` reads Docker's live port. Because of
+that, `fleet-host-config-boot.timer` runs `fleet-host-config.service` three
+minutes after every boot (the daily timer's random delay of up to an hour is too
+late): the run starts the Space, then renders the env file and the nft rule from
+its new port and restarts tether. Until it does, tether's unit may start with the
+last port, and its calls to the Space fail, because the old port is not allowed
+any more. If the Space step fails (the Cua daemon is down after about 90 seconds
+of waiting), the run completes everything else, keeps the old env file and the
+last fence file, renders tether's nft rule without the Space port (it fails
+closed: tether reaches no Space port until a run succeeds), and fails at its last
+tether task, which pages.
+
+Switch off: `touch /etc/fleet-ops/tether-off`. The next run skips the Space
+tasks, removes `/etc/tether/cua.env` and tether's firewall rule (`tether.nft`),
+stops the Space (`cua spaces stop local:tether`) and keeps tether stopped. The
+fence file `tether-space.nft` stays, so a Space started by hand is still fenced.
+The Space and its files are not deleted. To pause just the Space,
+`cua spaces stop local:tether`; the next run starts it again unless the marker
+exists.
+
+Delete it: switch it off, then `cua spaces delete local:tether --force` as nish,
+and `rm -f /etc/tether/cua.env` as root. Without the marker the next run creates
+a new empty Space. To remove the feature for good, open a PR that deletes the
+Space tasks, the env task, the nft line, `tether-space.nft.j2` and its file (add it
+to `retired`), the `EnvironmentFile=` line and
+`rootfs/etc/systemd/system/fleet-host-config-boot.timer` (add the timer to
+`retired`).
 
 ### Tether release installs
 
@@ -1032,6 +1160,22 @@ sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs
 call `agent.yml` through `uses:` and inherit its limits, while its `list` and `close-claim`
 jobs run their own steps on `ubuntu-latest` with no `timeout-minutes`.
 
+A job that calls `agent.yml` must grant every scope its jobs ask for, at or above the level asked. A
+caller that grants less kills the whole run at startup with no job and no log, which is how 23 Oct
+took the fleet down: `agent.yml`'s `review` job began asking `contents: read`, and all 13 callers in
+`agent-dispatch.yml` died until #10194 landed the grant (fleet-ops#10192).
+`tests/test_workflow_caps.py` reads every workflow under `.github/workflows/`, collects what
+`agent.yml` asks scope by scope, and fails the PR when any caller grants less. It follows direct
+`uses:` callers, which is every caller today. actionlint 1.7.12 and zizmor 1.30.1 both pass on the
+broken commit, so this test is the gate.
+
+So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agent.yml` is reachable
+only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
+at startup the `review` job never runs. What works is an approver's unedited
+`coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
+`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
+takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
+
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
@@ -1222,6 +1366,13 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
+
+A new runner unit needs no root step: `ansible/host.yml` renders
+`actions.runner.Nishfleet.netcup-agent-<N>.service` for the ids in
+`agent_runner_ids` from one template, and enables and starts a unit only when
+its directory holds both halves of a registration (`.runner` and
+`.credentials`). Registration is the one hand step left, because `config.sh`
+needs an org admin token the VPS key does not hold (#10236).
 
 ## Private detail scan
 

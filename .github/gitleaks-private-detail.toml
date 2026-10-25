@@ -85,6 +85,21 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$''']
 
 [[allowlists]]
+description = "issue-desk's user unit must name the two vendor binaries, the deploy clone and the agent's identity file in ExecStart= and Environment=, and its header names the same paths in the install, off and delete steps; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Each allowed path is listed, so a new home path in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)systemd/tincan-listen-issue-desk\.service$''']
+regexes = [
+  '''^home/nish/\.config/tincan/issue-desk\.json$''',
+  '''^home/nish/\.local/bin/pi$''',
+  '''^home/nish/\.local/bin/tincan$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/pi-extensions/issue-desk/index\.ts$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/issue-desk\.md$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-issue-desk\.service$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
