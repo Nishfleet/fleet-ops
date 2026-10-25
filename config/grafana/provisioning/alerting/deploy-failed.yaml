@@ -55,27 +55,21 @@
 # fleet-console-worker are covered from fleet-github, whose installation
 # datasources/fleet.yaml records as all Nishfleet repos; its read of these two
 # was not tested live before they were added, so a repo it cannot read files a
-# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy has
-# succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
-# fleet-console-worker is in the deploy-failed
-# group only, with no 24h rule: it got its Cloudflare key on 2026-10-20 and its
-# deploy succeeded for the first time the same day, with every run since green
-# (newest 2026-10-24), so it has no red history to page on yet. Adding its 24h
-# rule is a separate decision, because a 24h rule pages Nish.
+# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy
+# has succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
+# fleet-console-worker is in the deploy-failed group only, with no 24h rule: it
+# got its Cloudflare key on 2026-10-20 and its deploy succeeded for the first
+# time the same day, with every run since green (newest 2026-10-24), so it has
+# no red history to page on yet. Adding its 24h rule is a separate decision,
+# because a 24h rule pages Nish.
 #
-# A repo with no production deploy left gets no rule, in either group. Nothing in
-# this file or its tests checks that, so this line records the intent and the
-# incident below, not a gate.
-# inish-mail-filter had one from 2026-10-16 to 2026-10-23: its last run of
-# deploy-production.yml on main failed at startup on 2026-10-15, and main then
-# deleted the worker, wrangler.jsonc and that workflow on 2026-10-23 (glue
-# audit, Nishfleet/inish-mail-filter#13), which left the rule reading a repo
-# that deploys nothing. GitHub keeps a deleted workflow's runs for a while, so
-# the rule reads that history today; once GitHub drops it the query 404s and
-# the rule files a "cannot read GitHub runs" issue for ever. Drop the rule
-# with the deploy path it watches, never pause it: a paused rule still shows in
-# the list and the next reader learns nothing from it. Dropping it means two
-# edits, the rule and its uid in deleteRules below.
+# A repo with no production deploy left gets no rule, in either group. Nothing
+# here checks that, so this is the record of an intent and not a gate.
+# inish-mail-filter kept one after its deploy path was deleted on 2026-10-23
+# (fleet-ops#9855). Drop the rule with the deploy path it watches, never pause
+# it: a paused rule still shows in the list and the next reader learns nothing
+# from it. Dropping it means two edits, the rule and its uid in deleteRules
+# below.
 #
 # One rule per repo: the plugin reads its queries one after another, so one
 # rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
@@ -103,11 +97,11 @@
 # Rule labels are plain strings: provisioning expands a $ in a label.
 apiVersion: 1
 
-# File provisioning never deletes a rule that merely leaves the file: Grafana keeps the
-# provisioned copy and keeps evaluating it, so removing the rule above leaves it live on a
-# Grafana whose database outlives the container. paid-plan-idle.yaml carries the same block
-# for ppi-pareto, ppi-ollama and ppi-cline, which fired after they left their file
-# (fleet-ops#10198, #10206).
+# File provisioning never deletes a rule that merely leaves the file: Grafana
+# keeps the provisioned copy and keeps evaluating it, so removing the rule above
+# leaves it live on a Grafana whose database outlives the container.
+# paid-plan-idle.yaml carries the same block for ppi-pareto, ppi-ollama and
+# ppi-cline, which fired after they left their file (fleet-ops#10198, #10206).
 deleteRules:
   - orgId: 1
     uid: deploy-failed-inish-mail-filter
