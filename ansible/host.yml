@@ -302,11 +302,11 @@
     # shell without the tool dirs, so jobs on these runners got exit 127 for pi,
     # gh and claude. Same PATH as runners 1-22; a changed file restarts its runner.
     - name: Give the agent runners the tool PATH
+      become: true
+      become_user: nish
       ansible.builtin.copy:
         dest: "{{ nish_home }}/.local/share/agent-runner/netcup-agent-{{ item }}/.path"
         content: "{{ nish_home }}/.pi/agent/bin:{{ nish_home }}/.cargo/bin:{{ nish_home }}/.nvm/versions/node/v24.21.0/bin:{{ nish_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        owner: nish
-        group: nish
         mode: '0644'
       loop: "{{ agent_runner_ids }}"
       when: (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
