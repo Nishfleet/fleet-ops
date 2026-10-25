@@ -185,14 +185,14 @@ def main(root):
     other = {**units[0], "prom_alertname": "RouterDown"}
     if group_key(deepest(policy, other), other) in keys:
         bad.append("two different alert names share one notification group")
-    for c in contacts_doc:
-        if c["name"] == "prometheus-alert-dispatch":
-            for rcv in c["receivers"]:
-                tpl = rcv["settings"]["payload"]["template"]
-                if "maxAlerts" in rcv["settings"] or "range $$.Alerts" not in tpl:
-                    bad.append("prometheus-alert-dispatch must not set maxAlerts and must range over every alert in its template")
-                else:
-                    print(f"prometheus route: 3 SystemUnitFailed instances -> {len(keys)} group; template ranges over .Alerts")
+    sink = [c for c in contacts_doc if c["name"] == "prometheus-alert-dispatch"]
+    assert sink, "contact point prometheus-alert-dispatch not found"
+    for rcv in sink[0]["receivers"]:
+        tpl = rcv["settings"]["payload"]["template"]
+        if "maxAlerts" in rcv["settings"] or "range $$.Alerts" not in tpl:
+            bad.append("prometheus-alert-dispatch must not set maxAlerts and must range over every alert in its template")
+        else:
+            print(f"prometheus route: 3 SystemUnitFailed instances -> {len(keys)} group; template ranges over .Alerts")
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
