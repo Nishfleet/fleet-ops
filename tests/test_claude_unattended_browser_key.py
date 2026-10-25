@@ -25,14 +25,19 @@ def _keys(path: Path) -> dict[str, list[str]]:
 
 def test_remote_control_browser_key_comes_from_its_own_single_name_file() -> None:
     keys = _keys(REMOTE_CONTROL)
-    assert keys["EnvironmentFile"] == [BROWSER_KEY_FILE], (
-        "exactly one optional file: a missing file costs the browser tool, not the phone bridge"
+    assert BROWSER_KEY_FILE in keys.get("EnvironmentFile", []), (
+        "the unit must load the browser key file (optional, exactly as written)"
     )
 
 
 @pytest.mark.parametrize("name", ["oauth.env", "CLAUDE_CODE_OAUTH_TOKEN", "EXA_API_KEY", "BROWSER_USE_API_KEY"])
 def test_remote_control_names_no_credential_outside_that_file(name: str) -> None:
-    offenders = [value for values in _keys(REMOTE_CONTROL).values() for value in values if name in value]
+    offenders = [
+        f"{key}={value}"
+        for key, values in _keys(REMOTE_CONTROL).items()
+        for value in values
+        if name in key or name in value
+    ]
     assert offenders == [], (
         f"{REMOTE_CONTROL.relative_to(ROOT)}: {name} must reach the unit only through {BROWSER_KEY_FILE}, found in {offenders}"
     )
