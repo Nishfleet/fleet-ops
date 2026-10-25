@@ -206,6 +206,15 @@ script, or prompt lands unseen.
   `fleet-sync.service`.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
   (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+- `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
+  `gpg-agent.service`, the stock GPG credential cache every signing unit loads
+  (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
+  `MemoryMax=512M`). It was a hand-placed file under `~/.config/systemd/user`
+  (fleet-ops#10138), which shadows `/etc/systemd/user`, so the repo copy would
+  have been inert: `ansible/host.yml` lists that file in `retired`, so
+  `fleet-host-config.service` deletes the live copy and reloads nish's user
+  manager, and gpg-agent reads these bytes at its next start. The unit file is
+  the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
