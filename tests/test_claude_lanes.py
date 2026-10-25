@@ -885,11 +885,11 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
 
 DUP_GH = """#!/bin/bash
 echo "gh $*" >> "$STATE/gh.log"
-case "$1 $2" in "issue list") echo "$OPEN_JSON" ;; esac
+case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;; esac
 """
 
 
-def _dup_gate(tmp_path, title, open_issues):
+def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
     start = script.index("# A still-firing alert re-files")
@@ -901,8 +901,11 @@ def _dup_gate(tmp_path, title, open_issues):
     (b / "gh").chmod(0o755)
     issue = json.dumps({"title": title, "body": "b"})
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=50 REPO=o/r\nissue={json.dumps(issue)}\n{script[start:end]}\necho PROCEED\n'
-    env = {**os.environ, "PATH": f"{b}:{SYS_PATH}", "STATE": str(tmp_path), "OPEN_JSON": json.dumps(open_issues)}
-    r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
+    env = {**os.environ, "PATH": f"{b}:{SYS_PATH}", "STATE": str(tmp_path), "OPEN_JSON": json.dumps(open_issues), "LIST_FAIL": list_fail}
+    # bash -e, as Actions runs the step: a failed command stops it.
+    r = subprocess.run(["bash", "-e", "-c", prog], env=env, capture_output=True, text=True)
+    if list_fail:
+        return r.returncode, r.stdout
     assert r.returncode == 0, r.stderr
     log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
     return r.stdout.strip().splitlines()[-1], log
@@ -929,3 +932,8 @@ def test_non_alert_title_skips_the_lookup(tmp_path):
     out, log = _dup_gate(tmp_path, "grafana alert: DatasourceError", [{"number": 41, "title": "grafana alert: DatasourceError"}])
     assert out == "PROCEED"
     assert log == ""
+
+
+def test_a_failed_twin_lookup_fails_the_gate_loud(tmp_path):
+    rc, out = _dup_gate(tmp_path, ALERT, [], list_fail="1")
+    assert rc != 0 and "PROCEED" not in out
