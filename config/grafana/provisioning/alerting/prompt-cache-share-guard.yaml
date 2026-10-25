@@ -38,6 +38,12 @@
 # for a 9-point drop. The 1-hour paging rule (prompt-cache-hit.yaml, under 0.5
 # share) covers the fast and total failure.
 #
+# After 2026-10-30 the 7-day window holds no pre-bump day, so the 48h half and
+# the span/max machinery become dead weight: drop the 48h leg and the `or` at
+# that point, and re-base the floors from a fresh 48h reading if the bar moves.
+# The fixtures for this rule are run by the `promtool test rules
+# config/grafana/tests/*.test.yml` step in ci.yml.
+#
 # A vendor needs 1M input tokens in 48h to be judged, so a probe lane and a
 # vendor that is idling out stay silent (anthropic read 8.5k tokens today). Both
 # sides of each ratio carry the same `and on (model_id)` filter, so a row that
@@ -52,7 +58,10 @@
 #
 # Severity warning, not critical: a drifting share is a spend leak, not an
 # outage, and a warning lands on the fleet-alert-dispatch route, which files one
-# fleet-ops issue per 24h while it holds. Nish's money rules page; this reports.
+# fleet-ops issue per 24h while it holds. Resolved against the policy tree in
+# cloudflare-spend-contact.yaml: severity warning + signal
+# prompt-cache-share-guard routes to fleet-alert-dispatch alone, repeat 86400s,
+# and reaches no paging contact point. Nish's money rules page; this reports.
 apiVersion: 1
 
 groups:
@@ -144,7 +153,12 @@ groups:
               type: threshold
               refId: C
               expression: A
-              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+              # gte, not gt: A only returns vendors already under their floor, so
+              # any sample it returns is a breach, including a share of exactly
+              # 0.000 (a cached counter that stopped growing while input kept
+              # coming). gt would drop that one case, which is the shape this
+              # rule exists for.
+              conditions: [{evaluator: {params: [0], type: gte}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
               intervalMs: 1000
               maxDataPoints: 43200
         noDataState: OK
@@ -152,6 +166,6 @@ groups:
         for: 15m
         annotations:
           summary: 'Prompt-cache share on {{ $labels.vendor }} is 2 points below its post-bump baseline'
-          description: 'It served {{ $values.B.Value | printf "%.3f" }} of its input tokens from its prompt cache over 7 days and {{ $values.D.Value | printf "%.3f" }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points. Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points. Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
         labels: {severity: warning, signal: prompt-cache-share-guard}
         isPaused: false

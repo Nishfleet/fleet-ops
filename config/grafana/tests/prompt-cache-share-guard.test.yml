@@ -21,6 +21,11 @@
 #    sides must drop it rather than read its share as 0.
 # 5. the values A returns for case 2's inputs: the breaching vendor at its own
 #    share, the other two absent rather than 0.
+# 6. a vendor that keeps reporting a cached count that stopped growing, so its
+#    share is exactly 0: it fires, beside a healthy vendor that does not. This
+#    is the shape that needs the deployed threshold to be `gte 0`; promtool has
+#    no threshold step and fires on any sample, so the rule file carries that
+#    half and this case pins that A returns the row at all.
 #
 # The alert name, `for` and labels here are the deployed ones, so a case that
 # fires here is a case Grafana calls Alerting.
@@ -139,6 +144,28 @@ tests:
       - eval_time: 7d
         alertname: PromptCacheShareBelowBaseline
         exp_alerts: []
+
+  - interval: 12h
+    input_series:
+      # minimax keeps serving input and its cached counter stops moving, so the
+      # share is 0 rather than undefined: every input token was a miss.
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: minimax
 
   - interval: 12h
     input_series:
