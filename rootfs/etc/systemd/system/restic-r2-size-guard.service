@@ -23,7 +23,7 @@ Type=oneshot
 # 0 switches a limit off; a dropped Environment= line in a drop-in falls back
 # to the number shipped here.
 Environment=SIZE_GUARD_MAX_BYTES=1073741824
-Environment=SIZE_GUARD_MAX_RESTORED_BYTES=1
+Environment=SIZE_GUARD_MAX_RESTORED_BYTES=4294967296
 EnvironmentFile=/etc/restic/netcup-r2.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 # append:, not truncate: every Exec line reopens StandardOutput=, and a
