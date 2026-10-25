@@ -11,3 +11,5 @@
 /.github/CODEOWNERS @nish3451
 # Paid-plan lock (fleet-ops#9224): removing a paid plan from the router needs Nish's yes. CI fails when a listed plan loses its last row.
 /config/paid-plans.json @nish3451
+# Unit tests are not scripts (fleet-ops#10336): test_*.py under tests/ needs no code-owner review. Last match wins, so this line has no owner.
+/tests/test_*.py
