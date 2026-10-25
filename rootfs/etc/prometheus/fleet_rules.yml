@@ -52,14 +52,14 @@ groups:
           summary: "{{ $labels.mountpoint }} will fill within 24 hours"
           description: "At the rate of the last 6 hours, {{ $labels.mountpoint }} ({{ $labels.device }}) runs out of space within 24 hours."
 
-      - alert: SwapPressure
-        expr: (1 - node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes) > 0.75 and node_memory_SwapTotal_bytes > 0
-        for: 30m
+      - alert: MemoryPressure
+        expr: rate(node_pressure_memory_waiting_seconds_total[5m]) > 0.1
+        for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Swap is more than 75% used"
-          description: "Swap use has stayed above 75% for 30 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+          summary: "Tasks are stalled waiting for memory"
+          description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
 
       - alert: OOMKill
         expr: increase(node_vmstat_oom_kill[15m]) > 0
