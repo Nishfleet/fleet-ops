@@ -1511,9 +1511,11 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
   litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing
   path or api_base, 400) fails it, so a provider cannot silently drop out of the check. HTTP 401 or
-  403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with one plain line
-  naming the provider and what Nish must do, and no issue is filed. A router row with a key but no
-  https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`, is refused.
+  403 means a dead or expired key or login: every run logs one plain line naming the provider and
+  what Nish must do and moves on (fleet-ops#9912: a standing state must not re-fail the unit on
+  every daily run and keep the failed-unit list never empty), and no issue is filed. A router row
+  with a key but no https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`,
+  is refused.
 - `config/provider-watch.json` holds only generic per-provider settings: `watch` (an ERE; only ids
   matching it are compared; Cline lists a large catalogue that changes about weekly, so it watches
   only `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids), `billing` (`flat`) and `listing`

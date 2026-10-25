@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -1749,3 +1750,87 @@ def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None
     token = _unit_keys(GRAFANA_TOKEN)
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
     assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+
+
+RETRO_UNIT = ROOT / "systemd/retro-weekly.service"
+RETRO_DATE = "2026-10-21"
+
+
+def _run_retro_stoppost(tmp_path: Path):
+    line = next(line for line in RETRO_UNIT.read_text().splitlines() if line.startswith("ExecStopPost="))
+    command = shlex.split(line.removeprefix("ExecStopPost=").replace("$$", "$").replace("%%", "%"))
+    runtime = tmp_path / "runtime"
+    state = tmp_path / "state"
+    vault = tmp_path / "vault"
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNTIME_DIRECTORY": str(runtime),
+        "RETRO_STATE": str(state),
+        "RETRO_VAULT": str(vault),
+    }
+    return subprocess.run(command, env=env, capture_output=True, text=True), runtime, state, vault
+
+
+def _retro_delivered(tmp_path: Path, stale_vault=True):
+    result, runtime, state, vault = _run_retro_stoppost(tmp_path)
+    runtime.mkdir()
+    (runtime / "date").write_text(RETRO_DATE)
+    (runtime / "setup-done").write_text("set-up-ok")
+    (runtime / "claude.jsonl").write_text("{}")
+    run = state / f"run-{RETRO_DATE}"
+    run.mkdir(parents=True)
+    (run / "report.md").write_text("report body")
+    vault.mkdir()
+    copy = vault / f"retro-week-{RETRO_DATE}.md"
+    copy.write_text("report body")
+    if stale_vault:
+        os.utime(copy, (0, 0))
+    else:
+        os.utime(copy, (time.time() + 3600, time.time() + 3600))
+        os.utime(runtime / "date", (time.time(), time.time()))
+    return runtime
+
+
+def test_retro_stoppost_says_when_set_up_stopped_before_the_date(tmp_path: Path) -> None:
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: set-up never wrote its date")
+
+
+def test_retro_stoppost_says_when_set_up_stopped_after_the_date(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    (runtime / "setup-done").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: set-up stopped after the date write")
+
+
+def test_retro_stoppost_says_when_the_call_left_no_transcript(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    (runtime / "claude.jsonl").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the model call never ran to a transcript")
+
+
+def test_retro_stoppost_says_when_the_call_wrote_no_report(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    run_dir = runtime.parent / "state" / f"run-{RETRO_DATE}"
+    (run_dir / "report.md").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the model call ran but wrote no report.md")
+
+
+def test_retro_stoppost_says_when_the_report_never_reached_the_vault(tmp_path: Path) -> None:
+    _retro_delivered(tmp_path, stale_vault=True)
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the report was written but it never reached the vault")
+
+
+def test_retro_stoppost_is_quiet_on_a_delivered_run(tmp_path: Path) -> None:
+    _retro_delivered(tmp_path, stale_vault=False)
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 0
+    assert result.stdout == "" and result.stderr == ""
