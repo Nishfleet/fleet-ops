@@ -69,6 +69,8 @@ def test_fleet_deploy_verdict_line_names_the_request_the_run_started_with(tmp_pa
 
 
 TETHER = INSTALLED / "tether-agent.service"
+GRAFANA_PROVISIONING = ROOT / "systemd/fleet-grafana-provisioning.service"
+GRAFANA_TOKEN = ROOT / "systemd/fleet-grafana-github-token.service"
 
 
 def _tether_keys() -> dict[str, list[str]]:
@@ -1727,3 +1729,23 @@ def test_host_config_runs_once_after_every_boot() -> None:
     enable = _host_task("Enable the host config run after boot")["ansible.builtin.systemd_service"]
     assert enable["name"] == "fleet-host-config-boot.timer" and enable["enabled"] is True
     assert "state" not in enable, "starting the timer after boot would fire it at once"
+
+
+def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
+    """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
+    keys = _unit_keys(GRAFANA_PROVISIONING)
+    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
+    assert keys["RestartMode"] == ["direct"], "systemd 254+ restarts without the failed state, so the token unit's start waits the retries out instead of failing with them, and OnFailure= fires once"
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"], "a real outage must still page"
+    assert "fleet-grafana.service" not in keys.get("After", []), "fleet-grafana.service has After= on the token unit that starts this one, so an ordering edge back would hold a Grafana start until its timeout"
+    interval = int(keys["StartLimitIntervalSec"][0])
+    burst = int(keys["StartLimitBurst"][0])
+    restart = int(keys["RestartSec"][0])
+    attempt = int(keys["TimeoutStartSec"][0])
+    assert interval > 0 and burst > 0, "a zero interval disables the start limit"
+    assert burst >= 3, "one retry does not outlast a Grafana start"
+    assert burst * restart < interval, "the limit must be reachable inside its interval"
+    assert (burst - 1) * restart >= 60, "the 2026-10-23 Grafana restart held the reload out for 30 s"
+    token = _unit_keys(GRAFANA_TOKEN)
+    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
+    assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
