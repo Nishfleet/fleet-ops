@@ -2506,3 +2506,26 @@
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
         state: restarted
+
+    # Last step of the self-repair loop (fleet-ops#10338): a oneshot that failed
+    # before its fix landed stays failed, and its alerts keep firing, until
+    # something starts it again. Only a unit that is failed now is started, and
+    # --no-block keeps a long backup from holding the deploy. The unit list is
+    # the start list in rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules,
+    # minus fleet-host-config.service itself.
+    - name: Read whether each re-runnable oneshot is failed
+      ansible.builtin.command: /usr/bin/systemctl is-failed {{ item }}
+      loop:
+        - fleet-update.service
+        - restic-r2-backup.service
+        - restic-r2-size-guard.service
+      register: oneshot_failed
+      changed_when: false
+      failed_when: oneshot_failed.rc not in [0, 1]
+
+    - name: Re-run each failed oneshot after the deploy
+      ansible.builtin.command: /usr/bin/systemctl start --no-block {{ item.item }}
+      loop: "{{ oneshot_failed.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout == 'failed'
