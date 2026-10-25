@@ -179,9 +179,10 @@
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
-    digest_prompts:
+    hermes_prompts:
       - digest-morning
       - digest-evening
+      - scorecard-weekly
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -2174,7 +2175,7 @@
       diff: false
       no_log: true
 
-    - name: Apply config/hermes/digest-*.md to the live digest jobs
+    - name: Apply config/hermes/*.md to the live Hermes jobs
       become: true
       become_user: nish
       ansible.builtin.command:
@@ -2186,13 +2187,13 @@
           - --prompt
           - "{{ wanted }}"
       environment: "{{ nish_env }}"
-      loop: "{{ digest_prompts }}"
+      loop: "{{ hermes_prompts }}"
       loop_control:
-        loop_var: digest
-        label: "{{ digest }}"
+        loop_var: prompt
+        label: "{{ prompt }}"
       vars:
-        job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
-        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+        job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', prompt) | first | default({}) }}"
+        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ prompt ~ '.md') | regex_replace('\\n+$', '') }}"
       when: job.id is defined and (job.prompt | default('')) != wanted
       changed_when: true
 
@@ -2359,19 +2360,19 @@
         fail_msg: "Command Code login: {{ commandcode_problems | default([]) | join('; ') }}. cmd keeps whatever login it has; the rest of this run completed."
         quiet: true
 
-    - name: Fail when a live digest prompt differs from config/hermes/
+    - name: Fail when a live Hermes prompt differs from config/hermes/
       ansible.builtin.assert:
         that: job.prompt is defined and job.prompt == wanted
-        fail_msg: "The live {{ digest }} job is missing or its prompt differs from config/hermes/{{ digest }}.md, and the apply task above did not put it back."
+        fail_msg: "The live {{ prompt }} job is missing or its prompt differs from config/hermes/{{ prompt }}.md, and the apply task above did not put it back."
         quiet: true
-      loop: "{{ digest_prompts }}"
+      loop: "{{ hermes_prompts }}"
       loop_control:
-        loop_var: digest
-        label: "{{ digest }}"
+        loop_var: prompt
+        label: "{{ prompt }}"
       when: hermes_jobs_after.content is defined
       vars:
-        job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
-        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+        job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', prompt) | first | default({}) }}"
+        wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ prompt ~ '.md') | regex_replace('\\n+$', '') }}"
 
     - name: Apply pending handlers before the Grafana credential check
       ansible.builtin.meta: flush_handlers

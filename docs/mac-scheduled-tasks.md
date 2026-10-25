@@ -80,23 +80,26 @@ gate. They do not end the same way, and the difference matters.
 | `scorecard-mac-helper` | retired | The weekly scorecard already runs here — `hermes cron list` shows `scorecard-weekly` (Mondays 09:00 IST), active, delivering to Telegram. The Mac column it fed came from counting Nish's typed messages in `~/.claude/projects` on the Mac, and that has no source once the Mac is off. It also spent ten paid judge calls a week, which this retires with it. |
 | `weekly-fleet-gardener` | retired earlier | Cut on 2026-09-29 (fleet-ops#8954, merged) after filing 0 proposals. Recorded in `docs/skill-proposals.md`. |
 
-## The digest prompts' canonical home (fleet-ops#9706)
+## The Hermes prompts' canonical home (fleet-ops#9706, #9575)
 
-The `digest-morning` and `digest-evening` jobs' prompt text lives in this repo:
-`config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
+The `digest-morning`, `digest-evening` and `scorecard-weekly` jobs' prompt text
+lives in this repo: `config/hermes/digest-morning.md`,
+`config/hermes/digest-evening.md` and `config/hermes/scorecard-weekly.md`. The
 live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
 files by `ansible/host.yml`, never edited by hand:
 
 1. Edit the file under `config/hermes/` and land it through a PR (the shape
    gate `tests/test_digest_reply_shape.py` and the check gate
-   `tests/test_digest_checks.py` run in CI; the first fails a prompt that drops
-   the reply contract, the second fails a prompt that reads the wrong feed or
-   uses a command the Hermes shell guard blocks).
+   `tests/test_digest_checks.py` run in CI for the digests; the step gate
+   `tests/test_hermes_prompt_steps.py` runs for every prompt there: the first
+   fails a prompt that drops the reply contract, the second fails a prompt that
+   reads the wrong feed or uses a command the Hermes shell guard blocks, and the
+   third fails a step that reads a variable it does not set itself).
 2. The deploy applies it: `fleet-host-config.service` (started on every push to
-   main) runs `ansible/host.yml`, whose task "Apply config/hermes/digest-*.md to
-   the live digest jobs" runs the stock `hermes cron edit <job id> --prompt`
+   main) runs `ansible/host.yml`, whose task "Apply config/hermes/*.md to
+   the live Hermes jobs" runs the stock `hermes cron edit <job id> --prompt`
    only when the live prompt differs from the file. A run that leaves any live
-   prompt different from its file fails the task "Fail when a live digest prompt
+   prompt different from its file fails the task "Fail when a live Hermes prompt
    differs from config/hermes/", so the daily run and `--check` report drift.
 
 The Hermes shell guard blocks a command that matches an `approvals.deny` glob
@@ -106,11 +109,11 @@ scanner cannot resolve: a bracket test `[ ... ]`, or `x=$(...)` inside a
 `for` or `while` loop. The prompt commands avoid both; keep them that way.
 
 To check the live copy still matches the canonical file, diff them:
-`diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
+`diff <(jq -r '.jobs[] | select(.name=="<job name>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/<job name>.md` — no output means they match.
 
-To switch a digest off: `hermes cron pause <job id>` stops it without deleting
+To switch a job off: `hermes cron pause <job id>` stops it without deleting
 anything, and `hermes cron resume <job id>` brings it back. To restore the
-previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706
+previous wording, `~/.hermes/cron/jobs.json.bak-9706` holds the pre-#9706 digest
 prompts (copy the old `prompt` value back with the same `hermes cron edit`
 command).
 
