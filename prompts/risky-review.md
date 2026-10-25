@@ -14,6 +14,7 @@ This diff touches a path that can change production, billing, customer data, sec
 - Customer data in logs, errors, Sentry, URLs or third-party calls. Secrets, tokens or keys added to the repo.
 - A weaker CSP, header, access rule or policy. A new dependency or version nobody justified.
 - A workflow, config or prompt change that removes a gate, widens a token, runs PR code with secrets, or lets an agent approve its own work.
+- Does this PR remove or loosen a detector, probe, alert threshold, route or backup path? If yes, block unless the linked issue says why, with evidence. Name the removed or loosened line in the `blocker`.
 - Spend with no cap: a loop, retry, fan-out or paid call without a hard limit.
 - Writes on read paths, a second writer for a table, or logic that changes behavior the PR text does not mention.
 - Does this add hand-rolled logic, a wrapper, a poller, a retry loop or inline shell/jq where a built-in feature exists, or does it delete working lines to make room for such logic under the line ratchet? If so, name the built-in feature and request changes: that is a `blocker`. A PR that deletes N working lines and adds N lines of glue still passes the line count, so judge the content and say which working lines went. A `stock:` or `built:` line in the PR text is a claim to check against the diff, not a fact.
