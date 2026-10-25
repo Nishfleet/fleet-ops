@@ -24,6 +24,10 @@ def _groups():
     return {g["name"]: g["rules"] for g in _yq(".groups", RULES)}
 
 
+def _deleted_uids():
+    return {r["uid"] for r in _yq(".deleteRules", RULES) or []}
+
+
 def _all_rules():
     return [r for rules in _groups().values() for r in rules]
 
@@ -62,6 +66,16 @@ def _red_for_a_day(runs):
 
 def _query(rule):
     return next(d for d in rule["data"] if d["refId"] == "A")
+
+
+def test_a_uid_in_delete_rules_is_not_also_a_live_rule():
+    # A rule that comes back to the file must take its uid out of deleteRules, or
+    # the next provisioning load deletes the rule that just returned. The reverse
+    # pairing, the uid gone from the file and from deleteRules, is what lets a
+    # removed rule stay live (fleet-ops#10198, #10206).
+    deleted = _deleted_uids()
+    live = {r["uid"] for r in _all_rules()}
+    assert not (deleted & live), f"uids in both the file and deleteRules: {sorted(deleted & live)}"
 
 
 def test_each_rule_reads_one_main_workflow_through_the_org_app_installation():

@@ -55,7 +55,9 @@
 # fleet-console-worker are covered from fleet-github, whose installation
 # datasources/fleet.yaml records as all Nishfleet repos; its read of these two
 # was not tested live before they were added, so a repo it cannot read files a
-# "cannot read GitHub runs" issue. fleet-console-worker is in the deploy-failed
+# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy has
+# succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
+# fleet-console-worker is in the deploy-failed
 # group only, with no 24h rule: it got its Cloudflare key on 2026-10-20 and its
 # deploy succeeded for the first time the same day, with every run since green
 # (newest 2026-10-24), so it has no red history to page on yet. Adding its 24h

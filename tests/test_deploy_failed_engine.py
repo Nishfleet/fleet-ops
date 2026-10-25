@@ -202,6 +202,8 @@ def test_grafana_stores_every_rules_annotations_labels_and_title_as_the_file_wri
     stored = {r["uid"]: r for r in json.load(urllib.request.urlopen(urllib.request.Request(f"{base}/api/v1/provisioning/alert-rules", headers=auth), timeout=10))}
     file = json.loads(subprocess.run([YQ, "-o=json", "[.groups[].rules[]]", str(RULES)], capture_output=True, text=True, check=True).stdout)
     assert len(file) == 14
+    assert not (set(stored) - {r["uid"] for r in file}), "the store holds a uid the file does not write"
+    assert "deploy-failed-inish-mail-filter" not in stored
     for rule in file:
         assert "{{ if $values }}" in rule["annotations"]["summary"]
         got = stored[rule["uid"]]
