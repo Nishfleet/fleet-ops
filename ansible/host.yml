@@ -832,9 +832,10 @@
     # those files came out group-writable and group-readable. The playbook's own
     # Devin CLI calls set the umask themselves; this repairs what any other
     # launcher wrote, to the same 0600/0700 that umask 077 gives. A symlink is
-    # skipped because it always shows mode 777, a file nish does not own is
-    # skipped because nish cannot chmod it, and -xdev keeps it inside one
-    # filesystem.
+    # skipped because it always shows mode 777, a file the running user does not
+    # own is skipped because that user cannot chmod it, and -xdev keeps it
+    # inside one filesystem. The owner is resolved at run time with id -un, so
+    # the same task runs unchanged on a host whose agent user has another name.
     - name: Look for the Devin CLI state directory
       become: true
       become_user: nish
@@ -847,7 +848,12 @@
       become: true
       become_user: nish
       ansible.builtin.command:
-        argv: [find, "{{ agent_share }}/devin", -xdev, -user, nish, -not, -type, l, -perm, /077, -exec, chmod, go-rwx, "{}", +]
+        argv:
+          - bash
+          - -c
+          - 'find "$1" -xdev -user "$(id -un)" -not -type l \( -perm -g+w -o -perm -o+w \) -exec chmod go-rwx {} +'
+          - bash
+          - "{{ agent_share }}/devin"
       register: devin_state_mode
       changed_when: false
       when: devin_state_dir.stat.exists and devin_state_dir.stat.isdir
