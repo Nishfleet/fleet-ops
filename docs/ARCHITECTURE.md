@@ -145,15 +145,18 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed. Coordinator approval is a **required status check**: the
   `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
-  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name resolves
-  every PR in the queue entry from the group ref, classifies it with the same
-  CLASSIFY program and the same `config/risky-paths.json` list `hold-risky`
-  reads, and fails when a risky PR's current head sha has no approval. A hand
-  enqueue is caught by it as well, because a queue entry cannot merge while a
-  required check fails (fleet-ops#9383: a manual enqueue merged #9371
-  unapproved before the check existed). The one way past it is the ruleset's
-  bypass actor, repository role 5 (admin), which can skip a required check.
-  agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
+  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
+  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  resolves every PR in the queue entry from the group ref, reads the CLASSIFY
+  and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
+  commit, and fails a risky PR whose current head sha carries no approval. A
+  hand enqueue is caught by it as well, because a queue entry cannot merge
+  while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
+  unapproved before the check existed; the job ran from 2026-10-07 but the
+  ruleset did not require it until later, so a failing check still let the
+  entry merge). This ruleset grants no bypass actor (`bypass_actors` is empty),
+  so no login skips its required checks that way; the path that is not a check
+  is a direct `PUT pulls/<PR>/merge`, which the ruleset does not permit. agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
