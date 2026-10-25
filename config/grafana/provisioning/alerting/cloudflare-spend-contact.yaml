@@ -3,7 +3,7 @@
 # token is a file reference, never a literal: $__file{} is Grafana's own
 # provisioning expansion and re-reads the file at every provisioning load. The
 # file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
-# only) that expires after one hour, so fleet-grafana-github-token.timer
+# and the four product repos a site alert can name, fleet-ops#10323) that expires after one hour, so fleet-grafana-github-token.timer
 # re-mints it every 20 min and reloads provisioning. Every rule carries a
 # severity label (critical or warning) and the policy tree below routes on it.
 apiVersion: 1
@@ -89,6 +89,89 @@ contactPoints:
               {{- end -}}
 
 
+  - orgId: 1
+    name: prometheus-alert-dispatch-0509
+    receivers:
+      - uid: prometheus-alert-gh-issues-0509
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/0509/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300 and #10323.\n\nFix the cause, prove the alert resolved, then close this issue." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
+              {{- end -}}
+
+
+  - orgId: 1
+    name: prometheus-alert-dispatch-seo-fix-kit
+    receivers:
+      - uid: prometheus-alert-gh-issues-seo-fix-kit
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/seo-fix-kit/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300 and #10323.\n\nFix the cause, prove the alert resolved, then close this issue." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
+              {{- end -}}
+
+
+  - orgId: 1
+    name: prometheus-alert-dispatch-siterep-public
+    receivers:
+      - uid: prometheus-alert-gh-issues-siterep-public
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/siterep-public/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300 and #10323.\n\nFix the cause, prove the alert resolved, then close this issue." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
+              {{- end -}}
+
+
+  - orgId: 1
+    name: prometheus-alert-dispatch-aiconverter-app
+    receivers:
+      - uid: prometheus-alert-gh-issues-aiconverter-app
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/aiconverter-app/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "alert: %s %s" .Labels.prom_alertname (or .Labels.name .Labels.instance))
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` started firing %s UTC (%s). Labels: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300 and #10323.\n\nFix the cause, prove the alert resolved, then close this issue." .Annotations.summary .Annotations.description .Labels.prom_alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
+              {{- end -}}
+
 policies:
   - orgId: 1
     receiver: fleet-alert-dispatch
@@ -132,6 +215,42 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
+      - receiver: prometheus-alert-dispatch-0509
+        object_matchers:
+          - [signal, "=", prometheus]
+          - [repo, "=", 0509]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 168h
+      - receiver: prometheus-alert-dispatch-seo-fix-kit
+        object_matchers:
+          - [signal, "=", prometheus]
+          - [repo, "=", seo-fix-kit]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 168h
+      - receiver: prometheus-alert-dispatch-siterep-public
+        object_matchers:
+          - [signal, "=", prometheus]
+          - [repo, "=", siterep-public]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 168h
+      - receiver: prometheus-alert-dispatch-aiconverter-app
+        object_matchers:
+          - [signal, "=", prometheus]
+          - [repo, "=", aiconverter-app]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 168h
       - receiver: prometheus-alert-dispatch
         object_matchers:
           - [signal, "=", prometheus]

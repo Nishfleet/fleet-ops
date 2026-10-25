@@ -13,7 +13,8 @@ fails the run instead of passing silently:
        App's public key.
   POST /app/installations/<id>/access_tokens
        needs the same JWT and a body that asks for exactly repositories
-       [fleet-ops] and permissions {issues: write} (the Grafana token), or
+       [fleet-ops, 0509, seo-fix-kit, siterep-public, aiconverter-app] and
+       permissions {issues: write} (the Grafana token), or
        exactly the one repo whose installation was looked up and permissions
        {contents, issues, pull_requests: write} (the worker token).
 
@@ -33,6 +34,7 @@ import tempfile
 PORT, PUB, APP_ID, MODE_FILE, LOG_FILE = sys.argv[1:6]
 MINTS = 0
 REPOS = {}
+GRAFANA_REPOS = ["fleet-ops", "0509", "seo-fix-kit", "siterep-public", "aiconverter-app"]
 WORKER_PERMS = {"contents": "write", "issues": "write", "pull_requests": "write"}
 
 
@@ -90,7 +92,7 @@ class H(http.server.BaseHTTPRequestHandler):
         elif method == "POST" and self.path.startswith("/app/installations/") and self.path.endswith("/access_tokens"):
             iid = int(self.path.split("/")[3])
             repo = REPOS.get(iid)
-            wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
+            wants = [{"repositories": GRAFANA_REPOS, "permissions": {"issues": "write"}},
                      {"repositories": [repo], "permissions": WORKER_PERMS}]
             if repo is None or json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}

@@ -13,8 +13,8 @@ Description=Mint the short-lived GitHub App token Grafana's alert webhook sends 
 # fleet-grafana-provisioning.service already makes.
 #
 # The token is minted from the nishfleet-worker App key that fleet-grafana
-# already mounts, scoped by the request body to issues:write on this one repo
-# (the contact points only POST issues). It lives in the user runtime dir
+# already mounts, scoped by the request body to issues:write on fleet-ops and the four product
+# repos a site alert files in (fleet-ops#10323; the contact points only POST issues). It lives in the user runtime dir
 # (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
 # as a config fd. A failed mint keeps the previous token file, pages through
 # OnFailure=, and Grafana's own delivery rule
@@ -44,7 +44,7 @@ Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 ExecStartPre=/bin/sh -c 'rm -f "$$RUNTIME_DIRECTORY/token.new"; test -e "$$RUNTIME_DIRECTORY/token" || { umask 077; : > "$$RUNTIME_DIRECTORY/token"; }'
 # RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
 # iat 60 s back for clock drift, exp inside the 10 min cap), then the
-# installation id of this repo, then a token limited to this repo and
+# installation id of fleet-ops, then a token limited to those repos and
 # issues:write. `$$` is systemd's escape for a literal `$`, `%%` for `%`.
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
@@ -54,10 +54,10 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
   id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
-  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"fleet-ops\\"],\\"permissions\\":{\\"issues\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"fleet-ops\\",\\"0509\\",\\"seo-fix-kit\\",\\"siterep-public\\",\\"aiconverter-app\\"],\\"permissions\\":{\\"issues\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
   printf "%%s" "$$tok" > "$$RUNTIME_DIRECTORY/token.new"; \
   mv -f "$$RUNTIME_DIRECTORY/token.new" "$$RUNTIME_DIRECTORY/token"; \
-  echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
+  echo "minted a GitHub App token for issues:write on fleet-ops and four product repos, valid one hour"'
 # Grafana picks the new file up on a provisioning reload. The service skips
 # itself when Grafana is stopped (a starting Grafana reads the file anyway).
 ExecStartPost=/usr/bin/systemctl --user start fleet-grafana-provisioning.service

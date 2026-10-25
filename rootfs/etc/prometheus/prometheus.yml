@@ -112,6 +112,25 @@ scrape_configs:
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
+      # repo: the Nishfleet repo whose worker fixes the site (fleet-ops#10323).
+      # Grafana files a SiteDown in that repo; a target with no row here files
+      # in fleet-ops.
+      - source_labels: [__param_target]
+        regex: 'https://api\.0509\.io/'
+        target_label: repo
+        replacement: 0509
+      - source_labels: [__param_target]
+        regex: 'https://seofixkit\.com/'
+        target_label: repo
+        replacement: seo-fix-kit
+      - source_labels: [__param_target]
+        regex: 'https://siterep\.net/'
+        target_label: repo
+        replacement: siterep-public
+      - source_labels: [__param_target]
+        regex: 'https://aiconverter\.app/'
+        target_label: repo
+        replacement: aiconverter-app
       - target_label: __address__
         replacement: 127.0.0.1:9115
 

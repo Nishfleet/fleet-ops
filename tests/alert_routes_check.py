@@ -11,6 +11,11 @@ for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
 
+A Prometheus alert that carries a repo label (the site probes, fleet-ops#10323)
+files in that product repo's own contact point, so its worker can fix it; one
+with no repo label files in fleet-ops. This also fails when a repo label in
+rootfs/etc/prometheus/prometheus.yml has no contact point and route.
+
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
 import re
@@ -41,7 +46,9 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch"}
+PRODUCT_REPOS = ("0509", "seo-fix-kit", "siterep-public", "aiconverter-app")
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch",
+               *(f"prometheus-alert-dispatch-{r}" for r in PRODUCT_REPOS)}
 GENERIC_SINK = "fleet-alert-dispatch"
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
@@ -159,6 +166,21 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    prom = {"alertname": "Prometheus alert firing", "severity": "warning", "signal": "prometheus"}
+    for r in PRODUCT_REPOS:
+        got = {rc for rc, _ in route(policy, {**prom, "repo": r, "prom_alertname": "SiteDown"})}
+        if got != {f"prometheus-alert-dispatch-{r}"}:
+            bad.append(f"SiteDown with repo={r} must file only in {r}, reached {sorted(got)}")
+    got = {rc for rc, _ in route(policy, prom)}
+    if got != {"prometheus-alert-dispatch"}:
+        bad.append(f"a Prometheus alert with no repo label must file in fleet-ops, reached {sorted(got)}")
+    prom_cfg = yaml.safe_load(Path("rootfs/etc/prometheus/prometheus.yml").read_text())
+    labelled = {rc["replacement"] for sc in prom_cfg["scrape_configs"] for rc in sc.get("relabel_configs") or []
+                if rc.get("target_label") == "repo"}
+    if labelled != set(PRODUCT_REPOS):
+        bad.append(f"repo labels in prometheus.yml {sorted(labelled)} differ from the contact points {sorted(PRODUCT_REPOS)}")
+    else:
+        print(f"SiteDown routes: {', '.join(f'repo={r} -> prometheus-alert-dispatch-{r}' for r in PRODUCT_REPOS)}; no repo -> prometheus-alert-dispatch")
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
