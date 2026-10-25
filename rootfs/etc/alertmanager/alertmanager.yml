@@ -7,7 +7,13 @@
 #                    both alive, and alerts when it stops. A dead-man inside the
 #                    box could not report the box dying.
 #   severity=nish -> `telegram`: a real outage (see fleet_rules.yml), paged
-#                    immediately and re-sent every 6 hours while it lasts.
+#                    after 30s and re-sent every 6 hours while it lasts. Only
+#                    BackupStale, BackupFailed and SiteDown, which a worker can
+#                    fix, wait 2 hours per instance first: the Grafana rule
+#                    prometheus-alerts files an issue for the fleet to fix them
+#                    (fleet-ops#10300). Spend, router, gateway, exporter and
+#                    reload alerts stop the fleet from fixing anything, so
+#                    they page at once.
 #
 # Everything else matches no route and lands on `none`, which has no
 # integrations: those alerts stay visible (ALERTS series, Alertmanager) and page
@@ -35,6 +41,14 @@ route:
       group_wait: 0s
       group_interval: 1m
       repeat_interval: 5m
+    - matchers:
+        - severity="nish"
+        - alertname=~"BackupStale|BackupFailed|SiteDown"
+      receiver: telegram
+      group_by: ['alertname', 'instance']
+      group_wait: 2h
+      group_interval: 5m
+      repeat_interval: 6h
     - matchers:
         - severity="nish"
       receiver: telegram
