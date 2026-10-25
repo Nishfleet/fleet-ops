@@ -1,9 +1,13 @@
-# fleet-ops#9605 (Nish said yes on 2026-10-12, see that issue): the two
-# automated reviewers approve worker code (.py, .sh, bin/, scripts/). New
-# scripts are still refused by the `ci` check (.semgrep/no-glue.yml), and any
-# edit under .github/ needs both automated reviews (config/risky-paths.json
-# "guard"). Nish's review stays on the files below: the safety rules and their
-# scanners, the tests that prove the agent jail, deny lists, root-run host
+# fleet-ops#9605: Nish said yes on 2026-10-12 14:24 UTC (recorded by nish3451
+# in the #9605 thread the same day). Worker code (.py, .sh, bin/, scripts/)
+# merges on the automated review; only the guard paths (.github/,
+# config/risky-paths.json, prompts/risky-review.md, credentials/) need both
+# automated reviews (config/risky-paths.json "guard"). New script files under
+# bin/, scripts/ and the other glue dirs are still refused by the `ci` check
+# (.semgrep/no-glue.yml). A new file under tests/ is not refused there (the
+# scanner skips test dirs), so the tests below keep Nish's review. Nish's
+# review stays on the safety rules and their scanners, the tests that prove
+# the agent jail and the alert and admission gates, deny lists, root-run host
 # config, seat keys and credentials. Public repos refuse push rulesets, so
 # this uses CODEOWNERS + require_code_owner_review.
 
@@ -17,9 +21,19 @@
 /.github/gitleaks-private-detail.toml @nish3451
 # Tests that prove the worker jail hides every login and that App tokens are minted safely.
 /tests/test_claude_lanes.py @nish3451
+/tests/test_claude_max_agents.py @nish3451
+/tests/test_runner_jail_start_state.py @nish3451
+/tests/test_gh_login_check.py @nish3451
+/tests/test_worker_github_token.py @nish3451
 /tests/github_app_stub.py @nish3451
-# Agent deny lists and permission policy.
+# The alert-routing contract (which rules page Nish) and the triage admission gate.
+/tests/alert_routes_check.py @nish3451
+/tests/test_triage_admit.py @nish3451
+# Hand-off cleanup: a busy worktree must survive the hand-off run.
+/tests/test_orch_cleanup_keeps_busy_worktree.py @nish3451
+# Agent deny lists, permission policy and the exec-policy floor.
 /rootfs/etc/claude-code/ @nish3451
+/tests/test_codex_execpolicy_floor.py @nish3451
 # Root-run host config: firewall, privilege, kernel hardening, audit, root units.
 /rootfs/etc/nftables.conf @nish3451
 /rootfs/etc/polkit-1/ @nish3451
@@ -28,10 +42,21 @@
 /rootfs/etc/systemd/system/ @nish3451
 /ansible/host.yml @nish3451
 /ansible/update.yml @nish3451
-# Seat keys and credentials.
+# Host hardening proven by tests.
+/tests/test_quadlet_hardening.py @nish3451
+# Seat keys and credentials: the credential directory, the units that mint and
+# apply tokens, the seat files and the env files.
 /credentials/ @nish3451
+/systemd/fleet-worker-github-token@.service @nish3451
+/systemd/fleet-grafana-github-token.service @nish3451
+/systemd/cloudflare-tokens-apply.service @nish3451
 **/*seat*.conf @nish3451
 *.env @nish3451
+.env* @nish3451
+.dev.vars* @nish3451
+# Credential-store and token-state safety proven by tests.
+/tests/test_no_plaintext_git_credentials.py @nish3451
+/tests/test_tofu_state_encryption.py @nish3451
 # This file.
 /.github/CODEOWNERS @nish3451
 # Paid-plan lock (fleet-ops#9224): removing a paid plan from the router needs Nish's yes. CI fails when a listed plan loses its last row.
