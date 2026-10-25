@@ -474,7 +474,7 @@ jobs:
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
             else
-              cat "$RUNNER_TEMP/try.err" >&2
+              cat "$RUNNER_TEMP/try.err" >&2; echo "claude lane: final text (seat=$claude_seat rc=$rc):"; cat "$RUNNER_TEMP/try.out"; echo "claude lane: end of final text" # print mode writes only the final answer to stdout: a stop on a blocker, a duplicate or an already-delivered issue exits rc 0 with the reason on stdout, which the lane used to drop with try.out, so the run looked silent (fleet-ops#10101 follow-up: tether run 40073423830)
               # A refused seat is not a failed packet: say so where the Router
               # wall step reads, so a branch with nothing pushed is requeued.
               if [ "$rc" != 0 ] && refused; then echo "claude: 429 rate limit, cursor lane full" >&2; fi
