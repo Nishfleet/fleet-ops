@@ -43,6 +43,32 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
+      - alert: DiskWillFill
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} will fill within 24 hours"
+          description: "At the rate of the last 6 hours, {{ $labels.mountpoint }} ({{ $labels.device }}) runs out of space within 24 hours."
+
+      - alert: MemoryPressure
+        expr: rate(node_pressure_memory_waiting_seconds_total[5m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasks are stalled waiting for memory"
+          description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+
+      - alert: OOMKill
+        expr: increase(node_vmstat_oom_kill[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The kernel OOM killer ran"
+          description: "node_vmstat_oom_kill rose in the last 15 minutes: the kernel killed a process for lack of memory."
+
   - name: fleet_hermes
     rules:
       # Not active for 5 minutes. max_over_time rather than `for:` so a crash
