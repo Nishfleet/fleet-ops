@@ -10,6 +10,13 @@ rail are in `README.md`; design and enforced rules are in
    deliberately down; respect it. Otherwise step 2 is the truth.
 2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
 3. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
+   From a shell inside a worker or runner jail this ends `Failed to connect to
+   bus: Permission denied` because the jail masks the user manager
+   (fleet-ops#9983): the error is the jail, not a host fault, and the
+   `root:root` mode-000 socket it reports is systemd's inaccessible
+   placeholder. From inside the jail the step stays not run and can never be
+   cleared. Partial fallback from any shell: `systemctl --failed` (system
+   scope), failed system units only.
 4. `curl -s 127.0.0.1:4000/health/readiness` (expect
    `{"status":"healthy","db":"connected"}`), then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
