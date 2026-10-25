@@ -5,6 +5,30 @@
 # Grafana file provisioning has no shared/foreach rule form (docs: groups[].rules
 # is a list of full rules). One rule per plan so absent_over_time matches that
 # api_base. disableResolveMessage is true: Hermes urgent is firing-only.
+#
+# The idle test in every rule below is two conditions multiplied, not
+# `and`ed, because a success counter that has not increased is not the same
+# thing as a plan that served nothing (fleet-ops#9879: CommandCode paged 50
+# seconds after a real 200 OK, 90 seconds before its first sample after the
+# router restart, with its pre-restart samples flat). `and` keeps the left
+# element whenever the right side has a series with matching labels, whatever
+# that series' value, so `(increase == bool 0) and (now == bool offset)` pages
+# on a moved counter; `*` multiplies the two 0/1 conditions instead
+# (https://prometheus.io/docs/prometheus/latest/querying/operators/).
+#
+#  - increase() misses a caller's first call after a restart. LiteLLM labels a
+#    deployment's series only once it has reported, so that first success
+#    creates the series at 1 and the counter never shows the 0 -> 1 step
+#    increase() counts. A plan called once reads increase == 0 forever.
+#  - the plan total is what moves instead. Comparing the total now against the
+#    same total one idle window back catches both halves: a restart takes every
+#    series away (0 against a non-zero total) and a new caller's series lifts
+#    the total with no increase at all.
+#
+# Each side of that comparison carries `or vector(0)`, so an absent side reads
+# 0 instead of an empty vector that would make `== bool` return nothing. The
+# absent_over_time branch still leads the union, so a row dropped from the
+# router pages after 24h whatever its counter did inside the idle window.
 apiVersion: 1
 
 contactPoints:
@@ -45,15 +69,19 @@ groups:
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 172800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])
+                or
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -102,15 +130,19 @@ groups:
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 172800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])
+                or
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 24h) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -159,15 +191,19 @@ groups:
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 172800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])
+                or
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}[24h])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.stepfun.ai/step_plan/v1.*"} offset 24h) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -216,15 +252,19 @@ groups:
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 172800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])
+                or
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}[24h])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.z.ai/api/coding/paas/v4.*"} offset 24h) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -273,15 +313,19 @@ groups:
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 172800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])
+                or
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}[24h])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://opencode.ai/zen/go/v1.*"} offset 24h) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -331,13 +375,15 @@ groups:
       # 24h-zero window pages on a normal quiet day (fleet-ops#9865, fired on
       # 2026-10-16 with the row healthy after 3 successful calls the day
       # before). The idle branch therefore reads 7 days; absence still pages
-      # after 24h so a row dropped from the router is caught fast.
+      # after 24h so a row dropped from the router is caught fast. Its A
+      # expression carries the same two idle conditions as the 24h rows, with
+      # the offset comparison widened to the same 7 days.
       - uid: ppi-alibaba
         title: Alibaba token-plan SG idle
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 604800, to: 0}
+            relativeTimeRange: {from: 1209600, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
@@ -345,7 +391,11 @@ groups:
               expr: |-
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h])
                 or
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0)
+                (
+                  (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0)
+                  *
+                  ((sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"} offset 7d) or vector(0)))
+                )
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
