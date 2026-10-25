@@ -140,7 +140,7 @@ policies:
           - [signal, "=", prometheus]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
         group_by: [prom_alertname]
-        group_wait: 0s
+        group_wait: 30s
         group_interval: 5m
         # 24h, not 168h: a worker that closes the issue without fixing the cause
         # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
