@@ -1294,6 +1294,19 @@ def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> 
     assert repoint < remove, "removing the file first leaves the wants link dangling and LINK-GUARD fails the unit"
 
 
+def test_the_root_copy_installs_the_desk_daemon_and_the_oom_dropin() -> None:
+    host = (ROOT / "ansible/host.yml").read_text()
+    assert 'src: "{{ rootfs }}/etc/systemd/user/"' in host and "dest: /etc/systemd/user/" in host, (
+        "step 2k is inert unless the root copy installs the whole rootfs/etc/systemd/user/ tree, "
+        "and an enumerated file list would miss the next file added there"
+    )
+    for relative in (
+        "rootfs/etc/systemd/user/cua-desk-daemon.service",
+        "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf",
+    ):
+        assert (ROOT / relative).is_file(), f"{relative} is not in the repo, so the copy installs nothing"
+
+
 SPACE_TOKEN = "Tk3-" + "x" * 28
 CONTAINER_ID = "ab" * 32
 
