@@ -826,16 +826,14 @@
       when: item.pw_name == 'nish'
 
     # The Devin CLI writes its run logs, plugin index, rotated logs and session
-    # locks under its data dir with whatever umask it inherits. The systemd units
-    # that start it carry UMask=0077, but a launcher that de-elevates to nish
-    # through PAM gets pam_umask's 0002 instead (audit W1a, nish-vault#30), so
-    # those files came out group-writable and group-readable. The playbook's own
-    # Devin CLI calls set the umask themselves; this repairs what any other
-    # launcher wrote, to the same 0600/0700 that umask 077 gives. A symlink is
-    # skipped because it always shows mode 777, a file the running user does not
-    # own is skipped because that user cannot chmod it, and -xdev keeps it
-    # inside one filesystem. The owner is resolved at run time with id -un, so
-    # the same task runs unchanged on a host whose agent user has another name.
+    # locks with the umask it inherits, and a launcher that de-elevates to nish
+    # through PAM gets pam_umask's 0002 instead of the units' UMask=0077 (audit
+    # W1a, nish-vault#30; pam_umask(8)), so those files came out group-readable.
+    # This repairs what any other launcher wrote, to the 0600/0700 umask 077
+    # gives. -xdev stays inside one filesystem, a symlink is skipped because it
+    # always shows mode 777, and a file the running user does not own is skipped
+    # because that user cannot chmod it. id -un resolves the owner, so the task
+    # runs unchanged where the agent user has another name.
     - name: Look for the Devin CLI state directory
       become: true
       become_user: nish

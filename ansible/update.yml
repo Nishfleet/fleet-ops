@@ -261,9 +261,9 @@
           loop: "{{ runner_units.stdout_lines | map('split') | map('first') | list }}"
           register: runners_stopped
 
-        # umask 077 because the Devin CLI writes a run log under its data dir
-        # on every start, and a become-time PAM session pins the child umask to
-        # 0002 (audit W1a, nish-vault#30). A version check writes nothing else.
+        # umask 077 because the Devin CLI writes a run log under its data dir on
+        # every start, and a become-time PAM session pins the child umask to 0002
+        # (audit W1a, nish-vault#30; pam_umask(8)). A version check writes nothing else.
         - name: Record tool versions before the update
           become: true
           become_user: nish
