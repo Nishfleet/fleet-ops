@@ -34,6 +34,10 @@ URGENT = {
     "StepFun idle": "money", "z.ai idle": "money",
     "OpenCode Go idle": "money",
     "Alibaba token-plan SG idle": "money",
+    # money: scattered session calls are full input price (fleet-ops#9361, 90.4M
+    # cached tokens re-read in 5.6 days); how to clean up routes (remove a row,
+    # bench, reorder) is Nish's yes-only call
+    "Session hop rate above 2%": "money",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
         "Nishfleet/mailbox", "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
