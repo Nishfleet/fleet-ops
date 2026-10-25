@@ -1180,11 +1180,9 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
     assert "[Service]" in lines
     assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
     unit = ROOT / dropin_dir.removesuffix(".d")
-    # The Devin listener unit is hand-placed on the host (no repo copy), so only its drop-in is here.
-    if unit.is_file():
-        assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-            f"{unit.name} sets UMask itself; keep it in the drop-in only"
-        )
+    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+        f"{unit.name} sets UMask itself; keep it in the drop-in only"
+    )
 
 
 GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
@@ -1239,6 +1237,106 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
+
+
+WAKE_UNITS = (
+    "systemd/tincan-listen-command-code.service",
+    "systemd/tincan-listen-cursor-vps.service",
+    "systemd/tincan-listen-devin-vps.service",
+    "systemd/tincan-listen-fleet-worker.service",
+    "systemd/tincan-listen-opencode.service",
+    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/user/cua-desk-daemon.service",
+)
+WAKE_AGENT = {
+    "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
+    "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
+    "tincan-listen-devin-vps": ("devin -p", "--permission-mode dangerous"),
+    "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
+    "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
+    "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
+}
+DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
+
+
+def effective_directives(unit: Path) -> dict[str, list[str]]:
+    """A unit the way systemd reads it: the unit file, then its drop-ins in name order."""
+    keys: dict[str, list[str]] = {}
+    for source in [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]:
+        if not source.is_file():
+            continue
+        for key, values in _unit_keys(source).items():
+            keys.setdefault(key, []).extend(values)
+    return keys
+
+
+@pytest.mark.parametrize("relative", WAKE_UNITS, ids=lambda path: path)
+def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> None:
+    unit = ROOT / relative
+    assert unit.is_file(), f"{relative} is not in the repo, so a git pull carries no edit to it"
+    keys = effective_directives(unit)
+    assert _last(keys, "Restart") == "always"
+    if relative != DESK_UNIT:
+        assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
+    assert _last(keys, "WantedBy") == "default.target"
+    if relative != DESK_UNIT:
+        assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
+
+
+def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
+    for name, (binary, flags) in WAKE_AGENT.items():
+        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        exec_start = keys["ExecStart"][0]
+        assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
+        if flags:
+            assert flags in exec_start, f"{name}: ExecStart lost the {flags} flags"
+        agent = name.removeprefix("tincan-listen-")
+        assert keys["Environment"][0] in {
+            f"TINCAN_CONFIG=/home/nish/.config/tincan/{agent}.json",
+            f"TINCAN_CONFIG=%h/.config/tincan/{agent}.json",
+        }, f"{name}: TINCAN_CONFIG does not point at its own config"
+        assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
+
+
+def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own() -> None:
+    cursor = effective_directives(ROOT / "systemd/tincan-listen-cursor-vps.service")
+    assert "%h/.config/fleet-ops/seats/cursor.env" in cursor["EnvironmentFile"]
+    desk = effective_directives(ROOT / DESK_UNIT)
+    assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
+    assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
+    assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
+
+
+def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
+    readme = (ROOT / "README.md").read_text()
+    assert "systemctl --user start <unit>" in readme, "the README lost the run line"
+    for relative in WAKE_UNITS:
+        unit = relative.split("/")[-1]
+        assert f"systemctl --user disable --now {unit}" in readme
+
+
+def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    line = next(
+        (line for line in sync.splitlines() if "default.target.wants/cua-desk-daemon.service" in line),
+        "",
+    )
+    assert line.startswith("ExecStart=-/bin/sh -c '"), "an unguarded step fails every deploy until /etc has the file"
+    assert 'test "$$(readlink $$w)" = %h/.config/systemd/user/cua-desk-daemon.service' in line, (
+        "the repoint must be conditional, so a hand disable (no wants link) stays off"
+    )
+    repoint = line.index("ln -sfn /etc/systemd/user/cua-desk-daemon.service $$w")
+    remove = line.index("rm -f %h/.config/systemd/user/cua-desk-daemon.service;")
+    assert repoint < remove, "removing the file first leaves the wants link dangling and LINK-GUARD fails the unit"
+
+
+def test_the_root_copy_installs_the_desk_daemon() -> None:
+    host = (ROOT / "ansible/host.yml").read_text()
+    assert 'src: "{{ rootfs }}/etc/systemd/user/"' in host and "dest: /etc/systemd/user/" in host, (
+        "step 2k is inert unless the root copy installs the whole rootfs/etc/systemd/user/ tree, "
+        "and an enumerated file list would miss the next file added there"
+    )
+    assert (ROOT / DESK_UNIT).is_file(), f"{DESK_UNIT} is not in the repo, so the copy installs nothing"
 
 
 SPACE_TOKEN = "Tk3-" + "x" * 28
