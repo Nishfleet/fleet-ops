@@ -472,3 +472,66 @@ tests:
       - eval_time: 10m
         alertname: RouterSeniorFailing
         exp_alerts: []
+
+  # GrafanaDown: up for 10m never fires; down fires once it has been down 5m.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="grafana"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: GrafanaDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: GrafanaDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: GrafanaDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: grafana
+            exp_annotations:
+              summary: "Grafana is down, so no alert can file a fleet issue"
+              description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
+
+  # GrafanaDown: the scrape job disappearing is also down (absent branch).
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GrafanaDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: GrafanaDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              job: grafana
+            exp_annotations:
+              summary: "Grafana is down, so no alert can file a fleet issue"
+              description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
+
+  # GrafanaNotificationsFailing: a flat counter is silent, a rise fires at once
+  # and clears once the 15m window holds no rise.
+  - interval: 1m
+    input_series:
+      - series: 'grafana_alerting_notifications_failed_total{integration="webhook"}'
+        values: '0x10 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: GrafanaNotificationsFailing
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: GrafanaNotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "Grafana failed to deliver alert notifications in the last 15 minutes"
+              description: "grafana_alerting_notifications_failed_total rose in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service."
+      - eval_time: 30m
+        alertname: GrafanaNotificationsFailing
+        exp_alerts: []
