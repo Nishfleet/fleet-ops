@@ -189,8 +189,9 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`
 and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
-on the host (`/etc/systemd/system/restic-r2-*`, installed outside this repo)
-and publish restore proofs.
+on the host (`/etc/systemd/system/restic-r2-*`, deliberately host-only —
+RUNBOOK, "LiteLLM stack (rebuild reference)" records the decision and the
+rebuild warning) and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,
 no second dispatcher, no Kubernetes.

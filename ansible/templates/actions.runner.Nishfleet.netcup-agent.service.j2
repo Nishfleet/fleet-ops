@@ -1,0 +1,14 @@
+[Unit]
+Description=GitHub Actions Runner (Nishfleet.netcup-agent-{{ item }})
+After=network-online.target
+
+[Service]
+ExecStart={{ nish_home }}/.local/share/agent-runner/netcup-agent-{{ item }}/runsvc.sh
+User=nish
+WorkingDirectory={{ nish_home }}/.local/share/agent-runner/netcup-agent-{{ item }}
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target
