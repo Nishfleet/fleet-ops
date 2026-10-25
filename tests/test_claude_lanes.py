@@ -902,7 +902,6 @@ def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     issue = json.dumps({"title": title, "body": "b"})
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=50 REPO=o/r\nissue={json.dumps(issue)}\n{script[start:end]}\necho PROCEED\n'
     env = {**os.environ, "PATH": f"{b}:{SYS_PATH}", "STATE": str(tmp_path), "OPEN_JSON": json.dumps(open_issues), "LIST_FAIL": list_fail}
-    # bash -e, as Actions runs the step: a failed command stops it.
     r = subprocess.run(["bash", "-e", "-c", prog], env=env, capture_output=True, text=True)
     if list_fail:
         return r.returncode, r.stdout
@@ -922,7 +921,6 @@ def test_alert_with_an_older_open_twin_is_closed_as_its_duplicate(tmp_path):
 
 
 def test_alert_without_an_open_twin_proceeds(tmp_path):
-    # Only itself, a newer twin and a near-miss title are open: the daily re-file runs.
     out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 60, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
     assert out == "PROCEED"
     assert "issue close" not in log
