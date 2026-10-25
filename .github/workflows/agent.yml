@@ -1085,7 +1085,7 @@ jobs:
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # Both reviewers run at the same time and the job waits for each whatever the other did,
           # so one that dies does not take the other's answer with it; each empties its own file.
-          ask() { local rc=0; timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
+          ask() { local rc=0; timeout 480 "$HOME/.local/bin/pi" --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
             --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --provider litellm --model "$1" \
             < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || rc=$?; [ "$rc" = 0 ] || : > "$RUNNER_TEMP/$2.txt"; return "$rc"; }
           # The judge seat is called directly, not through pi, because the row that answered is
