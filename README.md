@@ -143,12 +143,16 @@ script, or prompt lands unseen.
   `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
   them; the files here are the bytes that ran before, and `fleet-sync.service`
   step 2j links each one on every deploy (the `default.target.wants` links
-  already point at these paths, so a hand disable stays off). The desk daemon is
+  already point at these paths, so a hand disable stays off: step 2j has no
+  `enable` line). The desk daemon is
   root-owned, installed from `rootfs/etc/systemd/user/` by
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
   bundled `cua` binary; step 2k retires its hand-placed copy once the installed
-  one is there. A unit edit applies at that unit's next restart. Off switch, one
-  unit at a time:
+  one is there, and repoints its wants link at the installed file so the link
+  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
+  are enabled already (the wants link names the unit, and step 2j keeps the six
+  wake links pointed at the repo files). A unit edit applies at that unit's next
+  restart. Off switch, one unit at a time:
   `systemctl --user disable --now tincan-listen-command-code.service`
   `systemctl --user disable --now tincan-listen-cursor-vps.service`
   `systemctl --user disable --now tincan-listen-devin-vps.service`
@@ -158,8 +162,10 @@ script, or prompt lands unseen.
   `systemctl --user disable --now cua-desk-daemon.service`
   Delete one of the six wake services by removing its name from
   `fleet-sync.service` step 2j, its file here and the live link, then
-  `systemctl --user daemon-reload`. Delete the desk daemon by removing its file
-  under `rootfs/etc/systemd/user/` and the wants link.
+  `systemctl --user daemon-reload`. Delete the desk daemon with
+  `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
+  link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
+  `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5

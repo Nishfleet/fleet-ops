@@ -1170,11 +1170,9 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
     assert "[Service]" in lines
     assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
     unit = ROOT / dropin_dir.removesuffix(".d")
-    # The Devin listener unit is in systemd/ with fleet-ops#10133, so both are read.
-    if unit.is_file():
-        assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-            f"{unit.name} sets UMask itself; keep it in the drop-in only"
-        )
+    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
+        f"{unit.name} sets UMask itself; keep it in the drop-in only"
+    )
 
 
 CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
@@ -1227,7 +1225,7 @@ def effective_directives(unit: Path) -> dict[str, list[str]]:
 
 
 @pytest.mark.parametrize("relative", WAKE_UNITS, ids=lambda path: path)
-def test_wake_unit_is_in_the_repo_and_pages_when_it_dies(relative: str) -> None:
+def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> None:
     unit = ROOT / relative
     assert unit.is_file(), f"{relative} is not in the repo, so a git pull carries no edit to it"
     keys = effective_directives(unit)
@@ -1263,8 +1261,9 @@ def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
 
 
-def test_every_wake_unit_has_an_off_switch_written_down() -> None:
+def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
     readme = (ROOT / "README.md").read_text()
+    assert "systemctl --user start <unit>" in readme, "the README lost the run line"
     for relative in WAKE_UNITS:
         unit = relative.split("/")[-1]
         assert f"systemctl --user disable --now {unit}" in readme
@@ -1275,9 +1274,24 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_box_copy_goes_away() -> Non
     assert _last(keys, "ManagedOOMPreference") == "omit"
     assert _last(keys, "MemoryMax") == "512m"
     sync = (ROOT / "systemd/fleet-sync.service").read_text()
-    assert "cua-desk-daemon.service; do test -e /etc/systemd/user" in sync, (
-        "the hand-placed copies shadow /etc/systemd/user, so nothing removes them and the repo copies are inert"
+    assert "test -e /etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf" in sync, (
+        "the hand-placed drop-in shadows /etc/systemd/user, so nothing removes it and the repo copy is inert"
     )
+
+
+def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    line = next(
+        (line for line in sync.splitlines() if "default.target.wants/cua-desk-daemon.service" in line),
+        "",
+    )
+    assert line.startswith("ExecStart=-/bin/sh -c '"), "an unguarded step fails every deploy until /etc has the file"
+    assert 'test "$$(readlink $$w)" = %h/.config/systemd/user/cua-desk-daemon.service' in line, (
+        "the repoint must be conditional, so a hand disable (no wants link) stays off"
+    )
+    repoint = line.index("ln -sfn /etc/systemd/user/cua-desk-daemon.service $$w")
+    remove = line.index("rm -f %h/.config/systemd/user/cua-desk-daemon.service;")
+    assert repoint < remove, "removing the file first leaves the wants link dangling and LINK-GUARD fails the unit"
 
 
 SPACE_TOKEN = "Tk3-" + "x" * 28
