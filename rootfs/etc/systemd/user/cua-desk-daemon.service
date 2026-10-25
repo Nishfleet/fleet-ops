@@ -1,0 +1,19 @@
+[Unit]
+Description=Cua daemon for the desk persistent agent (Cua Spaces bundled cua)
+Documentation=https://cua.ai/docs/cua-sdk/reference/spaces/persistent-agents
+After=network-online.target cua-spacesd-host.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart="/opt/Cua Spaces/resources/native/cua" daemon start --foreground --loopback 127.0.0.1:0
+EnvironmentFile=%h/.config/fleet-ops/seats/claude-seat-b.env
+Environment=CUA_MESH=prefer
+WorkingDirectory=%h
+Restart=always
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

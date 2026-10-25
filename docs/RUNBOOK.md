@@ -487,6 +487,22 @@ cost: the netcup provider VNC console.
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
 
+## Rebuild the box from nothing
+
+The step order for a fresh netcup box (user, SSH over Tailscale, `vps-fleet`
+key, deploy clone, `ansible-playbook ansible/host.yml`, fleet-sync, runners,
+credential files, restic restore, verification) lives in the private vault,
+not in this public repo — this repo holds no credentials and no restore
+steps. On this host the vault checkout is
+`~/workspaces/tooling/nish-vault/05 Playbooks/rebuild-from-nothing.md`
+(fleet-ops#9777); from anywhere else, the `nish3451/nish-vault` GitHub repo,
+same path. The first stage of that plan (fresh box up to a passing
+`ansible-playbook --syntax-check ansible/host.yml`) was rehearsed on a
+scratch ubuntu:24.04 rootfs on 2026-10-25: the syntax check passed and the
+rehearsal caught a uid-1000 collision in the user-creation step, which the
+plan now fixes. Data restore is that vault's
+`restic-r2-recovery-runbook.md`; lockout is its `break-glass.md`.
+
 ## Main has no ruleset bypass (2026-10-12)
 
 - Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
