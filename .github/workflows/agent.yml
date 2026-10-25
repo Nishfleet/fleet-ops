@@ -470,6 +470,12 @@ jobs:
             fi
             unset claude_tok
             [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"
+            # Print mode writes only the final answer to try.out, and this lane used to delete it, so a run that ended with exit 0 and no PR left no reason anywhere (runs 40073423830, 40073425627, 40099814475). Keep it on the VPS, in the runner's work dir beside the transcript and outside $RUNNER_TEMP (cleaned per job). The log gets one fixed line with the path and size, never the text: the model's final text can carry secrets or workflow commands that untrusted issue text slipped in, and "only errors (stderr) reach the log" stays true (fleet-ops#10309, PR #10304 blocked).
+            if [ -f "$RUNNER_TEMP/try.out" ]; then
+              claude_final="${RUNNER_TEMP%/*}/claude-final/$FLEET_TASK_ID.txt"
+              mkdir -p "${claude_final%/*}" && cp "$RUNNER_TEMP/try.out" "$claude_final" && echo "claude lane: final answer kept at $claude_final ($(wc -c <"$claude_final") bytes)" \
+                || echo "::warning::claude lane: could not keep the final answer at $claude_final"
+            fi
             if [ "$rc" != 0 ] && refused && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
