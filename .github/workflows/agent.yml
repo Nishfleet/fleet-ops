@@ -169,6 +169,11 @@ jobs:
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
+          # A still-firing alert re-files every 24h (#10325). An older open twin already holds it: close this one, no model call (#10348).
+          if jq -e '.title|startswith("alert: ")' <<<"$issue" >/dev/null; then
+            twin=$(gh issue list -R "$REPO" --state open --search "in:title $(jq -r .title <<<"$issue")" --limit 100 --json number,title | jq -r --argjson i "$i" --arg t "$(jq -r .title <<<"$issue")" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty')
+            if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi
+          fi
           for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
@@ -209,18 +214,13 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other
-          # than SWE-2: Claude Code on a Claude seat first, then Cursor (paced to
-          # 1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot
-          # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
-          # fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while
-          # fewer than 2 run (OpenCode's free tier answers only the opencode CLI,
-          # fleet-ops#8790), else Devin SWE-2 Max while
-          # fewer than 4 run ($0); when all three are full the issue
-          # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
-          # A lane's live count is the distinct worker directories (Devin,
-          # Cursor) or pi session directories on its bwrap command lines, so
-          # it spans every runner and repo on this host.
+          # Engine (Nish, 2026-09-25). strong-only: a senior model other than SWE-2, Claude Code first,
+          # then Cursor (1 at once); with both full they stay agent-ready. Any other issue: pi while it
+          # has a free router slot (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3; fleet-ops#8975),
+          # else DeepSeek V4.1 Flash Free on the opencode CLI while fewer than 2 run (its free tier answers
+          # only that CLI, fleet-ops#8790), else Devin SWE-2 Max while fewer than 4 run ($0); all three full
+          # waits (lanes-full), with no Cursor fallback (fleet-ops#8740). A lane's live count is the distinct
+          # worker or pi session directories on its bwrap command lines, so it spans every runner and repo.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is

@@ -881,3 +881,51 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
+
+
+DUP_GH = """#!/bin/bash
+echo "gh $*" >> "$STATE/gh.log"
+case "$1 $2" in "issue list") echo "$OPEN_JSON" ;; esac
+"""
+
+
+def _dup_gate(tmp_path, title, open_issues):
+    """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
+    script = _step("work", "Gate")
+    start = script.index("# A still-firing alert re-files")
+    end = script.index("skip duplicate-alert; fi\n", start)
+    end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
+    b = tmp_path / "bin"
+    b.mkdir()
+    (b / "gh").write_text(DUP_GH)
+    (b / "gh").chmod(0o755)
+    issue = json.dumps({"title": title, "body": "b"})
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=50 REPO=o/r\nissue={json.dumps(issue)}\n{script[start:end]}\necho PROCEED\n'
+    env = {**os.environ, "PATH": f"{b}:{SYS_PATH}", "STATE": str(tmp_path), "OPEN_JSON": json.dumps(open_issues)}
+    r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
+    return r.stdout.strip().splitlines()[-1], log
+
+
+ALERT = "alert: SystemUnitFailed restic-r2-size-guard.service"
+
+
+def test_alert_with_an_older_open_twin_is_closed_as_its_duplicate(tmp_path):
+    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 41, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
+    assert out == "SKIP duplicate-alert"
+    assert "gh issue close 50 -R o/r --duplicate-of 41 --comment duplicate: the alert is still firing; #41 is open for it" in log
+    assert "comment 41" not in log and "issue comment" not in log, "the older issue gets no comment"
+
+
+def test_alert_without_an_open_twin_proceeds(tmp_path):
+    # Only itself, a newer twin and a near-miss title are open: the daily re-file runs.
+    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 60, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
+    assert out == "PROCEED"
+    assert "issue close" not in log
+
+
+def test_non_alert_title_skips_the_lookup(tmp_path):
+    out, log = _dup_gate(tmp_path, "grafana alert: DatasourceError", [{"number": 41, "title": "grafana alert: DatasourceError"}])
+    assert out == "PROCEED"
+    assert log == ""
