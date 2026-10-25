@@ -1,6 +1,12 @@
 # Fleet LiteLLM proxy, containerized (fleet-ops#8435, cutover #8494).
-# The image is pinned to the version the venv ran (1.98.0), so the Prisma
-# schema and config semantics do not move with the cutover. Bump the tag in its own PR.
+# The image is pinned by tag and digest (v1.105.0, cosign-verified outside CI). The schema change
+# between releases is not additive, so a start does three things in order, enforced by this unit's
+# own ExecStartPre= lines (systemd runs them in order and does not start the proxy if one fails):
+# 1. a pg_dump -Fc of the router database, once per schema state (the rollback), 2. the pinned
+# image's own migration job, 3. the proxy. A bump therefore edits the tag and digest here in both
+# the Image= line and the migration ExecStartPre= line, in one PR, and never leaves the proxy
+# running on an unmigrated schema: any restart (crash, config save, reboot) goes through the same
+# three steps.
 
 [Unit]
 Description=Fleet LiteLLM proxy (Quadlet, fleet-ops#8435)
@@ -9,25 +15,53 @@ After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # Keep restarting for a few minutes, then enter failed and page
 # (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
 # dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
-# in ~75s. Burst 20 × (RestartSec 10s + 75s) = 1700s, so the window
-# must be 1h or the burst never fills and OnFailure never fires.
+# in ~75s. Measured 2026-10-23 with OLLAMA_API_BASE set (see below): about 30 s to readiness on
+# v1.105.0 (about 5 min without it), plus the ExecStartPre= steps: the dump check (a no-op after
+# the first start of a schema state) and the migration job (25 s when it migrates; its no-op
+# repeat on an up-to-date schema is the same import plus an empty prisma migrate deploy).
+# Burst 20 × (RestartSec 10s + about 2 min) = 2600s, so the window must be 1h or the burst never
+# fills and OnFailure never fires.
 StartLimitIntervalSec=1h
 StartLimitBurst=20
 OnFailure=fleet-unit-failed@%N.service
 
 [Container]
-Image=ghcr.io/berriai/litellm:v1.98.0
+Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
+# general_settings.disable_prisma_schema_update stays true: the proxy itself never migrates, it only
+# logs "prisma schema out of sync". The migration is the ExecStartPre= job in [Service] below.
+# LiteLLM asks the default Ollama address (localhost:11434) for model info while it builds the
+# router for each ollama_chat row, and on this host that connect hangs: startup measured about
+# 5 min on both v1.98.0 and v1.105.0, and about 30 s with OLLAMA_API_BASE set (the stock variable
+# for that default). Every ollama_chat row in config/litellm-proxy.yaml sets its own api_base
+# (https://ollama.com), so no request changes.
+Environment=OLLAMA_API_BASE=https://ollama.com
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
-Environment=DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+# DATABASE_URL carries the database password, so it comes from a 0600 file, not this
+# repo (the database requires scram-sha-256). general_settings.database_url in
+# config/litellm-proxy.yaml is os.environ/DATABASE_URL (fleet-ops#10020), so this variable is the
+# one the proxy uses. The env file has no `-` prefix on purpose: if it is missing the proxy does
+# not start (loud, OnFailure=) rather than start with a URL the database refuses. The password
+# is hex, so the URL needs no escaping. LITELLM_LOG=INFO does not print the URL.
+PodmanArgs=--env=DATABASE_URL
 # INFO, not DEBUG: DEBUG dumps full prompts into the journal (fleet-ops#4449).
 Environment=LITELLM_LOG=INFO
 # Podman's default stop timeout is 10 s, so `podman rm -f` SIGKILLed the
 # proxy at 10 s whatever TimeoutStopSec says: exit 137, unit failed, and
 # OnFailure= sent a false fail ping on every restart (10-02 11:16:41 journal:
-# "StopSignal SIGTERM failed to stop container ... in 10 seconds"). 110 s stays
-# under TimeoutStopSec=120 so in-flight requests drain (fleet-ops#4449).
-PodmanArgs=--stop-timeout=110
+# "StopSignal SIGTERM failed to stop container ... in 10 seconds"). The window
+# must cover LiteLLM's own request drain, which is GRACEFUL_SHUTDOWN_TIMEOUT
+# (default 30 s, graceful_shutdown_manager.py), plus the uvicorn teardown.
+# fleet-ops#4449 set 110 s for that, but the journal of 2026-10-22/23 shows every
+# drain finishing in 0.00 s with 0 requests in flight, and four stops in a row
+# still sat the full 110 s: one uvicorn worker never exits after "Waiting for
+# connections to close", so the SIGKILL, not the drain, set the restart time.
+# 45 s keeps the whole 30 s drain and a margin, and takes 65 s off each such stop.
+# The value is fixed when the container is created, so it bounds the stop of the next container, not of
+# the one already running: the first restart after a change of this line still waits the old value
+# (2026-10-23 17:08 IST: a container made under 110 s sat until systemd's new 60 s timeout, then its
+# SIGKILL, about 120 s). tests/test_litellm_proxy_migration_skip.py keeps this below TimeoutStopSec.
+PodmanArgs=--stop-timeout=45
 # Bytecode cache that outlives the --rm container. Each start re-compiled
 # litellm+prisma into a throwaway layer; measured 2026-10-02 on the pinned
 # image, `import litellm.proxy.proxy_server` 24.6/26.0 s cold vs 20.4/18.2 s
@@ -44,6 +78,9 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
 # is already covered by the seats/*.env EnvironmentFile below.
 PodmanArgs=--env=ALIBABA_CODING_API_KEY
+# Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key sits in a
+# seat file that the seat EnvironmentFile lines below already cover.
+PodmanArgs=--env=ANTHROPIC_API_KEY
 PodmanArgs=--env=CLINE_API_KEY
 PodmanArgs=--env=COMMANDCODE_API_KEY
 PodmanArgs=--env=LITELLM_MASTER_KEY
@@ -52,6 +89,8 @@ PodmanArgs=--env=OLLAMA_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY
 PodmanArgs=--env=OPENCODE_API_KEY_2
 PodmanArgs=--env=PARETO_API_KEY
+# Redis cache password (router_settings.redis_password): filled from litellm-keys/redis.env below.
+PodmanArgs=--env=REDIS_PASSWORD
 PodmanArgs=--env=STEPFUN_API_KEY
 PodmanArgs=--env=STRAITLY_API_KEY
 PodmanArgs=--env=SYNTHETIC_API_KEY
@@ -91,12 +130,53 @@ Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
+EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
+# No `-` prefix on purpose: without this file the proxy fails to start (loud, via OnFailure=)
+# instead of running with a cache it cannot authenticate to. ansible/host.yml renders it.
+EnvironmentFile=%h/.config/fleet-ops/litellm-keys/redis.env
 Slice=app-litellm.slice
+# The router's own cap, equal to app-litellm.slice's MemoryMax; the slice test below asserts the two
+# stay equal. The slice still bounds the whole tree at the same 5G, so this is not a tighter limit.
+# It gives the unit a cap of its own instead of `infinity` in `systemctl show -p MemoryMax`, and
+# makes the proxy's cgroup the one that hits its wall at 5G rather than the shared slice.
+MemoryMax=5G
+# Pre-start steps, in this order. A failing step fails the start job, so the proxy never runs on a
+# schema the job did not migrate; Restart=on-failure and OnFailure= then page as for any failed start.
+# The proxy is stopped while they run, so nothing writes between the dump and the migration.
+# 1. Dump of the router database (pg_dump -Fc, role litellm, password from ~/.pgpass), named by the
+#    number of applied migrations, so each schema state is dumped once, before anything migrates
+#    it: the first start on a new release writes the pre-migration file (152 on v1.98.0), and a
+#    crash or config-save restart after the migration finds its own file (196) and writes nothing
+#    over the pre-migration one. The file is written under a .part name and moved into place only
+#    after pg_restore --list shows table data, mode 0600. agent-state/backups is in
+#    config/restic/include.txt, so restic keeps the history. Rollback: stop the proxy,
+#    pg_restore --clean --if-exists the 152 file, revert the image PR, start the proxy; spend logs
+#    and key spend written after the dump are lost.
+ExecStartPre=/bin/sh -c 'umask 077 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && f=%h/workspaces/agent-state/backups/litellm-pre-migrate-$$n.dump && { test -s $$f || { /usr/bin/pg_dump -h 127.0.0.1 -U litellm -d litellm -Fc -f $$f.part && /usr/bin/pg_restore --list $$f.part | grep -q "TABLE DATA" && /bin/mv $$f.part $$f; }; }'
+# 2. The image's own migration job (`litellm --skip_server_startup`, no --config, so the proxy's
+#    disable_prisma_schema_update is not read and prisma migrate deploy runs, then it exits). It
+#    exits non-zero when a migration fails and 0 when the schema is already current. The image on the
+#    `podman run` line names the same image as Image= above: keep the two identical. DATABASE_URL is
+#    passed by name from this unit's EnvironmentFile= (systemd strips quotes there, as for the proxy),
+#    not by --env-file.
+#    Skip when nothing changed: a success writes a marker named by the image digest and the number of
+#    applied migrations, and a start that finds the marker for the same digest and the same count has
+#    nothing to migrate, so it does not run the job again. That job is the slow part of a no-op
+#    restart (25 s idle, 150 s measured under load on 2026-10-23, all of it exit wait after "Setup
+#    complete"). A new image has a new digest, and a restored older dump has a different count, so
+#    both miss the marker and migrate as before; a failed job writes no marker, so the proxy still
+#    never starts on a schema the job did not migrate.
+ExecStartPre=/bin/sh -c 'umask 077; mkdir -p %S/fleet-ops && i=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && m=%S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n && { test -e $$m || { /usr/bin/podman run --rm --network host --env DATABASE_URL --env LITELLM_LOG=INFO --env PYTHONPYCACHEPREFIX=/pycache -v fleet-litellm-pycache:/pycache $$i --skip_server_startup && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && : > %S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n; }; }'
+# systemd's 90 s default would cover a first pull of a new image and the migration; Type=notify
+# ends the wait at container start, so this only bounds a hung dump or migration.
+TimeoutStartSec=15min
 ManagedOOMPreference=avoid
 Restart=on-failure
 RestartSec=10s
 # Let in-flight requests drain instead of being SIGKILLed at 15s (fleet-ops#4449).
-TimeoutStopSec=120
+# Above the 45 s --stop-timeout, so podman's own SIGKILL fires first and the unit
+# still has time to remove the container.
+TimeoutStopSec=60
 
 [Install]
 WantedBy=default.target

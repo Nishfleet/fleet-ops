@@ -31,6 +31,11 @@ OnFailure=fleet-unit-failed@%N.service
 Type=oneshot
 WorkingDirectory=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 EnvironmentFile=%h/.config/cloudflare/token-minter.env
+# State encryption (infra/cloudflare-tokens/README.md, "State encryption"): the
+# OpenTofu state holds each token it minted, so once this file exists the state
+# is written encrypted. The "-" makes the file optional, so nothing changes until
+# it is placed; the key never goes in this unit, in argv or in the repo.
+EnvironmentFile=-%h/.config/cloudflare/tofu-state-encryption.env
 Environment=TF_DATA_DIR=%h/.cache/fleet-ops/cloudflare-tokens-tofu
 Environment=TF_IN_AUTOMATION=1
 ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false

@@ -1,0 +1,16 @@
+# Runs fleet-host-config.service once after every boot. fleet-host-config.timer
+# is daily with a random delay of up to an hour, which is too late for tether's
+# Cua Space: a reboot leaves it stopped, and its next start gets a new published
+# port that host.yml writes into /etc/tether/cua.env and the nft rule. The run
+# also starts the Space. Nothing else changes on a boot run: it is the same
+# idempotent playbook as the daily one.
+# Switch off: delete this file and add it to `retired` in ansible/host.yml.
+[Unit]
+Description=Apply fleet-ops host config once after boot
+
+[Timer]
+OnBootSec=3min
+Unit=fleet-host-config.service
+
+[Install]
+WantedBy=timers.target

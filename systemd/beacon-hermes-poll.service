@@ -1,0 +1,35 @@
+[Unit]
+Description=Beacon Hermes poll: read new Hermes sessions from ~/.hermes/state.db into the Beacon runtime log
+# Owner: Nish (Beacon local session capture, 2026-10-21). Stock Beacon, no glue: the vendor's own
+# watcher, `beacon endpoint hermes sync --watch`, reads the committed Hermes session store
+# (~/.hermes/state.db) every minute and appends harness.name=hermes,
+# harness.collection_method=poll events to ~/.beacon/endpoint/logs/runtime.jsonl, with its cursor in
+# ~/.beacon/endpoint/state/hermes.json. It runs here, outside the Hermes sandbox, so the sandboxed
+# gateway needs no write access to ~/.beacon (fleet-ops#9941 gave it four file binds; they pinned
+# an inode that Beacon's 10 MB rotation leaves behind, and are gone). Beacon's own Hermes hooks are
+# uninstalled (`beacon endpoint hooks uninstall --harness hermes`) so a turn is not captured twice.
+# Nothing leaves the box from here: it reads a local SQLite file and appends to a local file.
+# The Syncthing send-only `beacon-server` folder mirrors that log to Nish's own MacBook.
+#
+# Switch off: systemctl --user disable --now beacon-hermes-poll.service, then drop fleet-sync.service
+# step 2i and its enable line, and delete this file in a PR (a hand disable alone is re-enabled by the
+# next deploy). Do not run `beacon endpoint hooks install --harness hermes` again: it would capture
+# twice and the sandbox no longer lets the hook write.
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+ExecStart=%h/.local/bin/beacon endpoint hermes sync --watch --interval 1m
+Restart=on-failure
+RestartSec=30
+MemoryMax=256M
+# It parses Telegram text the gateway wrote, so it gets the hardening a user unit allows.
+# Writes are limited to Beacon's own directory.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=%h/.beacon
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

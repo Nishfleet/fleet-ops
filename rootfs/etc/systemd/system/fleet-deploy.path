@@ -1,0 +1,18 @@
+# Starts fleet-deploy.service when the deploy-box job writes a request stamp.
+# The job only writes /var/lib/fleet-deploy/request (a file the runner uid owns,
+# in a root-owned directory: rootfs/etc/tmpfiles.d/fleet-deploy.conf); root does
+# the rest, so the job needs neither the user bus nor a polkit rule.
+#
+# PathChanged= fires when the file is closed after a write. A request that lands
+# while fleet-deploy.service is still running is noticed when it stops and starts
+# it once more. deploy-box's
+# `concurrency: deploy-box` already runs one job at a time.
+[Unit]
+Description=Watch for a deploy request from the deploy-box job
+
+[Path]
+PathChanged=/var/lib/fleet-deploy/request
+Unit=fleet-deploy.service
+
+[Install]
+WantedBy=paths.target
