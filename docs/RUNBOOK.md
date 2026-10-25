@@ -50,6 +50,15 @@ stays a hand copy: the live-state JSON files under `~/.local/state/` and the
 `~/.config/fleet-ops`-owned files. The two hand-written Pi extension forks are
 gone (fleet-ops#8238).
 
+Shells do not read `~/.config/environment.d`. The systemd user manager does,
+for user units, so a value only a unit needs goes there. Do not add a loader
+for it to `~/.bashrc` or `~/.zshrc`. A loader ran the systemd environment
+generator from 2026-10-07 to 2026-10-25 to carry the pi-grok
+`PI_XAI_CLIENT_VERSION` pin into shells. The pin was retired (`fleet-ops#10224`)
+and the loader is deleted (`fleet-ops#10143`). Work that needs a value from a
+file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
+not from an interactive shell (README, "systemd by default").
+
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
