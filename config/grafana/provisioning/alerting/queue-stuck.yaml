@@ -21,6 +21,11 @@
 # resets the clock. An issue's PR link is GitHub's own `linked:pr`, which a
 # `Closes #N` in a PR body sets.
 #
+# Known gaps: work stuck for more than 30 days leaves the read window and stops alerting;
+# `linked:pr` follows closing keywords only, so an issue whose PR says `Relates to #N` reads
+# as having no PR. A read error is not silent: execErrState Error raises DatasourceError,
+# which the catch-all route files as an issue.
+#
 # Route: severity warning, so they do not page; with no signal route they reach the
 # catch-all in cloudflare-spend-contact.yaml and file a fleet-ops issue at once. Not paging is a
 # choice: the page for a dead loop is Alertmanager's (GrafanaDown, GrafanaNotificationsFailing).
