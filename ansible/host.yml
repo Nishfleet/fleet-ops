@@ -159,14 +159,10 @@
       - "{{ nish_home }}/workspaces/products/.githooks"
       - "{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"
       - "{{ nish_home }}/.cache/tincan-relink-once.sh"
-      # The Hermes daily reminder about the GitHub App from #9676 (#10137): it
-      # exits silently once the nishfleet-orchestrator App is installed and
-      # otherwise prints the App's create-and-install steps, and #9676 carries
-      # that reminder now. ~/.hermes/scripts is a retired mechanism (the
-      # 2026-09-25 wipe, retired-mechanisms ledger) that this script re-created
-      # on 2026-10-12. Only the one file is named here: the playbook cannot list
-      # that directory, and retiring a directory blind would delete files no one
-      # has looked at. The task below removes the job that ran it.
+      # The daily Hermes reminder about the GitHub App from #9676 (#10137).
+      # Only the file is named: this playbook cannot list ~/.hermes/scripts, and
+      # retiring a directory blind would delete files no one has looked at. The
+      # task below removes the job that ran it.
       - "{{ nish_home }}/.hermes/scripts/remind-orchestrator-app.sh"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
@@ -2198,12 +2194,11 @@
       when: job.id is defined and (job.prompt | default('')) != wanted
       changed_when: true
 
-    # The one-time removal of the retired Hermes cron job (#10137): the job ran
-    # ~/.hermes/scripts/remind-orchestrator-app.sh daily at 10:00 IST in
-    # --no-agent mode, and its reminder now lives in #9676. Removed with the
-    # stock `hermes cron remove`, the same CLI the digest task above uses. The
-    # guard reads the job out of the live store, so this task runs exactly once
-    # and is a no-op afterwards; the digest jobs are not selected by it.
+    # One-time removal of the retired Hermes cron job (#10137): the job ran
+    # ~/.hermes/scripts/remind-orchestrator-app.sh daily, and #9676 carries its
+    # reminder now. Stock `hermes cron remove`, the same CLI as the task above.
+    # The guard reads the job out of the live store, so this runs once and is a
+    # no-op afterwards; an unreadable store skips it, as it does the digests.
     - name: Remove the retired Hermes cron job
       become: true
       become_user: nish
@@ -2212,11 +2207,17 @@
           - "{{ nish_home }}/.local/bin/hermes"
           - cron
           - remove
-          - "{{ job.id }}"
+          - "{{ job_id }}"
       environment: "{{ nish_env }}"
       vars:
-        job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', 'remind-orchestrator-app') | first | default({}) }}"
-      when: job.id is defined
+        # {"jobs": [{"id": "…", "name": "…"}]} out of the live Hermes store
+        retired_job_ids: >-
+          {{ ((hermes_jobs | default({})).content | default('e30=') | b64decode | from_json).jobs
+          | default([]) | selectattr('name', 'equalto', 'remind-orchestrator-app')
+          | map(attribute='id') | list }}
+      loop: "{{ retired_job_ids }}"
+      loop_control:
+        loop_var: job_id
       changed_when: true
 
     - name: Read Hermes' scheduled jobs again
