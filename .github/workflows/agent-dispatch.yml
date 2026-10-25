@@ -835,7 +835,7 @@ jobs:
             echo "re-arm #$n at ${sha:0:7}: armed and CLEAN, not queued after 30 minutes"
             arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')")
           done < <(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeStateStatus |
-            jq -r --argjson q "$queued" --argjson cut "$cut30" '.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest != null and .mergeStateStatus == "CLEAN"
+            jq -r --argjson q "$queued" --argjson cut "$cut30" '.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest.enabledAt != null and .mergeStateStatus == "CLEAN"
               and (.headRefName | IN($q[]) | not) and (.autoMergeRequest.enabledAt | fromdateiso8601) < $cut) | [.number, .headRefOid] | @tsv')
           # PR heads an open stuck-PR issue already reports (agent.yml's stuck
           # job writes `stuck-pr: #<pr> <sha>` in the body or a comment), so a
@@ -1477,8 +1477,12 @@ jobs:
           branch="orch/issue-$ISSUE"
           # A branch with an open PR is a rework (stuck-orch); one without is
           # another hand-off's push, still in flight.
-          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null &&
-            gh pr list -R "$REPO" --head "$branch" --state open --json number --jq 'length' | grep -qx 0; then
+          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
+            open_prs=$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq 'length')
+          else
+            open_prs=none
+          fi
+          if [ "$open_prs" = 0 ]; then
             echo "orchestrate: $branch exists on origin with no PR; another hand-off owns #$ISSUE; skip"
             exit 0
           fi
@@ -1627,8 +1631,9 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" refs/remotes/origin/main
           fi
           # A rework starts from the PR's pushed head, not from main.
-          ! git -C "$mirror" show-ref --verify --quiet "refs/remotes/origin/orch/issue-$ISSUE" ||
+          if git -C "$mirror" show-ref --verify --quiet "refs/remotes/origin/orch/issue-$ISSUE"; then
             git -C "$wt" reset -q --hard "refs/remotes/origin/orch/issue-$ISSUE"
+          fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
