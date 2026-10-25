@@ -83,6 +83,17 @@ def _quadlet(key):
     return next(line.split("=", 1)[1] for line in QUADLET.read_text().splitlines() if line.startswith(key + "="))
 
 
+def _quadlet_env(name):
+    return next((line.split("=", 2)[2] for line in QUADLET.read_text().splitlines() if line.startswith("Environment=" + name + "=")), None)
+
+
+def _quadlet_run_flags():
+    flags = ["--network", _quadlet("Network")]
+    tz = _quadlet_env("TZ")
+    assert tz, "the quadlet must set Environment=TZ: the rules' SQL reads local timestamps"
+    return flags + ["-e", f"TZ={tz}"]
+
+
 def _rule(uid):
     assert YQ, "yq must be on PATH to read the alert rules"
     out = subprocess.run([YQ, "-o=json", f'.groups[].rules[] | select(.uid == "{uid}")', str(RULES)], capture_output=True, text=True, check=True)
@@ -127,8 +138,8 @@ def grafana():
         try:
             for attempt in range(3):
                 subprocess.run([DOCKER, "rm", "-f", name], capture_output=True)
-                subprocess.run([DOCKER, "run", "-d", "--name", name, "--network", "host",
-                                "-e", "TZ=Asia/Kolkata", "-e", "GF_SERVER_HTTP_ADDR=127.0.0.1", "-e", f"GF_SERVER_HTTP_PORT={port}",
+                subprocess.run([DOCKER, "run", "-d", "--name", name, *_quadlet_run_flags(),
+                                "-e", "GF_SERVER_HTTP_ADDR=127.0.0.1", "-e", f"GF_SERVER_HTTP_PORT={port}",
                                 "-e", "GF_SECURITY_ADMIN_PASSWORD", "-e", f"GF_PLUGINS_PREINSTALL_SYNC={plugin}",
                                 "-e", "GF_ANALYTICS_REPORTING_ENABLED=false", "-e", "GF_ANALYTICS_CHECK_FOR_UPDATES=false",
                                 "-v", f"{provisioning}:/etc/grafana/provisioning/datasources:ro",
@@ -176,8 +187,8 @@ def _evaluate(grafana, uid, repo):
     return frame["data"]["values"][0][0]
 
 
-def test_the_container_runs_in_a_zone_that_is_not_utc(grafana):
-    assert grafana[2] == "IST"
+def test_the_container_runs_in_the_quadlets_zone(grafana):
+    assert grafana[2] == subprocess.run(["env", f"TZ={_quadlet_env('TZ')}", "date", "+%Z"], capture_output=True, text=True, check=True).stdout.strip()
 
 
 @pytest.mark.parametrize("repo", sorted(SCENARIOS))
