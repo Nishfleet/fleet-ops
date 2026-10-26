@@ -14,8 +14,10 @@ Description=Daily check of each router provider's model list against the host sn
 # REPO: the snapshot, the lists of changed ids and an optional ignore.txt (extended regexes,
 # one per line, for ids to hide) all live in the state directory.
 # - First run for a provider: the snapshot is seeded and nothing is filed.
-# - HTTP 401 or 403: the key or login is dead. The unit fails (OnFailure= pages) with one
-#   plain line naming the provider and what Nish must do. No issue is filed for that.
+# - HTTP 401 or 403: the key or login is dead. One plain line names the provider and what Nish
+#   must do, every run until the key is renewed (fleet-ops#9912: the unit does not fail on it,
+#   because a standing state re-failed the unit on every daily run and kept the failed-unit
+#   list never empty). No issue is filed for that.
 # - An added or removed id: the ids go to changes/<UTC date>-<provider>.txt in the state
 #   directory, then ONE issue per changed provider is filed on Nishfleet/fleet-ops with the
 #   labels provider-watch and needs-orchestrator (fleet-ops#8304 says control-plane work is
@@ -111,7 +113,7 @@ echo "Authorization: Bearer $$k" > "$$d/hdr"; \
 code=$$(curl -sS -m 30 --retry 2 --retry-delay 20 -o "$$d/body" -w "%%{http_code}" -H "@$$d/hdr" "$$url" 2>/dev/null) || code=000; \
 rm -f "$$d/hdr"; \
 case $$code in \
-401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; bad=1; continue;; \
+401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; continue;; \
 200) ;; \
 000|408|429|5??) echo "provider-watch: $$name listing unavailable (HTTP $$code), skipped; outages page through litellm_deployment_state"; continue;; \
 *) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \

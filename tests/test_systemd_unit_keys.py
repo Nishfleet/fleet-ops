@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -937,15 +938,23 @@ def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() ->
         wait = re.search(r"(?m)^      group_wait: (\S+)$", route)
         if 'severity="nish"' in matchers:
             nish.append((matchers, wait.group(1) if wait else None))
-    assert len(nish) == 2, (
-        f"want exactly two severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
+    assert len(nish) == 3, (
+        f"want exactly three severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
     )
     fixable = [r for r in nish if 'alertname=~"BackupStale|BackupFailed|SiteDown"' in r[0]]
     assert len(fixable) == 1, (
         f"want one severity=nish route for BackupStale, BackupFailed and SiteDown, got {len(fixable)}"
     )
-    rest = [r for r in nish if r is not fixable[0]]
-    assert nish[0] is fixable[0], (
+    loop = [r for r in nish if 'alertname=~"GrafanaDown|GrafanaNotificationsFailing"' in r[0]]
+    assert len(loop) == 1 and loop[0][1] == "0s", (
+        f"want one severity=nish route for GrafanaDown and GrafanaNotificationsFailing with "
+        f"group_wait 0s (fleet-ops#10306), got {loop}"
+    )
+    rest = [r for r in nish if r is not fixable[0] and r is not loop[0]]
+    assert nish.index(loop[0]) < len(nish) - 1 and nish.index(fixable[0]) < len(nish) - 1, (
+        "the loop-health and worker-fixable routes must come before the catch-all"
+    )
+    assert nish[0] is loop[0] and nish[1] is fixable[0], (
         "the worker-fixable route must come before the catch-all: Alertmanager takes the first "
         "route that matches and stops there, so a catch-all above it pages the three at once"
     )
@@ -1339,6 +1348,32 @@ def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own()
     assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
     assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
+
+
+def test_the_opencode_listener_loads_its_own_router_key() -> None:
+    opencode = effective_directives(ROOT / "systemd/tincan-listen-opencode.service")
+    assert opencode["EnvironmentFile"] == ["%h/.config/fleet-ops/seats/tincan-opencode.env"], (
+        "this lane is woken by mail from other agents, so a prompt-injected message can read its "
+        "environment: the key in it must be the lane's own worker-cheap virtual key (fleet-ops#10221)"
+    )
+
+
+def test_no_unit_loads_the_litellm_master_key() -> None:
+    units = {
+        path
+        for pattern in ("systemd/*.service", "rootfs/etc/systemd/system/*.service", "rootfs/etc/systemd/user/*.service")
+        for path in ROOT.glob(pattern)
+    }
+    offenders = [
+        str(unit.relative_to(ROOT))
+        for unit in sorted(units)
+        if any("litellm-master-key.env" in value for value in effective_directives(unit).get("EnvironmentFile", []))
+    ]
+    assert offenders == [], (
+        f"these units put the router's admin credential in their own environment: {offenders}. "
+        "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
+        "quadlet container is the one place that may load it."
+    )
 
 
 def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
@@ -1749,3 +1784,87 @@ def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None
     token = _unit_keys(GRAFANA_TOKEN)
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
     assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+
+
+RETRO_UNIT = ROOT / "systemd/retro-weekly.service"
+RETRO_DATE = "2026-10-21"
+
+
+def _run_retro_stoppost(tmp_path: Path):
+    line = next(line for line in RETRO_UNIT.read_text().splitlines() if line.startswith("ExecStopPost="))
+    command = shlex.split(line.removeprefix("ExecStopPost=").replace("$$", "$").replace("%%", "%"))
+    runtime = tmp_path / "runtime"
+    state = tmp_path / "state"
+    vault = tmp_path / "vault"
+    env = {
+        "PATH": os.environ["PATH"],
+        "RUNTIME_DIRECTORY": str(runtime),
+        "RETRO_STATE": str(state),
+        "RETRO_VAULT": str(vault),
+    }
+    return subprocess.run(command, env=env, capture_output=True, text=True), runtime, state, vault
+
+
+def _retro_delivered(tmp_path: Path, stale_vault=True):
+    result, runtime, state, vault = _run_retro_stoppost(tmp_path)
+    runtime.mkdir()
+    (runtime / "date").write_text(RETRO_DATE)
+    (runtime / "setup-done").write_text("set-up-ok")
+    (runtime / "claude.jsonl").write_text("{}")
+    run = state / f"run-{RETRO_DATE}"
+    run.mkdir(parents=True)
+    (run / "report.md").write_text("report body")
+    vault.mkdir()
+    copy = vault / f"retro-week-{RETRO_DATE}.md"
+    copy.write_text("report body")
+    if stale_vault:
+        os.utime(copy, (0, 0))
+    else:
+        os.utime(copy, (time.time() + 3600, time.time() + 3600))
+        os.utime(runtime / "date", (time.time(), time.time()))
+    return runtime
+
+
+def test_retro_stoppost_says_when_set_up_stopped_before_the_date(tmp_path: Path) -> None:
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: set-up never wrote its date")
+
+
+def test_retro_stoppost_says_when_set_up_stopped_after_the_date(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    (runtime / "setup-done").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: set-up stopped after the date write")
+
+
+def test_retro_stoppost_says_when_the_call_left_no_transcript(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    (runtime / "claude.jsonl").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the model call never ran to a transcript")
+
+
+def test_retro_stoppost_says_when_the_call_wrote_no_report(tmp_path: Path) -> None:
+    runtime = _retro_delivered(tmp_path)
+    run_dir = runtime.parent / "state" / f"run-{RETRO_DATE}"
+    (run_dir / "report.md").unlink()
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the model call ran but wrote no report.md")
+
+
+def test_retro_stoppost_says_when_the_report_never_reached_the_vault(tmp_path: Path) -> None:
+    _retro_delivered(tmp_path, stale_vault=True)
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 1
+    assert result.stderr.startswith("no-deliverable: the report was written but it never reached the vault")
+
+
+def test_retro_stoppost_is_quiet_on_a_delivered_run(tmp_path: Path) -> None:
+    _retro_delivered(tmp_path, stale_vault=False)
+    result, _, _, _ = _run_retro_stoppost(tmp_path)
+    assert result.returncode == 0
+    assert result.stdout == "" and result.stderr == ""
