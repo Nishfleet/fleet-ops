@@ -866,7 +866,7 @@ jobs:
             echo "#$n $ref: $class, $reason"
             case $class in
               arm)
-                [ "$(jq -r .autoMergeRequest <<<"$p")" = null ] || gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || { errs=$((errs + 1)); continue; }
+                [ "$(jq -r .autoMergeRequest <<<"$p")" = null ] || gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || echo "::warning::#$n: disarm refused; stuck-arm arms it as it is"
                 arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
                 # Four paid reviews a sweep at most; the rest wait for the next
