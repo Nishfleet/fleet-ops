@@ -240,6 +240,10 @@ jobs:
         # Runs fleet-sync.service's own agent installs and its link check against a temp home.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py
+      - name: quadlet units keep their hardening (fleet-ops#10103)
+        # Proves every quadlet unit file keeps its hardening keys.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_quadlet_hardening.py
       - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
