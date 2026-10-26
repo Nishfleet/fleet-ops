@@ -58,12 +58,16 @@ contactPoints:
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: $__file{/run/secrets/github-token/token}
-          maxAlerts: 1
+          maxAlerts: 20
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "router refused call: %s for %s" (or .Labels.requested_model "unknown model") (or .Labels.api_key_alias "unknown key"))
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-refused-call rule (config/grafana/provisioning/alerting/router-refused-call.yaml), fleet-ops#9938. No deployment was picked, so this is the caller's model scope or the model name, not a dead router row." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+              {{- $models := "" -}}
+              {{- range $.Alerts -}}
+              {{- $models = printf "%s- %s: %s\n" $models (or .Labels.requested_model "unknown model") .Annotations.value -}}
+              {{- end -}}
+              {{- coll.Dict "title" (printf "router refused call for %s" (or .Labels.api_key_alias "unknown key"))
+                     "body" (printf "Models this key asked for and was refused:\n\n%s\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-refused-call rule (config/grafana/provisioning/alerting/router-refused-call.yaml), fleet-ops#9938. No deployment was picked, so this is the caller's model scope or the model name, not a dead router row." $models .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
