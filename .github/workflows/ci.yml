@@ -223,6 +223,17 @@ jobs:
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py
+      - name: the review comment is scanned for private detail before it is posted (fleet-ops#9528)
+        if: always()
+        env:
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          d=$RUNNER_TEMP/gitleaks-review; mkdir -p "$d"
+          curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$d/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "$GITLEAKS_SHA256  $d/g.tgz" | sha256sum --check --strict -
+          tar -xzf "$d/g.tgz" -C "$d" gitleaks
+          PATH=$d:$PATH pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_review_scan.py
       - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
@@ -1130,7 +1141,7 @@ jobs:
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
           done
-          RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL
+          RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL; PRIVATE_DETAIL_URL=$(yq '.jobs.review.env.PRIVATE_DETAIL_URL' "$f"); export PRIVATE_DETAIL_URL
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
@@ -1162,6 +1173,7 @@ jobs:
           cat > "$t/bin/curl" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
+            *gitleaks-private-detail*) while [ $# -gt 0 ]; do [ "$1" = -o ] && echo "[extend]" > "$2"; shift; done ;;
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
             *4000/v1/chat/completions*) # the two extra reviewers: the GLM row for the senior seat and the Qwen row for the judge seat, unless the case says otherwise
@@ -1177,6 +1189,7 @@ jobs:
             *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
           esac
           MOCK
+          printf '#!/bin/sh\nexit 0\n' > "$t/bin/gitleaks"
           # The first review is `claude -p --model <m> --tools ""`: no tools, a model
           # from the builder rule, and never a permission bypass.
           cat > "$t/bin/claude" <<'MOCK'
@@ -1189,7 +1202,7 @@ jobs:
           printf '%b\n' "$FIRST"
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
-          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude"
+          chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude" "$t/bin/gitleaks"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y
           none=
