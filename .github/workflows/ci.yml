@@ -573,7 +573,7 @@ jobs:
           esac
           FAKE
           chmod +x "$t/bin/gh"
-          today=$(date -u +%FT%TZ)
+          today=$(date -u -d '+10 minutes' +%FT%TZ)
           old=$(date -u -d '2 days ago' +%FT%TZ)
           bad=0
           while IFS= read -r c; do
