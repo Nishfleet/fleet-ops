@@ -956,6 +956,7 @@ jobs:
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+      PRIVATE_DETAIL_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -983,7 +984,21 @@ jobs:
           THIRD_ROW: alibaba-qwen38max-judge
         run: |
           set -euo pipefail
-          say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          scan() {
+            local in=$RUNNER_TEMP/scan.txt rep=$RUNNER_TEMP/scan.json rules=$RUNNER_TEMP/rules.toml rc=0
+            printf '%s\n' "$1" > "$in"
+            curl -fsSL --retry 3 --max-time 60 -o "$rules" "$PRIVATE_DETAIL_URL" && [ -s "$rules" ] || rc=9
+            [ $rc != 0 ] || (cd "$RUNNER_TEMP" && gitleaks stdin --config "$rules" --ignore-gitleaks-allow --redact -f json -r "$rep" --exit-code 2 --no-banner --log-level error < "$in" > /dev/null 2>&1) || rc=$?
+            case $rc in
+              0) cat "$in" ;;
+              2) jq -e 'length > 0' "$rep" > /dev/null && awk 'NR == FNR { bad[$1] = 1; next } FNR in bad { if (!prev) print "[a line was withheld: it matched a private-detail rule]"; prev = 1; next } { prev = 0; print }' <(jq -r '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$rep") "$in" || rc=9 ;;
+            esac
+            rm -f "$in" "$rep"
+            [ $rc = 0 ] || [ $rc = 2 ]
+          }
+          scan_failed() { echo "::error::the private-detail scan could not run; nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
+          say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; gh pr comment "$PR" -R "$REPO" --body "$out"; }
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() {
@@ -1073,7 +1088,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve_say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1122,7 +1137,7 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s and %s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$THIRD_FAMILY" "$text" "$all")"
+            approve_say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s and %s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$THIRD_FAMILY" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
