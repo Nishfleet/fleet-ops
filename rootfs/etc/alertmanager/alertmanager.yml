@@ -13,7 +13,9 @@
 #                    prometheus-alerts files an issue for the fleet to fix them
 #                    (fleet-ops#10300). Spend, router, gateway, exporter and
 #                    reload alerts stop the fleet from fixing anything, so
-#                    they page at once.
+#                    they page at once. GrafanaDown and
+#                    GrafanaNotificationsFailing, the repair loop's own health,
+#                    page with no group_wait at all (fleet-ops#10306).
 #
 # Everything else matches no route and lands on `none`, which has no
 # integrations: those alerts stay visible (ALERTS series, Alertmanager) and page
@@ -41,6 +43,14 @@ route:
       group_wait: 0s
       group_interval: 1m
       repeat_interval: 5m
+    # The repair loop's own health (fleet-ops#10306): no wait, group_wait 0s.
+    - matchers:
+        - severity="nish"
+        - alertname=~"GrafanaDown|GrafanaNotificationsFailing"
+      receiver: telegram
+      group_wait: 0s
+      group_interval: 5m
+      repeat_interval: 6h
     - matchers:
         - severity="nish"
         - alertname=~"BackupStale|BackupFailed|SiteDown"

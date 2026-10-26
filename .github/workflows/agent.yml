@@ -94,7 +94,7 @@ jobs:
       # worker label and comment, the worker opens and arms its PR.
       - name: App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -600,7 +600,7 @@ jobs:
         # Scoped like app-token above. Router wall comments and relabels,
         # Arm auto-merge edits the PR body and runs gh pr merge --auto (a
         # squash needs contents), Deliverable reads the issue and PR list.
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -758,7 +758,7 @@ jobs:
       - name: App token for strike
         id: strike-token
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -1165,7 +1165,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Arm token
         id: arm-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -1232,7 +1232,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Issue token
         id: issue-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -1322,7 +1322,7 @@ jobs:
       - name: App token (read) for Nishfleet/inish-site
         if: steps.live.outputs.done != 'true'
         id: read-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -1420,7 +1420,7 @@ jobs:
       - name: App token (write) for Nishfleet/inish-site
         if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
         id: write-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
