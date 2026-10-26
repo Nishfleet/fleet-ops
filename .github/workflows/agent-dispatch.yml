@@ -1617,8 +1617,7 @@ jobs:
           if [ "$ORCH_RUNNER" = pi ]; then
             # Pi on a LiteLLM seat: no Claude spend, no turn cap; the step's timeout-minutes is the wall
             # (fleet-ops#10349). The litellm provider reads FLEET_TASK_ID and exits 1 without it.
-            # Seat switch: ORCHESTRATE_SEAT (default worker-capable).
-            # Claude switch: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
+            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
             env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
               "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
