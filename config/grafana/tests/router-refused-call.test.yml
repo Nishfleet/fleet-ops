@@ -10,7 +10,7 @@
 #
 # The cases:
 #
-#  - the incident shape, six refusals in six seconds for one key and model, fires and
+#  - the incident shape, 60 refusals in the hour for one key and model, fires and
 #    carries the key alias and the requested model in its labels, which is what the
 #    issue title is built from;
 #  - the same shape at 3 failures in the hour stays quiet;

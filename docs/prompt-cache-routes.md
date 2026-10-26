@@ -1,7 +1,8 @@
 # Prompt-cache routes: per-vendor verdicts and the Pi zero-cache cause
 
 Read-only research for fleet-ops#9357. Every number below was read off this
-box on 2026-10-07 and can be re-read with the command printed under it.
+box, on the date its section gives, and can be re-read with the command printed
+under it.
 
 ## 1. The metric pair is the right denominator
 
@@ -111,6 +112,11 @@ over the same query without the `model_id` filter.
 `cache_read_input_token_cost` where a provider documents a cached-read price,
 which is the only cache-shaped knob an OpenAI-compatible row has. Adding
 anything else would be a flag LiteLLM ignores.
+
+The `opencodego2-ds41flash-worker-capable` row above (134 calls, 0 null, 134
+with cache details) still read a 91-95% daily share in section 6's spend-log
+query through 2026-10-19, and stopped reporting on its streamed path on
+2026-10-20; see section 6.
 
 ## 4. Why two Pi sessions read exactly zero
 
@@ -311,3 +317,151 @@ route that stops reporting reads a flat series and still fires — and hiding it
 takes a proxy restart. `docs/prompt-cache-routes.md` section 3's vendor table
 stays the record of which rows can report a cache at all, so a row moving into
 that list is a documentation and router change rather than an alert one.
+
+Section 6 records a page where the lane never stopped caching at the vendor: the
+reporting path did, which the rule cannot tell apart from a real drop.
+
+## 6. 2026-10-20: the OpenCode Go lane stopped reporting cache on streamed usage
+
+The rule from section 5 went critical on `worker-capable` at 2026-10-21
+06:57:50Z (fleet-ops#9935). The lane still caches and the counter stopped
+seeing it.
+
+**What the spend log shows.** `opencodego2-ds41flash-*` held a cache-read
+share of 91-95% every day from 2026-10-12 to 2026-10-19 (93.14%, 91.54%,
+91.64%, 93.30%, 94.58%, 93.47%, 93.40%, 91.17%), 0.35% on 2026-10-20 and 0.21%
+on 2026-10-21. The last row that carried a cache number on real traffic is
+2026-10-20 06:50:49Z, a `sk-fleet-worker` call on
+`opencodego2-ds41flash-worker-capable`: 69,904 prompt tokens, 69,888 cached.
+Since then the lane has 415 rows and the only five that carry a cache field are
+hand-made probe calls from this investigation, four of which read
+`cached_tokens: 0` because the probe sent a cold prefix on purpose. Nothing on
+this side changed: the proxy process started 2026-10-17 18:19 IST and
+`config/litellm-proxy.yaml` last changed on 2026-10-17, so this is not a fleet
+deploy.
+
+Both numbers above come from the spend log, which keeps the provider usage
+block under `metadata->'usage_object'`:
+
+```
+psql "postgresql://litellm@localhost:5432/litellm" -At -F'|' -c "
+  SELECT to_char(date_trunc('day', \"startTime\"), 'MM-DD'), count(*),
+         round(100.0 * sum(coalesce((metadata->'usage_object'->'prompt_tokens_details'->>'cached_tokens')::bigint, 0))
+               / nullif(sum(prompt_tokens), 0), 2),
+         count(*) FILTER (WHERE metadata->'usage_object'->'prompt_tokens_details'->>'cached_tokens' IS NOT NULL)
+    FROM \"LiteLLM_SpendLogs\"
+   WHERE model_id LIKE 'opencodego2-ds41flash%' AND prompt_tokens > 0 AND \"startTime\" >= '2026-10-11'
+   GROUP BY 1 ORDER BY 1"
+```
+
+The five probe rows and the 415-row count are the same query without the
+`GROUP BY`, filtered to `"startTime" > '2026-10-20 06:50:49'` and cut down to
+`count(*)`, `min("startTime")` and `max("startTime")`. Test the field with
+`->>'cached_tokens' IS NOT NULL`, never with `->` alone: in `jsonb`,
+`'null'::jsonb IS NOT NULL` is true.
+
+**The prefix did not break.** Pi's request bodies were captured at the proxy
+boundary: a throwaway forwarder on 127.0.0.1:4001 that logs each request body
+and passes it to 127.0.0.1:4000, with `PI_CODING_AGENT_DIR` pointed at a copy of
+the agent config whose `litellm` base URL names 4001. The sizes are `wc -c` of
+those captures. Two consecutive turns of one session were 61.9 KB and 62.2 KB,
+and
+their common messages were byte-identical: the second request only appends
+the assistant turn and its tool result, which is the shape a provider prefix
+cache needs. Replayed straight to `https://opencode.ai/zen/go/v1/chat/completions`
+with the same key and the same `x-opencode-session` header, those two bodies
+read back `cached_tokens` 15,488 of 15,586 (99.4%) and 15,616 of 15,638 (99.9%).
+A later turn of the same session, 106 KB and 27,715 prompt tokens, read back
+27,648, which is 99.8%.
+
+**The field is missing only on the streamed answer the proxy gets.** The
+106 KB body, same session header, same `worker-capable` key:
+
+| path | `prompt_tokens` | cache field |
+| --- | --- | --- |
+| direct to the vendor, `stream: true` | 27,715 | `cached_tokens: 27,648` |
+| through the proxy, `stream: false` | 27,715 | `cached_tokens: 27,648` |
+| through the proxy, `stream: true` | 24,536 | absent |
+
+The 24,536 is not the vendor's number: it falls 3,179 tokens short of the
+27,715 the vendor itself reports for the same bytes, and a count taken by the
+wrapper instead of read from the provider's `usage` block is the only cause that
+fits. That reading is inferred from the gap, not measured. The tokens are
+cached, the counter cannot see it, and the rule reads a flat zero.
+
+Every captured body carries `"stream": true` and
+`"stream_options": {"include_usage": true}`, so each call asks for the usage
+block. To re-read the table: the first row is the first command unchanged, the
+third row is the second command unchanged, and the second row is the second
+command with `"stream": false` in a copy of the body. The proxy answer names
+its row in the `x-litellm-model-id` header.
+
+```
+curl -sS --config <(sed -n 's|^OPENCODE_API_KEY_2=\(.*\)|header = "Authorization: Bearer \1"|p' \
+      ~/.config/fleet-ops/seats/opencode-2.env) \
+     -H 'Content-Type: application/json' -H 'x-opencode-session: fleet2-worker-capable' \
+     --data-binary @body.json https://opencode.ai/zen/go/v1/chat/completions | tail -2
+
+curl -sS --config <(sed -n 's|^LITELLM_INISH_DAILY_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' \
+      ~/.config/fleet-ops/seats/inish-daily.env) \
+     -H 'Content-Type: application/json' -H 'x-litellm-session-id: sa' \
+     --data-binary @body.json http://127.0.0.1:4000/v1/chat/completions
+```
+
+**Ruled out, one run each on this box 2026-10-21.** Each is the first command
+above with one flag or one body field changed: `-H 'User-Agent: litellm/1.98.0'`,
+`-H 'User-Agent: python-httpx/0.28.1' -H 'Accept-Encoding: gzip, deflate, br,
+zstd'`, `--http1.1`, `--resolve opencode.ai:443:<ip>` for each of the four A
+records (172.65.90.20 to .23), `store` dropped, `reasoning_effort` dropped, a
+body with a tool call and its result appended, and
+`stream_options.continuous_usage_stats` added. All keep the field. The control
+that matters is a miss, not a hit: the same prefix read twice in one minute in
+the spend log, 2026-10-21 07:09:43 and 07:09:54, logged `cached_tokens` 0 and
+then 13,440. A miss reports 0, so an absent field is not a miss, it is a field
+the caller never got.
+
+**What the vendor sends now.** Its streamed usage block rides on the chunk that
+carries the last of the reply, instead of on a trailing chunk with no content.
+A 13,538-token probe answered in two chunks plus `[DONE]` (the tail of the first
+command above, `stream: true`):
+
+```
+data: {"choices":[{"delta":{"reasoning_content":"docs","role":"assistant"}}],...}
+data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":13538,
+       "completion_tokens":2,"prompt_tokens_details":{"cached_tokens":13440}}}
+data: [DONE]
+```
+
+A row that still reports, `commandcode-glm53flashb-worker-cheap`, ends its
+stream the other way: seven content chunks, then two with an empty delta, and
+the `usage` block on the second of those. Same box, same proxy, minutes apart:
+
+```
+data: {"choices":[{"index":0,"delta":{}}],...}
+data: {"choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":13521,
+       "prompt_tokens_details":{"cached_tokens":0}}}
+data: [DONE]
+```
+
+That answer was a cold prefix, and it still carries the field, set to 0. So
+streaming does not drop the field by itself. The visible difference between the
+row that reports and the row that does not is where the usage block sits: on the
+empty-delta tail chunk, or on the chunk that carries the last content. The
+drop follows that difference, which makes it the placement, not the streaming
+and not the cache.
+
+**No in-repo lever exists.** LiteLLM v1.98.0 cannot force a non-streaming
+upstream call for a streaming caller (the note at
+`config/litellm-proxy.yaml:50`, fleet-ops#8923), and no row parameter changes
+the shape a gateway returns its streamed usage in. An OpenAI-compatible row has
+`cache_read_input_token_cost` and nothing else cache-shaped. The levers that
+would restore the counter both change what production does, so neither is taken
+here: the image bump is tracked at fleet-ops#9384, and re-weighting the lane off
+rows that do not report changes a provider row, which needs Nish's yes first
+(`config/litellm-proxy.yaml:51`).
+
+**For the next page.** Section 5's drill-down names the row but not the cause.
+Add one non-streamed replay of any captured request: if
+`prompt_tokens_details.cached_tokens` comes back, the vendor still reports and
+the loss is on the streamed path; if it stays absent, the vendor stopped
+reporting.

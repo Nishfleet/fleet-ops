@@ -42,12 +42,47 @@
         "ENDED": "1791181312",
         "LOAD1": "6.18",
         "CORES": "8",
-        "SWAP_USED_KB": "2097152"
+        "SWAP_USED_KB": "2097152",
+        "ENGINE": "opencode"
       },
       "prior_failed_comment": 0,
       "started_comment": true,
       "want": "strike",
-      "note": "cap death on a healthy host is still a strike"
+      "note": "cap death on a healthy host is still a strike on a non-pi engine"
+    },
+    {
+      "name": "timeout-healthy-pi",
+      "ref": "claim/issue-9268",
+      "env": {
+        "WORKER_OUTCOME": "failure",
+        "STARTED": "1791178004",
+        "ENDED": "1791181312",
+        "LOAD1": "6.18",
+        "CORES": "8",
+        "SWAP_USED_KB": "2097152",
+        "ENGINE": "pi"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "plain cap death on pi resumes on pi (fleet-ops#9955): infra, no strong-only"
+    },
+    {
+      "name": "timeout-pi-no-sample",
+      "ref": "claim/issue-9268",
+      "env": {
+        "WORKER_OUTCOME": "failure",
+        "STARTED": "1791178004",
+        "ENDED": "1791181312",
+        "LOAD1": "",
+        "CORES": "",
+        "SWAP_USED_KB": "",
+        "ENGINE": "pi"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "infra",
+      "note": "pi cap death with no host sample requeues as infra (intended, #9955); other engines strike (timeout-no-guard-sample)"
     },
     {
       "name": "timeout-no-guard-sample",
@@ -176,6 +211,24 @@
       "started_comment": true,
       "want": "strike",
       "prior_infra_comments": 3
+    },
+    {
+      "name": "pi-wall-infra-cap-strikes",
+      "ref": "claim/issue-9273",
+      "env": {
+        "WORKER_OUTCOME": "failure",
+        "STARTED": "1791178004",
+        "ENDED": "1791181312",
+        "LOAD1": "6.18",
+        "CORES": "8",
+        "SWAP_USED_KB": "2097152",
+        "ENGINE": "pi"
+      },
+      "prior_failed_comment": 0,
+      "started_comment": true,
+      "want": "strike",
+      "prior_infra_comments": 3,
+      "note": "pi healthy cap death after 3 infra requeues strikes with strong-only (cap bounds the pi resume loop)"
     },
     {
       "name": "infra-under-cap-requeues",

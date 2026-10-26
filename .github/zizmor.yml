@@ -11,6 +11,9 @@ rules:
         Nishfleet/fleet-ops/.github/workflows/agent.yml: ref-pin
         # The ratchet must run from main so a PR cannot change the rule it is judged by (#9627).
         Nishfleet/fleet-ops/.github/workflows/ratchet.yml: ref-pin
+        # The probe runs from main, like agent.yml, so one definition serves every
+        # job and repo (fleet-ops#9983).
+        Nishfleet/fleet-ops/.github/actions/runner-probe: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:

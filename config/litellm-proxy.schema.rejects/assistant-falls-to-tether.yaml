@@ -1,6 +1,5 @@
-# fleet-ops#9596: fallbacks still send senior to senior-backup, but the row is gone, so the fallback names nothing.
-# Built from the live config's judge, senior and senior-backup rows and its router_settings,
-# which pass the schema alone, so this file breaks only the rule named above.
+# Tether: no group may fall into tether (the Claude credit is Tether's alone, and assistant -> tether with tether -> assistant is a cycle).
+# Built from the live config's judge, senior and tether rows and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
 model_list:
 - model_name: judge
   litellm_params:
@@ -47,26 +46,20 @@ model_list:
       BadRequestErrorAllowedFails: 1
 - model_name: senior
   litellm_params:
-    model: openai/z-ai/glm-5.3-flash
-    api_base: https://api.paretoinference.com/v1
-    api_key: os.environ/PARETO_API_KEY
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - pareto
     - senior
     order: 1
-    input_cost_per_token: 9e-08
-    cache_read_input_token_cost: 1.8e-08
-    output_cost_per_token: 3e-07
-    max_budget: 10.0
-    budget_duration: 1d
     max_parallel_requests: 1
-    cooldown_time: 300
+    cooldown_time: 60
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: '2026-10-07 #9357 scoreboard: 81.5% cache-read 7d on real router traffic.'
-    id: pareto-glm53flash-senior
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
+    id: synthetic-glm53flash-senior
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge
@@ -92,22 +85,57 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+- model_name: tether
+  litellm_params:
+    model: anthropic/claude-sonnet-5-5
+    api_key: os.environ/ANTHROPIC_API_KEY
+    api_base: https://api.anthropic.com
+    cache_control_injection_points:
+    - location: message
+      role: system
+    - location: message
+      index: -1
+    tags:
+    - prepaid
+    - anthropic
+    order: 1
+    input_cost_per_token: 2e-06
+    cache_creation_input_token_cost: 2.5e-06
+    cache_read_input_token_cost: 1e-07
+    output_cost_per_token: 1e-05
+    max_parallel_requests: 4
+    cooldown_time: 300
+    max_budget: 50.0
+    budget_duration: 1d
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-23 on api.anthropic.com/v1/messages with a 23403-token system block marked cache_control, call 1 cache_creation_input_tokens 23403, call 2 cache_read_input_tokens
+      23403 of 23414 (99.9%).'
+    id: anthropic-sonnet55-tether
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 router_settings:
   routing_strategy: simple-shuffle
   optional_pre_call_checks:
   - prompt_caching
   - session_affinity
-  redis_url: redis://127.0.0.1:6379
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
   fallbacks:
   - judge:
     - senior
-  - senior:
-    - senior-backup
-  - worker-capable:
-    - worker-cheap
   - worker-cheap:
     - worker-capable
+  - worker-public:
+    - worker-capable
+  - assistant:
+    - worker-capable
+    - tether
+  - tether:
+    - assistant
   cooldown_time: 60
   allowed_fails: 1
   num_retries: 0

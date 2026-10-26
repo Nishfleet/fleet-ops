@@ -18,8 +18,8 @@
 #  - a real row at 4 failures in the hour stays quiet, and a 429 on a real row
 #    stays quiet too (a quota wall is a resting row, not a dead one).
 #
-# Every series is fed one failure per minute for a full hour, so `increase` over
-# the 1h window reads 60 for the loud cases and 3.05 for the quiet one: the
+# Series are fed about one failure per minute for an hour (the quiet case, 4 in all), so `increase` over
+# the 1h window reads 60 for the loud cases and about 4 for the quiet one: the
 # cases stand on which series the expression keeps, not on a count that sits
 # next to the threshold.
 evaluation_interval: 1m

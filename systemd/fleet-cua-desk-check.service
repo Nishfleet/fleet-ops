@@ -1,0 +1,41 @@
+[Unit]
+Description=Fail loud when the Cua desk agent is down or its last routine run failed
+# 2026-10-17 a manual reboot left the desk container stopped (Docker restart
+# policy `no`), fleet-update's container prune deleted it on 10-18, and the
+# daily 13:00 IST 0509 walk failed on 10-18, 10-19 and 10-20 with nothing but
+# `lastOutcome` in routines.json to say so. This oneshot fails, and OnFailure=
+# pages through the existing failed-unit route, when `cua sandbox ls --local`
+# does not list local:desk as ready, or when any routine's lastOutcome starts
+# with `failed` (a missing or unreadable routines.json counts as failed).
+# --local because the cloud listing answers HTTP 410 since Cua Cloud ended.
+# It only reads: never `cua host setup` here, and never restart
+# cua-spacesd-host.service. Trigger: fleet-cua-desk-check.timer (hourly).
+#
+# Switch off: systemctl --user disable --now fleet-cua-desk-check.timer, then
+# drop step 2h and its enable line from fleet-sync.service and delete both files.
+OnFailure=fleet-unit-failed@%N.service
+# Three tries 20 s apart, so one blip does not page: RestartMode=direct
+# (systemd 254+) restarts without the failed state, so OnFailure= fires once,
+# when the start limit is spent.
+StartLimitIntervalSec=2min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+Restart=on-failure
+RestartMode=direct
+RestartSec=20
+# CUA and ROUTINES exist so CI can run this very ExecStart against a stub cua
+# and a temp routines file (tests/test_cua_desk_check.py); the host never
+# overrides them. jq reads DESK and FAILED through `env.`, so the program
+# needs no quotes inside this quoted line.
+Environment="CUA=/opt/Cua Spaces/resources/native/cua"
+Environment=ROUTINES=%h/.cua/persistent/routines.json
+Environment=DESK=local:desk
+Environment=FAILED=failed
+ExecStart=/bin/sh -c 'desk=$$("$$CUA" sandbox ls --local --json --no-size 2>/dev/null | jq -r ".[] | select(.id == env.DESK) | .status" 2>/dev/null); \
+runs=$$(jq -c ".[] | select(.lastOutcome // null | tostring | startswith(env.FAILED)) | {botID, title, lastFiredAt, lastOutcome}" "$$ROUTINES" 2>&1) || runs="cannot read $$ROUTINES: $$runs"; \
+[ "$$desk" = ready ] && [ -z "$$runs" ] && { echo "cua desk ok: $$DESK ready, no failed routine"; exit 0; }; \
+[ "$$desk" = ready ] || echo "cua desk BROKEN: $$DESK is $${desk:-missing} (want ready). Fix: vault _system/agent-memory/cua-desk-agent.md (recreate the Space; never cua host setup while a run is live)"; \
+[ -z "$$runs" ] || echo "cua desk BROKEN: failed routine: $$runs. Read the run in the Cua daemon log; the next good run clears this"; exit 1'
+TimeoutStartSec=60

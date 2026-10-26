@@ -15,14 +15,16 @@ What this does NOT do (the honest limits, each pinned by a test below):
 - Backoff. `Router._time_to_sleep_before_retry` returns 0 as soon as the group has
   one healthy row left, so the same-row retry is instant. "retry the same row once
   after the backoff" is met in *which row*, not in *when*.
-- A hard-down row. Once the in-group budget is spent, litellm 1.98.0 runs the
+- A hard-down row. Once the in-group budget is spent, litellm 1.105.0 runs the
   fallback group on the same call, so one cold re-send on the fallback seat stays.
   Cutting it needs litellm to suppress the fallback for a retryable error.
-- 500. `RetryPolicy` ships `InternalServerErrorRetries`, but 1.98.0's
-  `get_num_retries_from_retry_policy` has no `InternalServerError` branch, so that
-  field is dead config until litellm adds the handler.
+- 500. `InternalServerErrorRetries` is read since litellm 1.105.0 (it was dead config
+  on 1.98.0): with the shipped value 1, a 5xx now gets one in-group retry before the
+  fallback group answers. test_internal_server_error_retry_is_live_on_litellm_1_105_0
+  pins that; the 429 numbers below do not involve it.
 
-Measured on this host, litellm 1.98.0, one call into a pinned seat that 429s:
+Measured on litellm 1.98.0 (this host, the pick counts) and re-run on litellm 1.105.0
+(the v1.105.0 image, same numbers), one call into a pinned seat that 429s:
 
   shipped 2/2/2 -> 3 in-group picks (/fail, /fail, /failcapable) + 1 fallback
   fixed   0/1/1 -> 2 in-group picks (/fail, /fail - the same row) + 1 fallback
@@ -30,15 +32,40 @@ Measured on this host, litellm 1.98.0, one call into a pinned seat that 429s:
   fixed, row parks on its first 429 (RateLimitErrorAllowedFails 0) -> 2 in-group
     picks on two DIFFERENT seats (/fail, /failcapable) + 1 fallback
 
-The same-row retry therefore holds for rows under the router-level allowed_fails of 1
-and does not hold for the rows that park on the first 429 (see
-test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself). For those the fix
-still caps the in-group picks at 2 instead of 3, but one of them is a cross-seat hop.
+fleet-ops#9050 adds two keys 1.98.0 did not have, live on the v1.105.0 image
+(NotFoundErrorRetries, DefaultRetries; the policy resolution now runs before
+Router.should_retry_this_error, so a named value overrides the class's own
+raise). Measured on litellm 1.105.0 (PyPI wheel, the same code the pinned
+image contains), one call into a pinned seat:
+
+  a seat answering a real 404 "model unavailable" (the body's
+    code model_not_found is what litellm reads to map the 404; drilled on
+    both 1.98.0 and 1.105.0) and parking on its first 404
+    (NotFoundErrorAllowedFails 0, fleet-ops#9469) -> attempt 1 (/gone404)
+    parks the row, so the granted attempt goes to a live peer (/okcapable);
+    the next call goes straight to the peer
+  the same wall with the budget zeroed -> 1 in-group pick + 1 fallback
+    (/gone404, /okcheap): the fallback is what answers without the retry
+  a 403 "free tier has ended" arrives at the router from an openai-compatible
+    provider as BadRequestError carrying status 403 (drilled on 1.98.0 and
+    1.105.0), so BadRequestErrorRetries: 1 (fleet-ops#9375) already granted
+    its one in-group attempt on both versions - the attempt re-picks the
+    pinned row (the session-affinity pin outranks the retry skip list; the
+    403 does not cool the row) and the call exits through the fallback group
+    (/gone403, /gone403, /okcheap)
+  an unkeyed status like 402 (plain APIError, no named key) gains one
+    in-group attempt through DefaultRetries that 1.98.0 did not grant
+
+The same-row 429 retry therefore holds for rows under the router-level
+allowed_fails of 1 and does not hold for the rows that park on the first 429
+(see test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself). For
+those the fix still caps the in-group picks at 2 instead of 3, but one of them
+is a cross-seat hop.
 
 Two cross-seat re-sends become one, and a briefly-limited row is no longer kicked
 to another seat at all.
 
-These tests run in-process against litellm 1.98.0 (the version pinned for prod)
+These tests run in-process against litellm 1.105.0 (the version pinned for prod)
 and need no Redis: with `optional_pre_call_checks: ["session_affinity"]` and no
 redis_url the DeploymentAffinityCheck degrades to a pod-local pin. The affinity
 lookup the routing decision depends on is the same code path the proxy uses, and
@@ -50,11 +77,16 @@ http.server answers one row 429 and the peers 200.
 CI does not run this file yet: https://github.com/Nishfleet/fleet-ops/issues/9427
 carries the job, and the worker App token has no Workflows permission, so a
 worker cannot push the ci.yml change that would run it. Until that lands, the
-pick counts below are only as live as the last hand run, and the run command is:
+pick counts below are only as live as the last hand run, and the run command
+runs the suite in the pinned litellm 1.105.0 interpreter (the image's own
+python, or any venv with litellm==1.105.0 installed; the version is asserted
+by test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on):
 
-  /home/nish/.local/venvs/litellm/bin/python tests/test_router_retry_policy_no_cross_seat.py
+  <litellm-1.105.0-python> -m pytest -q tests/test_router_retry_policy_no_cross_seat.py
 
-It runs under pytest from the repo root too, with that interpreter on the path.
+The 1.105.0 numbers for fleet-ops#9050 and the #9375 re-measure were both taken
+with the PyPI wheel of litellm 1.105.0, the same package version the pinned
+ghcr.io/berriai/litellm:v1.105.0 image contains.
 """
 from __future__ import annotations
 
@@ -71,12 +103,14 @@ from typing import List
 
 import litellm
 from litellm import Router
-from litellm.exceptions import AuthenticationError, InternalServerError, RateLimitError
+from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,
+                                InternalServerError, NotFoundError, RateLimitError)
 from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
 from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
 from litellm.types.router import RetryPolicy
 
 import jsonschema
+import httpx
 import yaml
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
@@ -92,7 +126,7 @@ REJECTS_GLOB = "config/litellm-proxy.schema.rejects/retry-policy-*.yaml"
 # This constant is also the one home for the version: the CI job that will run
 # this file reads the pin from here (issue 9427), so the pin and the test cannot
 # drift apart.
-PINNED_LITELLM = "1.98.0"
+PINNED_LITELLM = "1.105.0"
 
 # fleet-ops#9375 as written in this PR (the "old" values the audit measured).
 RP_SHIPPED = {
@@ -103,7 +137,8 @@ RP_SHIPPED = {
     "BadRequestErrorRetries": 1,
     "ContentPolicyViolationErrorRetries": 0,
 }
-# fleet-ops#9375 as the fix ships it.
+# fleet-ops#9375 as this commit ships it (0/1/1), plus the two keys fleet-ops#9050
+# adds on litellm 1.105.0:
 RP_PROPOSED = {
     "AuthenticationErrorRetries": 0,
     "RateLimitErrorRetries": 1,
@@ -111,6 +146,8 @@ RP_PROPOSED = {
     "InternalServerErrorRetries": 1,
     "BadRequestErrorRetries": 1,
     "ContentPolicyViolationErrorRetries": 0,
+    "NotFoundErrorRetries": 1,
+    "DefaultRetries": 1,
 }
 
 # A zeroed-out budget, for the contrast tests only.
@@ -132,7 +169,8 @@ def _counts(paths: List[str]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# HTTP mock: /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200
+# HTTP mock: /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200,
+# /gone403 -> 403, /gone404 -> 404
 # --------------------------------------------------------------------------- #
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Answers the /fail rows with a real 429 JSON body so LiteLLM raises
@@ -160,6 +198,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.rfile.read(length)
         _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
+        if "/gone403" in path:
+            body = json.dumps({"error": {
+                "message": "Free tier has ended for this model. Use the paid slug.",
+                "type": "invalid_request_error",
+            }}).encode()
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if "/gone404" in path:
+            # The body carries code "model_not_found" because litellm (1.98.0
+            # and 1.105.0, drilled) reads it to map a 404 to NotFoundError;
+            # without the code the same status arrives as BadRequestError and
+            # skips the NotFoundError piece of this test entirely.
+            body = json.dumps({"error": {
+                "message": "This model is unavailable for free. The paid version is available now - use this slug instead: inclusionai/ling-3.0-flash-sante",
+                "type": "invalid_request_error",
+                "code": "model_not_found",
+            }}).encode()
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if "/fail" in path:
             server = _CURRENT_SERVER[0]
             # fail_first_only: the /fail row 429s once then answers 200, to probe
@@ -214,19 +279,26 @@ class _Server:
 _CURRENT_SERVER: List[_Server] = []
 
 
-def _rows(port, park_on_first_429=False):
+def _rows(port, park_on_first_429=False, seat_a_lane="/fail", peer_lane="/failcapable",
+          seat_a_row_policy=None):
     """park_on_first_429 gives seat-a the row policy the prod rows that sit on a daily
     quota wall carry (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0,
-    fleet-ops#9075 / #9122 / #9248): the first 429 cools the row at once."""
+    fleet-ops#9075 / #9122 / #9248): the first 429 cools the row at once. seat_a_lane
+    and seat_a_row_policy put seat-a on the /gone403 and /gone404 walls for the
+    fleet-ops#9050 drills (seat_a_row_policy is the NotFoundErrorAllowedFails: 0
+    parked 404 shape). peer_lane points seat-c at /okcapable so the retry lands on
+    a row that answers."""
     seat_a_info = {"id": "seat-a", "supports_prompt_caching": True}
     if park_on_first_429:
         seat_a_info["allowed_fails_policy"] = {"RateLimitErrorAllowedFails": 0}
+    if seat_a_row_policy is not None:
+        seat_a_info["allowed_fails_policy"] = dict(seat_a_row_policy)
     return [
         {"model_name": "worker-capable",
-         "litellm_params": {"model": "openai/seat-a", "api_base": f"http://127.0.0.1:{port}/fail", "api_key": "k"},
+         "litellm_params": {"model": "openai/seat-a", "api_base": f"http://127.0.0.1:{port}{seat_a_lane}", "api_key": "k"},
          "model_info": seat_a_info},
         {"model_name": "worker-capable",
-         "litellm_params": {"model": "openai/seat-c", "api_base": f"http://127.0.0.1:{port}/failcapable", "api_key": "k"},
+         "litellm_params": {"model": "openai/seat-c", "api_base": f"http://127.0.0.1:{port}{peer_lane}", "api_key": "k"},
          "model_info": {"id": "seat-c", "supports_prompt_caching": True}},
         {"model_name": "worker-cheap",
          "litellm_params": {"model": "openai/seat-b", "api_base": f"http://127.0.0.1:{port}/okcheap", "api_key": "k"},
@@ -234,7 +306,11 @@ def _rows(port, park_on_first_429=False):
     ]
 
 
-async def _run(server, retry_policy, sid, park_on_first_429=False):
+async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, calls=1):
+    """Run `calls` calls against one Router instance (the 404 park drill needs a
+    second call on the same router to prove the parked lane stays out). With
+    calls == 1 the return keeps the old (attempts, outcome, pin) shape; with a
+    higher count it returns ([attempts per call], [outcome per call], pin)."""
     server.hits.clear()
     saved_callbacks = litellm.callbacks
     # simple-shuffle draws from `random`; seed it so no draw can differ between runs.
@@ -243,7 +319,7 @@ async def _run(server, retry_policy, sid, park_on_first_429=False):
     litellm.callbacks = []
     try:
         router = Router(
-            model_list=_rows(server.port, park_on_first_429),
+            model_list=rows if rows is not None else _rows(server.port, park_on_first_429),
             routing_strategy="simple-shuffle",
             num_retries=0, cooldown_time=60, allowed_fails=1,
             optional_pre_call_checks=["prompt_caching", "session_affinity"],
@@ -261,16 +337,23 @@ async def _run(server, retry_policy, sid, park_on_first_429=False):
         # claim, which is out of scope for these tests.
         await router.cache.async_set_cache(
             key=_pin_key(sid), value={"model_id": "seat-a"}, ttl=3600)
-        outcome = "ok"
-        try:
-            await router.acompletion(model="worker-capable",
-                                     messages=[{"role": "user", "content": "hi"}],
-                                     metadata={"session_id": sid})
-        except Exception as e:  # noqa: BLE001
-            outcome = type(e).__name__
-        attempts = list(server.hits)
+        pick_batches: List[List[str]] = []
+        outcomes: List[str] = []
+        for _ in range(calls):
+            outcome = "ok"
+            try:
+                await router.acompletion(model="worker-capable",
+                                         messages=[{"role": "user", "content": "hi"}],
+                                         metadata={"session_id": sid})
+            except Exception as e:  # noqa: BLE001
+                outcome = type(e).__name__
+            pick_batches.append(list(server.hits))
+            outcomes.append(outcome)
+            server.hits.clear()
         pin = await router.cache.async_get_cache(key=_pin_key(sid))
-        return attempts, outcome, pin
+        if calls == 1:
+            return pick_batches[0], outcomes[0], pin
+        return pick_batches, outcomes, pin
     finally:
         _CURRENT_SERVER.pop()
         litellm.callbacks = saved_callbacks
@@ -321,7 +404,7 @@ def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule(
         live = yaml.safe_load(fh)
     assert [e.message for e in validator.iter_errors(live)] == []
     fixtures = sorted(glob.glob(REJECTS_GLOB))
-    assert len(fixtures) == 5, fixtures
+    assert len(fixtures) == 7, fixtures
     for path in fixtures:
         with open(path, "rb") as fh:
             doc = yaml.safe_load(fh)
@@ -378,19 +461,19 @@ def test_the_mock_reads_the_request_body():
         server.close()
 
 
-def test_internal_server_error_is_inert_on_litellm_1_98_0():
-    # litellm 1.98.0's get_num_retries_from_retry_policy has no InternalServerError
-    # branch (litellm.types.router.RetryPolicy ships the field but the lookup omits
-    # it), so InternalServerErrorRetries is dead config until litellm adds the handler:
-    # it resolves to None and the Router falls back to num_retries (0) -> exactly one
-    # attempt before the fallback group, never an in-group hop.
+def test_internal_server_error_retry_is_live_on_litellm_1_105_0():
+    # litellm 1.98.0's get_num_retries_from_retry_policy had no InternalServerError
+    # branch, so InternalServerErrorRetries was dead config there (one attempt, then the
+    # fallback group). litellm 1.105.0 reads it: the shipped value 1 now gives a 5xx one
+    # in-group retry before the fallback group answers. That is the forward value the
+    # config comment names, measured here on 1.105.0.
     #
     # This and the no-backoff test below read litellm internals, so both are the
     # litellm upgrade tripwires: a litellm bump that changes either shape fails CI
     # and the numbers in this file and in the config comment must be re-measured.
     rp = RetryPolicy(**RP_PROPOSED)
     exc = InternalServerError(message="x", llm_provider="openai", model="m", response=None)
-    assert get_num_retries_from_retry_policy(exc, rp) is None
+    assert get_num_retries_from_retry_policy(exc, rp) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -522,6 +605,134 @@ def test_pin_survives_a_failed_then_fallback_success():
     assert pin == {"model_id": "seat-a"}
 
 
+def test_the_migration_pre_start_names_the_same_image_as_the_proxy():
+    # fleet-litellm-proxy.container names the image twice: Image= and the ExecStartPre= that
+    # runs the migration job. A bump that edits only one would migrate the schema with one
+    # release and serve with another, so the two references must be identical.
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "containers/quadlet/fleet-litellm-proxy.container").read_text()
+    image = re.findall(r"^Image=(\S+)$", text, re.M)
+    migrate = [m for m in re.findall(r"^ExecStartPre=.*podman run .*--skip_server_startup.*$", text, re.M)]
+    assert len(image) == 1 and len(migrate) == 1, (image, migrate)
+    assert re.search(r"@sha256:[0-9a-f]{64}$", image[0]), image[0]
+    # The line is a sh -c wrapper (skip when nothing changed): the image is assigned to i=.
+    assert f"i={image[0]} " in migrate[0], (image[0], migrate[0])
+    assert re.search(r"\$\$i --skip_server_startup ", migrate[0]) and "--config" not in migrate[0]
+    assert f":v{PINNED_LITELLM}@" in image[0], (image[0], PINNED_LITELLM)
+
+
+def test_a_404_gets_one_in_group_retry_on_litellm_1_105_0():
+    """fleet-ops#9050, the 404 half. litellm 1.98.0 hard-raised any NotFoundError in
+    Router.should_retry_this_error and had no NotFoundErrorRetries key, so the failed
+    call left the group. The 1.105.0 resolution (litellm.router_utils.
+    get_retry_from_policy) runs BEFORE should_retry_this_error in
+    async_function_with_retries and prefers NotFoundErrorRetries for a status-404
+    answer, so the shipped value 1 grants one retry."""
+    exception = NotFoundError(message="This model is unavailable for free.",
+                              model="x", llm_provider="openai")
+    assert getattr(exception, "status_code", None) == 404
+    assert get_num_retries_from_retry_policy(
+        exception, RetryPolicy(**RP_PROPOSED)) == 1
+
+
+def test_a_403_arrives_as_bad_request_and_gets_one_retry():
+    """fleet-ops#9050, the 403 half. Drilled on 1.98.0 and 1.105.0: an
+    openai-compatible 403 arrives at the router as BadRequestError carrying
+    status 403, so the granting key is BadRequestErrorRetries: 1
+    (fleet-ops#9375) - live on both versions, not a 1.105.0 change. RetryPolicy
+    has no PermissionDeniedErrorRetries field to begin with (upstream PR #31066
+    is unmerged) because litellm never raises PermissionDeniedError on this path.
+    It is asserted here because anything named must not quietly claim a different
+    class mapped what the caller actually saw."""
+    request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
+    exception = BadRequestError(
+        message="Free tier has ended for this model. Use the paid slug.",
+        llm_provider="openai", model="x",
+        response=httpx.Response(403, request=request))
+    assert getattr(exception, "status_code", None) == 403
+    assert get_num_retries_from_retry_policy(
+        exception, RetryPolicy(**RP_PROPOSED)) == 1
+
+
+def test_an_unkeyed_402_also_gets_the_default_one_retry():
+    """DefaultRetries covers every class the policy does not name. 402 stays plain
+    APIError on 1.105.0 (no key), so the default grants it one retry; the named keys
+    keep precedence, so 401 stays 0 and a 429 keeps its same-row retry."""
+    exception = APIError(status_code=402, message="insufficient credits",
+                         llm_provider="openai", model="x")
+    assert get_num_retries_from_retry_policy(
+        exception, RetryPolicy(**RP_PROPOSED)) == 1
+    assert get_num_retries_from_retry_policy(
+        AuthenticationError("401", "openai", "x", None), RetryPolicy(**RP_PROPOSED)) == 0
+    assert get_num_retries_from_retry_policy(
+        RateLimitError(message="x", llm_provider="openai", model="x"),
+        RetryPolicy(**RP_PROPOSED)) == 1
+
+
+def test_a_403_wall_retries_the_pinned_row_then_falls_to_the_fallback():
+    """fleet-ops#9050, the 403 drill on litellm 1.105.0. A pinned seat answers 403
+    ('Free tier has ended' - the 2026-09-30 revoked-tier wall). BadRequestError
+    (status 403) carries no cooldown, so the session-affinity pin keeps the
+    failed row healthy: the pin's pre-call filter runs before the retry skip
+    filter and the skip filter restores the full list when the exclusion would
+    leave nothing, so the granted attempt re-picks the pinned row and the call
+    exits through the fallback group - no caller sees the 403 either way. The
+    retry is one extra same-row pick, not a cross-seat hop."""
+    server = _Server()
+    try:
+        attempts, outcome, pin = asyncio.run(_run(
+            server, RP_PROPOSED, "s-403-peer",
+            rows=_rows(server.port, seat_a_lane="/gone403", peer_lane="/okcapable")))
+    finally:
+        server.close()
+    assert attempts == ["/gone403/chat/completions",
+                        "/gone403/chat/completions",
+                        "/okcheap/chat/completions"], attempts
+    assert outcome == "ok", outcome
+    assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_zero_retries_kick_a_403_wall_to_the_fallback():
+    """The budget-zeroed contrast for the 403 drill (the same shape test_zero_retries_hit
+    _the_fallback_on_a_transient_429 checks for 429s): with NotFoundErrorRetries and
+    DefaultRetries at 0 the caller gets the answer only through the fallback group re-send
+    - the retry is what keeps a revoked tier inside the group."""
+    server = _Server()
+    try:
+        attempts, outcome, pin = asyncio.run(_run(
+            server, RP_ZERO, "s-403-zero",
+            rows=_rows(server.port, seat_a_lane="/gone403", peer_lane="/okcapable")))
+    finally:
+        server.close()
+    assert attempts == ["/gone403/chat/completions",
+                        "/okcheap/chat/completions"], attempts
+    assert outcome == "ok", outcome
+    assert pin == {"model_id": "seat-a"}, pin
+
+
+def test_a_404_lane_retries_onto_the_peer_and_then_parks():
+    """fleet-ops#9050 with the fleet-ops#9469 park: a dead lane (the ended free
+    ling-3.0-flash slug) answers 404, NotFoundErrorAllowedFails: 0 parks it after the
+    one granted retry already went to the peer, and the NEXT call on the same router
+    goes straight to the peer - the leak stays closed after exactly one attempt per
+    cooldown window."""
+    server = _Server()
+    try:
+        batches, outcomes, pin = asyncio.run(_run(
+            server, RP_PROPOSED, "s-404-peer-and-park",
+            rows=_rows(server.port, seat_a_lane="/gone404", peer_lane="/okcapable",
+                       seat_a_row_policy={"NotFoundErrorAllowedFails": 0}),
+            calls=2))
+    finally:
+        server.close()
+    assert batches[0] == ["/gone404/chat/completions",
+                          "/okcapable/chat/completions"], batches
+    assert batches[1] == ["/okcapable/chat/completions"], batches
+    assert outcomes == ["ok", "ok"], outcomes
+    assert pin == {"model_id": "seat-a"}, pin
+
+
 if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
@@ -529,7 +740,7 @@ if __name__ == "__main__":
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_zero_retries,
         test_rate_limit_gets_one_retry,
-        test_internal_server_error_is_inert_on_litellm_1_98_0,
+        test_internal_server_error_retry_is_live_on_litellm_1_105_0,
         test_the_same_row_retry_has_no_backoff,
         test_the_mock_reads_the_request_body,
         test_shipped_policy_spends_two_retries_on_two_seats_on_a_429_wall,
@@ -537,7 +748,14 @@ if __name__ == "__main__":
         test_a_transient_429_recovers_on_the_row_it_hit,
         test_a_row_that_parks_on_its_first_429_retries_a_peer_not_itself,
         test_zero_retries_hit_the_fallback_on_a_transient_429,
+        test_a_404_gets_one_in_group_retry_on_litellm_1_105_0,
+        test_a_403_arrives_as_bad_request_and_gets_one_retry,
+        test_an_unkeyed_402_also_gets_the_default_one_retry,
+        test_a_403_wall_retries_the_pinned_row_then_falls_to_the_fallback,
+        test_zero_retries_kick_a_403_wall_to_the_fallback,
+        test_a_404_lane_retries_onto_the_peer_and_then_parks,
         test_pin_survives_a_failed_then_fallback_success,
+        test_the_migration_pre_start_names_the_same_image_as_the_proxy,
     ]
     failures = 0
     for fn in fns:
