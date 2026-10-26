@@ -210,18 +210,12 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other
-          # than SWE-2: Claude Code on a Claude seat first, then Cursor (paced to
-          # 1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot
-          # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
-          # fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while
-          # fewer than 2 run (OpenCode's free tier answers only the opencode CLI,
-          # fleet-ops#8790), else Devin SWE-2 Max while
-          # fewer than 4 run ($0); when all three are full the issue
-          # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
-          # A lane's live count is the distinct worker directories (Devin,
-          # Cursor) or pi session directories on its bwrap command lines, so
-          # it spans every runner and repo on this host.
+          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other than SWE-2: Claude Code on a Claude seat first, then Cursor
+          # (1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot (first-try clean 85%,
+          # 5/5 held-out vs Devin 73%, 1/3; fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while fewer than 2 run
+          # (fleet-ops#8790), else Devin SWE-2 Max while fewer than 4 run ($0); when all three are full the issue waits (lanes-full), with no
+          # Cursor fallback (fleet-ops#8740). A lane's live count is the distinct worker directories (Devin, Cursor) or pi session
+          # directories on its bwrap command lines, so it spans every runner and repo on this host.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is
@@ -236,21 +230,13 @@ jobs:
           devin_free() {
             [ "$(live devin)" -lt 4 ]
           }
-          # Claude does the judgment work, the free workers do the mechanical work,
-          # and Jev decides which is which. strong-only (senior) work always goes to
-          # Claude Code first. Any other issue is classified by Jev from its title
-          # and body: p >= 0.9 that completing it needs engineering judgment sends
-          # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
-          # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, then opencode, then Devin, and never Cursor
-          # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the runner's number (netcup-agent-N):
-          # odd runs seat a, even runs the default login (seat b), so
-          # the jobs split across both seats and a job never changes seat (no
-          # clock, and the prompt cache holds). A seat at its usage limit shows up
-          # as a rate limit in the Worker, which falls through (below). There is no
-          # cap on live claude workers: nothing stock gives N slots, and
-          # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
+          # Claude does the judgment work, the free workers the mechanical work, and Jev decides which. strong-only (senior) work always goes to
+          # Claude Code first. Any other issue is classified by Jev from its title and body: p >= 0.9 that it needs engineering judgment sends it
+          # to claude, p <= 0.1 (mechanical) to the free lanes, and anything between, or a failed Jev call, to the free lanes (pi, opencode,
+          # Devin; never Cursor, fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two failed runs. The seat follows the
+          # runner's number (netcup-agent-N): odd runs seat a, even the default login (seat b), and a job never changes seat (no clock, the
+          # prompt cache holds). A seat at its usage limit shows as a rate limit in the Worker, which falls through (below). No cap on live
+          # claude workers: nothing stock gives N slots, and agent.slice MemoryHigh/MemoryMax already govern their RAM.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           # judgment_p: asks Jev whether the issue needs engineering judgment and sets
           # jp to the probability of yes (empty when the call fails). The issue text
@@ -385,17 +371,11 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the runner's number
-            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
-            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
-            # login). A name with no number keeps seat a. The seat never changes
-            # inside a job, except to the other seat when its own login is missing
-            # (below). A run that dies on a rate limit or
-            # a usage limit sends the same packet to the Cursor lane for senior
-            # work, or to pi (the first of the ordinary lanes) for any other job,
-            # which never uses Cursor; either continues from whatever the branch
-            # holds (worker.md step 2b). Other engines never see these seats'
-            # logins (the jail lines above); this one sees only the seat it runs on.
+            # Claude Code on one of the two seats, chosen by the runner's number (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
+            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default login). A name with no number keeps seat a. The seat never changes
+            # inside a job, except to the other seat when its own login is missing (below). A run that dies on a rate or usage limit sends the
+            # same packet to Cursor for senior work, or to pi for any other job, which never uses Cursor; either continues from the branch (worker.md step 2b).
+            # Other engines never see these seats' logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
@@ -1102,14 +1082,10 @@ jobs:
           # with no blocker line: the senior seat (GLM) and the judge group's Qwen seat.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # Both extra reviewers are called directly, not through pi, because the row that answered is
-          # only in the response headers, and each approves only when its own family's row answered:
-          # the senior group's one row is GLM, and the judge group's first row is Qwen with DeepSeek
-          # behind it (judge also falls back to the senior seat), so a fallback answers from another
-          # row and that is not an approval. The row id is x-litellm-model-id, the header the repo's
-          # own proofs read (docs/prompt-cache-routes.md). The key goes in the curl config, never argv
-          # (/proc/<pid>/cmdline is world readable, #8403), and the request body goes in a file:
-          # one argv string over 128 KiB (MAX_ARG_STRLEN) cannot start curl, and a guard diff can be that big.
+          # Both extra reviewers are called directly, not through pi: the row that answered is only in the response headers,
+          # and each approves only when its own family's row answered (senior: GLM; judge: Qwen first, DeepSeek behind it, then the senior seat),
+          # so a fallback answers from another row and is not an approval. The row id is x-litellm-model-id (docs/prompt-cache-routes.md).
+          # The key goes in the curl config, never argv (#8403), and the body goes in a file: one argv string over 128 KiB (MAX_ARG_STRLEN) cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 8192, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \

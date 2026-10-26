@@ -18,15 +18,10 @@ concurrency:
 
 jobs:
   # ci: every step is one vendor command. Required check by this name.
-  #
-  # `ci` is also the aggregate gate: it needs every other job in this file that
-  # runs on pull_request or merge_group, so a red grafana-boot or
-  # cloudflare-tokens-tofu fails the required check (PR #9507 merged with
-  # grafana-boot red). coordinator-approval is its own required check and stays
-  # out. `!cancelled()` so a failed need still runs this job and turns it red:
-  # a skipped required check would pass. A need that skips on its own (a job-level
-  # `if:`) counts as a pass; failure and cancelled do not. grafana-boot's path
-  # gate skips its steps, not the job, so it reports success.
+  # `ci` is also the aggregate gate: it needs every other job in this file that runs on pull_request or merge_group, so a red
+  # grafana-boot or cloudflare-tokens-tofu fails the required check (PR #9507 merged with grafana-boot red). coordinator-approval is its
+  # own required check and stays out. `!cancelled()` so a failed need still runs this job and turns it red: a skipped required check
+  # would pass. A need that skips on its own (a job-level `if:`) counts as a pass; failure and cancelled do not.
   ci:
     name: ci
     needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
@@ -1889,20 +1884,13 @@ jobs:
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
 
-  # Coordinator approval as a required status check (fleet-ops#9383).
-  # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
-  # direct enqueue or merge got past it (#9371 merged with no approval). A
-  # required check is the one thing the merge queue cannot skip. On merge_group
-  # this job resolves the PR(s) in the queue entry, classifies each one's
-  # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment or success status from an approver.
-  # On pull_request and push it passes, so a PR can be enqueued and the queue
-  # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
-  # path list are read from the BASE commit's agent-dispatch.yml and
-  # config/risky-paths.json, so ci.yml's case tests over them keep covering
-  # what this job runs and a PR cannot loosen the list it is judged by.
-  # Every failed read fails the check. Ruleset bypass actors (repository admin)
-  # can still skip a required check.
+  # Coordinator approval as a required status check (fleet-ops#9383). hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR
+  # events, so a direct enqueue or merge got past it (#9371 merged unapproved). A required check is the one thing the merge queue cannot
+  # skip. On merge_group this job resolves the PR(s) in the entry, classifies each one's changed files and fails when a risky PR's CURRENT
+  # head sha has no `coordinator-approval: <sha>` comment or success status from an approver. On pull_request and push it passes. The
+  # CLASSIFY and APPROVAL programs, APPROVERS and the path list come from the BASE commit's agent-dispatch.yml and config/risky-paths.json,
+  # so ci.yml's case tests keep covering what this job runs and a PR cannot loosen its own list. Every failed read fails the check.
+  # Ruleset bypass actors (repository admin) can still skip a required check.
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest
