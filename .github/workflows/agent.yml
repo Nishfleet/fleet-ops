@@ -1181,7 +1181,12 @@ jobs:
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
-          [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
+          if [ "$(jq -r '.auto_merge != null' <<<"$pr")" = true ]; then
+            # The sweep's arm_pr dispatch means this armed PR sat outside the queue: disarm, then arm again
+            # below. The sweep's own GITHUB_TOKEN cannot disarm (fleet-ops#10409).
+            [ -z "$REVIEWED" ] || { echo "#$PR is already armed"; exit 0; }
+            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --disable-auto
+          fi
           # The App has no workflows permission, so GitHub refuses its arm on a PR that edits
           # .github/workflows/**. For such a PR the arm uses the runner user's gh login
           # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
