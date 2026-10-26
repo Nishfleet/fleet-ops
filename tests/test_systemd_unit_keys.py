@@ -938,15 +938,23 @@ def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() ->
         wait = re.search(r"(?m)^      group_wait: (\S+)$", route)
         if 'severity="nish"' in matchers:
             nish.append((matchers, wait.group(1) if wait else None))
-    assert len(nish) == 2, (
-        f"want exactly two severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
+    assert len(nish) == 3, (
+        f"want exactly three severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
     )
     fixable = [r for r in nish if 'alertname=~"BackupStale|BackupFailed|SiteDown"' in r[0]]
     assert len(fixable) == 1, (
         f"want one severity=nish route for BackupStale, BackupFailed and SiteDown, got {len(fixable)}"
     )
-    rest = [r for r in nish if r is not fixable[0]]
-    assert nish[0] is fixable[0], (
+    loop = [r for r in nish if 'alertname=~"GrafanaDown|GrafanaNotificationsFailing"' in r[0]]
+    assert len(loop) == 1 and loop[0][1] == "0s", (
+        f"want one severity=nish route for GrafanaDown and GrafanaNotificationsFailing with "
+        f"group_wait 0s (fleet-ops#10306), got {loop}"
+    )
+    rest = [r for r in nish if r is not fixable[0] and r is not loop[0]]
+    assert nish.index(loop[0]) < len(nish) - 1 and nish.index(fixable[0]) < len(nish) - 1, (
+        "the loop-health and worker-fixable routes must come before the catch-all"
+    )
+    assert nish[0] is loop[0] and nish[1] is fixable[0], (
         "the worker-fixable route must come before the catch-all: Alertmanager takes the first "
         "route that matches and stops there, so a catch-all above it pages the three at once"
     )
