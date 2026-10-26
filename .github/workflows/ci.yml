@@ -617,8 +617,7 @@ jobs:
           printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/home/.local/bin/pi"
           chmod +x "$t/home/.local/bin/pi"
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          grep -qF '"$HOME/.local/bin/claude"' <<<"$ses"
-          grep -qF '"$HOME/.local/bin/pi"' <<<"$ses"
+          { grep -qF '"$HOME/.local/bin/claude"' <<<"$ses"; grep -qF '"$HOME/.local/bin/pi"' <<<"$ses"; }
           mkdir -p "$t/wt/prompts"
           echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
           while IFS= read -r c; do
