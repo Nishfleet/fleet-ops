@@ -573,7 +573,7 @@ jobs:
           esac
           FAKE
           chmod +x "$t/bin/gh"
-          today=$(date -u +%FT%TZ)
+          today=$(date -u -d '+10 minutes' +%FT%TZ)
           old=$(date -u -d '2 days ago' +%FT%TZ)
           bad=0
           while IFS= read -r c; do
@@ -1841,7 +1841,7 @@ jobs:
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_deploy_failed_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
