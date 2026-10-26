@@ -577,9 +577,8 @@ jobs:
             # (a host or service restart sends no event) and no claim PR yet
             # goes back to agent-ready, so this sweep lists it (fleet-ops#9063:
             # drive #200 #34 #99 #60 #75 sat claimed with no live run, 2026-10-02).
-            # One with a ready claim PR is the orphans case below; a draft one is
-            # what a run that died after its first push leaves, so it requeues too
-            # (fleet-ops#10367: #10103 sat claimed 3 days behind draft PR #10166).
+            # A draft claim PR counts as none: a run that died after its first push
+            # leaves one (fleet-ops#10367: #10103 sat claimed 3 days behind #10166).
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
