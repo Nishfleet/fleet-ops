@@ -1,11 +1,25 @@
-// Lets user nish (the deploy-box.yml runner) start fleet-host-config.service
-// and nothing else, so the deploy job needs no sudo. polkit is what systemd
-// asks before a non-root caller starts a system unit (man polkit,
-// org.freedesktop.systemd1.manage-units). The unit only applies merged main
-// from its own root-owned clone, so starting it grants no other power.
+// Lets user nish (the deploy-box.yml runner and the Claude lane's jobs) start
+// the units below and nothing else, so neither needs sudo. polkit is what
+// systemd asks before a non-root caller starts a system unit (man polkit,
+// org.freedesktop.systemd1.manage-units). Only the verb start is granted:
+// stop, restart and every other unit stay refused.
+//
+// fleet-host-config.service: applies merged main from its own root-owned
+// clone, so starting it grants no other power (the deploy job).
+// fleet-update.service: the daily update oneshot; re-run after a fix is live.
+// restic-r2-backup.service: the nightly backup oneshot; BackupFailed texts
+// Nish after 2h, so a re-run after the fix clears it.
+// restic-r2-size-guard.service: the backup size check oneshot; same reason.
+var fleetStartableUnits = [
+    "fleet-host-config.service",
+    "fleet-update.service",
+    "restic-r2-backup.service",
+    "restic-r2-size-guard.service"
+];
+
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        action.lookup("unit") == "fleet-host-config.service" &&
+        fleetStartableUnits.indexOf(action.lookup("unit")) !== -1 &&
         action.lookup("verb") == "start" &&
         subject.user == "nish") {
         return polkit.Result.YES;
