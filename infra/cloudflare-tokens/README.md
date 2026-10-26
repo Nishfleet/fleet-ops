@@ -10,10 +10,15 @@ a variable. GitHub only ever holds the narrow tokens this config writes.
 Providers: `cloudflare/cloudflare` v5, `integrations/github`, `hashicorp/time`
 (`time_rotating`). Account: the `account_id` default in `variables.tf`.
 
-Status: applied for the 10 repos below on 2026-10-09 with the minter token
-(`~/.config/cloudflare/token-minter.env`); the plan resolved every permission
-group name against the live API. Which jobs have run on the new tokens is in
-the PR body. A weekly timer renews them (see "Renewal").
+Status: applied for the 10 repos that were in the list on 2026-10-09 with the
+minter token (`~/.config/cloudflare/token-minter.env`); the plan resolved every
+permission group name against the live API. Which jobs have run on the new
+tokens is in the PR body. A weekly timer renews them (see "Renewal").
+`inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
+apply` after that merge creates its token and writes its secret, so the state
+holds it before any run has used it. `fleet_console` (fleet-console-worker) was
+applied by hand on 2026-10-20 and is now in `main.tf`, so the weekly apply no
+longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 
 ## What it creates
 
@@ -25,10 +30,17 @@ the PR body. A weekly timer renews them (see "Renewal").
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
 | `0509-support-inbox` | 0509-support-inbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
 | `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
-| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+| `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
 | `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
+| `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
+| `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
+
+The `mailbox` repo is the former `0509-support-inbox` repo (same repo id): the
+`0509-support-inbox` entry above writes its secret through the GitHub rename
+redirect, so it needs no entry of its own.
 
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
@@ -39,8 +51,11 @@ token whose jobs all run on the VPS self-hosted runners. No Cloudflare job does
 today.
 
 `CLOUDFLARE_ACCOUNT_ID` is an identifier, not a credential, and stays as it is
-(org secret, plus repo secrets in drive and 0509-support-inbox and the 0509
-`production` environment).
+(org secret, plus repo secrets in drive, 0509-support-inbox and the 0509
+`production` environment). The one in fleet-console-worker is managed by
+`github_actions_secret.account_id_fleet_console`; the state already holds it
+under that address, so the next plan shows no destroy for it, and `tofu destroy`
+would delete it.
 
 Permission groups are looked up by name from the
 `cloudflare_api_token_permission_groups_list` data source (one lookup for the
@@ -84,6 +99,38 @@ cannot prove what the live list holds; check with
 `grep cloudflare-tokens /etc/restic/include.txt`. If the state is lost, delete
 the old tokens in the Cloudflare dashboard (names start `gha-`) and apply again
 to mint fresh ones.
+
+### State encryption
+
+The state file holds the token values as OpenTofu wrote them, so the state is
+encrypted with OpenTofu's own state encryption (AES-GCM, key derived from a
+passphrase). The passphrase and the method settings are not in this repo: they
+are one `TF_ENCRYPTION` line in a private env file that
+`cloudflare-tokens-apply.service` loads when it exists
+(`EnvironmentFile=-`). `state-encryption.env.example` is the template. The file
+lives next to the other Cloudflare env files under `~/.config/cloudflare/`, so
+the nightly backup carries it with the state; without the passphrase the state
+cannot be read, so keep that backup.
+
+Turn it on once, by hand, with no one else applying at the same time:
+
+    umask 077
+    cp infra/cloudflare-tokens/state-encryption.env.example ~/.config/cloudflare/tofu-state-encryption.env
+    # replace the placeholder with the output of: openssl rand -base64 32
+    systemctl --user start cloudflare-tokens-apply.service
+
+The first apply reads the plain state through the `fallback` member and writes
+it encrypted. OpenTofu writes `.backup` only when the state changes, so the old
+`.backup` stays a plain copy: after checking that
+`grep -c '"resources"' ~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`
+prints 0 and `tofu plan` (run as below) shows no changes, delete that one
+`terraform.tfstate.backup`; the next state change writes an encrypted one. Then
+delete the `fallback` member from the env file so a plain state is refused from
+then on. With the passphrase lost, treat it like a lost state (see above).
+
+A hand run of `tofu` needs the same variable. Do not `source` the file (a shell
+strips the quotes in the JSON); use the unit, or
+`systemd-run --user --wait --pipe -p EnvironmentFile=$HOME/.config/cloudflare/tofu-state-encryption.env -p WorkingDirectory=<deploy clone> ~/.local/bin/tofu -chdir=infra/cloudflare-tokens plan`.
 
 ## Apply
 

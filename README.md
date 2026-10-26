@@ -19,8 +19,8 @@ script, or prompt lands unseen.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge
   and once a day, and fails on a hand-installed file.
-- `ansible/update.yml` — the weekly safe full update of the box (see
-  [Weekly update](#weekly-update)). `fleet-update.service` runs it as root
+- `ansible/update.yml` — the daily safe full update of the box (see
+  [Daily update](#daily-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
 - `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
   token per repo and writes it into that repo's GitHub Actions secret, replaced
@@ -81,6 +81,16 @@ script, or prompt lands unseen.
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
+- `systemd/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish), exactly
+  `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
+  new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
+  `harness.name=hermes`, `collection_method=poll` events to
+  `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
+  have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
+  (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
+  again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
+  deploy. Off switch: remove that step and its enable line, then
+  `systemctl --user disable --now beacon-hermes-poll.service`.
 - `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
   /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
   Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
@@ -88,6 +98,13 @@ script, or prompt lands unseen.
   is the job; `config/retro-public-deny.txt` is the check every follow-up issue
   must pass before it is filed; `config/retro-weekly-claude.json` is the tool
   list. README "Weekly retro" has the run, off and delete steps.
+- `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
+  as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
+  starts with `failed` (2026-10-18: the desk was pruned and three daily walks failed
+  with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
+  enables the timer on every deploy. Off switch: remove that step and its enable
+  line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
@@ -96,7 +113,7 @@ script, or prompt lands unseen.
   `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
   binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
-  second-login env line for the Tincan listener. They were hand-placed on the
+  env line that picks the Tincan listener's own Claude login. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
@@ -111,6 +128,54 @@ script, or prompt lands unseen.
   so only its parent unit is verified. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
+- `systemd/tincan-listen-command-code.service`,
+  `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
+  `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
+  `tincan-listen-pi.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
+  and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
+  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
+  OpenCode and the paid pi seat, each reading its own
+  `~/.config/tincan/<agent>.json` and prompt and writing its state under
+  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
+  router with a virtual key of its own, kept in the fleet's local seat directory
+  (worker-cheap only, capped per day), minted with `POST /key/generate` like
+  every other consumer credential, because a prompt-injected message in that
+  lane could make the run print its environment. The router's master key is not
+  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
+  daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
+  The six wake services were hand-placed regular files under
+  `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
+  them; the files here are the bytes that ran before, and `fleet-sync.service`
+  step 2j links each one on every deploy (the `default.target.wants` links
+  already point at these paths, so a hand disable stays off: step 2j has no
+  `enable` line). The desk daemon is
+  root-owned, installed from `rootfs/etc/systemd/user/` by
+  `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
+  bundled `cua` binary; step 2k retires its hand-placed copy once the installed
+  one is there, and repoints its wants link at the installed file so the link
+  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
+  are enabled already (the wants link names the unit, and step 2j keeps the six
+  wake links pointed at the repo files). A unit edit applies at that unit's next
+  restart. The OpenCode lane will not start without its own key file, so mint
+  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
+  limit) into the fleet's seat directory before its first start, the way the
+  Cursor lane's seat file is provisioned: a missing file fails the unit and
+  pages, which is the point, because the lane has no fallback to the admin key.
+  Off switch, one unit at a time:
+  `systemctl --user disable --now tincan-listen-command-code.service`
+  `systemctl --user disable --now tincan-listen-cursor-vps.service`
+  `systemctl --user disable --now tincan-listen-devin-vps.service`
+  `systemctl --user disable --now tincan-listen-fleet-worker.service`
+  `systemctl --user disable --now tincan-listen-opencode.service`
+  `systemctl --user disable --now tincan-listen-pi.service`
+  `systemctl --user disable --now cua-desk-daemon.service`
+  Delete one of the six wake services by removing its name from
+  `fleet-sync.service` step 2j, its file here and the live link, then
+  `systemctl --user daemon-reload`. Delete the desk daemon with
+  `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
+  link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
+  `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
@@ -167,20 +232,57 @@ script, or prompt lands unseen.
   has run once with the configs merged (the 15-minute tick pages on a missing
   config). Each run rebuilds the index from the files on disk, so it mirrors
   the logs and keeps the same retention; the index never holds more than the
-  logs do.
+  logs do. The drop-in `systemd/leviathan-index@.service.d/20-umask.conf` sets
+  `UMask=0077` so `pi.db` and `claude.db` are owner-only (the user-manager
+  default is 0002). Link it once after the merge with the drop-in `ln -sfn`
+  idiom under "Install" (before the merge it would dangle), then
+  `systemctl --user daemon-reload`; it applies at the next index run.
+  The same `UMask=0077` drop-in sits in
+  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
+  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
+  so the drop-in now applies on every deploy. Applies at the next restart.
+- `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
+  teammate that turns one request into one queued issue (`needs-triage`, so the
+  [admission job](#triage-admission-needs-triage) decides whether a worker starts)
+  and answers with its URL. Stock `tincan listen --exec`, and the three tools it
+  may use live in `pi-extensions/issue-desk/` (its README has the allowlist, the cap, the off
+  switch and the delete steps). Pi starts with no built-in tools, no other
+  extensions, no MCP and no skills, so the model cannot run anything else. Install
+  by hand from the deploy clone (link, then `enable --now`): it is not enabled by
+  `fleet-sync.service`.
+- `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
+  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+- `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
+  `gpg-agent.service`, the stock GPG credential cache every signing unit loads
+  (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
+  `MemoryMax=512M`). It was a hand-placed file under `~/.config/systemd/user`
+  (fleet-ops#10138), which shadows `/etc/systemd/user`, so the repo copy would
+  have been inert: `ansible/host.yml` lists that file in `retired`, so
+  `fleet-host-config.service` deletes the live copy and reloads nish's user
+  manager, and gpg-agent reads these bytes at its next start. The unit file is
+  the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
-  — the dead-man and the Hermes gateway page. Prometheus loads six rules:
+  — the dead-man and the pages. Prometheus loads eleven rules:
   `Watchdog` (always firing), `SystemUnitFailed` (visible, pages nobody),
   `NodeExporterDown` (the `node` target down for 5 minutes, severity nish),
   `HermesGatewayDown` (`hermes-gateway.service` has no active sample for 5
-  minutes while the `node` target is up), and `PrometheusConfigReloadFailed`
-  and `AlertmanagerConfigReloadFailed` (stock reload metrics, severity nish).
-  Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
+  minutes while the `node` target is up), `PrometheusConfigReloadFailed`
+  and `AlertmanagerConfigReloadFailed` (stock reload metrics, severity nish),
+  `BackupStale` (the nightly off-site backup timer has not fired for
+  30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
+  `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
+  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
+  `AISpendMetricMissing` (that spend metric absent for a day). Every one but
+  the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
   `severity=nish` alerts to Telegram. The ping URL, the bot token and the chat
   id are hand-placed 0600 files in `/etc/prometheus` (`deadman_url`,
   `telegram_bot_token`, `telegram_chat_id`); the repo holds none of them.
+  The chat id is the Telegram chat the bot posts to: read it from an existing
+  box's `telegram_chat_id`, or from the old `/etc/prometheus/alertmanager.yml`
+  if a box still has that copy (the play refuses to retire it while it is the
+  only source).
   `.github/workflows/ci.yml` runs `promtool check config`, `promtool check
   rules`, `amtool check-config` and `promtool test rules
   config/prometheus-tests/`. Off switch, temporary, under 2 minutes: `sudo systemctl
@@ -197,9 +299,11 @@ script, or prompt lands unseen.
 - `systemd/fleet-sync.service` (started by
   `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
   a clean-clone check that prints
-  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus two
-  `git merge-base --is-ancestor` probes that fail unless `HEAD` equals
-  `origin/main`, `systemctl --user link` of `fleet-unit-failed@.service` and
+  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus one
+  `sh` line that runs two `git merge-base --is-ancestor` probes and, unless
+  `HEAD` equals `origin/main`, prints `DEPLOY-BLOCKED` with the branch, the
+  commits that are not on main and the fix (fleet-ops#9967), `systemctl
+  --user link` of `fleet-unit-failed@.service` and
   `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`,
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
@@ -207,8 +311,9 @@ script, or prompt lands unseen.
   and the leviathan index units, their configs and the tmpfiles rule to
   `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
-  that fails the unit on a dangling or throwaway-target live symlink
-  (fleet-ops#7743). Root-owned files (`/etc/**`, `agent.slice`, everything under
+  that fails the unit on a throwaway-target live symlink, and on a dangling
+  one outside the `~/.pi/agent/skills` mirror, which logs instead
+  (fleet-ops#7743, #9967). Root-owned files (`/etc/**`, `agent.slice`, everything under
   `rootfs/`) are not this unit's job: `fleet-host-config.service` installs them
   as root from its own clone.
 
@@ -241,10 +346,16 @@ The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
 followed by a `git merge --ff-only` of that named ref — never
 `git pull`, which merges the multi-entry `FETCH_HEAD` and dies with
 `Cannot fast-forward to multiple branches` when anything else in the
-clone has written that file (fleet-ops#8893). Two `merge-base
---is-ancestor` lines then assert `HEAD == origin/main`, so a deploy
-window that ends a commit short fails the unit instead of leaving the
-live clone quietly behind.
+clone has written that file (fleet-ops#8893). One `sh` line then runs
+`git merge-base --is-ancestor` in both directions: together they are true
+only when `HEAD == origin/main`, so a deploy window that ends a commit
+short fails the unit instead of leaving the live clone quietly behind.
+The line prints `DEPLOY-BLOCKED`, the branch, `HEAD` and `origin/main`,
+the commits that are not on main, and `switch main` as the fix, because
+the bare exit code this replaced left six red deploy-box runs printing
+only `exit code 1` (fleet-ops#9967). A session that needs a work branch
+uses a worktree: a work branch checked out in the deploy clone blocks
+every deploy.
 
 ### Wiring a NEW unit (one-time, by hand)
 
@@ -352,11 +463,27 @@ churning checkout, and they dangled when the files vanished, taking the
 standing-rules render down (fleet-ops#7743). The guard for that is in
 `fleet-sync.service`: the LINK-GUARD step fails the unit — on every deploy
 push to main and at boot — while any symlink under `~/.config/systemd/user`,
-`~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` is broken
-or resolves into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`).
+`~/.local/bin`, `~/.pi/agent` or `~/workspaces/tooling/nish-vault` resolves
+into a throwaway root (`*worktrees/*`, `agent-state`, `tmp`), or is broken
+(`-xtype l`) anywhere except the one mirror directory described next.
 Live links belong to the canonical checkout and the stable install dirs
 (`~/.local/share`, `~/.local/lib`), never to a tree a session can delete or
 re-clone.
+
+`~/.pi/agent/skills` is the exception, and its own class: each entry is a link
+to a skill that `~/.claude/skills` (a Syncthing folder edited on another
+machine) or the vault owns, so deleting a skill at the source leaves the link
+dead as a matter of course. There a dead link is printed and does not fail the
+unit, so the deploy converges and a skill that comes back needs no relink; a
+throwaway target there is still fatal. Nine such links held every push red for
+23 h across six runs before this split (fleet-ops#9967). Off switch, if the
+skill wiring itself must never gate a deploy: delete the three LINK-GUARD
+`ExecStart=` lines in `systemd/fleet-sync.service`, then
+`systemctl --user daemon-reload`. Nothing else reads them.
+
+Global skills are updated by hand when wanted: `npx -y skills update -g -y`.
+There is no timer for it — the weekly skills-update timer was deleted on
+2026-10-24 (fleet-ops#10134), so nobody looks for one.
 
 ## systemd by default
 
@@ -479,9 +606,9 @@ under real memory pressure. sshd, tailscaled, and the runner services are out
 of scope: they do not live in `session-*.scope`. `claim/issue-*` and
 `claim/adhoc-*` branches are released by the agent that claimed them.
 
-## Weekly update
+## Daily update
 
-`fleet-update.timer` starts `fleet-update.service` every Sunday at 03:30 IST.
+`fleet-update.timer` starts `fleet-update.service` every day at 03:30 IST.
 It runs `ansible/update.yml` as root through `ansible-pull`:
 
 1. Pause: set the repo variable `FLEET_DISPATCH_PAUSED=true` in each queue
@@ -494,7 +621,16 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone).
+   plugins, cursor-agent, devin, uv, bun, rclone, amp, syncthing). Stale npm
+   staging dirs (`.*-stage-*` under the npm global root) are deleted first,
+   because one left by an interrupted self-update makes `npm update --global`
+   exit non-zero.
+   Cua Spaces has no apt repository, so when a newer stable release exists and
+   no desk run is turning, the run downloads its `.deb`, checks the sha256
+   against the release's `checksums.txt`, installs it, restarts the Cua daemon,
+   deletes and creates the `desk` Space again (the agent's files stay in the
+   Cua Volume on the host), and smoke-tests one throwaway Space. Any failure
+   fails the run.
 4. Resume, even when a step failed: start the runners, set
    `FLEET_DISPATCH_PAUSED=false` where this run set it, restart the timers,
    sweep each queue. The repos it paused are listed in
@@ -512,6 +648,8 @@ It never reboots. When a package needs a reboot, it opens one
 `needs-nish-decision` issue. The daily security updates (`unattended-upgrades`)
 stay on; `rootfs/etc/needrestart/conf.d/50-fleet.conf` makes them only list
 services on old libraries, so they never restart a service mid-job.
+`hermes-gateway.service` and `hermes-serve.service` are not restarted by it
+either, so they run on old system libraries until the next reboot.
 `claude-remote-control.service` is never restarted, by either path. A change to
 it is therefore staged on merge: the file is copied in and the running server
 keeps its old session until Nish restarts it, because that restart cuts his
@@ -533,11 +671,279 @@ number after the restart is the real test.
 
 - Run it now: `sudo systemctl start --no-block fleet-update.service`, then
   `journalctl -u fleet-update -f`.
-- Switch it off: a PR that drops "Enable the weekly update" in
+- Switch it off: a PR that drops "Enable the daily update" in
   `ansible/host.yml` and adds a task with `state: stopped, enabled: false`.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
+## Tether: our own always-on agent (fleet-ops#9980)
+
+Phase 1 of our own agent: iMessage chat, its own memory, and crash-proofing,
+with no live-site, database, GitHub or Cloudflare access. The app lives in the
+private repo `Nishfleet/tether`; this repo owns the unit that runs it, because
+a per-user unit's unprivileged manager cannot apply namespaced sandbox options
+(proven on this box, vault note `claude-vps-listener-locked`), so it must be a
+system unit with its own service user.
+
+| Piece | Where |
+| --- | --- |
+| Unit | `rootfs/etc/systemd/system/tether-agent.service` (`User=tether`, `ProtectSystem=strict`, `ProtectHome=true`, `CapabilityBoundingSet=` empty, `SystemCallFilter=@system-service`, `IPAddressDeny=localhost`) |
+| Service user and config directory | `ansible/host.yml` creates the `tether` system user and `/etc/tether` (root:tether 0750) |
+| Thread, memory and crash state | `/var/lib/tether` (`StateDirectory=tether`, created by systemd, mode 0700, the unit's working directory) |
+| Credentials | `/etc/tether/tether.env`, root:tether 0640, live-only and never in git |
+| App | `/opt/tether/<version>-<sha12>` unpacked from the pinned release, `/opt/tether/current` pointing at it; all root:root, read-only to the `tether` user |
+| Egress rule | `ansible/templates/tether.nft.j2`, installed as `/etc/nftables.d/tether.nft`, table `inet tether` |
+
+The unit is staged and stays disabled. `host.yml` never enables or starts
+`tether-agent.service`. It does install the app: a pinned, checksummed,
+CI-built release of `Nishfleet/tether` (see "Tether release installs" below).
+If someone starts the unit before `/opt/tether/current` exists,
+`ConditionPathExists=/opt/tether/current/dist/index.js` turns that start into
+a skip. The app is at a root-owned path on purpose: the service user can
+write only `/var/lib/tether`, so it cannot rewrite its own code. `host.yml` also installs Node 22 LTS for the unit: the official linux-x64
+tarball for one exact version (`tether_node_version`), checked against a sha256
+pinned in `host.yml`, unpacked into the root-owned `/opt/node-v<version>`. The
+unit's `ExecStart` names that `node` by absolute path. A new Node version is a
+PR that changes the version, the hash and that path together. `host.yml` also
+sets `/etc/tether/photon.env` (placed by hand, never created here) to
+`root:tether 0640`, and the unit loads it after `tether.env`. A second
+credentials file, `/etc/tether/calendar.env` (calendar and contacts), is handled
+the same way: placed by hand, never created here, `root:tether 0640`, loaded
+after `photon.env`. Internet egress for the service user is already open, so it
+needed no firewall change.
+
+tether has no route to the server's Cua daemon. A fixed loopback port with a
+token was tried (#10102) and never worked: the daemon writes a new token to its
+own `daemon.json` at every start and ignores `CUA_DAEMON_TOKEN` and
+`--daemon-token`. It is retired: `host.yml` lists the drop-in directory
+`/etc/systemd/user/cua-desk-daemon.service.d` in `retired` (so it is deleted and
+nish's user manager reloaded), removes `/etc/fleet-ops/cua-daemon-token` and
+nish's `fleet-ops/cua/daemon.env` by name, and then removes that last directory
+only when it is empty. The daemon is restarted only by a newer Cua Spaces
+release (the idle-desk check, restart and desk recreate above), never for a
+config change. What tether can reach instead is its own Space, below.
+
+`Restart=on-failure` brings a killed process back with the durable runtime's
+last checkpoint, which is what the mid-reply proof in #9980 needs. The restart
+is capped: `StartLimitBurst=5` in `StartLimitIntervalSec=3600`, so a fast crash
+loop reaches it in about 25 seconds, and any loop that crashes at least every
+12 minutes reaches it within the hour. A slower loop is bounded only by the
+router key's budget (below). The unit is
+then `failed`, and `OnFailure=fleet-unit-failed@%N.service` sends the
+healthchecks.io fail ping, the same page the other units use. After fixing the
+cause, run `systemctl reset-failed tether-agent.service` and start it.
+
+Models go through the LiteLLM router at `127.0.0.1:4000`, never a direct
+provider key. The unit allows `127.0.0.1/32` and `127.0.0.53/32` and denies
+the rest of loopback. `IPAddressAllow=` takes no port, so the `inet tether`
+nftables table matches the `tether` uid (numeric, so `deluser` cannot break the
+file's load) and, for host-local destinations, allows only tcp `127.0.0.1:4000`
+and tcp/udp `127.0.0.53:53`. It drops loopback, the server's own IPv4 and IPv6
+addresses (from ansible facts, plus `fib daddr type local`), `172.16.0.0/12`,
+`10.0.0.0/8`, `192.168.0.0/16`, IPv4 link-local, every docker or podman bridge
+subnet present, the tailnet's CGNAT block and the tailnet, ULA and link-local
+IPv6 ranges. Internet egress stays open. The table is its own
+table, loaded by the host's `nftables.service` through
+`include "/etc/nftables.d/*.nft"` in `rootfs/etc/nftables.conf`, so it never
+touches the `filter` table or docker's rules and a boot re-applies it.
+
+Web lookup (fleet-ops#9980, `Nishfleet/tether#7`): the app's nearby-places tool
+calls exactly one public host, `photon.komoot.io` over https, read-only, with no
+key. Because internet egress stays open for the `tether` uid, this needs no rule
+or unit change: the table above only drops host-local destinations, and the
+service user's own `IPAddressDeny=localhost` does not touch a public host. The
+host is a constant in the app, the model never supplies a URL, and redirects are
+refused, so a poisoned name cannot point the tool at the router port or the
+tailnet. If egress is ever narrowed to named hosts, this host is the one to add
+for the lookup.
+
+LiteLLM virtual keys are minted by hand with the admin API (the RUNBOOK says
+the proxy has no declarative key list), so no key is created here. After merge
+the orchestrator mints one: `POST /key/generate` with `key_alias` `tether`,
+`models` `["assistant"]`, `max_budget` 2, `budget_duration` `1d` and
+`rpm_limit` 20. Port 4000 also serves `/jev` and `/metrics`, so after minting
+check that this key is refused there. Its value goes only into `/etc/tether/tether.env`
+(root:tether 0640), never into a repo.
+
+Warning: `deluser` frees the service uid and `rm -rf` removes its memory and
+credentials, and neither can be undone. Switch off, about two minutes, as root:
+
+```
+touch /etc/fleet-ops/tether-off    # lasting: the host-config run creates nothing for tether and keeps the unit disabled and stopped
+systemctl disable --now tether-agent.service
+deluser tether                     # optional: also drop the service user
+rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and cannot be undone
+```
+
+The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
+the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+user and `/etc/tether`. While the marker exists that run creates nothing for
+tether, removes its firewall rule, and keeps the unit disabled and stopped.
+Remove the marker to allow it again. To delete tether for good, open a PR that
+removes `rootfs/etc/systemd/system/tether-agent.service` and the tether tasks
+in `ansible/host.yml`, and adds the unit path to `retired`.
+
+In-band, without root, Nish's own off-switch is the `STOP` text. The app that
+handles `STOP` and `RESUME` lives in `Nishfleet/tether`, so that behaviour is
+proved there, not by this repo.
+
+### Tether's own Cua Space
+
+tether can reach one Cua Space, `local:tether`, and nothing else on Cua. Its key
+is that Space's own `cua-spacesd` token: it opens that Space's `spacesd` only
+(checked: the same token against the desk Space's port answers
+`unauthenticated`). It is not the server's Cua login. What the Space itself can
+see, the Cua Volume included, follows Cua's own grants (`cua volume`), not this
+repo.
+
+`host.yml` does this as nish, like the other Cua tasks, unless the off marker
+exists:
+
+- creates the Space with `cua spaces create linux --name tether --on local`
+  only when `cua sandbox ls --local` does not list it. An existing Space is
+  never recreated, so its files and token stay;
+- runs `cua spaces start local:tether` when it is stopped or suspended;
+- reads the token from `/run/cua/env-token` in the Space (the documented
+  `spacesd` location) and the address from `cua --embedded sandbox info`;
+- renders `/etc/tether/cua.env` (`TETHER_SPACE_URL`, `TETHER_SPACE_TOKEN`,
+  `root:tether 0640`, `no_log`, no diff), which the tether unit loads, and
+  restarts tether when it changed;
+- adds `ip daddr 127.0.0.1 tcp dport <port> accept` for that one port to
+  `tether.nft.j2`, before the loopback drop. No other loopback port opens;
+- reads the Space container's network, restart policy and privileged flag from
+  Docker (`docker inspect` on the container id `cua sandbox info` reports). It
+  must have restart policy `no`, not be privileged, and have one network, one
+  IPv4 address and no IPv6 address, or the step fails and pages. It also reads
+  the container's veth: the peer index of `eth0` in the container's network
+  namespace (`nsenter`), and the host interface with that index. It then renders
+  and loads `tether-space.nft` (the fence below) from the address and veth,
+  before it reads the token and renders the env file. If the step fails before
+  the fence is loaded, the rescue stops the Space (`cua spaces stop`, or `docker
+  stop` when the Cua daemon is the failure), so it never runs unfenced; a failure
+  after the fence is loaded leaves it running and fenced.
+
+The Space is a Docker container on the default bridge, next to the desk Space
+and the host. Cua has no network option for a local container (`--network none`
+is for a QEMU VM only), so `tether-space.nft.j2` fences it, in its own file and
+tables (`bridge tether_space`, `inet tether_space`), by its host-side veth and
+also by its address. The veth is what a forged source address cannot change: the
+bridge prerouting hook marks every frame that enters on it, and the IP hooks
+drop on that mark as well as on the address. From the Space, nothing reaches the
+host's own addresses (inet input), nothing is routed to 10/8, 127/8, 169.254/16,
+172.16/12, 192.168/16 or 100.64/10 (inet forward; a host-local destination goes
+to input, not forward), and every frame to another bridge port is dropped
+(bridge forward, no connection tracking: the host loads no `br_netfilter`, so
+bridged traffic skips both IP hooks). Replies to connections others open (the
+published port, `sandbox exec`) pass; the internet stays open. The Space's DNS
+servers are the host's public upstream resolvers, so no DNS exception is needed
+(if they ever move into a private range, name lookups in the Space fail until an
+exception is added). Checked on the box with a throwaway Space: before the fence
+the desk Space's `:3211` answered from inside it, after it only the internet did.
+Cua gives the Space `CapAdd SYS_ADMIN` and cannot drop `NET_RAW`; in a runsc
+Space root still has neither `NET_RAW` nor `NET_ADMIN` (`ip addr add` and raw and
+packet sockets fail with `Operation not permitted`), and the interface match
+holds even if that changed.
+
+The fence file is not part of tether's off marker: the marker removes
+`tether.nft`, not `tether-space.nft`. A failed Space step leaves the last
+rendered fence as it is (only tether's port allow goes). Docker's restart policy
+for the Space is `no`, so after a reboot it stays stopped until the boot run
+starts it, and the fence file loaded at boot holds its last address. If Docker
+gives that address to another container first, that container's private
+destinations are blocked, which is the safe direction; the boot run then
+renders the Space's real address. A manual `docker restart` of the Space can
+give it a new address and the fence follows on the next run.
+
+The port is read live on each run because Docker publishes `spacesd` on a random
+loopback port that changes whenever the container starts. A pause and resume
+(`cua spaces stop` and `start`) keeps it. A container stop, which is what a
+reboot does (Docker restart policy `no`), does not: after `docker stop` and
+`cua spaces start` the port was new, the token was the same, and the Cua daemon
+kept answering with the old port, so `cua sandbox info` and `cua sandbox exec`
+without `--embedded` fail. `--embedded` reads Docker's live port. Because of
+that, `fleet-host-config-boot.timer` runs `fleet-host-config.service` three
+minutes after every boot (the daily timer's random delay of up to an hour is too
+late): the run starts the Space, then renders the env file and the nft rule from
+its new port and restarts tether. Until it does, tether's unit may start with the
+last port, and its calls to the Space fail, because the old port is not allowed
+any more. If the Space step fails (the Cua daemon is down after about 90 seconds
+of waiting), the run completes everything else, keeps the old env file and the
+last fence file, renders tether's nft rule without the Space port (it fails
+closed: tether reaches no Space port until a run succeeds), and fails at its last
+tether task, which pages.
+
+Switch off: `touch /etc/fleet-ops/tether-off`. The next run skips the Space
+tasks, removes `/etc/tether/cua.env` and tether's firewall rule (`tether.nft`),
+stops the Space (`cua spaces stop local:tether`) and keeps tether stopped. The
+fence file `tether-space.nft` stays, so a Space started by hand is still fenced.
+The Space and its files are not deleted. To pause just the Space,
+`cua spaces stop local:tether`; the next run starts it again unless the marker
+exists.
+
+Delete it: switch it off, then `cua spaces delete local:tether --force` as nish,
+and `rm -f /etc/tether/cua.env` as root. Without the marker the next run creates
+a new empty Space. To remove the feature for good, open a PR that deletes the
+Space tasks, the env task, the nft line, `tether-space.nft.j2` and its file (add it
+to `retired`), the `EnvironmentFile=` line and
+`rootfs/etc/systemd/system/fleet-host-config-boot.timer` (add the timer to
+`retired`).
+
+### Tether release installs
+
+`ansible/host.yml` holds the release in two vars, the only place they are
+written: `tether_version` and `tether_sha256`. Unless
+`/etc/fleet-ops/tether-off` exists, one `block:` does the following. The
+directory and the cached file are named `<version>-<first 12 hex of the hash>`,
+so a new hash at the same version is a new name and never reuses old content.
+
+1. If `/opt/tether/<key>` is already whole (a real directory, a regular
+   `dist/index.js`, nothing group- or other-writable or not owned by root,
+   checked with the `find` module) the block only checks the link. A directory
+   that fails that check is replaced, but only once its replacement is staged
+   and checked, so a failed download never removes what `current` points at.
+2. Otherwise it checks that nish's `gh` login works (`gh auth token` is not
+   empty; the login is in `~/.config/gh/hosts.yml`, a file, so it also works
+   under `become_user: nish`) and fails with "gh not authenticated for nish"
+   when it is not.
+3. `gh release download` of `tether-v<version>.tar.gz` from `Nishfleet/tether`
+   as nish into `/var/cache/tether-releases/nish` (nish-writable, because `gh`
+   cannot write into a root-owned directory; root reads only a plain file
+   there, and a link is refused). The repo is private; the credential stays in
+   `gh`'s own config and is never in a URL or in this repo.
+4. `get_url` copies it to the root-owned
+   `/var/cache/tether-releases/tether-v<key>.tar.gz` and checks it against
+   `tether_sha256`. The unverified download is then removed.
+5. `unarchive` unpacks into the root-owned staging directory
+   `/opt/tether/.tmp-<key>` (tarball root: `dist/`, `package.json`,
+   `package-lock.json`, `node_modules/`; no group or other write on any file).
+   A task requires `dist/index.js` and no group- or other-writable or non-root
+   file, then `mv -T` renames staging to `/opt/tether/<key>` (atomic, so a
+   killed run leaves only a staging directory that the next run clears).
+6. `/opt/tether/current` is pointed at `/opt/tether/<key>`.
+7. When `current` moved, the release directories and cached tarballs other than
+   the new one and the one `current` pointed at before are removed: one
+   rollback step stays.
+
+The unit runs `/opt/tether/current/dist/index.js`. It is still never enabled or
+started by this run.
+
+- **A failure does not stop the host config.** Any failure in the block (no
+  GitHub login, no release asset, a checksum mismatch, a bad layout) goes to
+  its `rescue:`: `current` is left where it was and the failure is recorded.
+  Every other task runs and pending handlers are flushed. The last task of the
+  play then fails the run with that message, so the deploy is red and pages.
+- **Upgrade:** build and publish the new release in `Nishfleet/tether`, then open
+  one PR that changes `tether_version` and `tether_sha256` in `ansible/host.yml`.
+  After the merge the next host-config run installs it beside the old one and
+  moves `current`. Restart the unit by hand to run it.
+- **Rollback:** revert that PR. The previous release directory is still in
+  `/opt/tether`, so the next run points `current` back at it.
+- **Hash mismatch:** the verify task fails, nothing is unpacked and `current`
+  stays. Check the pinned hash against the release's `.sha256` asset. The next
+  run downloads `tether-v<version>.tar.gz` again; nothing needs deleting by hand.
+- **No GitHub login:** run `gh auth login` as nish. A version that is already
+  installed needs no download and no login.
 
 ## Remote Control stays on (OOM storm 2026-10-09)
 
@@ -556,6 +962,7 @@ of swap full. Nothing alerted anyone.
 | `OOMPolicy=continue`: a killed child no longer stops the whole unit | `claude-remote-control.service.d/50-alert-on-stop.conf` | at the daemon-reload after merge |
 | `ExecStopPost=` starts `fleet-unit-failed@claude-remote-control.service`, the existing healthchecks.io fail ping (fleet-ops#9033) | same file | next restart of Remote Control (Nish) |
 | `OOMScoreAdjust=-900` to `-500`, so a runaway session child can be chosen | `claude-remote-control.service` | next restart of Remote Control (Nish) |
+| Sandbox drop-in (kernel, clock, devices, `/proc`, `/home` read-only except `/home/nish`, address families, capability and syscall trims): `systemd-analyze security` 9.2 to 4.8 offline. `NoNewPrivileges`, `PrivateTmp` and `ProtectSystem` stay off on purpose, because sessions use `sudo`, `/tmp` and system edits | `claude-remote-control.service.d/80-hardening.conf` | next restart of Remote Control (Nish). Roll back: delete the file, reload, restart |
 | `OOMScoreAdjust=-500` for `hermes-gateway.service` | `hermes-gateway.service.d/70-oom-protect.conf` | next restart of hermes (it restarts itself) |
 
 The alert uses `ExecStopPost=` because `OnFailure=` never fires for this unit:
@@ -579,22 +986,37 @@ Switch off: delete `50-alert-on-stop.conf` (alert and `OOMPolicy`), the
 next run installs it again. The running `ExecStopPost=` and `-500` stay until
 Remote Control is next restarted.
 
-### Remote Control keeps the Max login (2026-10-10)
+### Remote Control runs on the default login (2026-10-22)
 
-`claude-remote-control.service.d/10-max-config.conf` sets
-`CLAUDE_CONFIG_DIR=/home/nish/.claude-max`. The default login in `~/.claude`
-is now a Team seat whose organization policy disables Remote Control, and on
-that login the server exits at once and `Restart=always` loops on it (the
-link was down from 10:52 to 10:56 UTC on 2026-10-10). The drop-in keeps the
-link on the separate Max config dir whatever the default login is. A new
-config dir registers a new Remote Control environment on claude.ai; the old
-one stays listed as offline.
+`claude-remote-control.service.d/10-max-config.conf` (the filename is kept so
+`ansible/host.yml` needs no change) holds `UnsetEnvironment=CLAUDE_CONFIG_DIR`,
+so Remote Control and every session it spawns use the default Team-seat login
+in `~/.claude`. From 2026-10-10 the drop-in pointed it at the personal Max
+config dir `~/.claude-max`; on 2026-10-22 that login lost Remote Control
+("Remote Control isn't enabled for this account") and the unit crash-looped on
+the next restart. Setting `CLAUDE_CONFIG_DIR` to `~/.claude` (as an absolute
+path) instead fails with "Workspace not trusted", because it reads a different
+`.claude.json`.
 
-Switch off: delete the file, add its path to `retired` in `ansible/host.yml`,
-`systemctl daemon-reload`, and restart Remote Control, only once the default
-login allows Remote Control again.
+Checked 2026-10-22: the unit has run on this login since 21:06 IST with
+`NRestarts=0` (set by a runtime drop-in until this file landed), so the Team
+seat does allow Remote Control. Usage and sessions now sit on that Team seat
+and its organization, not on the personal Max login. `~/.claude/settings.json`
+and `~/.claude-max/settings.json` have identical `permissions`, `hooks` and
+`enabledPlugins`; only `env` differs. The Max config dir's Remote Control
+environment stays listed on claude.ai as offline. A running server keeps its
+environment; the change applies at the next restart of Remote Control, which
+only Nish does, or when the unit's own restart loop next fires.
+
+Switch off: put the old `Environment=CLAUDE_CONFIG_DIR=` line (the Max config
+dir `~/.claude-max`, as an absolute path) back in place of the
+`UnsetEnvironment=` line, `systemctl daemon-reload`, and restart Remote
+Control, only once the Max login has Remote Control again.
 
 ### Subagents on the Max config dir (2026-10-11)
+
+Historical since 2026-10-22: Remote Control no longer sets `CLAUDE_CONFIG_DIR`
+and reads `~/.claude/agents` directly; the link below stays harmless.
 
 Claude Code reads subagents from `$CLAUDE_CONFIG_DIR/agents`, so with the
 drop-in above every Remote Control thread got "helper not found", and the
@@ -642,6 +1064,28 @@ holds both rules before merge.
   `ansible/host.yml`. Remove the "Claude Code managed-settings drop-ins" ci
   step and the install task in the same PR once no drop-in is left.
 
+## Beacon OTLP drop-in
+
+`rootfs/etc/claude-code/managed-settings.d/70-beacon-otlp.json` is a managed-settings
+drop-in that carries only Beacon's OpenTelemetry `env` keys (telemetry on, OTLP gRPC to
+`127.0.0.1:4317`, logs and metrics exporters, tool details and prompts). It exists because
+worker lanes run `--setting-sources project,local` and so never read `~/.claude/settings.json`
+where those keys live; managed settings are read whatever `--setting-sources` says, and the
+`env` block merges key by key with `/etc/claude-code/managed-settings.json`. It carries no
+hooks: workers keep `disableAllHooks`. Scope: every Claude Code process on the box, including
+`retro-weekly`, which runs without a network namespace to the host, so its exports fail
+locally and harmlessly. Nothing leaves the box: the endpoint is loopback and Beacon's
+collector only writes `~/.beacon/endpoint/logs/runtime.jsonl` (mode 0600).
+
+- Verify: a worker-style run (`claude -p --setting-sources project,local --settings
+  '{"disableAllHooks":true}'`) that runs `echo MARKER` leaves `claude_code` `otlp` lines
+  with that marker in `~/.beacon/endpoint/logs/runtime.jsonl`.
+- Switch it off: fast, `sudo rm /etc/claude-code/managed-settings.d/70-beacon-otlp.json`
+  (takes effect for the next Claude Code launch; running sessions keep their start-up values;
+  the next `fleet-host-config.service` run puts the file back until a PR retires it). Durable:
+  a PR that deletes the file from `rootfs/` and adds its `/etc` path to `retired` in
+  `ansible/host.yml`.
+
 ## Browser tool: Chrome DevTools MCP
 
 One free browser tool for every agent CLI on the box: the Chrome DevTools MCP
@@ -658,7 +1102,7 @@ for narrow fan-out only and its entries are not touched.
 `npx` and no `@latest` at runtime); `ansible/host.yml` owns the argument list.
 The play copies both files under `~/.local/share/chrome-devtools-mcp`, runs
 `npm ci --ignore-scripts` there when they changed or `node_modules` is missing
-(not `npm -g`: the weekly `npm update --global` would move a global install
+(not `npm -g`: the daily `npm update --global` would move a global install
 past the pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
 
 Every task that touches nish's home runs `become_user: nish`, never as root:
@@ -719,6 +1163,19 @@ deletions, `git diff --numstat` against the merge base) under `.github/workflows
 as many, so removing glue earns room. There are no exceptions in this repo: a new
 mechanism is a component in its own repo, behind an official extension point. The job
 self-tests on throwaway repos every run (growing fails; shrinking and an in-place edit pass).
+
+When a value must rise rather than the code grow — a spend ceiling, a budget, a timeout — make
+it a repository variable read through `vars` with the reviewed default still in the file:
+`EVAL_MAX_NEURONS: ${{ vars.EVAL_MAX_NEURONS || '2000' }}`. Setting it is then a settings change
+(Settings → Secrets and variables → Actions → Variables), not a diff, and the reviewed default in
+the file is the record, because a variable is not versioned: the same commit can run under a
+different ceiling on two days, so the default and the daily ceiling behind it are what a reviewer
+reads. A `workflow_dispatch` input cannot do this job, because the `inputs:` block is workflow
+lines the ratchet counts. An `inputs:` exemption was proposed on fleet-ops#10054 and refused for
+two reasons: it is hand-rolled YAML parsing in the one program the fleet wants airtight, and it
+would make every added input default free, a money ceiling included. 0509's eval ceiling is the
+first user (fleet-ops#10054).
+
 A web or product repo adds a workflow with one job named `ratchet` that calls
 `uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
 and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
@@ -738,6 +1195,22 @@ SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
 sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs
 call `agent.yml` through `uses:` and inherit its limits, while its `list` and `close-claim`
 jobs run their own steps on `ubuntu-latest` with no `timeout-minutes`.
+
+A job that calls `agent.yml` must grant every scope its jobs ask for, at or above the level asked. A
+caller that grants less kills the whole run at startup with no job and no log, which is how 23 Oct
+took the fleet down: `agent.yml`'s `review` job began asking `contents: read`, and all 13 callers in
+`agent-dispatch.yml` died until #10194 landed the grant (fleet-ops#10192).
+`tests/test_workflow_caps.py` reads every workflow under `.github/workflows/`, collects what
+`agent.yml` asks scope by scope, and fails the PR when any caller grants less. It follows direct
+`uses:` callers, which is every caller today. actionlint 1.7.12 and zizmor 1.30.1 both pass on the
+broken commit, so this test is the gate.
+
+So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agent.yml` is reachable
+only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
+at startup the `review` job never runs. What works is an approver's unedited
+`coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
+`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
+takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
 
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
@@ -832,6 +1305,93 @@ repo (`gh variable set ADMIT_TRIAGE --body off -R Nishfleet/<repo>`).
 `ci.yml`, and this section. CI runs the job's real scripts against a fake `gh`
 and a fake router (`tests/test_triage_admit.py`).
 
+## Red main issues
+
+The hourly sweep (the `red-main` job in `agent-dispatch.yml`, on the caller's `GITHUB_TOKEN`) keeps exactly one open `agent-ready` issue per workflow file in an enrolled repo whose latest finished run on the default branch failed (CI included; disabled, dynamic and agent-dispatch workflows are skipped, and so are runs from forks). The issue body starts with the line `red-main: <workflow file>` and names the failing run, its first failing step and the last green sha. A `GITHUB_TOKEN` label fires no event, so the next sweep's `agent-ready` listing starts the worker.
+
+- A new failing run adds a comment (marker `red-main-run: <run id>`), at most one a day.
+- A green latest run closes the issue with a link to that run, unless a worker holds it (`agent-in-progress`); the next green sweep closes it after.
+- An issue closed after a failing run is not filed again for that run.
+- An issue is filed for a workflow at most once a day, and at most three new issues a day per repo, so a workflow that flips between red and green cannot start a worker every hour.
+- Builders do not file their own issue for a red main: they use this one (fleet-ops#9308).
+
+The sweep polls the latest run instead of reacting to `workflow_run`: that trigger takes literal workflow names in each caller stub (no wildcard), so a new or renamed workflow would be missed in every repo, and a missed event would leave an issue open after main turned green. The sweep reads the state itself, so it also closes.
+
+**Switch it off:** set the repo variable `RED_MAIN` to `off` on the calling repo. **Delete it:** remove the `red-main` job, `tests/test_red_main_sweep.py`, its name in the `gated` list and test step of `ci.yml`, and this section. `Nishfleet/fleet-ops` is not swept.
+
+## Workflow notes
+
+Reasons and switches that used to sit as comments in the workflow files; they moved here so the workflow files do not grow (the ratchet above). The runner-group note: the org runner group `agent` must list `agent-dispatch.yml@refs/heads/main` in selected_workflows, or the self-hosted jobs queue forever.
+
+### agent-dispatch.yml: repo variables
+
+```
+Events that put work on the agent queue. Repo variable AGENT_MODE:
+  shadow (default) = only issues also labelled shadow-actions, no rework
+  live             = every agent-ready issue, plus rework on red CI
+Repo variable MISS_REVIEW:
+  off (default, unset) = miss-review jobs never start
+  live                 = a miss event starts one different-family review
+To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
+To delete it: revert the miss-review jobs in this file and the miss-review
+path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
+Repo variable ORCHESTRATE:
+  off                  = the orchestrate job never starts
+  live (default, unset) = a needs-orchestrator label starts one hand-off run.
+  Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
+  newly stubbed repo cannot sit off by omission.
+Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
+  Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
+  Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+  Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
+  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
+    ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
+  Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
+    the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
+To switch orchestration off: set ORCHESTRATE to off.
+To delete it: revert the orchestrate job in this file, the workflow-path
+detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
+already in flight finishes: the label gate only stops new ones.
+Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
+  true                   = every job that starts a worker or picks work to
+                           start skips, and the paused job logs one summary
+                           line per skipped event
+  anything else or unset = not paused
+ansible/update.yml sets it to true for the update and back to false in
+its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
+workflow drops every trigger, so hold-risky could not hold a PR armed in that
+window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;
+ci.yml fails if a guard job gains the condition or a dispatch job loses it.
+Repo variable ADMIT_TRIAGE:
+  off                   = the admit job never starts
+  anything else or unset = an issue labelled needs-triage in an enrolled product
+  repo, filed AND labelled by the human owner login alone and admitted by Jev
+  (p >= 0.9), is queued. A bot login never admits; anything below 0.9 goes to
+  the orchestrator. Caps: ADMIT_DAILY_MAX admissions per IST day (default 10)
+  and ADMIT_BUDGET_SEC a run (default 780). Runs only while AGENT_MODE=live,
+  so a shadow-mode repo gets no agent-ready it did not ask for.
+  To delete it: remove the admit job, tests/test_triage_admit.py, its ci.yml
+  step and the README section.
+The orchestrate and admit jobs are the self-hosted jobs here: org runner group
+`agent` (id 3) must list this file @refs/heads/main in selected_workflows,
+or the job queues forever next to idle runners. Delete that entry with them.
+```
+
+### agent-dispatch.yml: stuck-prs STUCK program
+
+stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
+comments (API objects), red: names of failed required checks on the
+head}. Out: {class, reason, url}. class is arm, review or stuck.
+Only verdicts on the CURRENT head count, in the words agent.yml's
+review job writes. Nothing arms without a reviewer or approver
+approval of that head: an unreviewed head, held or not, is sent to
+the review job, the same one hold-risky starts. A conflict or a red
+check is stuck whatever the review said. Each review the sweep asks
+for leaves a `stuck-review: <sha>` comment, so after three asks
+with no verdict (a review job that died before it wrote one) the
+head is stuck: STUCK re-asks once the marker is 15 minutes old.
+config/stuck-pr-cases.json runs this program in CI.
+
 ## Worker capacity
 
 The concurrency bound is the runner count (#8429): 22 `agent` runners
@@ -842,6 +1402,13 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 26G/28G, `MemorySwapMax=1G`). RAM safety is per-unit `MemoryMax` plus
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
+
+A new runner unit needs no root step: `ansible/host.yml` renders
+`actions.runner.Nishfleet.netcup-agent-<N>.service` for the ids in
+`agent_runner_ids` from one template, and enables and starts a unit only when
+its directory holds both halves of a registration (`.runner` and
+`.credentials`). Registration is the one hand step left, because `config.sh`
+needs an org admin token the VPS key does not hold (#10236).
 
 ## Private detail scan
 
@@ -954,9 +1521,11 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
   litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing
   path or api_base, 400) fails it, so a provider cannot silently drop out of the check. HTTP 401 or
-  403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with one plain line
-  naming the provider and what Nish must do, and no issue is filed. A router row with a key but no
-  https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`, is refused.
+  403 means a dead or expired key or login: every run logs one plain line naming the provider and
+  what Nish must do and moves on (fleet-ops#9912: a standing state must not re-fail the unit on
+  every daily run and keep the failed-unit list never empty), and no issue is filed. A router row
+  with a key but no https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`,
+  is refused.
 - `config/provider-watch.json` holds only generic per-provider settings: `watch` (an ERE; only ids
   matching it are compared; Cline lists a large catalogue that changes about weekly, so it watches
   only `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids), `billing` (`flat`) and `listing`

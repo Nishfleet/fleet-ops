@@ -90,16 +90,27 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the issue number's parity (the same
-  input the Cursor lane keys on, fleet-ops#9696): in the claude lane step,
-  before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
+  with `needs-opus`). The seat is set by the issue number's parity
+  (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
+  step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
-  keeps seat a. The step logs `claude lane: seat=a|b issue=<n> runner=<name>`.
-  The jail exposes only the chosen seat. The seat follows the issue, not the
-  runner, so a retry of the same issue keeps its seat and `claude -p --continue`
-  resumes the earlier session; jobs split across both seats with no clock, and a
-  job stays on one seat from the Gate to the last call, which keeps the prompt
-  cache. To switch it
+  keeps seat a. The seat follows the issue, not the runner, so a retry of the
+  same issue keeps its seat and `claude -p --continue` resumes the earlier
+  session. The step logs `claude lane: seat=a|b auth=token|login issue=<n> runner=<name>`. A seat with a
+  one-year `claude setup-token` file (`claude-seat-<x>.env` in the seat config
+  directory, one line `CLAUDE_CODE_OAUTH_TOKEN=...`, mode 600) logs in with that
+  token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
+  (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
+  run as shell, and the token is masked and given to the claude command alone, so
+  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  error on that token, the lane retries once with the other seat's token (logged as
+  `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
+  so a backup copy restores it. With no such file the seat's login is used
+  (`auth=login`). Delete the token files and the lane goes back to logins.
+  The jail exposes only the chosen seat's login; token files and the backup dir
+  (`~/.local/share/claude-seat-backup`) are hidden from every jail, symlinks
+  included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
+  from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
   limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
   any other job. Nothing polls usage.
@@ -134,13 +145,29 @@ The rules still in force:
   `encoded: 5` is legal only with a reason. A rule that recurs twice is a
   defect in its rung.
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
-  not armed; agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
+  not armed. Coordinator approval is a **required status check**: the
+  `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
+  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
+  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  resolves every PR in the queue entry from the group ref, reads the CLASSIFY
+  and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
+  commit, and fails a risky PR whose current head sha carries no approval. A
+  hand enqueue is caught by it as well, because a queue entry cannot merge
+  while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
+  unapproved before the check existed; the job ran from 2026-10-07 but the
+  ruleset did not require it until later, so a failing check still let the
+  entry merge). This ruleset grants no bypass actor (`bypass_actors` is empty),
+  so no login skips its required checks that way; the path that is not a check
+  is a direct `PUT pulls/<PR>/merge`, which the ruleset does not permit. agent-dispatch.yml's `hold-risky` job disarms, dequeues and labels
   any PR whose changed paths or added diff lines match `config/risky-paths.json` until its exact
   head sha is approved: an approver's unedited PR comment with the line
   `coordinator-approval: <full head sha>`, or a `coordinator-approval=success`
   status on it (0509#7092). A person's Approve review counts toward the
   ruleset's required review, not toward this gate, and there is no relay that
-  re-arms on it (the one-tap relay of fleet-ops#9505 is removed).
+  re-arms on it (the one-tap relay of fleet-ops#9505 is removed). That disarm
+  is now redundant on fleet-ops and stays only until 0509 and drive have the
+  check: their `agent-dispatch.yml` stubs call this shared workflow and their
+  rulesets require no `coordinator-approval`.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
@@ -180,8 +207,9 @@ Detection + repair, not blind duplication. `Restart=`/`OnFailure=`
 and external healthchecks.io dead-men (URLs in
 `~/.config/fleet-ops/keystone-hc.env`; unset = LOUD skip, shared = LOUD fail)
 cover supervision. Restic R2 backup / verify / restore-test run as ROOT units
-on the host (`/etc/systemd/system/restic-r2-*`, installed outside this repo)
-and publish restore proofs.
+on the host (`/etc/systemd/system/restic-r2-*`, deliberately host-only —
+RUNBOOK, "LiteLLM stack (rebuild reference)" records the decision and the
+rebuild warning) and publish restore proofs.
 SSH is Tailscale-only, so the out-of-band layer is the netcup VNC console
 (RUNBOOK). GitHub-hosted runners are the compute break-glass. No second box,
 no second dispatcher, no Kubernetes.

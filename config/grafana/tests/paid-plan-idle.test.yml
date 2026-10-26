@@ -1,0 +1,76 @@
+# Gate for the ppi-alibaba rule's A expression (fleet-ops#9865).
+#
+# The rule family pages a plan that serves zero calls in 24h. That threshold
+# sits below the Alibaba row's real cadence: it is the one judge-seat row, its
+# traffic is occasional one-shot judge calls (0-3/day, bursty), and on
+# 2026-10-16 the rule fired with the row healthy because its last 3 calls
+# (18:17-19:31 UTC the day before) had slid out of the 24h window 40 seconds
+# before the rule evaluated. The deployed fix widens the idle branch to 7
+# days and leads with the 24h absence branch, so these three cases pin the
+# behaviour:
+#
+#  - the incident shape stays silent: the row is present and its last call
+#    (here 91h before the eval, i.e. any gap over 24h and under 7d) is outside
+#    the old 24h idle branch and well inside the new 7d one. In the real
+#    incident the gap was 24h plus 40 seconds, the closest possible miss.
+#  - a plan with zero calls for 7 days still fires;
+#  - a row that vanishes from the router still fires after 24h of absence even
+#    when its counter moved within the last 7 days.
+#
+# Structure follows prompt-cache-hit.test.yml: alert_rule_test answers "does
+# Grafana's threshold call it Alerting", promql_expr_test pins the values the
+# union returns (what that threshold reads).
+evaluation_interval: 1h
+rule_files:
+- paid-plan-idle.test.rules.yml
+tests:
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
+    values: '0+0x89 3+0x91'
+  alert_rule_test:
+  - alertname: AlibabaTokenPlanSgIdle
+    eval_time: 181h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+    eval_time: 181h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
+    values: '3+0x190'
+  alert_rule_test:
+  - alertname: AlibabaTokenPlanSgIdle
+    eval_time: 190h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: alibaba-token-plan-sg
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+    eval_time: 190h
+    exp_samples:
+    - labels: '{}'
+      value: 1
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
+    values: '0+0x89 3+0x10'
+  alert_rule_test:
+  - alertname: AlibabaTokenPlanSgIdle
+    eval_time: 130h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: alibaba-token-plan-sg
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+    eval_time: 130h
+    exp_samples:
+    - labels: '{}'
+      value: 1

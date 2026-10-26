@@ -1,52 +1,3 @@
-# Events that put work on the agent queue. Repo variable AGENT_MODE:
-#   shadow (default) = only issues also labelled shadow-actions, no rework
-#   live             = every agent-ready issue, plus rework on red CI
-# Repo variable MISS_REVIEW:
-#   off (default, unset) = miss-review jobs never start
-#   live                 = a miss event starts one different-family review
-# To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
-# To delete it: revert the miss-review jobs in this file and the miss-review
-# path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
-# Repo variable ORCHESTRATE:
-#   off                  = the orchestrate job never starts
-#   live (default, unset) = a needs-orchestrator label starts one hand-off run.
-#   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
-#   newly stubbed repo cannot sit off by omission.
-# Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
-#   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
-#   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
-#   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
-#   Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
-#     ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
-#   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
-#     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
-# To switch orchestration off: set ORCHESTRATE to off.
-# To delete it: revert the orchestrate job in this file, the workflow-path
-# detector in agent.yml's Gate, and prompts/orchestrator-handoff.md. A run
-# already in flight finishes: the label gate only stops new ones.
-# Repo variable FLEET_DISPATCH_PAUSED (the caller repo's, like the others):
-#   true                   = every job that starts a worker or picks work to
-#                            start skips, and the paused job logs one summary
-#                            line per skipped event
-#   anything else or unset = not paused
-# ansible/update.yml sets it to true for the weekly update and back to false in
-# its always: block, then sweeps. It replaces `gh workflow disable`: a disabled
-# workflow drops every trigger, so hold-risky could not hold a PR armed in that
-# window (2026-10-05, 08:11-10:47Z). hold-risky and close-claim never read it;
-# ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-# Repo variable ADMIT_TRIAGE:
-#   off                   = the admit job never starts
-#   anything else or unset = an issue labelled needs-triage in an enrolled product
-#   repo, filed AND labelled by the human owner login alone and admitted by Jev
-#   (p >= 0.9), is queued. A bot login never admits; anything below 0.9 goes to
-#   the orchestrator. Caps: ADMIT_DAILY_MAX admissions per IST day (default 10)
-#   and ADMIT_BUDGET_SEC a run (default 780). Runs only while AGENT_MODE=live,
-#   so a shadow-mode repo gets no agent-ready it did not ask for.
-#   To delete it: remove the admit job, tests/test_triage_admit.py, its ci.yml
-#   step and the README section.
-# The orchestrate and admit jobs are the self-hosted jobs here: org runner group
-# `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
-# or the job queues forever next to idle runners. Delete that entry with them.
 name: agent-dispatch
 on:
   issues:
@@ -63,11 +14,9 @@ on:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
-        required: false
         type: string
       task:
         description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
-        required: false
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -75,23 +24,16 @@ on:
   workflow_call:
     inputs:
       issue:
-        required: false
         type: string
-        default: ''
       agent_mode:
-        required: false
         type: string
-        default: ''
       task:
-        required: false
         type: string
-        default: ''
       # JSON runs-on for the two GitHub-side jobs. A private caller whose
       # hosted minutes ran out passes its own runners, e.g.
       # '["self-hosted","Linux","X64"]' (drive, 2026-10-04: hosted jobs
       # refused for billing, so the sweep never ran).
       runner:
-        required: false
         type: string
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR
@@ -121,6 +63,18 @@ permissions: {}
 concurrency:
   group: agent-dispatch-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')) && 'sweep' || github.run_id }}
   cancel-in-progress: false
+# Sweep liveness (fleet-ops#9275): a run counts as live only while its `work` job (the
+# reusable-workflow job whose name ends in "/ work") is queued or running; a run queued as a
+# whole while its work job ended is a dead claim. With several work jobs the one carrying the
+# claim ref decides, none named all count, and no work job listed yet falls back to the run's
+# status. Input: `gh run view <id> --json status,jobs` on stdin, `--arg ref <ref>`; out: true or false.
+env:
+  RUN_LIVE_JQ: >-
+    def live: IN("queued", "in_progress", "waiting", "pending", "requested");
+    [.jobs[]? | select(.name | endswith("/ work"))] as $w
+    | [$w[] | select(.name | contains("(" + $ref + ")"))] as $mine
+    | (if ($mine | length) > 0 then $mine else $w end) as $j
+    | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
 jobs:
   # FLEET_DISPATCH_PAUSED is true: say so, once per event that a dispatch job
   # would have acted on, so a skipped run is not silent. It starts nothing and
@@ -151,11 +105,9 @@ jobs:
       vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
       ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    # issues: write is what agent.yml's report job asks for; its other jobs
-    # ask for nothing and act with the App token.
-    permissions:
-      issues: write
-      pull-requests: write
+    # issues: write is what agent.yml's work job asks for (Router wall and the
+    # strike step relabel with GITHUB_TOKEN).
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: claim/issue-${{ github.event.issue.number }}
   # Red CI on a claim PR: post the failed run's ##[error] lines on the issue
@@ -207,9 +159,7 @@ jobs:
       startsWith(github.event.workflow_run.head_branch, 'claim/issue-') &&
       github.event.workflow_run.head_repository.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
   # main moved (CI finished on a push to the default branch): a claim PR it
@@ -255,9 +205,9 @@ jobs:
               (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
             body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
             if [[ $body =~ actions/runs/([0-9]+) ]]; then
-              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-                queued|in_progress|requested|waiting|pending) echo "#$i: run live, skip"; continue ;;
-              esac
+              # A failed read is not proof the run died: skip, never requeue a live worker.
+              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$i: run read failed, skip"; continue; }
+              if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$i: run live, skip"; continue; fi
             fi
             gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: claim PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
             echo "requeue #$i: PR #$pr is CONFLICTING"
@@ -269,13 +219,11 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.conflicts.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
   # The merge queue ejected a claim PR (failed checks or a conflict): send the
@@ -292,9 +240,7 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
       github.event.pull_request.head.repo.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.pull_request.head.ref }}
   # Approved-head merge guard (0509#7092: a risky PR was armed by the
@@ -518,15 +464,13 @@ jobs:
   # job then arms the PR.
   # hold-risky stays the only door: it reads that comment like any other.
   # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
-  # needs two reviews to approve: the judge and a second reviewer of a
-  # different model family. No person is asked. Paused fleets do not review.
+  # needs three reviews to approve: the judge and two more reviewers of
+  # other model families. No person is asked. Paused fleets do not review.
   review-risky:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
-    permissions:
-      pull-requests: write
-      # agent.yml's work and report jobs ask for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
-      issues: write
+    # agent.yml's work job asks for issues: write; a caller job must grant every permission the called workflow requests, or the run dies at startup.
+    permissions: {contents: read, issues: write, pull-requests: write}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ github.event.pull_request.number }}
@@ -594,15 +538,11 @@ jobs:
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
         run: |
-          # One issue as JSON for the sweep. Returns 0 with the JSON on stdout,
-          # 3 for an issue that is gone (HTTP 404 or 410), and 1 for any other
-          # failure, after printing gh's own error. Measured 2026-10-12 with gh
-          # 2.93.0 on deleted fleet-ops issue 9502: exit 1, stdout the error
-          # body {"message":"This issue was deleted",...,"status":"410"},
-          # stderr "gh: This issue was deleted (HTTP 410)". Either one marks
-          # the issue gone, so a gh that stops printing the body still skips.
-          # Any other read fault stays fatal, so a real API fault is never
-          # mistaken for a deleted issue (fleet-ops#9553).
+          # One issue as JSON for the sweep. Returns 0 with the JSON on stdout, 3 for an issue
+          # that is gone (HTTP 404 or 410), 1 for any other failure after printing gh's error.
+          # Measured 2026-10-12 with gh 2.93.0 on deleted issue 9502: exit 1, stdout the body
+          # {"message":"This issue was deleted",...,"status":"410"}, stderr "(HTTP 410)"; either
+          # marks it gone. Any other read fault stays fatal (fleet-ops#9553).
           issue_json() {
             local out err rc=0
             err=$(mktemp)
@@ -621,14 +561,10 @@ jobs:
             nums=$ISSUE
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
-            # A split parent never closed on its own, so everything blocked by
-            # it waited forever (0509, 2026-09-24: ~140 queued issues). Close
-            # each open ancestor whose sub-issues are now all closed, and
-            # release what it blocked. A GITHUB_TOKEN close fires no event,
-            # so the release happens here. /parent 404s at the top.
-            # A critical-path or epic parent carries its own finish line (a
-            # production run, not its children), so it never closes here:
-            # 0509#5680 and #5736 were closed with production still red.
+            # A split parent never closed on its own, so everything blocked by it waited forever
+            # (0509, 2026-09-24: ~140 issues). Close each open ancestor whose sub-issues are all
+            # closed and release what it blocked (a GITHUB_TOKEN close fires no event). A
+            # critical-path or epic parent carries its own finish line, so it never closes here.
             c=$CLOSED
             while p=$(gh api "repos/$GITHUB_REPOSITORY/issues/$c/parent" --jq .number 2>/dev/null) &&
               [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)\(if any(.labels[].name; . == "critical-path" or . == "epic") then " own-finish-line" else "" end)"')" = "open 0" ]; do
@@ -646,12 +582,13 @@ jobs:
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
               [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-                queued|in_progress|requested|waiting|pending) ;;
-                *) gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                   echo "requeued #$n: claimed with no live run and no claim PR"
-                   stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]') ;;
-              esac
+              # A failed read is not proof the run died: skip, never requeue a live worker.
+              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
+                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+                echo "requeued #$n: claimed with no live run and no claim PR"
+                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
+              fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
@@ -692,7 +629,8 @@ jobs:
               )
               # Claim PRs whose issue is still agent-in-progress after the worker
               # is gone (fleet-ops#8777). Live means the newest "agent run started:"
-              # run is queued or in progress; `gh run view` is that read.
+              # run is queued or in progress; `gh run view` is that read, judged by its work
+              # job (RUN_LIVE_JQ at the top of this file).
               inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
               orphans=$(
                 jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
@@ -708,11 +646,9 @@ jobs:
                     echo "::error::agent run started comment on #$n has no run id" >&2
                     exit 1
                   fi
-                  status=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
-                  case $status in
-                    queued|in_progress|requested|waiting|pending) ;;
-                    *) echo "claim/issue-$n" ;;
-                  esac
+                  rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                  live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
+                  [ "$live" = true ] || echo "claim/issue-$n"
                 done | jq -Rsc 'split("\n") | map(select(length > 0))'
               )
               # Red claim PRs the rework event missed (drive#765: no run fired;
@@ -749,10 +685,8 @@ jobs:
                     '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
                   if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
-                    status=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) || exit 1
-                    case $status in
-                      queued|in_progress|requested|waiting|pending) echo "#$n: run live, skip" >&2; continue ;;
-                    esac
+                    rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                    if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: run live, skip" >&2; continue; fi
                   fi
                   echo "$ref"
                 done | jq -Rsc 'split("\n") | map(select(length > 0))'
@@ -783,8 +717,12 @@ jobs:
             esac
             pages="$pages$i"$'\n'
           done
+          # agent.yml's Gate skips these five labels, so a ref that carries one is a
+          # matrix slot spent on a job that ends in 9 s. ci.yml keeps this set equal to
+          # the Gate's `for l in` list.
           refs=$(printf '%s' "$pages" |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+              | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
@@ -794,25 +732,14 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
     strategy:
       fail-fast: false
-      # Bound the sweep fan-out to live seat slots. The matrix starts one worker
-      # per listed ref at once; a 14-ref sweep put ~14 workers on the LiteLLM
-      # router against ~7 live parallel slots and 429'd them into strikes
-      # (fleet-ops#8553). Stock Actions knob, no new files: strategy.max-parallel,
-      # tunable per repo via vars.AGENT_MAX_PARALLEL (unset -> 4, the Devin lane's cap of 4).
-      # The Gate counts live Devin workers, but matrix jobs start in the same
-      # second and all read 0, so 9 of 10 hit Devin's rate limit on 2026-09-29
-      # (run 36621293000); a fan-out of 4 cannot exceed the cap.
-      # This bounds only this matrix. The new/rework/ejected jobs above are one
-      # dispatch per event and are NOT throttled by max-parallel; bounding that
-      # aggregate is host runner-count config (deploy is Nish-gated). Sweeps
-      # themselves are one running plus one waiting (concurrency above).
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
+      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots,
+      # Devin's 4) is gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
   # Any open PR that has waited over 15 minutes, on any branch (2026-10-11: 53
@@ -854,18 +781,6 @@ jobs:
           # Logins whose unedited `coordinator-approval: <sha>` comment counts,
           # hold-risky's APPROVERS.
           APPROVERS: nish3451 github-actions[bot]
-          # stdin: {pr: {headRefOid, mergeable}, comments: the PR's issue
-          # comments (API objects), red: names of failed required checks on the
-          # head}. Out: {class, reason, url}. class is arm, review or stuck.
-          # Only verdicts on the CURRENT head count, in the words agent.yml's
-          # review job writes. Nothing arms without a reviewer or approver
-          # approval of that head: an unreviewed head, held or not, is sent to
-          # the review job, the same one hold-risky starts. A conflict or a red
-          # check is stuck whatever the review said. Each review the sweep asks
-          # for leaves a `stuck-review: <sha>` comment, so after three asks
-          # with no verdict (a review job that died before it wrote one) the
-          # head is stuck: STUCK re-asks once the marker is 15 minutes old.
-          # config/stuck-pr-cases.json runs this program in CI.
           STUCK: |
             .pr.headRefOid as $sha
             | $sha[0:7] as $s7
@@ -888,11 +803,11 @@ jobs:
           cutoff=$(( $(date +%s) - 900 ))
           queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
             --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
-          # A draft is its author saying "not yet"; Dependabot PRs follow the
-          # repo's own Dependabot rules. Everything else open is meant to land.
+          # A draft is its author saying "not yet"; Dependabot PRs follow their own rules. Everything
+          # else open is meant to land, an armed PR too once 15 minutes outside the queue (fleet-ops#10361).
           list() {
             gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
-              jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
+              jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and (.autoMergeRequest == null or ((.autoMergeRequest.enabledAt // "1970-01-01T00:00:00Z") | fromdateiso8601) < $cut)
                 and (.author.login | test("dependabot") | not) and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)'
           }
           cands=$(list)
@@ -909,14 +824,17 @@ jobs:
           fi
           review='[]' arm='[]' rework='[]' file='[]' seen=0 errs=0
           add() { jq -c --argjson x "$2" --argjson cap "${3:-20}" '. + [$x] | .[:$cap]' <<<"$1"; }
-          # PR heads an open stuck-PR issue already reports (agent.yml's stuck
-          # job writes `stuck-pr: #<pr> <sha>` in the body or a comment), so a
-          # reported head takes no slot below.
+          # A report whose PR merged, closed or moved past its head is done; it holds no slot (fleet-ops#10276).
+          open_reports=0; while IFS=$'\t' read -r i p s; do
+            st=OPEN$s; [ -z "$p" ] || st=$(gh pr view "$p" -R "$GITHUB_REPOSITORY" --json state,headRefOid --jq '.state + .headRefOid') || st=OPEN$s
+            if [ "$st" = "OPEN$s" ]; then open_reports=$((open_reports + 1)); else gh issue close "$i" -R "$GITHUB_REPOSITORY" --comment "PR #$p merged, closed or moved past ${s:0:7}. A later sweep reports it again if it is still stuck." || errs=$((errs + 1)); fi
+          done < <(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"Stuck PR" in:title' --json number,title,body \
+            --jq '.[] | select(.title | startswith("Stuck PR #")) | [.number, ((.body | capture("(^|\n)stuck-pr: #(?<p>[0-9]+) (?<s>[0-9a-f]{40})")) // {p: "", s: ""} | .p, .s)] | @tsv')
+          # PR heads an open report already names (agent.yml's stuck job writes
+          # `stuck-pr: #<pr> <sha>` in the body or a comment) take no slot below.
           reported=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"stuck-pr:" in:body' --json body,comments \
             --jq '[.[] | .body, .comments[].body | split("\n")[] | select(startswith("stuck-pr: #"))] | unique')
-          open_reports=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"Stuck PR" in:title' --json title --jq '[.[] | select(.title | startswith("Stuck PR #"))] | length')
-          slots=$(( open_reports >= 3 ? 0 : 3 - open_reports ))
-          [ "$slots" -le 2 ] || slots=2
+          slots=$(( open_reports >= 3 ? 0 : open_reports == 2 ? 1 : 2 ))
           while IFS= read -r p; do
             seen=$((seen + 1))
             n=$(jq -r .number <<<"$p"); ref=$(jq -r .headRefName <<<"$p"); sha=$(jq -r .headRefOid <<<"$p")
@@ -947,7 +865,9 @@ jobs:
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
-              arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
+              arm)
+                [ "$(jq -r .autoMergeRequest <<<"$p")" = null ] || gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || { errs=$((errs + 1)); continue; }
+                arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
                 # Four paid reviews a sweep at most; the rest wait for the next
                 # sweep that sees them. The marker comment is what STUCK counts
@@ -958,10 +878,9 @@ jobs:
                 fi
                 continue ;;
             esac
-            # Stuck. A claim PR whose issue is open goes back to its worker,
-            # unless the issue is parked (someone already owns it), blocked,
-            # or its newest run is still live. Every other PR is filed for
-            # the orchestrator by agent.yml's stuck job.
+            # Stuck. A claim PR whose issue is open goes back to its worker, unless the issue is parked
+            # (someone owns it), blocked, or its newest run is live. Every other PR, orch/issue-* too,
+            # is filed for the orchestrator by agent.yml's stuck job.
             if [[ $ref =~ ^claim/issue-([0-9]+)$ ]]; then
               i=${BASH_REMATCH[1]}
               if issue=$(gh api "repos/$GITHUB_REPOSITORY/issues/$i" 2>"$RUNNER_TEMP/issue.err"); then
@@ -977,9 +896,8 @@ jobs:
                   fi
                   last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
                   if [[ $last =~ actions/runs/([0-9]+) ]]; then
-                    case $(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) in
-                      queued|in_progress|requested|waiting|pending) echo "#$n: issue #$i run live, skip"; continue ;;
-                    esac
+                    rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { errs=$((errs + 1)); continue; }
+                    if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: issue #$i run live, skip"; continue; fi
                   fi
                   gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$note: $reason.${url:+ $url} Fix it on $ref and push; a new head gets a fresh review."
                   # An agent-ready issue is already in the list job's refs.
@@ -993,12 +911,8 @@ jobs:
             if jq -e --arg l "stuck-pr: #$n $sha" 'index($l)' <<<"$reported" >/dev/null; then
               echo "#$n: already reported at ${sha:0:7}"; continue
             fi
-            # At most three stuck-PR issues open per repo, two new a sweep: the
-            # orchestrate job keeps one run and one waiting per repo, cancels
-            # any older waiting run, and stops at its daily cap, so a burst of
-            # labels would leave most issues with no run (18 at once in
-            # fleet-ops on 2026-10-11). The rest go out as the orchestrator
-            # closes these.
+            # At most three reports open, two new a sweep: the orchestrate job keeps one run and
+            # one waiting per repo and has a daily cap (18 at once on 2026-10-11 left most with no run).
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
@@ -1007,23 +921,18 @@ jobs:
             echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
           } >> "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
-  # These jobs run inside the sweep's concurrency group, so they bound how long
-  # a sweep holds it: at most 4 reviews, 2 at a time, each under agent.yml's
-  # 20-minute review timeout, is 40 minutes on top of stuck-prs. A sweep started
-  # meanwhile waits as the one pending run and starts when this one ends; it is
-  # not dropped, so the next hourly start still finds every PR.
+  # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
+  # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.
   stuck-review:
     needs: stuck-prs
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.review != '' && needs.stuck-prs.outputs.review != '[]'"
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.review) }}
     # See review-risky: a caller job must grant what the called workflow's other jobs request.
-    permissions:
-      pull-requests: write
-      issues: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       review_pr: ${{ matrix.x.pr }}
@@ -1037,9 +946,7 @@ jobs:
       max-parallel: 4
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.arm) }}
-    permissions:
-      pull-requests: write
-      issues: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       arm_pr: ${{ matrix.x.pr }}
@@ -1049,12 +956,10 @@ jobs:
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.rework != '' && needs.stuck-prs.outputs.rework != '[]'"
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.stuck-prs.outputs.rework) }}
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ matrix.ref }}
@@ -1066,15 +971,91 @@ jobs:
       max-parallel: 4
       matrix:
         x: ${{ fromJSON(needs.stuck-prs.outputs.file) }}
-    permissions:
-      pull-requests: write
-      issues: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       stuck_pr: ${{ matrix.x.pr }}
       stuck_sha: ${{ matrix.x.sha }}
       stuck_reason: ${{ matrix.x.reason }}
       stuck_url: ${{ matrix.x.url }}
+  red-main:
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.RED_MAIN != 'off' && github.repository != 'Nishfleet/fleet-ops' &&
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RED_MAIN: |
+            . as $in
+            | [$in.issues[] | select([.body // "" | split("\n")[] | rtrimstr("\r")] | index("red-main: " + $in.file))] as $all
+            | ([$all[] | select(.state == "OPEN")] | sort_by(.number)) as $open
+            | ([$all[] | select(.state == "CLOSED" and .closedAt != null) | .closedAt | fromdateiso8601] | max) as $closed
+            | ([$all[] | select((.createdAt | fromdateiso8601) > $now - 86400)] | length) as $recent
+            | ($in.run // {}) as $run
+            | ([$open[] | select(([.labels[]?.name] | index("agent-in-progress")) == null) | .number]) as $idle
+            | if $run.conclusion == "success" then
+                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "main is green again"} else {action: "none", issues: [], reason: "green, nothing open"} end
+              elif $run.conclusion == "failure" then
+                if ($open | length) == 0 then
+                  if $recent > 0 then {action: "none", issues: [], reason: "an issue was filed for it within a day"}
+                  elif $closed != null and ($run.at | fromdateiso8601) <= $closed then {action: "none", issues: [], reason: "the issue was closed after this run"} else {action: "create", issues: [], reason: "red with no open issue"} end
+                else
+                  $open[0] as $i
+                  | ([$i.body // ""] + [$i.comments[]?.body // ""] | map(split("\n")[] | rtrimstr("\r"))) as $seen
+                  | ([$i.createdAt] + [$i.comments[]? | select((.body // "") | startswith("red-main-run: ")) | .createdAt] | map(fromdateiso8601) | max) as $last
+                  | if ($seen | index("red-main-run: \($run.id)")) != null then {action: "none", issues: [$i.number], reason: "this run is already reported"}
+                    elif ($now - $last) < 86400 then {action: "none", issues: [$i.number], reason: "reported within a day"}
+                    else {action: "comment", issues: [$i.number], reason: "new failing run"} end
+                end
+              else {action: "none", issues: [], reason: "no finished run on the default branch"} end
+        run: |
+          set -euo pipefail
+          branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          f=number,state,body,createdAt,closedAt,comments,author,labels
+          issues=$({ gh issue list -R "$GITHUB_REPOSITORY" --state all -L 1000 --search '"red-main:" in:body' --json "$f"; gh issue list -R "$GITHUB_REPOSITORY" --state all -L 100 --json "$f"; } |
+            jq -sc 'add | unique_by(.number) | [.[] | select((.author.login | IN("app/github-actions", "github-actions[bot]", "github-actions")) and ([.body // "" | split("\n")[] | rtrimstr("\r")] | any(startswith("red-main: "))))]')
+          printf '%s' "$issues" > "$RUNNER_TEMP/red-main-issues.json"
+          workflows=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" --jq '.workflows[]
+            | select(.state == "active" and (.path | startswith(".github/workflows/")) and (.path | endswith("/agent-dispatch.yml") | not))
+            | [.id, (.path | split("/")[-1])] | @tsv')
+          creates=$(jq --argjson now "$(date +%s)" '[.[] | select((.createdAt | fromdateiso8601) > $now - 86400)] | length' <<<"$issues") errs=0 seen=0
+          while IFS=$'\t' read -r id name; do
+            seen=$((seen + 1))
+            if ! run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$id/runs?branch=$branch&status=completed&per_page=10" --jq '[.workflow_runs[]
+              | select(.head_repository.full_name == env.GITHUB_REPOSITORY and (.event | IN("push", "schedule", "workflow_dispatch", "workflow_run")) and (.conclusion | IN("success", "failure", "timed_out", "startup_failure")))] | first // empty
+              | {id, conclusion: (if .conclusion == "success" then "success" else "failure" end), url: .html_url, at: .run_started_at}'); then
+              echo "::warning::$name: runs unreadable, skipped"; errs=$((errs + 1)); continue
+            fi
+            v=$(jq -nc --arg f "$name" --argjson run "${run:-null}" --slurpfile issues "$RUNNER_TEMP/red-main-issues.json" '{file: $f, run: $run, issues: $issues[0]}' | jq -c --argjson now "$(date +%s)" "$RED_MAIN") ||
+              { echo "::warning::$name: verdict failed, skipped"; errs=$((errs + 1)); continue; }
+            action=$(jq -r .action <<<"$v")
+            echo "$name: $action, $(jq -r .reason <<<"$v")"
+            [ "$action" != none ] || continue
+            rid=$(jq -r .id <<<"$run") url=$(jq -r .url <<<"$run") first=$(jq -r '.issues[0] // empty' <<<"$v") step=unknown green=none
+            if [ "$action" != close ]; then
+              step=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" --jq '[.jobs[] | select(.conclusion | IN("failure", "timed_out")) | {job: .name, step: ([.steps[]? | select(.conclusion | IN("failure", "timed_out")) | .name] | first // "")}] | first
+                | if . == null then "unknown" elif .step == "" then .job else "\(.job) / \(.step)" end') || step=unknown
+              green=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$id/runs?branch=$branch&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // "none"') || green=none
+            fi
+            case $action in
+              create)
+                [ "$creates" -lt 3 ] || { echo "$name: three issues filed in the last day, the rest wait"; continue; }
+                creates=$((creates + 1))
+                gh issue create -R "$GITHUB_REPOSITORY" --label agent-ready --title "Main is red: $name" --body "$(printf 'red-main: %s\nred-main-run: %s\n\nThe latest run of %s on the default branch failed: %s\nFirst failing step: %s\nLast green sha: %s\n\nFix the root cause in a PR. This issue closes itself when the workflow is green on the default branch; do not file another issue for it.' "$name" "$rid" "$name" "$url" "$step" "$green")" ;;
+              comment)
+                gh issue comment "$first" -R "$GITHUB_REPOSITORY" --body "$(printf 'red-main-run: %s\n\nStill red: %s\nFirst failing step: %s\nLast green sha: %s' "$rid" "$url" "$step" "$green")" ;;
+              close)
+                for n in $(jq -r '.issues[]' <<<"$v"); do gh issue close "$n" -R "$GITHUB_REPOSITORY" -r completed -c "$name is green on the default branch again: $url"; done ;;
+            esac
+          done <<<"$workflows"
+          echo "workflows: $seen, unreadable: $errs"
+          [ "$errs" = 0 ] || { echo "::error::$errs of $seen workflows errored and were skipped"; exit 1; }
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
   # not-by-merge (0509 09-23: #4297 #4268 #4212 #4211 sat open until hand-closed),
   # so those PRs blocked the queue noise for days. Close the open claim PR and
@@ -1137,9 +1118,7 @@ jobs:
       group: miss-review-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
   miss-review-pr:
@@ -1153,9 +1132,7 @@ jobs:
       group: miss-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
   miss-stalled:
@@ -1163,41 +1140,16 @@ jobs:
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '4') }}
+      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
     concurrency:
       group: miss-review-${{ github.repository }}-${{ matrix.ref }}
       cancel-in-progress: false
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions:
-      issues: write
-      pull-requests: write
+    permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
-  # Admission (fleet-ops: needs-triage -> Jev verdict -> queue). An open issue
-  # labelled needs-triage in an enrolled PRODUCT repo (config/intake-repos.json
-  # `repos`, product: true) is put to Jev: "admit for an automated worker now?".
-  #   p >= 0.9  agent-ready added, needs-triage removed
-  #   else      needs-orchestrator added, needs-triage removed (the human gate;
-  #             a missing answer leaves needs-triage for the next sweep)
-  # Only the human owner login admits (fleet-ops#8313: only owner-filed issues
-  # are admitted), as both the labeller and the author; no bot login counts, so
-  # a fleet-filed or automation-labelled issue keeps needs-triage for a person.
-  # Hard exclusions skip Jev and go to needs-orchestrator: secrets, money or
-  # payments, customer-data deletion, blocked-on: nish-decision, nish-reserved.
-  # Cost: ADMIT_DAILY_MAX admissions per IST day (like ORCHESTRATE_DAILY_MAX,
-  # fleet-ops#9351) and ADMIT_BUDGET_SEC a run, so a slow router cannot overrun
-  # the job timeout and a re-run cannot over-admit.
-  # Runs only while AGENT_MODE is live, so a shadow-mode repo gets no agent-ready.
-  # Nishfleet/fleet-ops is never acted on (de-enrolled from self-admission,
-  # fo#8304). One comment per issue carries p, the model and the run link. The
-  # labels are written with the worker App token so the agent-ready and
-  # needs-orchestrator events start the next job (a GITHUB_TOKEN label fires
-  # nothing). Self-hosted because the Jev router is only reachable from the
-  # agent runners; same runner group entry as orchestrate. Switch off: repo
-  # variable ADMIT_TRIAGE=off. Delete: remove this job, tests/test_triage_admit.py
-  # and its ci.yml step, and the README section.
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -1216,6 +1168,7 @@ jobs:
     # The App token does every write; the job's own token is not used.
     permissions: {}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       # The same two steps as agent.yml's (App key read and App token), unchanged
       # in behaviour: the key stays on the runner, is masked, and goes only to
       # create-github-app-token. The token it mints is scoped to the calling repo
@@ -1237,7 +1190,7 @@ jobs:
       # No owner and no repositories: scoped to the calling repo, as in agent.yml.
       - name: App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
@@ -1451,6 +1404,7 @@ jobs:
       # this file for a label-only trigger passes '' and the event number is read.
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Check the issue is still parked
         id: issue
         env:
@@ -1654,15 +1608,11 @@ jobs:
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Sonnet by default; the session default (Opus) only for a needs-opus
-          # issue, where MODEL is empty (fleet-ops#9351: Opus on every hand-off
-          # burned the weekly limit). --output-format json puts modelUsage in
-          # the log, the proof of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the
-          # session authenticates as the runner user, whose gh login can push
-          # .github/workflows/** -- the whole reason this job exists.
-          # The prompt goes on stdin: it opens with `---` front matter, and as
-          # an argument the CLI parses that as an option and exits 1 (run
-          # 37207149948: "error: unknown option '---").
+          # Sonnet by default; the session default (Opus) only for a needs-opus issue, where MODEL
+          # is empty (fleet-ops#9351). --output-format json puts modelUsage in the log, the proof
+          # of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the session authenticates
+          # as the runner user, whose gh login can push .github/workflows/**. The prompt goes on
+          # stdin: it opens with `---` front matter, which as an argument the CLI parses as an option.
           if [ "$ORCH_RUNNER" = pi ]; then
             # Pi on a LiteLLM seat: no Claude spend. Pi has no turn cap, so
             # the timeout below is the wall. The litellm provider reads

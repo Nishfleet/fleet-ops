@@ -1,7 +1,7 @@
 # Paid-plan idle detector (fleet-ops#9221).
 # The paid-plan list lives in this file. A plan Nish cancels is removed here
 # in the same PR that removes its router rows.
-# Contact point: existing Hermes Telegram bot + TELEGRAM_HOME_CHANNEL.
+# Contact point: existing Hermes Telegram bot + the Telegram home channel, reached through the policy tree by severity critical.
 # Grafana file provisioning has no shared/foreach rule form (docs: groups[].rules
 # is a list of full rules). One rule per plan so absent_over_time matches that
 # api_base. disableResolveMessage is true: Hermes urgent is firing-only.
@@ -15,13 +15,24 @@ contactPoints:
         type: telegram
         disableResolveMessage: true
         settings:
-          bottoken: $TELEGRAM_BOT_TOKEN
-          chatid: |
-            $TELEGRAM_HOME_CHANNEL
+          bottoken: $__file{/run/secrets/grafana-telegram-bot-token}
+          chatid: $__file{/run/secrets/grafana-telegram-home-channel}
           message: |
             {{ range .Alerts.Firing }}
             {{ .Annotations.summary }} {{ .Annotations.description }}
             {{ end }}
+
+# File provisioning never deletes a rule that merely leaves the file: Grafana keeps the
+# provisioned copy and keeps evaluating it. ppi-pareto left with Pareto (fleet-ops#10040,
+# #10065) but stayed live and fired "Pareto idle" from 2026-10-23 (fleet-ops#10198);
+# ppi-ollama and ppi-cline did the same after fleet-ops#10068 (fleet-ops#10206).
+deleteRules:
+  - orgId: 1
+    uid: ppi-pareto
+  - orgId: 1
+    uid: ppi-ollama
+  - orgId: 1
+    uid: ppi-cline
 
 groups:
   - orgId: 1
@@ -29,68 +40,6 @@ groups:
     folder: fleet
     interval: 1m
     rules:
-      - uid: ppi-cline
-        title: Cline idle
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[24h])) == bool 0)
-                or
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.cline.bot/api/v1.*"}[24h])
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.cline.bot/api/v1.*",exception_status="429"}[24h])) or vector(0)
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: B
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: {params: [0], type: gt}
-                  operator: {type: and}
-                  query: {params: [C]}
-                  reducer: {params: [], type: last}
-                  type: query
-              datasource: {type: __expr__, uid: __expr__}
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
-              type: threshold
-        noDataState: OK
-        execErrState: Error
-        for: 0s
-        annotations:
-          summary: Cline served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
-        labels:
-          plan: cline
-          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
-        isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-commandcode
         title: CommandCode idle
         condition: C
@@ -144,15 +93,10 @@ groups:
           summary: CommandCode served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: commandcode
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-minimax
         title: MiniMax idle
         condition: C
@@ -206,15 +150,10 @@ groups:
           summary: MiniMax served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: minimax
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-stepfun
         title: StepFun idle
         condition: C
@@ -268,15 +207,10 @@ groups:
           summary: StepFun served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: stepfun
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-zai
         title: z.ai idle
         condition: C
@@ -330,77 +264,10 @@ groups:
           summary: z.ai served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: zai
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
-      - uid: ppi-ollama
-        title: Ollama idle
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[24h])) == bool 0)
-                or
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://ollama.com.*"}[24h])
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://ollama.com.*",exception_status="429"}[24h])) or vector(0)
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: B
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: {params: [0], type: gt}
-                  operator: {type: and}
-                  query: {params: [C]}
-                  reducer: {params: [], type: last}
-                  type: query
-              datasource: {type: __expr__, uid: __expr__}
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
-              type: threshold
-        noDataState: OK
-        execErrState: Error
-        for: 0s
-        annotations:
-          summary: Ollama served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
-        labels:
-          plan: ollama
-          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
-        isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
       - uid: ppi-opencode-go
         title: OpenCode Go idle
         condition: C
@@ -454,91 +321,31 @@ groups:
           summary: OpenCode Go served zero fleet calls for 24 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: opencode-go
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
-      - uid: ppi-pareto
-        title: Pareto idle
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])) == bool 0)
-                or
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.paretoinference.com/v1.*"}[24h])
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            relativeTimeRange: {from: 86400, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: sum(increase(litellm_deployment_failure_responses_total{api_base=~"https://api.paretoinference.com/v1.*",exception_status="429"}[24h])) or vector(0)
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: B
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: {params: [0], type: gt}
-                  operator: {type: and}
-                  query: {params: [C]}
-                  reducer: {params: [], type: last}
-                  type: query
-              datasource: {type: __expr__, uid: __expr__}
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
-              type: threshold
-        noDataState: OK
-        execErrState: Error
-        for: 0s
-        annotations:
-          summary: Pareto served zero fleet calls for 24 hours (or vanished from the router).
-          description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
-        labels:
-          plan: pareto
-          quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
-        isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h
+      # The one judge-seat row in this family: its traffic is the occasional
+      # one-shot judge call (0-3/day bursty, 626 calls in 7 days with 600+ from
+      # the one-off eval campaign), not the hundreds/day of a worker row, so a
+      # 24h-zero window pages on a normal quiet day (fleet-ops#9865, fired on
+      # 2026-10-16 with the row healthy after 3 successful calls the day
+      # before). The idle branch therefore reads 7 days; absence still pages
+      # after 24h so a row dropped from the router is caught fast.
       - uid: ppi-alibaba
         title: Alibaba token-plan SG idle
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 604800, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h])) == bool 0)
-                or
                 absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h])
+                or
+                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -575,15 +382,10 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: Alibaba token-plan SG served zero fleet calls for 24 hours (or vanished from the router).
+          summary: Alibaba token-plan SG served zero fleet calls for 7 days (or vanished from the router for 24 hours).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
+          severity: critical
           plan: alibaba-token-plan-sg
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
-        notification_settings:
-          receiver: hermes-urgent
-          group_by: [alertname, grafana_folder, plan]
-          group_wait: 0s
-          group_interval: 1m
-          repeat_interval: 24h

@@ -35,7 +35,7 @@ in `include.txt` is dropped.
 | Top-level path in `c3bca658` | Files | Size | Verdict | Reason |
 | --- | --- | --- | --- | --- |
 | `/home/nish/workspaces/agent-state` | 15,338 | 1,763.5 MiB | keep `backups` (1,362.5 MiB) and `_system` (3 files); drop the rest | `litellm.dump` and the rollback dumps are not rebuildable; the rest is per-run work dirs |
-| `/home/nish/workspaces/products` | 19,139 | 535.0 MiB | drop | `git clone` from a remote |
+| `~/workspaces/products` | 19,139 | 535.0 MiB | keep, minus dependency trees and build outputs (2026-10-15) | not all of it is on a remote: uncommitted edits, local-only branches and repos with no remote |
 | `/home/nish/workspaces/tooling` | 14,493 | 391.1 MiB | keep `nish-vault` (30.4 MiB); drop the rest | the vault is the durable memory; the rest is checkouts |
 | `/home/nish/workspaces/fleet-knowledge-base` | 9,997 | 32.8 MiB | drop | `git clone` from a remote |
 | `/home/nish/workspaces/{shared-workflows,agent-runner,node-repo-template}` | 246 | 0.2 MiB | drop | `git clone` from a remote |
@@ -70,8 +70,10 @@ this file goes stale at the next backup.
 - `include.txt` — the backup list, read by `restic backup --files-from`
 - `exclude.txt` — short list of patterns dropped inside included directories
   and in `/etc`, read by `restic backup --exclude-file`
+- `retention.env` — the one retention policy (`RESTIC_FORGET_ARGS`), read as an
+  `EnvironmentFile` by the backup and the maintenance unit
 
-Both are deployed to `/etc/restic/` by `ansible/host.yml` in
+All three are deployed to `/etc/restic/` by `ansible/host.yml` in
 `fleet-host-config.service` (on every push to `main` and daily). No restart or
 daemon-reload needed: the unit reads them fresh on every run.
 
@@ -89,24 +91,30 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 | `/home/nish/workspaces/agent-memory` | 24 KiB | the one-fact-per-file agent memory dir. |
 | `/home/nish/nish-vault` | 40 KiB | the agent drop inbox on the home directory. Small, but it is named `nish-vault`, so assume it is meant to be kept. |
 | `/home/nish/workspaces/agent-state/_system` | 20 KiB | shared agent memory. |
-| `/home/nish/workspaces/agent-state/backups` | 1.4 GiB | the LiteLLM `pg_dump` the unit takes before every run, plus rollback snapshots. `docs/RUNBOOK.md` relies on it being in the restic path. |
+| `~/workspaces/agent-state/backups` | 1.4 GiB, about 0.3 GiB kept | the LiteLLM `pg_dump` (`litellm.dump`, custom format) the unit takes before every run, which is the LiteLLM database backup, plus rollback snapshots. `docs/RUNBOOK.md` relies on it being in the restic path. `exclude.txt` drops the 1.2 GiB stale Postgres datadir copy, the `skills-prune-*.tgz` rollback tarballs and the one-off `litellm-<label>.dump` pre-migration copies (six, about 140 MiB each, 22-23 Oct 2026, fleet-ops#10240); `litellm.dump` stays. |
 | `/home/nish/.hermes` | 5.1 GiB, ~100 MiB kept | hermes facts: `state.db` and its WAL, `state-snapshots/`, `skills/`, `kanban.db`, `shared-state.db`, `backups/`. `exclude.txt` drops the agent checkout, the tool trees, caches, installs and logs. |
 | `/home/nish/.pi/agent` | 1.4 GiB, ~100 MiB kept | locally maintained skills, prompts, agents and extensions. `sessions/` and `npm/` are dropped. |
-| `/home/nish/.local/share/fleet-litellm-postgres` | 1.9 GiB | the LiteLLM database itself. The unit's `pg_dump` is the consistent copy; this is the second, raw copy that survives a corrupt dump. |
 | `/home/nish/.local/share/fleet-litellm-redis` | 8 KiB | Redis data for the same service. |
 | `/home/nish/.local/share/fleet-grafana` | 486 MiB, 4.5 MiB kept | `grafana.db`: users, annotations, dashboard state, unified-search. `plugins/` is reinstalled from the catalog. |
 | `/home/nish/.local/share/drive` | 53 MiB | labelled eval train and held-out cases. A different model family wrote them; re-running the harness is not the same data. |
 | `/home/nish/.local/state/fleet-ops/cloudflare-tokens` | 344 KiB | OpenTofu state for the per-repo Cloudflare tokens (`infra/cloudflare-tokens/`). The only record of the live tokens; without it the `gha-*` tokens are deleted by hand and minted again. |
-| `/home/nish/.local/share/containers/storage/volumes` | 83 MiB | podman container volumes. |
+| `/home/nish/.local/share/containers/storage/volumes` | 3.3 GiB on disk, 83 MiB kept | podman container volumes. `exclude.txt` drops the orphaned pre-migration LiteLLM Postgres volume (3.2 GiB, last written 13:20 on 23 Oct 2026; no container mounts it and the nightly `pg_dump` is that database's backup, so it is superseded) and the litellm pycache volume (bytecode the proxy writes again). The orphaned volume was nearly all of the 3.6 GB of new data that tripped the size guard on 24 and 25 Oct (fleet-ops#10258). |
+| `~/workspaces/products` | 74 MiB source + `.git` | product working trees. Uncommitted edits, unpushed branches and repos with no remote yet exist only here; `exclude.txt` drops `node_modules`, `dist`, `build` and other rebuildable outputs at the top of each repo (about 1.3 GiB). Local `.env` files are kept too: the snapshot is encrypted and already holds `~/.config`, and a key that exists only on the box is exactly what a restore would otherwise lose. Local database files, dumps, data exports, archives and `.bak` copies (`.sqlite`, `.db`, `.sql`, `.csv`, `.ndjson`, `.gz`, `.tgz`, `.xz`, `.bz2`, `.zst`, `.zip`, `.7z`, `.tar`, `.bak`, `.old`, `.orig`, `.backup`) are dropped, because the locked copy could never forget a customer's rows; committed ones are still in git. |
 | `/etc` | 10 MiB | units, ssh, polkit, sysctl, cron, rclone and prometheus config. |
 | `/root` | ~4 KiB | root's scripts and keys. |
 | `/srv/aiostreams` | 153 MiB | application data. |
 | `/usr/local` | 158 MiB | hand-installed `gh` and `node`, which no package owns. |
 | `/var/spool/cron` | 8 KiB | cron jobs (the only cron spool on Ubuntu). |
 
-Sum of the kept set: about 3.9 GiB before compression, which restic reports as
+Sum of the kept set: about 3.9 GiB before compression on 2026-10-07, about 1.5 GiB once the raw LiteLLM datadir (2.1 GiB), the stale copies and the Hermes rollback trees left on 2026-10-21, which restic reports as
 the snapshot's restore size (see `Verification` on the PR). That is inside the
 7 GiB target the issue sets and far inside the 10 GiB hard stop.
+
+On 24 and 25 Oct the size guard tripped both nightly runs: the dry run counted
+3.6 GB of new data against the 1 GiB limit, nearly all of it the orphaned
+pre-migration Postgres volume dropped above. Measured on 2026-10-25 with that
+exclusion: the guard's dry run reports 430 MB of new data and a 1.7 GiB restore
+size, and the run's snapshot (`c2f3fab3`) processed 22,104 files / 1.687 GiB.
 
 Measured on 2026-10-07 with these two lists against a scratch repository
 (`Verification` on the PR carries the numbers). The first backup added 3.30 GB
@@ -124,7 +132,7 @@ They are readable by the live unit, which runs as root.
 
 | Path | Size | Drop reason |
 | --- | --- | --- |
-| `/home/nish/workspaces` and `/home/nish/workspaces/tooling` (except the vault, agent-memory and the two agent-state dirs above) | 35 GiB + 463 MiB | code and work dirs. `products/`, `agent-worktrees/`, `_archive-bundles/` and every `wt-*`/`fleet-ops-*` checkout are `git clone` from a remote; except `nish-vault` (above) they are rebuildable. `agent-state/tools`, `retired-checkouts*`, `branch-prune`, `glue-sweep`, `alert-repair` and the other per-run work dirs are regenerated by the next run. |
+| `~/workspaces` and `~/workspaces/tooling` (except the vault, agent-memory, the two agent-state dirs and `products/` above) | 35 GiB + 463 MiB | code and work dirs. `agent-worktrees/`, `_archive-bundles/` and every `wt-*`/`fleet-ops-*` checkout are `git clone` from a remote; except `nish-vault` (above) they are rebuildable. `agent-state/tools`, `retired-checkouts*`, `branch-prune`, `glue-sweep`, `alert-repair` and the other per-run work dirs are regenerated by the next run. |
 | `/home/nish/.local/share/agent-runner`, `devin`, `actions-runner`, `fleet-ci-runner` | 48 + 5.7 + 4.4 + 3.9 GiB | runner work dirs and their caches. The issue names these as the main cause of the growth. |
 | `/home/nish/.local/share/leviathan` | 2.3 GiB | the session-log search index. Rebuilt from the sessions it indexes. |
 | `/home/nish/.local/share/{git,gh,uv,semgrep-venv,go,gotool,go-toolchain,opencode,cursor-agent,blender-4.2.1,tirith,last30days,fleet-ops-rule-gap,drive-issue-582}` | ~3.5 GiB | versioned binaries, installed plugins and tool caches. |
@@ -134,6 +142,8 @@ They are readable by the live unit, which runs as root.
 | `/home/nish/.claude`, `.codex`, `.cursor`, `.juicefs`, `.bun`, `.nvm`, `.cua`, `.dotnet`, `.zcode`, `.devin-server`, `.wrangler`, `.promptfoo` | ~7.5 GiB | session transcripts and logs (the vault is the memory, leviathan is the index), installed binaries and tool caches. `.promptfoo/promptfoo.db` is eval *results*, reproducible from the drive cases above. |
 | `/home/nish/tool`, `.wix`, `Documents`, `backups`, `Downloads`, `Desktop`, `Music`, `Videos`, `Pictures`, `scratch` | ~360 MiB | personal scratch and retired files, not fleet state. The 6.7 MiB in `~/backups` is an old dump superseded by `agent-state/backups`. |
 | dotfiles at the top of `/home/nish` (`.bashrc`, `.viminfo`, `.zcompdump`, `.Xauthority`, …) | < 1 MiB | part of the OS image, not of the fleet state. |
+| `~/.local/share/fleet-litellm-postgres` | 2.1 GiB, about 700 MiB of churn a day | the raw datadir of the running LiteLLM Postgres. A file copy of a live Postgres is not crash-consistent, so it is not a backup, and its churn grew the repository by about 0.7 GB for every day a snapshot was kept. The `pg_dump` in `agent-state/backups` is the backup: restored from snapshot `66052ca5` and again from the newest kept snapshot after the first prune, and listed with `pg_restore --list` (146 tables) on 2026-10-21. The box-only backup unit writes `pg_dump -Fc` to a `.new` file and moves it over `litellm.dump` only after pg_dump exited 0, and neither of those two `ExecStartPre=` lines has a `-` prefix, so a failed dump fails the unit before restic runs and never replaces the previous dump with a partial one. |
+| the orphaned pre-migration LiteLLM Postgres podman volume (`df817408…`) | 3.2 GiB | the old cluster the 23 Oct 2026 migration left behind. No container mounts it; the live cluster's data dir is deliberately not backed up raw (row above), so this volume's state is superseded by the kept pre-migration dumps and the nightly `pg_dump`. Excluded on 2026-10-25 after it tripped the size guard on two consecutive nights (fleet-ops#10258); the files stay on disk. |
 | `/var/lib`, `/var/log` | — | duplicated by the `litellm.dump` and the host config kept above. Nothing in them is unreproducible. |
 
 Two deliberate exclusions inside a kept path, neither of which the old
@@ -160,9 +170,13 @@ If a path is missing from the kept table and it cannot be rebuilt, add it to
    export RESTIC_PASSWORD=$(mktemp -u)          # scratch repo, throw away after
    export RESTIC_REPOSITORY=/tmp/restic-check
    restic init
+   # ansible renders the lists as templates; do the same for the dry run.
+   for f in include exclude; do
+     sed "s|{{ nish_home }}|$HOME|g" config/restic/$f.txt > /tmp/restic-$f.txt
+   done
    restic backup --dry-run --json \
-     --files-from=config/restic/include.txt \
-     --exclude-file=config/restic/exclude.txt \
+     --files-from=/tmp/restic-include.txt \
+     --exclude-file=/tmp/restic-exclude.txt \
      --exclude-caches | jq '{data_added, total_bytes_processed, total_files_processed}'
    ```
 
@@ -179,8 +193,8 @@ summary. The unit fails with exit **78** when either limit is crossed:
 
 | Limit | Default | Summary field |
 | --- | --- | --- |
-| New data this run | `SIZE_GUARD_MAX_BYTES=2147483648` (2 GiB) | `data_added` |
-| Snapshot restored size | `SIZE_GUARD_MAX_RESTORED_BYTES=10737418240` (10 GiB) | `total_bytes_processed` |
+| New data this run | `SIZE_GUARD_MAX_BYTES=1073741824` (1 GiB) | `data_added` |
+| Snapshot restored size | `SIZE_GUARD_MAX_RESTORED_BYTES=4294967296` (4 GiB) | `total_bytes_processed` |
 
 - `restic-r2-backup.service.d/10-size-guard.conf` gives the backup unit
   a last `ExecStartPre=/usr/bin/systemctl start restic-r2-size-guard.service`
@@ -244,15 +258,55 @@ drop-in afterwards: a guard left off is how the next unexcluded cache grows the
 snapshot again.
 
 A first-ever backup trips the guard: an empty repository holds no blobs, so
-`data_added` is the whole 3.8 GiB and that is over the 2 GiB limit. Run the
+`data_added` is the whole 1.5 GiB and that is over the 1 GiB limit. Run the
 first backup of a new repository with a raised limit, or let the box's existing
 repository carry the history, where `data_added` is only what changed since the
 last snapshot. The local proof on the PR ran its first backup with the limit
-raised to 4 GiB and every later run at the shipped 2 GiB.
+raised to 4 GiB and every later run at the numbers shipped then.
 
 The companion alarm is the Cloudflare R2 bucket-size alarm (#9355). The guard
 is the cheap stop before the upload; the alarm catches a repository that grew
 over many runs, each of them under the threshold.
+
+## Retention
+
+One policy, defined once in `retention.env` and read by both
+`restic-r2-backup.service` (an `ExecStartPost`) and
+`restic-r2-maintenance.service` (the weekly run):
+
+```
+restic forget --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+```
+
+Without `--group-by host,tags` restic groups snapshots by host *and path set*,
+and the policy is applied inside each group. Every change to `include.txt`
+starts a new group, so four old groups, with snapshots back to 2026-09-19 and
+one restoring at 9.16 GiB, kept their own newest 7 days and never aged out:
+33 snapshots and 10.4 GB in the live bucket on 2026-10-21, against a kept set
+of about 1.5 GiB. Grouping by host and tags treats the whole history as one.
+
+The units are drop-ins on the box-only base units, so a base unit keeps its
+own old forget line until a drop-in replaces it: `20-retention.conf` resets
+`ExecStartPost=` (the old line and the heartbeat ping) and puts back the new
+forget and the ping, and the maintenance drop-in resets `ExecStart=`. The
+resets were checked line by line against the base units: the backup unit
+carried exactly that forget and the ping, and the maintenance unit exactly a
+forget and a check (its heartbeat is an `ExecStartPost=` the drop-in leaves
+alone). Neither forget line has a `-` prefix: a failed prune fails the unit.
+
+The locked bucket is a copy, not a second repository: `restic-r2-locked-copy`
+runs `rclone copy` and then `rclone sync --min-age 31d`. A pack the live
+repository prunes is removed from the locked bucket by the next scheduled copy
+if it is older than 31 days; a younger one stays until the 30-day bucket lock
+expires and the copy after that removes it. So only the last 31 days of
+removed history stay recoverable, and the locked bucket does not drain at once.
+Never run `restic forget` or `restic prune` against the locked bucket, and use
+`--no-lock` for any read there: a lock object cannot be deleted for 30 days.
+The bucket's Infrequent Access transition was removed: that class bills a
+30-day minimum and objects here are deleted at 31 days.
+
+The first prune under this policy was run by hand, after a dry run that was
+compared with the run, so the first scheduled run deletes nothing unusual.
 
 ## Not deployed from here
 
@@ -269,6 +323,9 @@ and changes one thing:
   hardening and heartbeat stay.
 - `restic-r2-size-guard.service` is the dry run and the two limits. It is
   started by the drop-in, never by a timer.
+- `restic-r2-backup.service.d/20-retention.conf` and
+  `restic-r2-maintenance.service.d/10-retention.conf` replace the box-only
+  forget lines with the policy from `retention.env`.
 - `restic-r2-locked-copy.service.d/10-needs-backup.conf` makes the locked copy
   `Requires=` the backup unit. The box-only unit's own `After=` still sets the
   order.

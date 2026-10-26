@@ -1,0 +1,39 @@
+# Rendered by ansible/host.yml for fleet-ops#9980. Do not edit on the box.
+# Egress for the tether service user: internet stays open; host-local
+# destinations are denied except the model router, tether's own Cua Space (the
+# one published spacesd port, read live by host.yml) and the DNS stub.
+# Its own table, so it never touches the filter table or docker's rules.
+# The Space's own fence is not here: it is tether-space.nft.j2, which stays
+# while tether is switched off.
+destroy table inet tether
+table inet tether {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    meta skuid != {{ tether_uid }} return
+    ip daddr 127.0.0.1 tcp dport 4000 accept
+{% if tether_space_port is defined %}
+    ip daddr 127.0.0.1 tcp dport {{ tether_space_port | int }} accept
+{% endif %}
+    ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 accept
+    ip daddr 127.0.0.0/8 drop
+    ip6 daddr ::1 drop
+    fib daddr type local drop
+    ip daddr 172.16.0.0/12 drop
+    # CGNAT 100.64/10, the tailnet block, as a mask test (the address, written out, is private detail).
+    ip daddr & 0xffc00000 == 0x64400000 drop
+    ip daddr { 10.0.0.0/8, 169.254.0.0/16, 192.168.0.0/16 } drop
+    ip6 daddr { fc00::/7, fe80::/10 } drop
+{% for addr in ansible_facts.all_ipv4_addresses | default([]) | unique %}
+    ip daddr {{ addr }} drop
+{% endfor %}
+{% for addr in ansible_facts.all_ipv6_addresses | default([]) | unique %}
+    ip6 daddr {{ addr }} drop
+{% endfor %}
+{% for name in ansible_facts.interfaces | default([]) if name is match('^(docker|br-|podman|cni|virbr)') %}
+{% set v4 = ansible_facts.get(name | replace('-', '_'), {}).get('ipv4') %}
+{% if v4 %}
+    ip daddr {{ v4.network }}/{{ v4.prefix }} drop
+{% endif %}
+{% endfor %}
+  }
+}

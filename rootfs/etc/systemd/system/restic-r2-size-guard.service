@@ -18,11 +18,12 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# 2 GiB of new data per run; 10 GiB restored size for the whole snapshot.
+# 1 GiB of new data per run; 4 GiB restored size for the whole snapshot (the
+# kept set restores at about 1.5 GiB since the raw LiteLLM datadir left the list).
 # 0 switches a limit off; a dropped Environment= line in a drop-in falls back
 # to the number shipped here.
-Environment=SIZE_GUARD_MAX_BYTES=2147483648
-Environment=SIZE_GUARD_MAX_RESTORED_BYTES=10737418240
+Environment=SIZE_GUARD_MAX_BYTES=1073741824
+Environment=SIZE_GUARD_MAX_RESTORED_BYTES=4294967296
 EnvironmentFile=/etc/restic/netcup-r2.env
 Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
 # append:, not truncate: every Exec line reopens StandardOutput=, and a

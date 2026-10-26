@@ -71,14 +71,67 @@ scrape_configs:
   # in the same change.
 
   # 0509 homepage up/down for the fleet view (fleet-grafana, Nish 2026-10-03).
-  # Display only: no rule reads it. One target, the
-  # stock http_2xx module, via the blackbox exporter already running on :9115.
+  # The stock http_2xx module, via the blackbox exporter already running on
+  # :9115. SiteDown (fleet_rules.yml) pages on any site-* job down for 10m.
   - job_name: site-0509
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
       - targets: [https://0509.io/]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # The other public product homepages, one GET each per minute, same
+  # module and exporter. Redirects are followed, so a www or apex redirect
+  # counts as up when it lands on a 2xx. storagebun.com is left out until it
+  # is public: it answers with the Access login while it is private.
+  - job_name: site-products
+    # Once a minute is enough for the 10-minute SiteDown window and halves the
+    # requests each site's free-plan quota and analytics see.
+    scrape_interval: 60s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://api.0509.io/
+          - https://seofixkit.com/
+          - https://siterep.net/
+          # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
+          # put https://tinystudio.io/ and https://tinystudio.in/ back at relaunch.
+          - https://aiconverter.app/
+          - https://inish.in/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # Launch push (2026-10-15 to 2026-10-29): the paths a Site Rep or SEO Fix
+  # Kit customer depends on, not just the homepage: each Worker's health
+  # route, Site Rep's embed script on customer sites, and SEO Fix Kit's free
+  # check page. Read-only GETs that write nothing (the deep-health endpoints
+  # write, so they are left out); four a minute keeps the Workers request
+  # count small. The job name matches site-.*, so SiteDown pages on these.
+  - job_name: site-launch-paths
+    scrape_interval: 60s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://siterep.net/api/health
+          - https://siterep.net/widget.js
+          - https://seofixkit.com/api/health
+          - https://seofixkit.com/check
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

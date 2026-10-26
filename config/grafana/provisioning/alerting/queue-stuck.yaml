@@ -1,0 +1,161 @@
+# Queue-stuck alerts: the fleet's work queue stopped moving and nothing said so (fleet-ops#10306).
+#
+# Why: PR 10320 was approved and armed, never entered the merge queue, and sat for
+# over 3 hours; PRs 10351 and 10356 were blocked and no rework started; an issue
+# claimed by a lane that ran out of quota has no PR. The Prometheus series meant to
+# measure this (fleet_ready_work, ci_merge_queue_head_wait_seconds, ...) have had
+# no samples for 7 days, so this reads GitHub itself.
+#
+# Signal: the stock GitHub data source (fleet-github in datasources/fleet.yaml,
+# read-only). Pull_Requests and Issues run a GitHub search over the whole Nishfleet
+# organization; timeField is "updated" (3 for Pull_Requests, 2 for Issues: their enums differ and an Issues query with 3 panics the plugin), so the window only bounds what the plugin
+# reads (30 days), and the SQL expression counts the hits whose updated_at is at
+# least the stated age old. A non-zero count fires (format: alerting); the
+# annotation links the GitHub search that lists them. One alert per rule, so one
+# fleet-ops issue per rule per 24h while it stays firing. No data is OK.
+#
+# What GitHub search cannot see: whether auto-merge is armed (a green, open, non-risky
+# PR with no update for 2h is stuck whether armed or not, because the fleet arms every
+# non-risky PR), and a reviewer block written as a comment instead of a GitHub review
+# (fleet-ops#10361). "No update" is the PR's updated_at, so a push, a comment or a label
+# resets the clock. An issue's PR link is GitHub's own `linked:pr`, which a
+# `Closes #N` in a PR body sets.
+#
+# Known gaps: work stuck for more than 30 days leaves the read window and stops alerting;
+# `linked:pr` follows closing keywords only, so an issue whose PR says `Relates to #N` reads
+# as having no PR. A read error is not silent: execErrState Error raises DatasourceError,
+# which the catch-all route files as an issue.
+#
+# Route: severity warning, so they do not page; with no signal route they reach the
+# catch-all in cloudflare-spend-contact.yaml and file a fleet-ops issue at once. Not paging is a
+# choice: the page for a dead loop is Alertmanager's (GrafanaDown, GrafanaNotificationsFailing).
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: queue-stuck
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: queue-stuck-pr-unmerged
+        title: PR green and unmerged for 2h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false status:success -label:needs-coordinator", timeField: 3}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS stuck
+                FROM (SELECT updated_at FROM A) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 7200
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}A pull request has had every check green and no update for 2 hours, and it is not merged.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR green and unmerged for 2h", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}The merge queue, the auto-merge arm or the approval step is stuck on it, or nobody armed it (fleet-ops#10306: PR 10320 sat armed and approved for over 3 hours with no alert). Find why it did not merge, fix that, and prove it merged. Risky PRs with needs-coordinator are left out; they wait for the coordinator on purpose.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+status%3Asuccess+-label%3Aneeds-coordinator+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck}
+        isPaused: false
+
+      - uid: queue-stuck-pr-blocked
+        title: PR blocked with no new push for 2h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot status:failure", timeField: 3}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot review:changes_requested", timeField: 3}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS stuck
+                FROM (SELECT updated_at FROM A UNION ALL SELECT updated_at FROM B) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 7200
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}A pull request has failing checks or a requested change and no update for 2 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR blocked with no new push for 2h", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}No rework started on it (fleet-ops#10306: PRs 10351 and 10356 sat blocked with no alert). Rework fires only for a red CI run on a claim/issue-* branch and stops at 3 runs, when the issue is parked needs-orchestrator; an orch/* or person branch gets none. Find which of those it is, fix that, and prove the PR moved. Dependabot PRs are left out; Dependabot rebases its own. A reviewer block that the reviewer wrote as a comment, not a GitHub review, is not seen here (fleet-ops#10361).{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+-author%3Aapp%2Fdependabot+status%3Afailure+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck}
+        isPaused: false
+
+      - uid: queue-stuck-issue-no-pr
+        title: Issue claimed or handed off for 3h with no PR
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:agent-in-progress -linked:pr", timeField: 2}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:needs-orchestrator -label:orchestrator-tried -label:agent-blocked -label:needs-nish-decision -linked:pr", timeField: 2}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS stuck
+                FROM (SELECT updated_at FROM A UNION ALL SELECT updated_at FROM B) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 10800
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}An issue has been agent-in-progress, or parked on needs-orchestrator with no orchestrator-tried, agent-blocked or needs-nish-decision label, for 3 hours with no pull request.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "Issue claimed or handed off for 3h with no PR", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck}
+        isPaused: false

@@ -40,7 +40,7 @@ gate. They do not end the same way, and the difference matters.
   decision. Nothing is lost by letting the Mac task die.
 - **`seofixkit-weekly-d1-backup` — retired from the Mac, capability still
   open.** The weekly export script still exists in the `seofixkit` product repo
-  (`nish3451/seo-fix-kit`, `ops/backup-d1.sh`), and the Mac task was its only
+  (`Nishfleet/seo-fix-kit`, `ops/backup-d1.sh`), and the Mac task was its only
   scheduler: that repo's `.github/workflows` holds `deploy-production.yml`,
   `pr-check.yml` and `secret-scan.yml` and no scheduled backup job. It runs
   through wrangler OAuth on the Mac, which this box cannot hold, and Wrangler is
@@ -55,6 +55,16 @@ gate. They do not end the same way, and the difference matters.
   queue. This needs the Cloudflare API, which the worker jail cannot reach
   (AGENTS.md), so it goes to the coordinator rather than being solved with an
   ad-hoc credential.
+
+  A loose user unit installed on this box on 2026-10-18 stood in for the Mac
+  task, broke the no-clock rule above, and had no test on its keys.
+  fleet-ops#10145 moved that unit into the product repo, next to the script it
+  runs (`ops/seofixkit-d1-backup.service`, `ops/seofixkit-d1-backup.timer`, keys
+  pinned by that repo's `test/d1-backup-unit.test.mjs`), and retired the host
+  copy: the deploy stops and disables the timer first, then deletes the files,
+  so the box ends up scheduling nothing instead of firing into a unit that is
+  gone. The export is manual until the CI job in fleet-ops#9527 lands, and D1
+  Time Travel still covers the last 30 days.
 
 ## The other nine
 
@@ -75,14 +85,29 @@ gate. They do not end the same way, and the difference matters.
 The `digest-morning` and `digest-evening` jobs' prompt text lives in this repo:
 `config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
 live copies under `~/.hermes/cron/jobs.json` on this box are applied from these
-files, never edited by hand:
+files by `ansible/host.yml`, never edited by hand:
 
 1. Edit the file under `config/hermes/` and land it through a PR (the shape
-   gate `tests/test_digest_reply_shape.py` runs in CI and fails a prompt that
-   drops the reply contract: at most 6 short plain lines, no internal names,
-   no questions).
-2. Apply it on the box with the stock command:
-   `hermes cron edit <job id> --prompt "$(cat config/hermes/digest-<which>.md)"`.
+   gate `tests/test_digest_reply_shape.py` and the check gate
+   `tests/test_digest_checks.py` run in CI; the first fails a prompt that drops
+   the reply contract, the second fails a prompt that reads the wrong feed or
+   uses a command the Hermes shell guard blocks). The shape gate flags a reply
+   with sections, internal names, questions or asks, config advice, commands or
+   paths, a first-person voice, a line whose only point is that a check passed
+   or a service is live, up or running, a line that only says nothing happened,
+   and any line written before the reply itself (fleet-ops#9921).
+2. The deploy applies it: `fleet-host-config.service` (started on every push to
+   main) runs `ansible/host.yml`, whose task "Apply config/hermes/digest-*.md to
+   the live digest jobs" runs the stock `hermes cron edit <job id> --prompt`
+   only when the live prompt differs from the file. A run that leaves any live
+   prompt different from its file fails the task "Fail when a live digest prompt
+   differs from config/hermes/", so the daily run and `--check` report drift.
+
+The Hermes shell guard blocks a command that matches an `approvals.deny` glob
+(`*curl*|*sh*` matches any `curl`, then a pipe, then `sh` anywhere after it,
+and "Nishfleet" or "nish.sh" contain `sh`) and a command whose shell body its
+scanner cannot resolve: a bracket test `[ ... ]`, or `x=$(...)` inside a
+`for` or `while` loop. The prompt commands avoid both; keep them that way.
 
 To check the live copy still matches the canonical file, diff them:
 `diff <(jq -r '.jobs[] | select(.name=="digest-<which>") | .prompt' ~/.hermes/cron/jobs.json) config/hermes/digest-<which>.md` — no output means they match.
