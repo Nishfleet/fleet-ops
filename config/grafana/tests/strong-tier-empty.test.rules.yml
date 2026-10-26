@@ -1,0 +1,29 @@
+# The deployed strong-tier-empty rules' A expressions, inlined verbatim from
+# strong-tier-empty.yaml, wrapped in `> 0`.
+#
+# The wrapper reproduces Grafana's C threshold (`> 0` over A) the same way
+# paid-plan-idle.test.rules.yml does for its rule: a case that fires here is a
+# case Grafana calls Alerting, and a healthy group that reads 0 is dropped here
+# exactly as it is Normal there.
+#
+# A is 1 when the strong group has no row at litellm_deployment_state 0, 0 when at
+# least one row reads 0, and empty when no state series for the group exists at
+# all. The empty read stays empty through the `> 0` wrapper, which is what
+# Grafana's noDataState: OK keeps quiet in production; the promql_expr_test cases
+# in strong-tier-empty.test.yml pin it.
+groups:
+- interval: 1m
+  name: strong-tier-empty
+  rules:
+  - alert: Strong group worker-capable has no healthy row
+    expr: "(sum(max by (model_id) (litellm_deployment_state{model_id=~\".+-worker-capable$\",litellm_model_name!~\"worker-capable|senior\"} == bool 0)) == bool 0)\n> 0"
+    labels:
+      grafana_folder: fleet
+      severity: warning
+      signal: strong-tier-empty
+  - alert: Strong group senior has no healthy row
+    expr: "(sum(max by (model_id) (litellm_deployment_state{model_id=~\".+-senior$\",litellm_model_name!~\"worker-capable|senior\"} == bool 0)) == bool 0)\n> 0"
+    labels:
+      grafana_folder: fleet
+      severity: warning
+      signal: strong-tier-empty

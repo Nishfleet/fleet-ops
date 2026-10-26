@@ -186,7 +186,8 @@ jobs:
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
-            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
+            gh label create needs-opus -R "$REPO" --force --color D4C5F9 --description "Orchestrator hand-off runs on Opus with 80 turns instead of Sonnet with 40" >/dev/null
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator,needs-opus --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
           fi
@@ -972,6 +973,9 @@ jobs:
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
+          # The row each extra reviewer must be answered by, read from x-litellm-model-id: the senior
+          # group has one row (GLM) and the judge group's first row is Qwen, with DeepSeek behind it.
+          SECOND_ROW: synthetic-glm53flash-senior
           THIRD_SEAT: judge
           THIRD_FAMILY: Qwen
           THIRD_ROW: alibaba-qwen38max-judge
@@ -1081,41 +1085,38 @@ jobs:
           # with no blocker line: the senior seat (GLM) and the judge group's Qwen seat.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # Both reviewers run at the same time and the job waits for each whatever the other did,
-          # so one that dies does not take the other's answer with it; each empties its own file.
-          ask() { local rc=0; timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --provider litellm --model "$1" \
-            < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || rc=$?; [ "$rc" = 0 ] || : > "$RUNNER_TEMP/$2.txt"; return "$rc"; }
-          # The judge seat is called directly, not through pi, because the row that answered is
-          # only in the response headers, and this reviewer approves only when the Qwen row
-          # answered: the judge group's first row is Qwen and DeepSeek sits behind it (the group
-          # also falls back to the senior seat), so a fallback answers from another row and that is
-          # not an approval. The row id is x-litellm-model-id, the header the repo's own proofs
-          # read (docs/prompt-cache-routes.md). The key goes in the curl config, never argv
+          # Both extra reviewers are called directly, not through pi, because the row that answered is
+          # only in the response headers, and each approves only when its own family's row answered:
+          # the senior group's one row is GLM, and the judge group's first row is Qwen with DeepSeek
+          # behind it (judge also falls back to the senior seat), so a fallback answers from another
+          # row and that is not an approval. The row id is x-litellm-model-id, the header the repo's
+          # own proofs read (docs/prompt-cache-routes.md). The key goes in the curl config, never argv
           # (/proc/<pid>/cmdline is world readable, #8403), and the request body goes in a file:
           # one argv string over 128 KiB (MAX_ARG_STRLEN) cannot start curl, and a guard diff can be that big.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
-          judge() { local rc=0
-            { jq -nc --arg m "$THIRD_SEAT" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 8192, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/third-req.json" \
+          ask_row() { local rc=0 seat=$1 pre=$2
+            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 8192, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
-                -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/third-headers.txt" -o "$RUNNER_TEMP/third-body.json" --data-binary "@$RUNNER_TEMP/third-req.json"; } || rc=$?
-            [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/third-body.json"; : > "$RUNNER_TEMP/third-headers.txt"; }; return "$rc"; }
-          ask "$SECOND_SEAT" second & p2=$!; judge & p3=$!
+                -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
+            [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
+          # Both run at the same time and the job waits for each whatever the other did, so one that dies does not take the other's answer with it; each empties its own files.
+          ask_row "$SECOND_SEAT" second & p2=$!; ask_row "$THIRD_SEAT" third & p3=$!
           rc2=0; rc3=0; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
           { [ "$rc2" = 0 ] && [ "$rc3" = 0 ]; } || retry "an extra reviewer process died (exit $rc2 and $rc3)"
-          # The answer must be JSON served by the Qwen row and not cut at its token limit; a missing
-          # header, any other row or a cut answer means the review did not finish: retry.
-          jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/third-body.json" > "$RUNNER_TEMP/third.txt" 2>/dev/null || retry "the judge seat's answer was not JSON"
-          served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/third-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
-          [ "$served" = "$THIRD_ROW" ] || retry "the judge seat was answered by ${served:-a row it did not name}, not the Qwen row $THIRD_ROW"
-          [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/third-body.json")" != length ] || retry "the judge seat's answer was cut at its token limit"
+          # Each answer must be JSON served by its own family's row and not cut at its token limit; a missing
+          # header, any other row or a cut answer means that review did not finish: retry, and the served row is
+          # printed in the comment so the family named there can be checked against the row that answered.
           all=; blk=; both=true
           for r in second third; do
-            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT
+            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT; vr=${R}_ROW
+            jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$r-body.json" > "$RUNNER_TEMP/$r.txt" 2>/dev/null || retry "the $r reviewer seat's answer was not JSON"
+            served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$r-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+            [ "$served" = "${!vr}" ] || retry "the $r reviewer seat was answered by ${served:-a row it did not name}, not the ${!vf} row ${!vr}"
+            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "the $r reviewer seat's answer was cut at its token limit"
             out=$(cat "$RUNNER_TEMP/$r.txt"); [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
             rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true); ok=approved
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
-            h=$(printf '\n\n%s reviewer (%s family, %s seat): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$ok" "$(cut_text "$rs")"); all+=$h; [ "$ok" = approved ] || blk+=$h
+            h=$(printf '\n\n%s reviewer (%s family, %s seat, served row %s): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$served" "$ok" "$(cut_text "$rs")"); all+=$h; [ "$ok" = approved ] || blk+=$h
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
