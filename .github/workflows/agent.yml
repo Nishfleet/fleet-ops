@@ -186,10 +186,7 @@ jobs:
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
-            # needs-opus puts the hand-off on the Claude runner: Pi on the free seats did not
-            # finish workflow-file hand-offs and timed out (fleet-ops#10349).
-            gh label create needs-opus -R "$REPO" --force --color D4C5F9 --description "Orchestrator hand-off runs on Opus with 80 turns instead of Sonnet with 40" >/dev/null
-            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator,needs-opus --remove-label agent-ready,agent-in-progress
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
           fi

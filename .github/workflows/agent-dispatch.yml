@@ -1383,8 +1383,7 @@ jobs:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     runs-on: [self-hosted, agent]
-    # 50 min waiting for a Pi slot plus the 50 min session (fleet-ops#10349).
-    timeout-minutes: 110
+    timeout-minutes: 60
     # issues: read is the whole grant: the steps read the issue, and the
     # orchestrator session does its own writes as the runner login. The GITHUB_TOKEN
     # is never handed to claude (step work unsets GH_TOKEN and GITHUB_TOKEN), so
@@ -1586,6 +1585,7 @@ jobs:
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
+        timeout-minutes: 50
         env:
           # The prompt is a file, not a ${{ }} inline: zizmor's
           # template-injection rule fails the workflow otherwise.
@@ -1615,26 +1615,15 @@ jobs:
           # as the runner user, whose gh login can push .github/workflows/**. The prompt goes on
           # stdin: it opens with `---` front matter, which as an argument the CLI parses as an option.
           if [ "$ORCH_RUNNER" = pi ]; then
-            # Pi on a LiteLLM seat: no Claude spend. Pi has no turn cap, so
-            # the timeout below is the wall. The litellm provider reads
-            # FLEET_TASK_ID for its session-id header and exits 1 without it.
+            # Pi on a LiteLLM seat: no Claude spend, no turn cap; the step's timeout-minutes is the wall
+            # (fleet-ops#10349). The litellm provider reads FLEET_TASK_ID and exits 1 without it.
             # Seat switch: ORCHESTRATE_SEAT (default worker-capable).
             # Claude switch: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
-            # At most 4 Pi hand-offs at once on this host: a burst of 19-20 used
-            # every max_parallel_requests slot on the free seats and the sessions
-            # stalled on 429s into the timeout (fleet-ops#10349). The issue number
-            # picks the slot; a hand-off waits up to 50 min for it, then fails loud.
-            slots="$HOME/workspaces/agent-worktrees/.orch-mirror"
-            mkdir -p "$slots"
-            echo "orchestrate: Pi slot $((ISSUE_N % 4)) of 4"
-            rc=0
-            flock -w 3000 -E 75 "$slots/pi-slot-$((ISSUE_N % 4)).lock" \
-              env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              timeout 3000 /home/nish/.local/bin/pi --print \
+            env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
+              /home/nish/.local/bin/pi --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
-              < "$RUNNER_TEMP/orchestrator-prompt.md" || rc=$?
-            [ "$rc" != 75 ] || echo "::error::orchestrate: no free Pi slot for #$ISSUE_N after 50 min"
-            exit "$rc"
+              < "$RUNNER_TEMP/orchestrator-prompt.md"
+            exit 0
           fi
           model_args=()
           [ -z "$MODEL" ] || model_args=(--model "$MODEL")
@@ -1647,7 +1636,7 @@ jobs:
           # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
           # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
           # delete the three flags below.
-          env -u GH_TOKEN -u GITHUB_TOKEN timeout 3000 /home/nish/.local/bin/claude -p \
+          env -u GH_TOKEN -u GITHUB_TOKEN /home/nish/.local/bin/claude -p \
             "${model_args[@]}" \
             "${hook_args[@]}" \
             --strict-mcp-config \
