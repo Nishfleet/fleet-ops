@@ -1620,7 +1620,7 @@ jobs:
             # Seat switch: ORCHESTRATE_SEAT (default worker-capable).
             # Claude switch: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
             env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              /home/nish/.local/bin/pi --print \
+              "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
@@ -1636,7 +1636,7 @@ jobs:
           # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
           # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
           # delete the three flags below.
-          env -u GH_TOKEN -u GITHUB_TOKEN /home/nish/.local/bin/claude -p \
+          env -u GH_TOKEN -u GITHUB_TOKEN "$HOME/.local/bin/claude" -p \
             "${model_args[@]}" \
             "${hook_args[@]}" \
             --strict-mcp-config \
