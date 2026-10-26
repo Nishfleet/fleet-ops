@@ -773,7 +773,6 @@ jobs:
       review: ${{ steps.find.outputs.review }}
       arm: ${{ steps.find.outputs.arm }}
       rework: ${{ steps.find.outputs.rework }}
-      orch: ${{ steps.find.outputs.orch }}
       file: ${{ steps.find.outputs.file }}
     steps:
       - id: find
@@ -804,11 +803,11 @@ jobs:
           cutoff=$(( $(date +%s) - 900 ))
           queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
             --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]')
-          # A draft is its author saying "not yet"; Dependabot PRs follow the
-          # repo's own Dependabot rules. Everything else open is meant to land.
+          # A draft is its author saying "not yet"; Dependabot PRs follow their own rules. Everything
+          # else open is meant to land, an armed PR too once 15 minutes outside the queue (fleet-ops#10361).
           list() {
             gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,author,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeable,updatedAt |
-              jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest == null
+              jq -c --argjson q "$queued" --argjson cut "$cutoff" '[.[] | select((.isDraft | not) and (.isCrossRepository | not) and (.autoMergeRequest == null or ((.autoMergeRequest.enabledAt // "1970-01-01T00:00:00Z") | fromdateiso8601) < $cut)
                 and (.author.login | test("dependabot") | not) and (.headRefName | IN($q[]) | not) and (.updatedAt | fromdateiso8601) < $cut)] | sort_by(.number)'
           }
           cands=$(list)
@@ -823,28 +822,19 @@ jobs:
             sleep 20
             cands=$(list)
           fi
-          review='[]' arm='[]' rework='[]' orch='[]' file='[]' seen=0 errs=0
+          review='[]' arm='[]' rework='[]' file='[]' seen=0 errs=0
           add() { jq -c --argjson x "$2" --argjson cap "${3:-20}" '. + [$x] | .[:$cap]' <<<"$1"; }
-          # Armed, CLEAN and still outside the merge queue 30 minutes after the
-          # arm (fleet-ops#10361: #10320 sat 3 hours, no event fires for it).
-          # The arm is dropped here and the arm job below puts it back on the
-          # same head, so the queue takes it. Once a sweep, logged.
-          cut30=$(( $(date +%s) - 1800 ))
-          while IFS=$'\t' read -r n sha; do
-            gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || { echo "::warning::#$n: disarm failed, skipped"; continue; }
-            echo "re-arm #$n at ${sha:0:7}: armed and CLEAN, not queued after 30 minutes"
-            arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')")
-          done < <(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,headRefOid,isDraft,isCrossRepository,autoMergeRequest,mergeStateStatus |
-            jq -r --argjson q "$queued" --argjson cut "$cut30" '.[] | select((.isDraft | not) and (.isCrossRepository | not) and .autoMergeRequest.enabledAt != null and .mergeStateStatus == "CLEAN"
-              and (.headRefName | IN($q[]) | not) and (.autoMergeRequest.enabledAt | fromdateiso8601) < $cut) | [.number, .headRefOid] | @tsv')
-          # PR heads an open stuck-PR issue already reports (agent.yml's stuck
-          # job writes `stuck-pr: #<pr> <sha>` in the body or a comment), so a
-          # reported head takes no slot below.
+          # A report whose PR merged, closed or moved past its head is done; it holds no slot (fleet-ops#10276).
+          open_reports=0; while IFS=$'\t' read -r i p s; do
+            st=OPEN$s; [ -z "$p" ] || st=$(gh pr view "$p" -R "$GITHUB_REPOSITORY" --json state,headRefOid --jq '.state + .headRefOid') || st=OPEN$s
+            if [ "$st" = "OPEN$s" ]; then open_reports=$((open_reports + 1)); else gh issue close "$i" -R "$GITHUB_REPOSITORY" --comment "PR #$p merged, closed or moved past ${s:0:7}. A later sweep reports it again if it is still stuck." || errs=$((errs + 1)); fi
+          done < <(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"Stuck PR" in:title' --json number,title,body \
+            --jq '.[] | select(.title | startswith("Stuck PR #")) | [.number, ((.body | capture("(^|\n)stuck-pr: #(?<p>[0-9]+) (?<s>[0-9a-f]{40})")) // {p: "", s: ""} | .p, .s)] | @tsv')
+          # PR heads an open report already names (agent.yml's stuck job writes
+          # `stuck-pr: #<pr> <sha>` in the body or a comment) take no slot below.
           reported=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"stuck-pr:" in:body' --json body,comments \
             --jq '[.[] | .body, .comments[].body | split("\n")[] | select(startswith("stuck-pr: #"))] | unique')
-          open_reports=$(gh issue list -R "$GITHUB_REPOSITORY" --state open -L 200 --search '"Stuck PR" in:title' --json title --jq '[.[] | select(.title | startswith("Stuck PR #"))] | length')
-          slots=$(( open_reports >= 3 ? 0 : 3 - open_reports ))
-          [ "$slots" -le 2 ] || slots=2
+          slots=$(( open_reports >= 3 ? 0 : open_reports == 2 ? 1 : 2 ))
           while IFS= read -r p; do
             seen=$((seen + 1))
             n=$(jq -r .number <<<"$p"); ref=$(jq -r .headRefName <<<"$p"); sha=$(jq -r .headRefOid <<<"$p")
@@ -875,7 +865,9 @@ jobs:
             class=$(jq -r .class <<<"$v"); reason=$(jq -r .reason <<<"$v"); url=$(jq -r .url <<<"$v")
             echo "#$n $ref: $class, $reason"
             case $class in
-              arm) arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
+              arm)
+                [ "$(jq -r .autoMergeRequest <<<"$p")" = null ] || gh pr merge "$n" -R "$GITHUB_REPOSITORY" --disable-auto || { errs=$((errs + 1)); continue; }
+                arm=$(add "$arm" "$(jq -nc --arg p "$n" --arg s "$sha" '{pr: $p, sha: $s}')"); continue ;;
               review)
                 # Four paid reviews a sweep at most; the rest wait for the next
                 # sweep that sees them. The marker comment is what STUCK counts
@@ -886,15 +878,13 @@ jobs:
                 fi
                 continue ;;
             esac
-            # Stuck. A claim PR whose issue is open goes back to its worker,
-            # unless the issue is parked (someone already owns it), blocked,
-            # or its newest run is still live. Every other PR is filed for
-            # the orchestrator by agent.yml's stuck job.
-            if [[ $ref =~ ^(claim|orch)/issue-([0-9]+)$ ]]; then
-              kind=${BASH_REMATCH[1]}; i=${BASH_REMATCH[2]}
+            # Stuck. A claim PR whose issue is open goes back to its worker, unless the issue is parked
+            # (someone owns it), blocked, or its newest run is live. Every other PR, orch/issue-* too,
+            # is filed for the orchestrator by agent.yml's stuck job.
+            if [[ $ref =~ ^claim/issue-([0-9]+)$ ]]; then
+              i=${BASH_REMATCH[1]}
               if issue=$(gh api "repos/$GITHUB_REPOSITORY/issues/$i" 2>"$RUNNER_TEMP/issue.err"); then
                 if [ "$(jq -r .state <<<"$issue")" = open ]; then
-                  # An orch PR's issue carries needs-orchestrator only while a hand-off is pending.
                   if jq -e '(.issue_dependencies_summary.blocked_by // 0) != 0 or
                     any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"))' <<<"$issue" >/dev/null; then
                     echo "#$n: issue #$i is parked or blocked, its owner has it"; continue
@@ -905,12 +895,6 @@ jobs:
                     echo "#$n: issue #$i already has this rework note"; continue
                   fi
                   last=$(jq -r '[.[] | select(startswith("agent run started:"))] | last // ""' <<<"$bodies")
-                  if [ "$kind" = orch ]; then
-                    # The orchestrate job's per-issue concurrency group owns a live run.
-                    gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$note: $reason.${url:+ $url} Fix it on $ref and push; a new head gets a fresh review."
-                    orch=$(add "$orch" "$(jq -nc --arg i "$i" '$i')")
-                    continue
-                  fi
                   if [[ $last =~ actions/runs/([0-9]+) ]]; then
                     rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { errs=$((errs + 1)); continue; }
                     if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: issue #$i run live, skip"; continue; fi
@@ -927,18 +911,14 @@ jobs:
             if jq -e --arg l "stuck-pr: #$n $sha" 'index($l)' <<<"$reported" >/dev/null; then
               echo "#$n: already reported at ${sha:0:7}"; continue
             fi
-            # At most three stuck-PR issues open per repo, two new a sweep: the
-            # orchestrate job keeps one run and one waiting per repo, cancels
-            # any older waiting run, and stops at its daily cap, so a burst of
-            # labels would leave most issues with no run (18 at once in
-            # fleet-ops on 2026-10-11). The rest go out as the orchestrator
-            # closes these.
+            # At most three reports open, two new a sweep: the orchestrate job keeps one run and
+            # one waiting per repo and has a daily cap (18 at once on 2026-10-11 left most with no run).
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
-          echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "orch: $orch"; echo "file: $file"
+          echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
           {
-            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "orch=$orch"; echo "file=$file"
+            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
           } >> "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
@@ -983,27 +963,6 @@ jobs:
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     with:
       ref: ${{ matrix.ref }}
-  # A blocked, red or conflicting orch/issue-N PR goes back to the orchestrate
-  # job for issue N, not to a worker: its fix may touch workflows, which the
-  # worker App cannot push. The runner user's own label fires the job's
-  # issues.labeled trigger (a GITHUB_TOKEN label would fire nothing).
-  stuck-orch:
-    needs: stuck-prs
-    if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.orch != '' && needs.stuck-prs.outputs.orch != '[]'"
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        issue: ${{ fromJSON(needs.stuck-prs.outputs.orch) }}
-    runs-on: [self-hosted, agent]
-    timeout-minutes: 5
-    permissions: {contents: read}
-    steps:
-      - env:
-          ISSUE: ${{ matrix.issue }}
-        run: |
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator
-          echo "stuck-orch: #$ISSUE handed back to the orchestrate job"
   stuck-file:
     needs: stuck-prs
     if: "!cancelled() && vars.FLEET_DISPATCH_PAUSED != 'true' && needs.stuck-prs.outputs.file != '' && needs.stuck-prs.outputs.file != '[]'"
@@ -1475,15 +1434,8 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch with an open PR is a rework (stuck-orch); one without is
-          # another hand-off's push, still in flight.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            open_prs=$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq 'length')
-          else
-            open_prs=none
-          fi
-          if [ "$open_prs" = 0 ]; then
-            echo "orchestrate: $branch exists on origin with no PR; another hand-off owns #$ISSUE; skip"
+            echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
             exit 0
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
@@ -1629,10 +1581,6 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q "$wt" "$branch_ref"
           else
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" refs/remotes/origin/main
-          fi
-          # A rework starts from the PR's pushed head, not from main.
-          if git -C "$mirror" show-ref --verify --quiet "refs/remotes/origin/orch/issue-$ISSUE"; then
-            git -C "$wt" reset -q --hard "refs/remotes/origin/orch/issue-$ISSUE"
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
