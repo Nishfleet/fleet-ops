@@ -609,22 +609,21 @@ jobs:
           # The session step: the real run block, with the claude path swapped
           # for a fake that records argv, one argument per line. The settings
           # JSON must reach claude as one argument that parses.
+          mkdir -p "$t/home/.local/bin"
           # shellcheck disable=SC2016 # the fake's body is literal script text
-          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/claude"
-          chmod +x "$t/claude"
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/home/.local/bin/claude"
+          chmod +x "$t/home/.local/bin/claude"
           # shellcheck disable=SC2016 # the fake's body is literal script text
-          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/pi"
-          chmod +x "$t/pi"
-          grep -qF /home/nish/.local/bin/claude <<<"$ses"
-          grep -qF /home/nish/.local/bin/pi <<<"$ses"
-          ses=${ses//\/home\/nish\/.local\/bin\/claude/$t\/claude}
-          ses=${ses//\/home\/nish\/.local\/bin\/pi/$t\/pi}
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/home/.local/bin/pi"
+          chmod +x "$t/home/.local/bin/pi"
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          { grep -qF '"$HOME/.local/bin/claude"' <<<"$ses"; grep -qF '"$HOME/.local/bin/pi"' <<<"$ses"; }
           mkdir -p "$t/wt/prompts"
           echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
           while IFS= read -r c; do
             id=$(jq -r .id <<<"$c")
             : > "$t/argv"
-            env FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+            env HOME="$t/home" FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
               MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
               bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
             mapfile -t argv < "$t/argv"
