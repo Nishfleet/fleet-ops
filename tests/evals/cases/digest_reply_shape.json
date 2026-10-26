@@ -211,6 +211,6 @@
       "orch-fleet-ops-9925-heldout",
       "orch-fleet-ops-9925-labels"
     ],
-    "note": "labels for n* and the text+labels for h* written by a non-Claude model before the prompt rewrite; the builder graded none (AI-decision rule). Call 1 wrote and labelled the held-out h* cases from the issue's plain question; call 2 labelled the builder's fitted n* fixtures. Both calls predate every edit."
+    "note": "labels for n* and the text+labels for r* written by a non-Claude model before the prompt rewrite; the builder graded none (AI-decision rule). Call 1 wrote and labelled the held-out r* cases from the issue's plain question; call 2 labelled the builder's fitted n* fixtures. Both calls predate every edit."
   }
 }
