@@ -1,0 +1,98 @@
+[Unit]
+Description=Tether, the always-on iMessage agent (fleet-ops#9980 phase 1)
+Documentation=https://github.com/Nishfleet/tether/blob/main/README.md
+Wants=network-online.target
+After=network-online.target
+# Tether stops when the firewall service stops: the `inet tether` table is what
+# narrows its 127.0.0.1 access to the router port.
+Requires=nftables.service
+After=nftables.service
+# The app ships from Nishfleet/tether as a pinned, checksummed release that
+# ansible/host.yml unpacks into /opt/tether/<version>-<sha12>, owned by root, so
+# the service user cannot rewrite its own code. /opt/tether/current names the
+# release in use. Until that binary exists a start is skipped, not failed.
+ConditionPathExists=/opt/tether/current/dist/index.js
+# Finite start limit: 5 starts in an hour, then the unit is failed and
+# OnFailure= pages. A fast crash loop (RestartSec=5) reaches it in about 25 s,
+# and a slow one that crashes minutes after each start still does within the
+# hour, so neither repeats paid model calls unattended.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=simple
+User=tether
+Group=tether
+WorkingDirectory=/var/lib/tether
+Environment=NODE_ENV=production
+# The model key lives in tether.env and the Photon Spectrum credentials in
+# photon.env, the calendar and contacts credentials in calendar.env, and the
+# address and token of tether's own Cua Space in cua.env (rendered by
+# ansible/host.yml), all root:tether 0640. That token opens that one Space and
+# nothing else, but that Space runs commands: tether holds a key that runs
+# commands inside its own Space, which tether-space.nft fences off from the host
+# and its neighbours. No shell on the host, and no GitHub, Cloudflare or
+# database token, reaches this unit (fleet-ops#9980).
+EnvironmentFile=-/etc/tether/tether.env
+EnvironmentFile=-/etc/tether/photon.env
+EnvironmentFile=-/etc/tether/calendar.env
+EnvironmentFile=-/etc/tether/cua.env
+# The Node binary is the pinned release that ansible/host.yml unpacks
+# (tether_node_version), named by absolute path, not the distro /usr/bin/node.
+ExecStart=/opt/node-v22.23.3/bin/node --enable-source-maps /opt/tether/current/dist/index.js
+SyslogIdentifier=tether
+# Crash-proofing: on-failure, not always, so the clean STOP exit does not come
+# back five seconds later. A killed process resumes on the durable runtime's
+# checkpoint; the start limit above caps a crash loop.
+Restart=on-failure
+RestartSec=5
+# Crash-proofing: the durable runtime holds the thread and its memory in the
+# state directory, so a kill mid-reply resumes where it stopped (fleet-ops#9980).
+StateDirectory=tether
+StateDirectoryMode=0700
+RuntimeDirectory=tether
+RuntimeDirectoryMode=0700
+# Per-user units silently ignore sandbox settings on this box (Ubuntu sets
+# kernel.apparmor_restrict_unprivileged_userns=1), so this is a system unit with
+# a service user, per the vault note claude-vps-listener-locked.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Loopback is denied except the router (127.0.0.1) and the resolved stub
+# (127.0.0.53). IPAddressAllow= takes no port, so the nftables table
+# `inet tether` (ansible/templates/tether.nft.j2) narrows 127.0.0.1 to tcp 4000
+# and tether's own Cua Space port, and 127.0.0.53 to port 53, and drops every
+# other host-local destination. The Space is started by the host config run, not
+# by a unit, so After= cannot order it; the run restarts this unit when the
+# Space's address or token changed.
+IPAddressDeny=localhost
+IPAddressAllow=127.0.0.1/32 127.0.0.53/32
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# V8 JIT needs writable executable pages; do not add MemoryDenyWriteExecute.
+MemoryDenyWriteExecute=false
+MemoryHigh=512M
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

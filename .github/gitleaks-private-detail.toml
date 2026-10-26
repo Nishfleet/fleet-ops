@@ -57,5 +57,92 @@ condition = "AND"
 description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
-regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|\.beacon/(endpoint/logs/runtime\.jsonl(\.lock)?|hermes/state\.json(\.lock)?)|workspaces/tooling/nish-vault/00)''']
+regexes = ['''home/nish/(\.hermes|\.local/state/hermes|\.config/gh|workspaces/tooling/nish-vault/00)''']
+condition = "AND"
+
+[[allowlists]]
+description = "dockerd-eval.service denies the CGNAT block (the tailnet range) in IPAddressDeny=, a unit line with no inline comment to carry gitleaks:allow, and its test reads that line back; the block is a generic range, not a host address; fleet-ops#9983"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''^rootfs/etc/systemd/system/dockerd-eval\.service$|^tests/test_dockerd_eval\.py$''']
+regexes = ['''100\.64\.0\.0''']
+condition = "AND"
+
+[[allowlists]]
+description = "The runner lockdown, no-eval and eval drop-ins, dockerd-eval.service, and its test, must name the paths their InaccessiblePaths= hides (a system unit has no %h, and a unit line has no inline comment to carry gitleaks:allow); fleet-ops#9983"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/systemd/system/(actions\.runner\.[^/]*\.service\.d/(20-lockdown|25-no-eval|30-eval)\.conf|dockerd-eval\.service)$|^tests/test_dockerd_eval\.py$|^rootfs/etc/tmpfiles\.d/dockerd-eval\.conf$''']
+
+[[allowlists]]
+description = "The tmpfiles file for the blocked plaintext git credential store must name its path (a tmpfiles line has no inline comment to carry gitleaks:allow), and its test names it too; fleet-ops#9983"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(rootfs/etc/tmpfiles\.d/no-plaintext-git-credentials\.conf|tests/test_no_plaintext_git_credentials\.py)$''']
+regexes = ['''^home/nish/\.git-credentials(/README)?$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The Tincan listener unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names the paths its BindPaths= and Environment= lines use; moved byte for byte from /etc/systemd/system, fleet-ops#9974 phase A"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-claude-vps\.service$''']
+
+[[allowlists]]
+description = "issue-desk's user unit must name the two vendor binaries, the deploy clone and the agent's identity file in ExecStart= and Environment=, and its header names the same paths in the install, off and delete steps; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Each allowed path is listed, so a new home path in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)systemd/tincan-listen-issue-desk\.service$''']
+regexes = [
+  '''^home/nish/\.config/tincan/issue-desk\.json$''',
+  '''^home/nish/\.local/bin/pi$''',
+  '''^home/nish/\.local/bin/tincan$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/pi-extensions/issue-desk/index\.ts$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/issue-desk\.md$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-issue-desk\.service$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The six Tincan wake services and the Cua desk daemon are user units whose ExecStart=, Environment= and EnvironmentFile= lines name the tincan and vendor binaries, each listener's own config and prompt, and the cursor listener's seat file; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Only those paths are allowed, so a new one in these files still fails the scan. The desk daemon lived at systemd/ in this PR's first commit and moved under rootfs/etc/systemd/user/ (fleet-ops#10140), and a PR scan reads every commit"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = [
+  '''(^|/)systemd/tincan-listen-(command-code|cursor-vps|devin-vps|fleet-worker|opencode|pi)\.service$''',
+  '''(^|/)systemd/cua-desk-daemon\.service$''',
+  '''(^|/)rootfs/etc/systemd/user/cua-desk-daemon\.service$''',
+]
+regexes = [
+  '''^home/nish/\.local/bin/(tincan|command-code|cursor-agent|devin|pi|opencode)$''',
+  '''^home/nish/\.config/tincan/[a-z-]+\.json$''',
+  '''^home/nish/\.config/tincan/prompts/[a-z-]+\.txt$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test reads the wake units back, so it spells out one listener's home and TINCAN_CONFIG path in an expected string and asserts the cursor and desk seat files the units load (fleet-ops#10133, #10140). Only those three literals are allowed in this file"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = [
+  '''^home/nish/\.config/tincan/$''',
+  '''^home/nish/\.local/bin/tincan$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)systemd/tigervnc\.service$''']
+regexes = ['''^100\.108\.184\.97$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The runner egress drop-in must list the CGNAT block 100.64.0.0/10 in IPAddressDeny= (a unit line cannot carry gitleaks:allow); only the network address of the block itself, never a host address"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]+\.service\.d/40-egress\.conf$''']
+regexes = ['''^100\.64\.0\.0$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The seo-fix-kit D1 backup retirement names three user-unit paths the host deploy stops, disables and deletes (fleet-ops#10145). An earlier commit of that PR wrote them as literals; the play now renders them from nish_home and the test asserts that form, and a PR scan reads every commit while history cannot be rewritten on an open PR. Only these three paths, in the two files that carry the retirement"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
+regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
 condition = "AND"

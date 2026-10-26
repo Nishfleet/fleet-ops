@@ -1,6 +1,8 @@
 # Daily safe full update: ansible-pull of ansible/update.yml as root, from its
 # own clone (same trust model as fleet-host-config.service). See the playbook
 # header for the steps. Run now: sudo systemctl start --no-block fleet-update.service
+# --verify-commit needs GitHub's keys in root's keyring, which fleet-host-config.service
+# puts there (ansible/host.yml); on a rebuilt box run that unit first.
 [Unit]
 Description=Daily safe full update of the fleet box (ansible-pull of ansible/update.yml)
 Wants=network-online.target
@@ -21,6 +23,6 @@ Environment=ANSIBLE_PIPELINING=1
 # writable; a missing parent makes ansible warn and write no log, not fail.
 # This is in addition to stdout, so the journal keeps its own record too.
 Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-update.log
-ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --inventory localhost, ansible/update.yml
+ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --verify-commit --inventory localhost, ansible/update.yml
 # Drain (up to 150 min) + apt (up to 60) + tools + resume checks.
 TimeoutStartSec=6h
