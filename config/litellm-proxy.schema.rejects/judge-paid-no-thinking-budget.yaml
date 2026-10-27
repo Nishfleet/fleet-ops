@@ -27,16 +27,6 @@ model_list:
     id: opencodego-ds41flash-judge
     supports_prompt_caching: true
     cache_proof: "test"
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    order: 2
-  model_info:
-    id: opencodego2-ds41flash-judge
-    supports_prompt_caching: true
-    cache_proof: "test"
 router_settings:
   redis_host: 127.0.0.1
   redis_port: 6379
