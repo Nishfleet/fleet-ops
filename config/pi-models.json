@@ -57,6 +57,12 @@
           "maxTokens": 32768
         },
         {
+          "id": "worker-capable-desk",
+          "name": "LiteLLM worker-capable-desk (alias of worker-capable, earlier compaction; fleet-ops#9330 trial)",
+          "contextWindow": 140000,
+          "maxTokens": 32768
+        },
+        {
           "id": "worker-public",
           "name": "LiteLLM worker-public (Straitly credit, public repos only, falls back to worker-capable)",
           "contextWindow": 140000,

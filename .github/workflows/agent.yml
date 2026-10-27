@@ -307,7 +307,7 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
-          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID · arm: menu=$([ $((i % 2)) = 1 ] && echo on || echo off) desk=$([ $((i / 2 % 2)) = 1 ] && echo on || echo off)"
           printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
@@ -551,12 +551,15 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             else
+              # fleet-ops#9330 2x2 trial: odd issue drops the skills menu, (issue/2) odd takes the desk alias (worker-public stays as is)
+              arm_n=${id##*-}; arm_flags=(); [ $((arm_n % 2)) = 1 ] && arm_flags+=(--no-skills)
+              [ $((arm_n / 2 % 2)) = 1 ] && [ "$pi_model" = worker-capable ] && pi_model=worker-capable-desk
               cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-                --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
+                --exclude-tools subagent "${arm_flags[@]}" --provider litellm --model "$pi_model" >/dev/null
             fi
           elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ] && [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2

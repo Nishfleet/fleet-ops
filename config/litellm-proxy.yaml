@@ -1220,6 +1220,10 @@ router_settings:
   # tracked as fleet-ops#9411, until which the TTL above and the session-hop Grafana alert
   # (config/grafana/provisioning/alerting/session-hop.yaml) bound the damage.
   deployment_affinity_ttl_seconds: 600
+  # fleet-ops#9330 desk arm of the 3-day token trial: same seats as worker-capable, only the name differs, so Pi's
+  # compaction.modelOverrides can key on it. Remove with the trial.
+  model_group_alias:
+    worker-capable-desk: worker-capable
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
   # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
   # (fleet-ops#9374): order 1 alibaba-qwen38max-judge, order 2 the two OpenCode Go judge rows. The stale note here
