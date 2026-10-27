@@ -288,6 +288,32 @@
         mode: preserve
       notify: Reload systemd
 
+    # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
+    # in common with nish. Its drop-in is rootfs/etc/systemd/system/
+    # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
+    # is copied once (force: false), so a re-run never overwrites the runner's live state.
+    - name: Create the pilot runner user
+      ansible.builtin.user:
+        name: fleet-runner
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/fleet-runner
+        create_home: true
+
+    - name: Copy runner 1 to the pilot user once
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.local/share/agent-runner/1/"
+        dest: /var/lib/fleet-runner/1/
+        remote_src: true
+        force: false
+        owner: fleet-runner
+        group: fleet-runner
+        directory_mode: '0750'
+      when: (nish_home ~ '/.local/share/agent-runner/1/.credentials') is exists
+      notify:
+        - Reload systemd
+        - Restart pilot runner
+
     - name: Install agent runner units
       ansible.builtin.template:
         src: actions.runner.Nishfleet.netcup-agent.service.j2
@@ -2450,6 +2476,11 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    - name: Restart pilot runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager

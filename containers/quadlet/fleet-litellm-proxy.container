@@ -76,7 +76,7 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # EnvironmentFile= lines below fill. One line per os.environ/NAME in litellm-proxy.yaml.
 # Alibaba Model Studio Token Plan (fleet-ops#9220, judge row only): os.environ/ALIBABA_CODING_API_KEY in
 # config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
-# is already covered by the seats/*.env EnvironmentFile below.
+# is already covered by the seat EnvironmentFile lines below.
 PodmanArgs=--env=ALIBABA_CODING_API_KEY
 # Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key sits in a
 # seat file that the seat EnvironmentFile lines below already cover.
@@ -127,7 +127,21 @@ PodmanArgs=--env=ZAI_API_KEY
 Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 
 [Service]
-EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
+# One line per seat file whose key the PodmanArgs=--env=NAME lines above pass on (a test checks
+# the config's os.environ/NAME vars are all passed); a glob would hand the router every other seat's key.
+EnvironmentFile=%h/.config/fleet-ops/seats/alibaba-coding.env
+EnvironmentFile=%h/.config/fleet-ops/seats/anthropic-api.env
+EnvironmentFile=%h/.config/fleet-ops/seats/cline.env
+EnvironmentFile=%h/.config/fleet-ops/seats/commandcode.env
+EnvironmentFile=%h/.config/fleet-ops/seats/minimax.env
+EnvironmentFile=%h/.config/fleet-ops/seats/ollama.env
+EnvironmentFile=%h/.config/fleet-ops/seats/opencode.env
+EnvironmentFile=%h/.config/fleet-ops/seats/opencode-2.env
+EnvironmentFile=%h/.config/fleet-ops/seats/pareto.env
+EnvironmentFile=%h/.config/fleet-ops/seats/stepfun.env
+EnvironmentFile=%h/.config/fleet-ops/seats/synthetic.env
+EnvironmentFile=%h/.config/fleet-ops/seats/typesafe-jev.env
+EnvironmentFile=%h/.config/fleet-ops/seats/zai.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
