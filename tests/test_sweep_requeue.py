@@ -1,7 +1,7 @@
 """Parked hand-offs in agent-dispatch.yml's list job (fleet-ops#10420): the step's real
 `run:` block and REQUEUE program (read out with yq) against a fake gh.
 
-An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator, at most 3 a
+An agent-blocked issue idle over 6 h goes back to needs-orchestrator, at most 3 a
 sweep and none while 3 already wait; after 3 ended hand-offs it gets needs-nish-decision.
 """
 import datetime
@@ -35,7 +35,7 @@ def _yj(expr):
                                      capture_output=True, text=True).stdout)
 
 
-def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",)):
+def issue(number, hours_idle=7, ended=1, labels=("agent-blocked",)):
     t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_idle)
     return {
         "number": number, "updatedAt": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -86,8 +86,8 @@ def test_three_tries_escalate_not_requeue(tmp_path):
 
 
 def test_escalated_and_queued_issues_are_left_alone(tmp_path):
-    w = run(tmp_path, [issue(1, ended=3, labels=("orchestrator-tried", "needs-nish-decision")),
-                       issue(2, labels=("orchestrator-tried", "needs-orchestrator"))])
+    w = run(tmp_path, [issue(1, ended=3, labels=("agent-blocked", "needs-nish-decision")),
+                       issue(2, labels=("agent-blocked", "needs-orchestrator"))])
     assert w == []
 
 
@@ -95,6 +95,11 @@ def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=3)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
+
+
+def test_blocked_issue_with_no_ended_hand_off_is_not_requeued(tmp_path):
+    w = run(tmp_path, [issue(1, ended=0), issue(2, ended=1)])
+    assert edits(w, "--add-label needs-orchestrator") == [2]
 
 
 def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
@@ -124,5 +129,4 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
     for c in i["comments"]:
         c["authorAssociation"] = "NONE"
     w = run(tmp_path, [i])
-    assert edits(w, "--add-label needs-nish-decision") == []
-    assert edits(w, "--add-label needs-orchestrator") == [1]
+    assert w == []
