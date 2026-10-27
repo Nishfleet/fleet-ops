@@ -689,12 +689,7 @@ jobs:
               prs='[]'
             fi
           fi
-          # Same gone-issue skip (issue_json) as the red-PR loop above, for the other place
-          # the sweep resolves numbers one at a time: a dispatched issue
-          # deleted between the listing and this read, or a hand-typed
-          # workflow_dispatch issue that names one. The loop runs in this
-          # shell, not a pipeline, so a read fault that is not a gone issue
-          # still aborts the sweep instead of quietly shrinking the queue.
+          # Gone-issue skip as above; this loop runs in the shell, so any other read fault aborts the sweep.
           pages=''
           for n in $nums; do
             rc=0; i=$(issue_json "$n") || rc=$?
@@ -704,6 +699,10 @@ jobs:
               *) exit 1 ;;
             esac
             pages="$pages$i"$'\n'
+            # A closed blocker releases a parked hand-off: re-label it on the runner login so the label event starts it (fleet-ops#10489).
+            if [ -n "$CLOSED" ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
+              for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
+            fi
           done
           # agent.yml's Gate skips these five labels, so a ref that carries one is a
           # matrix slot spent on a job that ends in 9 s. ci.yml keeps this set equal to
@@ -1429,6 +1428,7 @@ jobs:
           state=$(gh issue view "$ISSUE" -R "$REPO" --json state --jq .state)
           labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
           [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
+          [ "$(gh api "repos/$REPO/issues/$ISSUE" --jq '.issue_dependencies_summary.blocked_by // 0')" = 0 ] || { echo "orchestrate: #$ISSUE is blocked by an open issue; skip"; exit 0; }
           # Relabelled back to agent-ready (someone picked it up), or a previous
           # hand-off already ran and produced no PR: both end the loop here
           # rather than in the always() step, so nothing is built.
