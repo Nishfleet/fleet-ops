@@ -3,6 +3,7 @@
 Runs the real `run:` blocks (read out with yq) against a stub `gh` and a real git mirror:
 the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR
 instead of skipping) and its worktree step (start from the PR head)."""
+import json
 import os
 import pathlib
 import stat
@@ -14,7 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_STUB = """#!/bin/bash
 echo "$*" >> "$GH_LOG"
 case "$*" in
-  "pr view"*) echo "$GH_REF" ;;
+  "pr view"*) while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PR_JSON" ;;
   "api --paginate"*) printf '%b' "$GH_REVIEWS" ;;
   "issue view"*) echo "$GH_LABELS" ;;
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
@@ -64,9 +65,10 @@ SHA = "a" * 40
 OTHER = "b" * 40
 
 
-def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels=""):
+def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels="", cross=False):
     body = "".join(f"{s}\n" for s in reviews)
-    return _env(tmp_path, PR="5", SHA=SHA, GH_REF=ref, GH_REVIEWS=body, GH_LABELS=labels)
+    pr = json.dumps({"headRefName": ref, "isCrossRepository": cross})
+    return _env(tmp_path, PR="5", SHA=SHA, GH_PR_JSON=pr, GH_REVIEWS=body, GH_LABELS=labels)
 
 
 SEND = ("agent.yml", "review", "Send a blocked orch PR back to the orchestrator")
@@ -77,21 +79,22 @@ def test_a_blocked_orch_pr_puts_needs_orchestrator_back_on_its_issue(tmp_path):
     r = _run(_block(*SEND), env)
     assert r.returncode == 0, r.stderr
     calls = log.read_text()
-    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator" in calls
+    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator --remove-label orchestrator-tried" in calls
     assert "issue comment 77" in calls and "pull/5" in calls
 
 
 @pytest.mark.parametrize("case", ["not-orch", "fork", "no-block-for-this-head", "already-labelled"])
 def test_nothing_is_sent_back_when_it_does_not_apply(tmp_path, case):
-    kw = {"not-orch": {"ref": "claim/issue-77"}, "fork": {"ref": "fork"}, "no-block-for-this-head": {"reviews": (OTHER,)}, "already-labelled": {"labels": "1"}}[case]
+    kw = {"not-orch": {"ref": "claim/issue-77"}, "fork": {"cross": True}, "no-block-for-this-head": {"reviews": (OTHER,)}, "already-labelled": {"labels": "1"}}[case]
     env, log = _review(tmp_path, **kw)
     assert _run(_block(*SEND), env).returncode == 0
     assert "issue edit" not in log.read_text()
 
 
 def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
-    env, log = _review(tmp_path, ref="fork")
-    assert _run(_block(*SEND), env).returncode == 0
+    env, log = _review(tmp_path, cross=True)
+    r = _run(_block(*SEND), env)
+    assert r.returncode == 0, r.stderr
     assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
 
 
