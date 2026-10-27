@@ -936,7 +936,7 @@ jobs:
   review:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
-    timeout-minutes: 20
+    timeout-minutes: 60 # waiting for the seat locks and the 429 backoff (#10183) come on top of the calls' own timeouts
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
     # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
     # so the PR cannot change the reviewer that judges it. A PR that adds its own
@@ -1085,9 +1085,22 @@ jobs:
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # Both reviewers run at the same time and the job waits for each whatever the other did,
           # so one that dies does not take the other's answer with it; each empties its own file.
-          ask() { local rc=0; timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
-            --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --provider litellm --model "$1" \
-            < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || rc=$?; [ "$rc" = 0 ] || : > "$RUNNER_TEMP/$2.txt"; return "$rc"; }
+          # The senior seat is one row with max_parallel_requests 1, so a second review that calls it
+          # at the same time gets a 429 ("all max_parallel_requests slots in use", #10183). Every
+          # review on this host takes the seat's flock before it calls (a queue, not a cancel: a
+          # concurrency group keeps one pending run and drops the rest), and a call that still
+          # fails is tried again after 30 s, 60 s and 120 s, then the job's own retry() applies.
+          # The lock files live in $HOME because every runner on this host shares it.
+          mkdir -p "$HOME/.cache"
+          ask() { local rc=0 n=0
+            while :; do
+              rc=0; flock -w 1800 "$HOME/.cache/fleet-review-$1.lock" timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
+                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --provider litellm --model "$1" \
+                < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || rc=$?
+              [ "$rc" != 0 ] && [ "$n" -lt 3 ] || break
+              n=$((n+1)); sleep $((15 * 2 ** n))
+            done
+            [ "$rc" = 0 ] || : > "$RUNNER_TEMP/$2.txt"; return "$rc"; }
           # The judge seat is called directly, not through pi, because the row that answered is
           # only in the response headers, and this reviewer approves only when the Qwen row
           # answered: the judge group's first row is Qwen and DeepSeek sits behind it (the group
@@ -1097,11 +1110,18 @@ jobs:
           # (/proc/<pid>/cmdline is world readable, #8403), and the request body goes in a file:
           # one argv string over 128 KiB (MAX_ARG_STRLEN) cannot start curl, and a guard diff can be that big.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
-          judge() { local rc=0
+          judge() { local rc=0 n=0 served
+            while :; do rc=0
             { jq -nc --arg m "$THIRD_SEAT" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 8192, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/third-req.json" \
-              && curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
+              && flock -w 1800 "$HOME/.cache/fleet-review-$THIRD_SEAT.lock" curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/third-headers.txt" -o "$RUNNER_TEMP/third-body.json" --data-binary "@$RUNNER_TEMP/third-req.json"; } || rc=$?
-            [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/third-body.json"; : > "$RUNNER_TEMP/third-headers.txt"; }; return "$rc"; }
+            [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/third-body.json"; : > "$RUNNER_TEMP/third-headers.txt"; }
+            # A 429, or a fallback row answering for the Qwen row, is capacity and not a verdict: wait and ask again.
+            served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/third-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+            [ "$rc" = 0 ] && [ "$served" = "$THIRD_ROW" ] && break
+            [ "$n" -lt 3 ] || break
+            n=$((n+1)); sleep $((15 * 2 ** n))
+            done; return "$rc"; }
           ask "$SECOND_SEAT" second & p2=$!; judge & p3=$!
           rc2=0; rc3=0; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
           { [ "$rc2" = 0 ] && [ "$rc3" = 0 ]; } || retry "an extra reviewer process died (exit $rc2 and $rc3)"
