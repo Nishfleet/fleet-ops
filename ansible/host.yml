@@ -220,6 +220,21 @@
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
+    # ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
+    # checkout that user units can read (fleet-ops#10479): root owns it, no
+    # worktree is attached to it, and every deploy moves it to the merged
+    # commit. UMask=0077 (20-umask.conf) leaves its newer files 0600, which
+    # locked readers out once already (#10472), so this makes the whole tree
+    # readable and not writable by anyone but root.
+    - name: Make the deploy checkout readable by every user and writable by root only
+      ansible.builtin.file:
+        path: "{{ (playbook_dir ~ '/..') | realpath }}"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false
