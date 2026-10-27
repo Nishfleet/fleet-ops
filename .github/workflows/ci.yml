@@ -4,16 +4,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   merge_group:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Cancel superseded runs on PRs only. Main runs complete; they queue instead.
+  # Cancel superseded runs on PRs only. Merge-queue runs complete; they queue instead.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
