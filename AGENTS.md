@@ -38,8 +38,8 @@
 - Paid `/jev` and eval or judge calls: a run makes only the ones its own task
   calls for. `/jev` is called by worker.md step 4, only when its
   orchestrator-versus-nish-decision choice is live, by miss-review, by the
-  orchestrator hand-off's "Needs Nish" step, and by the agent.yml Gate's judgment routing (one call per claimed issue that is not
-  `strong-only`). A
+  orchestrator hand-off's "Needs Nish" step, and by the agent.yml Gate's
+  judgment routing (one call per claimed issue that is not `strong-only`). A
   report-only or check-only issue makes none, and no run re-asks a judge or
   eval for a second read: 16 rows x 3 questions x 3 repeats was 144 paid calls
   nobody asked for (0509#6967, 2026-10-04). worker.md's own planner
