@@ -143,6 +143,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
+      # directory, which shadows the installed one in /etc/systemd/user, so the
+      # bytes the repo ships were inert. The file, not the directory: a retired
+      # path is deleted, and the directory stays for the next drop-in. The user
+      # manager is reloaded below so it forgets the drop-in, and gpg-agent picks
+      # the installed one up at its next start.
+      - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
       # The old hand-placed Alertmanager config (#10146): the running service
       # reads /etc/alertmanager/alertmanager.yml, which the repo ships, and the
       # only reader of this copy was the first-run chat-id seed, removed below.
@@ -291,6 +298,20 @@
       loop: "{{ agent_runner_ids }}"
       notify: Reload systemd
 
+    # The runner's runsvc.sh exports `.path` as PATH. config.sh wrote it from a
+    # shell without the tool dirs, so jobs on these runners got exit 127 for pi,
+    # gh and claude. Same PATH as runners 1-22; a changed file restarts its runner.
+    - name: Give the agent runners the tool PATH
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        dest: "{{ nish_home }}/.local/share/agent-runner/netcup-agent-{{ item }}/.path"
+        content: "{{ nish_home }}/.pi/agent/bin:{{ nish_home }}/.cargo/bin:{{ nish_home }}/.nvm/versions/node/v24.21.0/bin:{{ nish_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        mode: '0644'
+      loop: "{{ agent_runner_ids }}"
+      when: (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
+      register: agent_runner_path
+
     # `.runner` alone is not proof of a registration: a `config.sh` cut between
     # its two writes leaves `.runner` without `.credentials`, and the unit would
     # start and fail. The pair is the registration.
@@ -304,6 +325,14 @@
       when:
         - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
         - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.credentials') is exists
+
+    - name: Restart agent runners whose PATH changed
+      ansible.builtin.systemd_service:
+        name: "actions.runner.Nishfleet.netcup-agent-{{ item.item }}.service"
+        state: restarted
+      loop: "{{ agent_runner_path.results | selectattr('changed') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     - name: Install systemd user-manager drop-ins
       ansible.builtin.copy:
@@ -794,6 +823,11 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
+      register: agent_state_db_chmod
+      # SQLite deletes its -journal, -wal and -shm files on its own, so one
+      # found a moment ago can be gone by now (fleet-ops#10388). Only that
+      # error is ignored; any other failure still fails the run.
+      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
@@ -2499,3 +2533,26 @@
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
         state: restarted
+
+    # Last step of the self-repair loop (fleet-ops#10338): a oneshot that failed
+    # before its fix landed stays failed, and its alerts keep firing, until
+    # something starts it again. Only a unit that is failed now is started, and
+    # --no-block keeps a long backup from holding the deploy. The unit list is
+    # the start list in rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules,
+    # minus fleet-host-config.service itself.
+    - name: Read whether each re-runnable oneshot is failed
+      ansible.builtin.command: /usr/bin/systemctl is-failed {{ item }}
+      loop:
+        - fleet-update.service
+        - restic-r2-backup.service
+        - restic-r2-size-guard.service
+      register: oneshot_failed
+      changed_when: false
+      failed_when: oneshot_failed.rc not in [0, 1]
+
+    - name: Re-run each failed oneshot after the deploy
+      ansible.builtin.command: /usr/bin/systemctl start --no-block {{ item.item }}
+      loop: "{{ oneshot_failed.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout == 'failed'
