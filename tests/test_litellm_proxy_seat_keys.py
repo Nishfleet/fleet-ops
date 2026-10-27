@@ -13,7 +13,7 @@ def test_no_seat_glob():
 
 
 def test_seat_files_listed_once():
-    listed = re.findall(r"^EnvironmentFile=%h/\.config/fleet-ops/seats/([\w-]+)\.env$", QUADLET, re.M)
+    listed = re.findall(r"^EnvironmentFile=-%h/\.config/fleet-ops/seats/([\w-]+)\.env$", QUADLET, re.M)
     assert listed and len(listed) == len(set(listed))
     for unused in ("claude-seat-a", "cursor", "devin", "hetzner", "nebius", "openrouter", "xkiro", "zenmux"):
         assert unused not in listed

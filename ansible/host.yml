@@ -308,6 +308,7 @@
         force: false
         owner: fleet-runner
         group: fleet-runner
+        mode: preserve
         directory_mode: '0750'
       when: (nish_home ~ '/.local/share/agent-runner/1/.credentials') is exists
       notify:

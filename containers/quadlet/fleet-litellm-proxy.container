@@ -129,19 +129,19 @@ Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 [Service]
 # One line per seat file whose key the PodmanArgs=--env=NAME lines above pass on (a test checks
 # the config's os.environ/NAME vars are all passed); a glob would hand the router every other seat's key.
-EnvironmentFile=%h/.config/fleet-ops/seats/alibaba-coding.env
-EnvironmentFile=%h/.config/fleet-ops/seats/anthropic-api.env
-EnvironmentFile=%h/.config/fleet-ops/seats/cline.env
-EnvironmentFile=%h/.config/fleet-ops/seats/commandcode.env
-EnvironmentFile=%h/.config/fleet-ops/seats/minimax.env
-EnvironmentFile=%h/.config/fleet-ops/seats/ollama.env
-EnvironmentFile=%h/.config/fleet-ops/seats/opencode.env
-EnvironmentFile=%h/.config/fleet-ops/seats/opencode-2.env
-EnvironmentFile=%h/.config/fleet-ops/seats/pareto.env
-EnvironmentFile=%h/.config/fleet-ops/seats/stepfun.env
-EnvironmentFile=%h/.config/fleet-ops/seats/synthetic.env
-EnvironmentFile=%h/.config/fleet-ops/seats/typesafe-jev.env
-EnvironmentFile=%h/.config/fleet-ops/seats/zai.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/alibaba-coding.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/anthropic-api.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/cline.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/commandcode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/minimax.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/ollama.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/opencode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/opencode-2.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/pareto.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/stepfun.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/synthetic.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/typesafe-jev.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/zai.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
