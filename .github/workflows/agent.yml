@@ -1107,7 +1107,7 @@ jobs:
             say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
             exit 1; }
           seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
-          for r in second third; do rc=rc_$r; [ "${!rc}" = 0 ] || { [ "${!rc}" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited ${!rc} with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
+          for x in "second $rc_second" "third $rc_third"; do read -r r rc <<<"$x"; [ "$rc" = 0 ] || { [ "$rc" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited $rc with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
           # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head, asked through the judge seat; the comment names it.
           used=$JUDGE_FAMILY
           for r in second third; do [ ! -s "$RUNNER_TEMP/$r-row" ] || used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"; done
