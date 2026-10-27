@@ -937,14 +937,14 @@ jobs:
   review:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
-    timeout-minutes: 20
+    timeout-minutes: 150  # two extra reviewers, each up to 4 calls of 480 s plus 210 s of backoff, then a fallback pass each (#10447)
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
     # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
     # so the PR cannot change the reviewer that judges it. A PR that adds its own
     # workflow could post as the same bot; that is why a PR that edits the guard
     # list or a workflow needs three independent reviews, not one (below). Arming is
     # the arm job's, as the worker App.
-    permissions: {pull-requests: write, contents: read}  # contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
+    permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     # A newer head starts its own review; the older one stops.
@@ -975,12 +975,11 @@ jobs:
           JUDGE_FAMILY: Jev
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
-          # The row each extra reviewer must be answered by, read from x-litellm-model-id: the senior
-          # group has one row (GLM) and the judge group's first row is Qwen, with DeepSeek behind it.
-          SECOND_ROW: synthetic-glm53flash-senior
+          # An extra reviewer is accepted from any row of its named family (the family is read from
+          # x-litellm-model-id by family_of below), and an infrastructure failure retries with this backoff.
+          REVIEW_BACKOFF: "30 60 120"
           THIRD_SEAT: judge
           THIRD_FAMILY: Qwen
-          THIRD_ROW: alibaba-qwen38max-judge
         run: |
           set -euo pipefail
           say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
@@ -1101,28 +1100,56 @@ jobs:
               && curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
-          # Both run at the same time and the job waits for each whatever the other did, so one that dies does not take the other's answer with it; each empties its own files.
-          ask_row "$SECOND_SEAT" second & p2=$!; ask_row "$THIRD_SEAT" third & p3=$!
+          # The family of a router row, from its id; empty is no known non-Claude family. The senior group has one row (GLM), the judge group's first row is Qwen with DeepSeek behind it.
+          family_of() { case "${1,,}" in *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; esac; }
+          # One extra review: an infrastructure failure (a failed call, no row header, a row of another family, an empty or cut answer) is tried again after each REVIEW_BACKOFF delay; a real answer ends it.
+          # $3 is the family that must answer; empty means any family not in $4 (the fallback). Success leaves <pre>.txt, <pre>-row, <pre>-family and <pre>-seat; failure leaves the last reason in <pre>-why.
+          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why
+            for d in 0 $REVIEW_BACKOFF; do
+              sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
+              if [ "$rc" != 0 ]; then why="the call failed (curl exit $rc)"
+              elif ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the answer was not JSON"
+              else
+                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served")
+                if [ -z "$fam" ]; then why="answered by ${served:-no row id} (no known non-Claude family)"
+                elif [ -n "$want" ] && [ "$fam" != "$want" ]; then why="answered by $served ($fam), not the $want family"
+                elif [ -z "$want" ] && case " $used " in *" $fam "*) true ;; *) false ;; esac; then why="answered by $served ($fam), a family that already reviewed this head"
+                elif [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$pre-body.json")" = length ]; then why="the answer was cut at its token limit"
+                elif [ -z "${content//[[:space:]]/}" ]; then why="the answer was empty"
+                else printf '%s' "$content" > "$RUNNER_TEMP/$pre.txt"; printf '%s' "$served" > "$RUNNER_TEMP/$pre-row"; printf '%s' "$fam" > "$RUNNER_TEMP/$pre-family"; printf '%s' "$seat" > "$RUNNER_TEMP/$pre-seat"; return 0; fi
+              fi
+              printf '%s' "$why" > "$RUNNER_TEMP/$pre-why"
+            done
+            return 1; }
+          # After every retry and the fallback family: one loud issue (never a silent stall), a PR comment without a re-run request, and a red job.
+          give_up() {
+            ttl="review of PR #$PR head ${SHA:0:12} could not finish after retries"
+            n=$(gh issue list -R "$REPO" --state open --search "\"$ttl\" in:title" --json number --jq '.[0].number // empty' || true)
+            [ -n "$n" ] || n=$(gh issue create -R "$REPO" --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
+            say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
+            exit 1; }
+          # Both run at the same time and the job waits for each whatever the other did, so one that dies does not take the other's answer with it.
+          seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!
           rc2=0; rc3=0; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
-          { [ "$rc2" = 0 ] && [ "$rc3" = 0 ]; } || retry "an extra reviewer process died (exit $rc2 and $rc3)"
-          # Each answer must be JSON served by its own family's row and not cut at its token limit; a missing
-          # header, any other row or a cut answer means that review did not finish: retry, and the served row is
-          # printed in the comment so the family named there can be checked against the row that answered.
+          # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head, asked through the judge seat; the comment names it.
+          used=$JUDGE_FAMILY; [ "$rc2" != 0 ] || used+=" $(cat "$RUNNER_TEMP/second-family")"; [ "$rc3" != 0 ] || used+=" $(cat "$RUNNER_TEMP/third-family")"
+          for r in second third; do
+            rcv=rc2; [ "$r" = second ] || rcv=rc3; [ "${!rcv}" != 0 ] || continue
+            R=${r^^}; vf=${R}_FAMILY; first_why=$(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")
+            seat_try "$THIRD_SEAT" "$r" "" "$used" || give_up "the $r reviewer (${!vf} family) failed: $first_why; the fallback family failed too: $(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")"
+            used+=" $(cat "$RUNNER_TEMP/$r-family")"
+          done
           all=; blk=; both=true
           for r in second third; do
-            R=${r^^}; vf=${R}_FAMILY; vs=${R}_SEAT; vr=${R}_ROW
-            jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$r-body.json" > "$RUNNER_TEMP/$r.txt" 2>/dev/null || retry "the $r reviewer seat's answer was not JSON"
-            served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$r-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
-            [ "$served" = "${!vr}" ] || retry "the $r reviewer seat was answered by ${served:-a row it did not name}, not the ${!vf} row ${!vr}"
-            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "the $r reviewer seat's answer was cut at its token limit"
-            out=$(cat "$RUNNER_TEMP/$r.txt"); [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
-            rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true); ok=approved
+            out=$(cat "$RUNNER_TEMP/$r.txt"); fam=$(cat "$RUNNER_TEMP/$r-family"); served=$(cat "$RUNNER_TEMP/$r-row"); seat=$(cat "$RUNNER_TEMP/$r-seat"); ok=approved
+            rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true)
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
-            h=$(printf '\n\n%s reviewer (%s family, %s seat, served row %s): %s\n%s' "${r^}" "${!vf}" "${!vs}" "$served" "$ok" "$(cut_text "$rs")"); all+=$h; [ "$ok" = approved ] || blk+=$h
+            h=$(printf '\n\n%s reviewer (%s family, %s seat, served row %s): %s\n%s' "${r^}" "$fam" "$seat" "$served" "$ok" "$(cut_text "$rs")"); all+=$h; [ "$ok" = approved ] || blk+=$h
           done
+          fam2=$(cat "$RUNNER_TEMP/second-family"); fam3=$(cat "$RUNNER_TEMP/third-family")
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s and %s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$SECOND_FAMILY" "$THIRD_FAMILY" "$text" "$all")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s and %s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "$fam2" "$fam3" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
