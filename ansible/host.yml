@@ -305,6 +305,7 @@
         src: "{{ nish_home }}/.local/share/agent-runner/1/"
         dest: /var/lib/fleet-runner/1/
         remote_src: true
+        local_follow: false
         force: false
         owner: fleet-runner
         group: fleet-runner
