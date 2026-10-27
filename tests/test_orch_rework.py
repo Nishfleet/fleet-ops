@@ -17,10 +17,20 @@ case "$*" in
   "pr view"*) echo "$GH_REF" ;;
   "api --paginate"*) printf '%b' "$GH_REVIEWS" ;;
   "issue view"*) echo "$GH_LABELS" ;;
-  "pr list"*) echo "$GH_OPEN_PRS" ;;
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
+  "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; echo "$GH_OPEN_PRS" ;;
 esac
 exit 0
+"""
+SYSTEMCTL_STUB = """#!/bin/bash
+if [ -n "${SYSTEMCTL_STUB:-}" ]; then
+  case "$*" in
+    *list-units*) printf '%b' "$SYSTEMCTL_STUB" ;;
+    *show*WorkingDirectory*) echo "$SYSTEMCTL_WD" ;;
+  esac
+  exit 0
+fi
+exec /usr/bin/systemctl "$@"
 """
 
 
@@ -71,12 +81,18 @@ def test_a_blocked_orch_pr_puts_needs_orchestrator_back_on_its_issue(tmp_path):
     assert "issue comment 77" in calls and "pull/5" in calls
 
 
-@pytest.mark.parametrize("case", ["not-orch", "no-block-for-this-head", "already-labelled"])
+@pytest.mark.parametrize("case", ["not-orch", "fork", "no-block-for-this-head", "already-labelled"])
 def test_nothing_is_sent_back_when_it_does_not_apply(tmp_path, case):
-    kw = {"not-orch": {"ref": "claim/issue-77"}, "no-block-for-this-head": {"reviews": (OTHER,)}, "already-labelled": {"labels": "1"}}[case]
+    kw = {"not-orch": {"ref": "claim/issue-77"}, "fork": {"ref": "fork"}, "no-block-for-this-head": {"reviews": (OTHER,)}, "already-labelled": {"labels": "1"}}[case]
     env, log = _review(tmp_path, **kw)
     assert _run(_block(*SEND), env).returncode == 0
     assert "issue edit" not in log.read_text()
+
+
+def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
+    env, log = _review(tmp_path, ref="fork")
+    assert _run(_block(*SEND), env).returncode == 0
+    assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
 
 
 def test_the_fourth_block_goes_to_nish_not_back_to_the_orchestrator(tmp_path):
@@ -93,12 +109,14 @@ def test_three_blocks_still_get_a_rework_round(tmp_path):
     assert "--add-label needs-orchestrator" in log.read_text()
 
 
-def _issue_env(tmp_path, exists, open_prs):
+def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
     env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs),
                     GH_LABELS="needs-orchestrator", RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
     # `gh issue view --json state` and `--json labels` both print GH_LABELS; the step wants OPEN first.
     gh = tmp_path / "bin/gh"
     gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
+    if pulls_fail:
+        env["GH_PULLS_FAIL"] = "1"
     return env, log
 
 
@@ -114,11 +132,25 @@ def test_issue_step_continues_on_a_branch_with_an_open_pr_and_skips_one_without(
     assert ("go=true" in out) is go, r.stdout
 
 
+def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
+    env, log = _issue_env(tmp_path, True, 1, pulls_fail=True)
+    r = _run(_block(*ISSUE_STEP), env)
+    assert r.returncode == 0, r.stderr
+    assert "go=true" not in (tmp_path / "out").read_text() if (tmp_path / "out").exists() else True
+    assert "the PR list for orch/issue-77 failed; skip" in log.read_text() + r.stdout
+
+
+def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
+    env, log = _issue_env(tmp_path, True, 1)
+    assert _run(_block(*ISSUE_STEP), env).returncode == 0
+    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=open" in log.read_text()
+
+
 def _git(*args, cwd):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True, capture_output=True)
 
 
-def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
+def _mirror(tmp_path):
     home = tmp_path / "home"
     (home / "workspaces/agent-worktrees").mkdir(parents=True)
     work = tmp_path / "seed"
@@ -129,12 +161,45 @@ def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
     _git("commit", "-q", "--allow-empty", "-m", "pushed fix attempt", cwd=work)
     seed = tmp_path / "seed.git"
     _git("clone", "-q", "--bare", str(work), str(seed), cwd=tmp_path)
-    env = {**os.environ, "HOME": str(home), "REPO": "Nishfleet/fleet-ops", "ISSUE": "77", "GITHUB_OUTPUT": str(tmp_path / "out"),
-           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.{seed}.insteadOf", "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git"}
-    block = _block("agent-dispatch.yml", "orchestrate", "Fresh worktree on origin/main")
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    sc = bin_ / "systemctl"
+    sc.write_text(SYSTEMCTL_STUB)
+    sc.chmod(sc.stat().st_mode | stat.S_IXUSR)
+    return home, work, seed, {**os.environ, "HOME": str(home), "PATH": f"{bin_}:{os.environ['PATH']}", "REPO": "Nishfleet/fleet-ops", "ISSUE": "77",
+                                "GITHUB_OUTPUT": str(tmp_path / "out"), "GIT_CONFIG_COUNT": "1",
+                                "GIT_CONFIG_KEY_0": f"url.{seed}.insteadOf", "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git"}
+
+
+WORKTREE_STEP = ("agent-dispatch.yml", "orchestrate", "Fresh worktree on origin/main")
+
+
+def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
+    home, _, _, env = _mirror(tmp_path)
+    block = _block(*WORKTREE_STEP)
     for _ in range(2):  # second run: the local branch exists already and is reset to the origin head
         r = _run(block, env)
         assert r.returncode == 0, r.stderr
         wt = home / "workspaces/agent-worktrees/orch-fleet-ops-77"
         log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=wt, capture_output=True, text=True, check=True).stdout.strip()
         assert log == "pushed fix attempt"
+
+
+def test_worktree_step_refuses_to_remove_a_tree_a_build_unit_is_building_in(tmp_path):
+    home, _, _, env = _mirror(tmp_path)
+    wt = str(home / "workspaces/agent-worktrees/orch-fleet-ops-77")
+    env["SYSTEMCTL_STUB"] = "orch-fleet-ops-77-build.service loaded active running\n"
+    env["SYSTEMCTL_WD"] = wt
+    r = _run(_block(*WORKTREE_STEP), env)
+    assert r.returncode != 0
+    assert "is building in" in r.stderr + r.stdout and "fleet-ops#9377" in r.stderr + r.stdout
+    assert not (tmp_path / "out").exists() or "worktree=" not in (tmp_path / "out").read_text()
+
+
+def test_worktree_step_keeps_the_tree_when_no_unit_holds_it(tmp_path):
+    home, _, _, env = _mirror(tmp_path)
+    env["SYSTEMCTL_STUB"] = "orch-fleet-ops-77-build.service loaded active running\n"
+    env["SYSTEMCTL_WD"] = str(tmp_path / "somewhere-else")
+    r = _run(_block(*WORKTREE_STEP), env)
+    assert r.returncode == 0, r.stderr
+    assert (home / "workspaces/agent-worktrees/orch-fleet-ops-77").is_dir()

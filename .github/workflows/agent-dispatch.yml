@@ -1435,10 +1435,10 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR is a blocked review sent back (fleet-ops#10435): continue it. The per-issue concurrency group means no other run for #N is live.
-          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null && [ "$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq length)" = 0 ]; then
-            echo "orchestrate: $branch exists on origin with no open PR; another hand-off owns #$ISSUE; skip"
-            exit 0
+          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435): continue it. The per-issue concurrency group means no other run for #N is live. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
+          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
+            open=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=open" --jq length) || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
+            if [ "$open" = 0 ]; then echo "orchestrate: $branch exists on origin with no open PR; another hand-off owns #$ISSUE; skip"; exit 0; fi
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
           # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
@@ -1497,7 +1497,7 @@ jobs:
         # No GH_TOKEN: every git call here authenticates as the runner user.
         run: |
           set -euo pipefail
-          # The mirror sits beside the worker worktrees, never in /tmp or the deploy clone: a checkout a session can re-clone is not a base. A bare repo needs no checkout; `git worktree add` works from it.
+          # The mirror sits beside the worker worktrees, never in /tmp or the deploy clone: a checkout a session can re-clone is not a base. A bare repo needs no checkout; `git worktree add` works from it (git 2.43 proven).
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
@@ -1515,7 +1515,7 @@ jobs:
               git -C "$mirror" remote add origin "https://github.com/$REPO.git"
           }
           init_mirror
-          # No GH_TOKEN on the fetch: the runner user's own gh login is the credential (~/.gitconfig -> gh auth git-credential), and a repo it cannot read fails loudly.
+          # No GH_TOKEN on the fetch: the runner user's own gh login is the credential (~/.gitconfig -> gh auth git-credential) because the App token cannot read a private repo and has no workflows scope, and a repo it cannot read fails loudly.
           # The refspec maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a heads->heads refspec deletes local branches not on origin, such as a hand-off that died before its push (proven live). It also gives the worktree a real origin/main for the prompt's reuse step.
           fetch_mirror() {
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
@@ -1535,6 +1535,10 @@ jobs:
           # A killed run can leave the worktree registered, and a bare repo
           # refuses to check one branch out in two worktrees at once. Remove it
           # through git first, so the registration goes with the directory.
+          # A detached build unit (orch-<repo>-<N>-build) can hold this tree as WorkingDirectory: removing the tree under it is the #9377 CHDIR loss, so refuse and let the age-out reap it. No user manager means no such unit.
+          if units=$(systemctl --user list-units --type=service --state=active 'orch-*' --plain --no-legend --no-pager 2>/dev/null); then
+            while read -r unit _; do [ "$(systemctl --user show -p WorkingDirectory --value "$unit" 2>/dev/null)" = "$wt" ] && { echo "::error::orchestrate: $unit is building in $wt; keeping the tree (fleet-ops#9377)"; exit 1; }; done <<<"$units"
+          fi
           git -C "$mirror" worktree prune
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
@@ -1553,6 +1557,8 @@ jobs:
                   git -C "$mirror" worktree prune ;;
               esac
             done < <(git -C "$mirror" worktree list --porcelain)
+            # A rework resets this branch to the origin head, so a hand-off that committed and died before its push would drop it: keep the tip under a name the log names.
+            if [ -n "$start" ] && ! git -C "$mirror" merge-base --is-ancestor "$branch_ref" "$start" 2>/dev/null; then git -C "$mirror" branch -f "orch/issue-$ISSUE-unpushed" "$branch_ref"; echo "::warning::orchestrate: orch/issue-$ISSUE had unpushed commits, kept on orch/issue-$ISSUE-unpushed"; fi
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q ${start:+-B "orch/issue-$ISSUE"} "$wt" "${start:-$branch_ref}"
           else
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" "${start:-refs/remotes/origin/main}"

@@ -1129,22 +1129,23 @@ jobs:
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
       # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: a label set by GITHUB_TOKEN starts no workflow run.
+      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
+      # and a PR from a fork never reaches here at all.
       - name: Send a blocked orch PR back to the orchestrator
         run: |
           set -euo pipefail
-          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName --jq .headRefName); n=${ref#orch/issue-}
+          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then fork else .headRefName end'); n=${ref#orch/issue-}
           [ "$n" != "$ref" ] || exit 0
           rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
-          gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
           rounds=$(grep -c . <<<"$rev")
           if [ "$rounds" -gt 3 ]; then
-            gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
-            gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator
-            gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or
   # one the hourly sweep found (stuck-arm). This job only arms, as the worker
