@@ -987,7 +987,7 @@ jobs:
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() {
-            say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
+            say "review of $SHA did not finish: $1. Nothing was approved or blocked.${2-" Re-run the review-risky job, or push a new head, to try again."}"
             exit 1
           }
           # Blocker lines: a line starting with blocker(s), with or without markup (a slash after
@@ -1114,7 +1114,7 @@ jobs:
             jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$r-body.json" > "$RUNNER_TEMP/$r.txt" 2>/dev/null || retry "the $r reviewer seat's answer was not JSON"
             served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$r-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
             [ "$served" = "${!vr}" ] || retry "the $r reviewer seat was answered by ${served:-a row it did not name}, not the ${!vf} row ${!vr}"
-            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "the $r reviewer seat's answer was cut at its token limit"
+            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "token budget exceeded: the $r reviewer seat's answer hit its max_tokens limit (finish_reason length), so a re-run asks the same row with the same budget and is cut again. Raise max_tokens in ask_row or shorten the review output contract" " "
             out=$(cat "$RUNNER_TEMP/$r.txt"); [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
             rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true); ok=approved
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
