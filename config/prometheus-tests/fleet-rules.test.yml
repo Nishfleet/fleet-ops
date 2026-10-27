@@ -606,18 +606,25 @@ tests:
         alertname: GrafanaNotificationsFailing
         exp_alerts: []
 
-  # Swap free at 25% never fires; under 20% it fires once 15 minutes have passed.
+  # Free swap 25% (never fires), 21% (never fires), then 12.5%: fires once the
+  # 15 minute hold has passed, not at 14 minutes.
   - interval: 1m
     input_series:
       - series: 'node_memory_SwapTotal_bytes'
-        values: '8000x40'
+        values: '8000x60'
       - series: 'node_memory_SwapFree_bytes'
-        values: '2000x5 1000x35'
+        values: '2000x20 1680x20 1000x20'
     alert_rule_test:
-      - eval_time: 10m
+      - eval_time: 15m
         alertname: SwapLow
         exp_alerts: []
-      - eval_time: 25m
+      - eval_time: 39m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 56m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 58m
         alertname: SwapLow
         exp_alerts:
           - exp_labels:
