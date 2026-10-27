@@ -30,3 +30,13 @@ def test_rootfs_unit_does_not_set_umask_itself(unit: str) -> None:
     assert not [line for line in unit_file.read_text().splitlines() if line.startswith("UMask=")], (
         f"{unit_file.name} sets UMask itself; keep it in the drop-in only"
     )
+
+
+def test_prometheus_config_installs_world_readable() -> None:
+    # fleet-ops#10464: mode "preserve" copied the clone's 0600 and the prometheus user could not read the rules.
+    import yaml
+
+    plays = yaml.safe_load((ROOT / "ansible/host.yml").read_text())
+    tasks = [t for play in plays for t in play["tasks"] if t.get("name") == "Install prometheus and blackbox exporter config"]
+    assert len(tasks) == 1
+    assert tasks[0]["ansible.builtin.copy"]["mode"] == "0644"
