@@ -177,3 +177,16 @@ describe("requeue", () => {
     expect(lines).toEqual(["::warning::#1: re-queue refused"]);
   });
 });
+
+describe("sweep without a merge queue", () => {
+  it("a null mergeQueue reads as an empty queue", async () => {
+    const gh: Gh = async (args) => {
+      const key = args.join(" ");
+      if (/^issue list/.test(key) || /^pr list/.test(key)) return ok([]);
+      if (/^api graphql/.test(key)) return ok({ data: { repository: { mergeQueue: null } } });
+      return { code: 1, stdout: "", stderr: `unexpected ${key}` };
+    };
+    const out = await sweep({ repo: "o/r", issue: "", closed: "" }, { gh, sleep: async () => {}, log: () => {} });
+    expect(out.refs).toEqual([]);
+  });
+});

@@ -197,7 +197,7 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
     if (q.code !== 0) {
       log("::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run");
     } else {
-      const nodes = (JSON.parse(q.stdout) as { data: { repository: { mergeQueue: { entries: { nodes?: { pullRequest?: { headRefName?: string } }[] } } } } }).data.repository.mergeQueue.entries.nodes ?? [];
+      const nodes = (JSON.parse(q.stdout) as { data?: { repository?: { mergeQueue?: { entries?: { nodes?: { pullRequest?: { headRefName?: string } }[] } } | null } | null } }).data?.repository?.mergeQueue?.entries?.nodes ?? [];
       const queued = nodes.map((x) => x.pullRequest?.headRefName).filter((r): r is string => r !== undefined);
       const armed = all.filter((p) => p.autoMergeRequest != null);
       const unarmed = all.filter((p) => p.autoMergeRequest == null && !labelNames(p).includes("needs-coordinator")).map((p) => p.headRefName);
