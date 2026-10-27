@@ -1,5 +1,3 @@
-// The agent-dispatch sweep (the `list` job): which issues and claim PRs to hand to agent.yml.
-// Ported from the job's former shell block, same reads in the same order.
 import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
@@ -18,7 +16,6 @@ export const ghCli: Gh = (args) =>
     });
   });
 
-// agent.yml's Gate skips these five labels; ci.yml keeps the set equal to the Gate's `for l in` list.
 const SKIP_LABELS = ["agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"];
 const FAILED = ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
 const LIVE = ["queued", "in_progress", "waiting", "pending", "requested"];
@@ -57,8 +54,6 @@ interface RunView {
 const isPending = (c: Check): boolean => (c.status != null && c.status !== "COMPLETED") || c.state === "PENDING";
 const isFailed = (c: Check): boolean => FAILED.includes(c.conclusion ?? "") || ["FAILURE", "ERROR"].includes(c.state ?? "");
 
-// Live means the run's `work` job is queued or running (fleet-ops#9275). With several work jobs the
-// one carrying the claim ref decides; none named means all count; none listed falls back to the run.
 export function runLive(rv: RunView, ref: string): boolean {
   const work = (rv.jobs ?? []).filter((j) => j.name.endsWith("/ work"));
   const mine = work.filter((j) => j.name.includes(`(${ref})`));
@@ -66,10 +61,6 @@ export function runLive(rv: RunView, ref: string): boolean {
   return jobs.length > 0 ? jobs.some((j) => LIVE.includes(j.status)) : LIVE.includes(rv.status ?? "");
 }
 
-// One red claim PR in, a verdict out: reason is "go" or the skip reason, run the newest counted
-// "agent run started:" body. A start whose run infra-failed never tried, so it does not count. No cap
-// test: a PR at the cap is dispatched on purpose so the Gate parks it. No rework: note test: rework-note
-// posts even while paused. config/sweep-rework-cases.json runs this in CI.
 export function redRework(input: { pr: Pr; issue: Issue; comments: Comment[] }): { reason: string; run: string } {
   const { pr, issue, comments } = input;
   const checks = pr.statusCheckRollup ?? [];
@@ -116,15 +107,11 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
   const { gh, sleep, log } = deps;
   const { repo } = env;
 
-  // Parsed JSON from gh, or an Error naming the failed call (fail loud).
   const json = async <T>(args: string[]): Promise<T> => {
     const r = await gh(args);
     if (r.code !== 0) throw new Error(`gh ${args.slice(0, 3).join(" ")} failed: ${r.stderr.trim()} ${r.stdout.trim()}`);
     return JSON.parse(r.stdout) as T;
   };
-  // An issue that is gone (HTTP 404 or 410) is skipped; any other read fault stays fatal
-  // (fleet-ops#9553). Measured 2026-10-12 with gh 2.93.0 on deleted issue 9502: exit 1, stdout the
-  // body {"message":"This issue was deleted",...,"status":"410"}, stderr "(HTTP 410)"; either marks it gone.
   const issueJson = async (n: string | number): Promise<Issue | typeof sweepGone> => {
     const r = await gh(["api", `repos/${repo}/issues/${n}`]);
     if (r.code === 0) return JSON.parse(r.stdout) as Issue;
@@ -132,7 +119,7 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
     try {
       status = String((JSON.parse(r.stdout) as { status?: unknown }).status ?? "");
     } catch {
-      /* stdout was not JSON */
+      status = "";
     }
     if (/^(404|410)$/.test(status) || /\(HTTP (404|410)\)/.test(r.stderr)) return sweepGone;
     throw new Error(`#${n}: issue read failed: ${r.stderr.trim()} ${r.stdout.trim()}`);
@@ -153,8 +140,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
   let prs: string[] = [];
 
   if (env.issue !== "") {
-    // One issue, no PR append: the filter below re-checks agent-ready and blocked_by, and agent.yml's
-    // Gate checks again, so a dispatch of an issue that was split or parked is skipped.
     nums = [env.issue];
   } else if (env.closed !== "") {
     const blocking = async (n: string | number) =>
@@ -162,10 +147,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
         .filter((i) => i.state === "open")
         .map((i) => i.number);
     nums = await blocking(env.closed);
-    // A split parent never closed on its own, so everything blocked by it waited forever (0509,
-    // 2026-09-24: ~140 issues). Close each open ancestor whose sub-issues are all closed and release
-    // what it blocked (a GITHUB_TOKEN close fires no event). A critical-path or epic parent carries
-    // its own finish line, so it never closes here.
     let c: string | number = env.closed;
     for (;;) {
       const up = await gh(["api", `repos/${repo}/issues/${c}/parent`]);
@@ -183,16 +164,12 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
       c = p;
     }
   } else {
-    // An issue left agent-in-progress by a run that died with its runner (a host or service restart
-    // sends no event) and no claim PR yet goes back to agent-ready, so this sweep lists it
-    // (fleet-ops#9063). One with a claim PR is the orphans case below.
     const inProgress = (await json<{ number: number }[]>(["issue", "list", "-R", repo, "-l", "agent-in-progress", "-L", "1000", "--json", "number"])).map((i) => i.number);
     for (const n of inProgress) {
       const open = await json<unknown[]>(["pr", "list", "-R", repo, "--head", `claim/issue-${n}`, "--state", "open", "--json", "number"]);
       if (open.length !== 0) continue;
       const body = await startedBody(n);
       if (!/actions\/runs\/[0-9]+/.test(body)) continue;
-      // A failed read is not proof the run died: skip, never requeue a live worker.
       let rv: RunView | null;
       try {
         rv = await runOf(body);
@@ -209,11 +186,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
     }
     nums = (await json<{ number: number }[]>(["issue", "list", "-R", repo, "-l", "agent-ready", "-L", "1000", "--json", "number"])).map((i) => i.number);
 
-    // CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after arming, so it never
-    // enters the queue and no event fires (0509#4384). The bulk list returns mergeable UNKNOWN until
-    // GitHub recomputes a PR after a push to main, so each armed PR is re-read to trigger that
-    // computation (fleet-ops#8557). A PR in the merge queue is dropped by ref below; a queued PR can
-    // have autoMergeRequest null (0509#4688), so the CONFLICTING test alone cannot drop it.
     type ClaimPr = { number: number; headRefName: string; autoMergeRequest: unknown; isDraft: boolean; isCrossRepository: boolean; mergeable: string; labels: Label[] };
     const all = (await json<ClaimPr[]>(["pr", "list", "-R", repo, "-L", "1000", "--json", "number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels"])).filter(
       (p) => p.headRefName.startsWith("claim/issue-") && !p.isDraft,
@@ -238,10 +210,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
         if (v.mergeable === "CONFLICTING") conflicted.push(v.headRefName as string);
       }
 
-      // Armed claim PRs whose required checks never reported (fleet-ops#8777): BLOCKED with nothing
-      // pending and nothing failed means a required check is absent. A pending check is running, not
-      // missing; a completed failure is the red-PR case's. A repo with no required checks is never
-      // BLOCKED by them, so it lists none (Nishfleet/drive, fleet-ops#8981).
       const missing: string[] = [];
       for (const p of armed) {
         const v = await prView(p.number, "headRefName,statusCheckRollup,mergeStateStatus");
@@ -249,7 +217,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
         if (v.mergeStateStatus === "BLOCKED" && !checks.some(isPending) && !checks.some(isFailed)) missing.push(v.headRefName as string);
       }
 
-      // Claim PRs whose issue is still agent-in-progress after the worker is gone (fleet-ops#8777).
       const inprog = new Set(inProgress);
       const orphans: string[] = [];
       for (const p of all) {
@@ -265,19 +232,12 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
         if (!runLive(rv, `claim/issue-${n}`)) orphans.push(`claim/issue-${n}`);
       }
 
-      // Red claim PRs the rework event missed (drive#765: no run fired; 0509#7182 #7172: rework hit
-      // lanes-full and nothing retried; every failure while FLEET_DISPATCH_PAUSED is true). An "agent
-      // run started:" newer than the failure, or a live newest run, leaves the PR alone; a rare overlap
-      // with the rework event is serialised by agent.yml's concurrency. A DIRTY PR is the conflicts
-      // job's. A PR at the 3-run cap is sent on so the Gate parks it.
       const red: string[] = [];
       for (const p of all.filter((x) => !x.isCrossRepository && /^claim\/issue-[0-9]+$/.test(x.headRefName))) {
         const v = await prView(p.number, "headRefName,statusCheckRollup,mergeStateStatus");
         const ref = v.headRefName as string;
         if (queued.includes(ref)) continue;
         const n = ref.slice("claim/issue-".length);
-        // A claim PR outlives its issue when the issue is deleted: skip it, never abort the sweep
-        // (fleet-ops#9553). Any other read failure is still fatal.
         const issue = await issueJson(n);
         if (issue === sweepGone) {
           log(`#${n}: issue gone, skipping claim PR ${p.number}`);
@@ -302,10 +262,6 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
     }
   }
 
-  // Same gone-issue skip for the other place the sweep resolves numbers one at a time: a dispatched
-  // issue deleted between the listing and this read, or a hand-typed workflow_dispatch issue that
-  // names one. A read fault that is not a gone issue aborts the sweep instead of quietly shrinking
-  // the queue.
   const pages: Issue[] = [];
   for (const n of new Set(nums)) {
     const i = await issueJson(n);
@@ -328,5 +284,5 @@ if (import.meta.main) {
     { repo, issue: process.env.ISSUE ?? "", closed: process.env.CLOSED ?? "" },
     { gh: ghCli, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), log: (l) => console.log(l) },
   );
-  appendFileSync(process.env.GITHUB_OUTPUT ?? "/dev/stdout", `refs=${JSON.stringify(out.refs)}\nstalled_refs=${JSON.stringify(out.stalledRefs)}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT ?? (() => { throw new Error("GITHUB_OUTPUT is not set"); })(), `refs=${JSON.stringify(out.refs)}\nstalled_refs=${JSON.stringify(out.stalledRefs)}\n`);
 }

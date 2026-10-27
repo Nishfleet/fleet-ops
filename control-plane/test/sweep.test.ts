@@ -4,7 +4,6 @@ import { type Gh, type GhResult, redRework, runLive, sweep } from "../src/sweep.
 
 const config = (name: string) => JSON.parse(readFileSync(new URL(`../../config/${name}`, import.meta.url), "utf8"));
 
-// jq's `*`: objects merge, everything else (arrays included) is replaced.
 const merge = (a: any, b: any): any =>
   a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)
     ? Object.fromEntries([...new Set([...Object.keys(a), ...Object.keys(b)])].map((k) => [k, k in b ? merge(a[k], b[k]) : a[k]]))
@@ -35,8 +34,6 @@ const claimPr = (number: number, issueNo: number, extra: object = {}) => ({
 });
 const red = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE", completedAt: "2026-10-09T00:00:00Z", startedAt: "2026-10-09T00:00:00Z" }];
 
-// The fleet-ops#9553 shape: #7001 and #7002 are queued, #7003 has a red claim PR with no run since
-// (its issue carries 180 KB of comments), and #9502 is deleted.
 function fakeGh(bodyOnStdout: boolean, calls: string[]): Gh {
   const prs = [claimPr(7001, 7001), claimPr(8001, 7003), claimPr(8002, 9502, { labels: [{ name: "needs-coordinator" }] })];
   return async (args) => {
