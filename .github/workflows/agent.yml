@@ -307,7 +307,7 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
-          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID · arm: menu=$([ $((i % 2)) = 1 ] && echo on || echo off) desk=$([ $((i / 2 % 2)) = 1 ] && echo on || echo off)"
+          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID · arm: menu=$([ $((i % 2)) = 1 ] && echo on || echo off) desk=$([ $((i / 2 % 2)) = 1 ] && [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" != false ] && echo on || echo off)"
           printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
