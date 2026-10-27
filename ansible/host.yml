@@ -310,7 +310,7 @@
         group: fleet-runner
         mode: preserve
         directory_mode: '0750'
-      when: (nish_home ~ '/.local/share/agent-runner/1/.credentials') is exists
+      when: (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
       notify:
         - Reload systemd
         - Restart pilot runner
