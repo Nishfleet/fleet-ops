@@ -936,7 +936,7 @@ jobs:
   review:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
-    timeout-minutes: 60 # waiting for the seat locks and the 429 backoff (#10183) come on top of the calls' own timeouts
+    timeout-minutes: 90 # worst case: 4 attempts x (600 s lock wait + 480 s call) + 210 s backoff, on top of the first review (#10183)
     # The approval is a PR comment written with the job's own GITHUB_TOKEN, so
     # github-actions[bot] is the approver. This job runs from main (agent.yml@main),
     # so the PR cannot change the reviewer that judges it. A PR that adds its own
@@ -1094,7 +1094,7 @@ jobs:
           mkdir -p "$HOME/.cache"
           ask() { local rc=0 n=0
             while :; do
-              rc=0; flock -w 1800 "$HOME/.cache/fleet-review-$1.lock" timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
+              rc=0; flock -w 600 "$HOME/.cache/fleet-review-$1.lock" timeout 480 pi --print --no-context-files --no-tools --no-session --append-system-prompt "$HOME/AGENTS.md" \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --provider litellm --model "$1" \
                 < "$RUNNER_TEMP/extra-in.txt" > "$RUNNER_TEMP/$2.txt" || rc=$?
               [ "$rc" != 0 ] && [ "$n" -lt 3 ] || break
@@ -1113,7 +1113,7 @@ jobs:
           judge() { local rc=0 n=0 served
             while :; do rc=0
             { jq -nc --arg m "$THIRD_SEAT" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 8192, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/third-req.json" \
-              && flock -w 1800 "$HOME/.cache/fleet-review-$THIRD_SEAT.lock" curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
+              && flock -w 600 "$HOME/.cache/fleet-review-$THIRD_SEAT.lock" curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/third-headers.txt" -o "$RUNNER_TEMP/third-body.json" --data-binary "@$RUNNER_TEMP/third-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/third-body.json"; : > "$RUNNER_TEMP/third-headers.txt"; }
             # A 429, or a fallback row answering for the Qwen row, is capacity and not a verdict: wait and ask again.
