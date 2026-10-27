@@ -546,8 +546,7 @@ jobs:
           cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
           for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
-          t=$(mktemp -d)
-          mkdir "$t/bin"
+          t=$(mktemp -d); mkdir "$t/bin"
           cat > "$t/bin/gh" <<'FAKE'
           #!/usr/bin/env bash
           # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
@@ -564,12 +563,13 @@ jobs:
             *git/ref/heads/*) exit 1 ;;
             *actions/runs/*/jobs*) all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
               if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
-            *actions/workflows/*/runs*) jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
+            *actions/workflows/*/runs*) n=$(<"$FAKE_DIR/fail"); [ "$n" -eq 0 ] || { echo $((n - 1)) > "$FAKE_DIR/fail"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
+              jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
             *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
             *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
           esac
           FAKE
-          chmod +x "$t/bin/gh"
+          printf '#!/bin/sh\n' > "$t/bin/sleep"; chmod +x "$t/bin/gh" "$t/bin/sleep"
           today=$(date -u -d '+10 minutes' +%FT%TZ)
           old=$(date -u -d '2 days ago' +%FT%TZ)
           bad=0
@@ -582,7 +582,7 @@ jobs:
             while IFS= read -r r; do
               jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
             done < <(jq -c '.runs[]' <<<"$c")
-            : > "$d/out"
+            : > "$d/out"; jq -r '.fail_runs // 0' <<<"$c" > "$d/fail"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
               DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
