@@ -1434,8 +1434,9 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            echo "orchestrate: $branch exists on origin; another hand-off owns #$ISSUE; skip"
+          # A branch on origin with an open PR is a blocked review sent back (fleet-ops#10435): continue it. The per-issue concurrency group means no other run for #N is live.
+          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null && [ "$(gh pr list -R "$REPO" --head "$branch" --state open --json number --jq length)" = 0 ]; then
+            echo "orchestrate: $branch exists on origin with no open PR; another hand-off owns #$ISSUE; skip"
             exit 0
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
@@ -1495,11 +1496,7 @@ jobs:
         # No GH_TOKEN: every git call here authenticates as the runner user.
         run: |
           set -euo pipefail
-          # The mirror lives under $HOME/workspaces/agent-worktrees, beside the
-          # worker worktrees, never in /tmp or inside the deploy clone: a
-          # checkout a session can re-clone is not a base to branch from.
-          # A bare repo needs no checkout of its own, and `git worktree add`
-          # works from one (git 2.43 proven).
+          # The mirror sits beside the worker worktrees, never in /tmp or the deploy clone: a checkout a session can re-clone is not a base. A bare repo needs no checkout; `git worktree add` works from it.
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
@@ -1507,11 +1504,7 @@ jobs:
           mkdir -p "${mirror%/*}"
           exec 9>"${mirror%.git}.lock"
           flock 9
-          # Test for a repository, not a directory: a mirror whose HEAD file is
-          # gone (fleet-ops#9526) is a directory that git no longer recognises.
-          # `git init` on it recreates HEAD and keeps the objects, refs and
-          # config, so a damaged mirror is repaired in place, and the remote is
-          # added only when it is missing.
+          # Test for a repository, not a directory: a mirror that lost its HEAD file (fleet-ops#9526) is a directory git no longer recognises. `git init` recreates HEAD and keeps objects, refs and config.
           init_mirror() {
             if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
               mkdir -p "$mirror"
@@ -1521,32 +1514,12 @@ jobs:
               git -C "$mirror" remote add origin "https://github.com/$REPO.git"
           }
           init_mirror
-          # No GH_TOKEN on the fetch either: the App token cannot read a private
-          # repo and has no workflows scope. The runner user's own gh login is the
-          # credential (~/.gitconfig -> gh auth git-credential), and a repo it
-          # cannot read fails this step loudly instead of claiming an issue it
-          # cannot build.
-          # The refspec maps into refs/remotes/origin/*, NOT into refs/heads/*:
-          # with prune, a heads->heads refspec deletes every local branch that is
-          # not on origin, which is exactly the branch holding a hand-off that
-          # died before its push (proven live: --prune removed
-          # refs/heads/orch/issue-localonly). Pruning only refs/remotes is safe.
-          # It also gives the worktree a real origin/main, which the prompt's
-          # "git log --oneline origin/main..HEAD" reuse step needs.
+          # No GH_TOKEN on the fetch: the runner user's own gh login is the credential (~/.gitconfig -> gh auth git-credential), and a repo it cannot read fails loudly.
+          # The refspec maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a heads->heads refspec deletes local branches not on origin, such as a hand-off that died before its push (proven live). It also gives the worktree a real origin/main for the prompt's reuse step.
           fetch_mirror() {
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
           }
-          # The age-out that deleted HEAD also removed old objects, so the same
-          # mirror can fail the fetch with "unresolved deltas" (fleet-ops#9526).
-          # The mirror is a cache of origin: when the fetch fails AND the object
-          # store does not pass a connectivity check, set it aside and fetch
-          # fresh. It is moved, not deleted, because it can hold local-only
-          # hand-off branches (a hand-off that died before its push); the aside
-          # copy sits beside the worktrees, where the 3-day age-out reaps it, so
-          # there is a window to salvage from it. A fetch that fails on an intact
-          # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. The lock above is held by this
-          # step alone, but a session live in a worktree of the old mirror loses its registration.
+          # The age-out also removed old objects, so the fetch can fail with "unresolved deltas" (fleet-ops#9526). When the fetch fails AND the object store fails a connectivity check, set the mirror aside (it can hold local-only hand-off branches; the 3-day age-out reaps the copy) and fetch fresh. A failed fetch on an intact mirror (network, credential) stays a loud failure. A session live in a worktree of the old mirror loses its registration.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
@@ -1565,11 +1538,12 @@ jobs:
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
+          # A branch on origin here has an open PR (step "issue"): continue from its head.
+          start=refs/remotes/origin/orch/issue-$ISSUE
+          git -C "$mirror" show-ref --verify --quiet "$start" || start=
           if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
             # A hand-off that died before its push: its branch holds its commits,
             # so start from it instead of failing on "branch already exists".
-            # Step "issue" already bailed when that branch is on origin, so this
-            # is only the local half.
             while IFS= read -r line; do
               case $line in
                 "worktree "*) wdir=${line#worktree } ;;
@@ -1578,9 +1552,9 @@ jobs:
                   git -C "$mirror" worktree prune ;;
               esac
             done < <(git -C "$mirror" worktree list --porcelain)
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q "$wt" "$branch_ref"
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q ${start:+-B "orch/issue-$ISSUE"} "$wt" "${start:-$branch_ref}"
           else
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" refs/remotes/origin/main
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" "${start:-refs/remotes/origin/main}"
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
