@@ -128,6 +128,54 @@ script, or prompt lands unseen.
   so only its parent unit is verified. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
+- `systemd/tincan-listen-command-code.service`,
+  `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
+  `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
+  `tincan-listen-pi.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
+  and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
+  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
+  OpenCode and the paid pi seat, each reading its own
+  `~/.config/tincan/<agent>.json` and prompt and writing its state under
+  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
+  router with a virtual key of its own, kept in the fleet's local seat directory
+  (worker-cheap only, capped per day), minted with `POST /key/generate` like
+  every other consumer credential, because a prompt-injected message in that
+  lane could make the run print its environment. The router's master key is not
+  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
+  daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
+  The six wake services were hand-placed regular files under
+  `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
+  them; the files here are the bytes that ran before, and `fleet-sync.service`
+  step 2j links each one on every deploy (the `default.target.wants` links
+  already point at these paths, so a hand disable stays off: step 2j has no
+  `enable` line). The desk daemon is
+  root-owned, installed from `rootfs/etc/systemd/user/` by
+  `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
+  bundled `cua` binary; step 2k retires its hand-placed copy once the installed
+  one is there, and repoints its wants link at the installed file so the link
+  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
+  are enabled already (the wants link names the unit, and step 2j keeps the six
+  wake links pointed at the repo files). A unit edit applies at that unit's next
+  restart. The OpenCode lane will not start without its own key file, so mint
+  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
+  limit) into the fleet's seat directory before its first start, the way the
+  Cursor lane's seat file is provisioned: a missing file fails the unit and
+  pages, which is the point, because the lane has no fallback to the admin key.
+  Off switch, one unit at a time:
+  `systemctl --user disable --now tincan-listen-command-code.service`
+  `systemctl --user disable --now tincan-listen-cursor-vps.service`
+  `systemctl --user disable --now tincan-listen-devin-vps.service`
+  `systemctl --user disable --now tincan-listen-fleet-worker.service`
+  `systemctl --user disable --now tincan-listen-opencode.service`
+  `systemctl --user disable --now tincan-listen-pi.service`
+  `systemctl --user disable --now cua-desk-daemon.service`
+  Delete one of the six wake services by removing its name from
+  `fleet-sync.service` step 2j, its file here and the live link, then
+  `systemctl --user daemon-reload`. Delete the desk daemon with
+  `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
+  link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
+  `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
@@ -191,10 +239,8 @@ script, or prompt lands unseen.
   `systemctl --user daemon-reload`; it applies at the next index run.
   The same `UMask=0077` drop-in sits in
   `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
-  Tincan listener (its unit file is hand-placed; link only the drop-in into
-  `~/.config/systemd/user/tincan-listen-devin-vps.service.d/`, then
-  `systemctl --user daemon-reload` and restart that listener, which only
-  wakes Devin).
+  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
+  so the drop-in now applies on every deploy. Applies at the next restart.
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](#triage-admission-needs-triage) decides whether a worker starts)
@@ -206,6 +252,15 @@ script, or prompt lands unseen.
   `fleet-sync.service`.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
   (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+- `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
+  `gpg-agent.service`, the stock GPG credential cache every signing unit loads
+  (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
+  `MemoryMax=512M`). It was a hand-placed file under `~/.config/systemd/user`
+  (fleet-ops#10138), which shadows `/etc/systemd/user`, so the repo copy would
+  have been inert: `ansible/host.yml` lists that file in `retired`, so
+  `fleet-host-config.service` deletes the live copy and reloads nish's user
+  manager, and gpg-agent reads these bytes at its next start. The unit file is
+  the distro's, so the repo ships the drop-in only.
 - `rootfs/etc/prometheus/fleet_rules.yml`, `rootfs/etc/alertmanager/alertmanager.yml`
   and the `rule_files` and `alerting` blocks of `rootfs/etc/prometheus/prometheus.yml`
   — the dead-man and the pages. Prometheus loads eleven rules:
@@ -1083,7 +1138,7 @@ credential file does not hold them back.
 
 ## CI
 
-`.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
+`.github/workflows/ci.yml` runs one job, `ci`, on every PR and every merge-queue entry. Its
 checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
@@ -1466,9 +1521,11 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
   litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing
   path or api_base, 400) fails it, so a provider cannot silently drop out of the check. HTTP 401 or
-  403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with one plain line
-  naming the provider and what Nish must do, and no issue is filed. A router row with a key but no
-  https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`, is refused.
+  403 means a dead or expired key or login: every run logs one plain line naming the provider and
+  what Nish must do and moves on (fleet-ops#9912: a standing state must not re-fail the unit on
+  every daily run and keep the failed-unit list never empty), and no issue is filed. A router row
+  with a key but no https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`,
+  is refused.
 - `config/provider-watch.json` holds only generic per-provider settings: `watch` (an ERE; only ids
   matching it are compared; Cline lists a large catalogue that changes about weekly, so it watches
   only `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids), `billing` (`flat`) and `listing`
