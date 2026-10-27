@@ -714,7 +714,7 @@ def test_a_403_arrives_as_bad_request_and_gets_one_retry():
 def test_an_unkeyed_402_also_gets_the_default_one_retry():
     """DefaultRetries covers every class the policy does not name. 402 stays plain
     APIError on 1.105.0 (no key), so the default grants it one retry; the named keys
-    keep precedence, so 401 stays 0 and a 429 keeps its same-row retry."""
+    keep precedence, so 401 stays 0 and a 429 gets its two (fleet-ops#10178)."""
     exception = APIError(status_code=402, message="insufficient credits",
                          llm_provider="openai", model="x")
     assert get_num_retries_from_retry_policy(
@@ -723,7 +723,7 @@ def test_an_unkeyed_402_also_gets_the_default_one_retry():
         AuthenticationError("401", "openai", "x", None), RetryPolicy(**RP_PROPOSED)) == 0
     assert get_num_retries_from_retry_policy(
         RateLimitError(message="x", llm_provider="openai", model="x"),
-        RetryPolicy(**RP_PROPOSED)) == 1
+        RetryPolicy(**RP_PROPOSED)) == 2
 
 
 def test_a_403_wall_retries_the_pinned_row_then_falls_to_the_fallback():
