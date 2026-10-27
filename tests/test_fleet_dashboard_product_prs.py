@@ -14,8 +14,7 @@ def test_product_prs_per_repo_leads_the_dashboard():
     target = table["targets"][0]
     assert target["datasource"]["type"] == "grafana-github-datasource"
     assert target["queryType"] == "Pull_Requests"
-    assert target["options"]["timeField"] == 2  # merged_at
-    query = target["options"]["query"]
+    assert target["options"]["timeField"] == 2    query = target["options"]["query"]
     assert query.startswith("is:merged ")
     assert {t.split("/")[1] for t in query.split() if t.startswith("repo:")} == PRODUCTS
 
