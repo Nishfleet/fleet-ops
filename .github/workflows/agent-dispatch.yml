@@ -722,13 +722,14 @@ jobs:
           REQUEUE: |
             [.[] | select(.labels | map(.name) | any(IN("needs-nish-decision", "needs-orchestrator")) | not)
               | select((.updatedAt | fromdateiso8601) < $now - 21600)
+              | select((.comments[-1].body // "") | startswith("orchestrator hand-off ended without a PR: "))
               | {number, runs: [.comments[] | select(.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | select(startswith("orchestrator hand-off ended without a PR: "))]}
               | select(.runs | length > 0)
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | sort_by(.act) | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([3 - $queued, 0] | max)] | .[]
         run: |
           queued=$(gh issue list -R "$GITHUB_REPOSITORY" -l needs-orchestrator -L 100 --json number --jq length) || queued=3
-          gh issue list -R "$GITHUB_REPOSITORY" -l agent-blocked -L 100 --json number,labels,updatedAt,comments |
+          gh issue list -R "$GITHUB_REPOSITORY" -l agent-blocked -L 1000 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
@@ -1718,6 +1719,7 @@ jobs:
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
           # credential, the same one the session pushes with).
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create agent-blocked -R "$REPO" --force --color D93F0B --description "Worker posted a proposal and released its claim"
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           echo "orchestrate: #$ISSUE marked agent-blocked (no PR)"

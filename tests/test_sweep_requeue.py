@@ -102,6 +102,12 @@ def test_blocked_issue_with_no_ended_hand_off_is_not_requeued(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [2]
 
 
+def test_worker_block_after_an_ended_hand_off_is_left_alone(tmp_path):
+    i = issue(1, ended=1)
+    i["comments"].append({"body": "blocked-on: senior-conference", "authorAssociation": "NONE"})
+    assert run(tmp_path, [i]) == []
+
+
 def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
     """REQUEUE's counter and the comment that feeds it are one string shared by two jobs:
     editing either alone leaves every ended hand-off uncounted, so the issue loops."""
