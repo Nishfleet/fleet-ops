@@ -352,7 +352,7 @@
         state: link
         owner: fleet-runner
         group: fleet-runner
-      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^/home/nish/') | list }}"
+      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
       loop_control:
         label: "{{ item.stat.path }}"
       notify: Restart pilot runner
