@@ -252,6 +252,10 @@ jobs:
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
         run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py
+      - name: router order-2 overflow runs against the pinned LiteLLM (fleet-ops#9658)
+        # The test imports litellm, so pytest runs in an env that has the proxy's pinned v1.98.0.
+        if: always()
+        run: uvx --with litellm==1.98.0 pytest@8.3.5 -q -p no:cacheprovider tests/test_router_order2_overflow.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
