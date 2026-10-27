@@ -1,0 +1,48 @@
+# Every firing Prometheus alert files one fleet-ops issue (fleet-ops#10300).
+# The detectors stay in rootfs/etc/prometheus/fleet_rules.yml, which already
+# applied each rule's own `for`, so this rule fires at once. Grafana raises one
+# instance per ALERTS series. The series' own alertname would be overwritten by
+# this rule's title, so label_join copies it to prom_alertname for the issue.
+# The rule sets severity warning, so a Prometheus alert never reaches the
+# critical routes: Telegram gets severity=nish alerts from Alertmanager only,
+# 2 hours after they start. Route: signal=prometheus in cloudflare-spend-contact.yaml.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: prometheus-alerts
+    folder: fleet
+    interval: 1m
+    rules:
+      - uid: prometheus-alerts
+        title: Prometheus alert firing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: label_join(ALERTS{alertstate="firing", alertname!="Watchdog"}, "prom_alertname", ",", "alertname")
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        annotations:
+          summary: 'Prometheus alert {{ $labels.prom_alertname }} is firing{{ with $labels.name }} for {{ . }}{{ else }}{{ with $labels.instance }} for {{ . }}{{ end }}{{ end }}'
+          description: 'Detector: rootfs/etc/prometheus/fleet_rules.yml, alert {{ $labels.prom_alertname }}. Find it with promtool or the Prometheus ALERTS series.'
+        labels: {severity: warning, signal: prometheus}
+        isPaused: false
