@@ -543,9 +543,8 @@ jobs:
           }
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
-            # One issue, no PR append: the jq below still re-checks agent-ready
-            # and blocked_by, and agent.yml's Gate re-checks again, so a
-            # dispatch of an issue that was split or parked is skipped.
+            # One issue, no PR append: the jq below re-checks agent-ready and blocked_by,
+            # and agent.yml's Gate re-checks again, so a split or parked issue is skipped.
             nums=$ISSUE
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
@@ -562,9 +561,8 @@ jobs:
             done
           else
             # An issue left agent-in-progress by a run that died with its runner
-            # (a host or service restart sends no event) and no claim PR yet
-            # goes back to agent-ready, so this sweep lists it (fleet-ops#9063:
-            # drive #200 #34 #99 #60 #75 sat claimed with no live run, 2026-10-02).
+            # (a host or service restart sends no event) and no claim PR yet goes back to
+            # agent-ready, so this sweep lists it (fleet-ops#9063, 2026-10-02: five drive issues).
             # One with a claim PR is the orphans case below.
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
@@ -580,8 +578,7 @@ jobs:
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
-            # after arming, so it never enters the queue and no event fires
-            # (0509#4384, armed and DIRTY since 09-23 19:00Z).
+            # after arming, so it never enters the queue and no event fires (0509#4384).
             # The bulk list returns mergeable UNKNOWN until GitHub recomputes a
             # PR after a push to main, so each armed PR is re-read per PR to
             # trigger that computation (fleet-ops#8557). A PR in the merge queue
@@ -705,9 +702,8 @@ jobs:
             esac
             pages="$pages$i"$'\n'
           done
-          # agent.yml's Gate skips these five labels, so a ref that carries one is a
-          # matrix slot spent on a job that ends in 9 s. ci.yml keeps this set equal to
-          # the Gate's `for l in` list.
+          # agent.yml's Gate skips these five labels: a ref with one wastes a matrix slot.
+          # ci.yml keeps this set equal to the Gate's `for l in` list.
           refs=$(printf '%s' "$pages" |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
@@ -715,25 +711,29 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart themselves (fleet-ops#10420): idle 6 h, then back to needs-orchestrator on the runner login, so the label event starts the hand-off; after 3 ended runs, needs-nish-decision.
+      # Parked hand-offs restart themselves (fleet-ops#10420): idle 6 h, then needs-orchestrator is (re-)added on the runner login, so the label event starts the hand-off (queued = live orchestrate jobs, not labels; an API error means no re-queues); after 3 ended runs, needs-nish-decision.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           REQUEUE: |
-            [.[] | select(.labels | map(.name) | any(IN("needs-nish-decision", "needs-orchestrator")) | not)
-              | select((.updatedAt | fromdateiso8601) < $now - 21600)
-              | {number, runs: [.comments[] | select(.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | select(startswith("orchestrator hand-off ended without a PR: "))]}
-              | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | sort_by(.act) | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([3 - $queued, 0] | max)] | .[]
+            [.[] | (.labels | map(.name)) as $l
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
+              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[] | select(.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | select(startswith("orchestrator hand-off ended without a PR: "))]}
+              | select(.tried or ("orch/issue-\(.number)" | IN($prs[]) | not))
+              | .act = (if .tried and (.runs | length) >= 3 then "escalate" else "requeue" end)]
+            | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
-          queued=$(gh issue list -R "$GITHUB_REPOSITORY" -l needs-orchestrator -L 100 --json number --jq length) || queued=3
-          gh issue list -R "$GITHUB_REPOSITORY" -l orchestrator-tried -L 100 --json number,labels,updatedAt,comments |
-            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" "$REQUEUE" | while IFS= read -r r; do
+          queued=$(for st in queued in_progress; do gh api "repos/$GITHUB_REPOSITORY/actions/workflows/agent-dispatch.yml/runs?status=$st&per_page=100" --jq '.workflow_runs[] | select(.event | IN("issues", "workflow_dispatch")) | .id' || exit 1; done |
+            while read -r id; do gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.name == "orchestrate" and .status != "completed")] | length' || exit 1; done | awk '{s += $1} END {print s + 0}') || queued=5
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 100 --json headRefName --jq 'map(.headRefName)') || { prs=[]; queued=5; }
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR: $(jq -r '.runs | map(ltrimstr("orchestrator hand-off ended without a PR: ")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
-              else env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"; fi
+              else env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label "$(jq -r 'if .tried then "orchestrator-tried" else "needs-orchestrator" end' <<<"$r")" &&
+                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"; fi
             done
   unblocked:
     needs: list
