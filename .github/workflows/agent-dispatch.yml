@@ -1085,7 +1085,12 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
+          # A closed issue is not active work: strip the queue and park labels, and
+          # orchestrator-tried, which marks a dead end that a close ends
+          # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
+          # record of a reserved call, not a queue state.
+          strip=$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')
+          [ -z "$strip" ] || gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$strip" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1711,6 +1716,17 @@ jobs:
           # orchestrator-tried and skips; only a person clears the label.
           if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
+            exit 0
+          fi
+          # A PR on any other branch (gate/*, claim/*) that closes the issue is
+          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
+          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
+          # includeClosedPrs is false: a closed unmerged PR does not count.
+          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
+          if env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" \
+              -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' \
+              --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount' | grep -qxE '[1-9][0-9]*'; then
+            echo "orchestrate: #$ISSUE has a linked closing PR; nothing to mark"
             exit 0
           fi
           # The writes need issues: write, which this job deliberately does not
