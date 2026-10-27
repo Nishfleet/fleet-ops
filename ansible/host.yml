@@ -335,6 +335,28 @@
         - Reload systemd
         - Restart pilot runner
 
+    # The copy keeps `bin` and `externals` as the absolute links they are under
+    # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
+    # at once and the unit crash-looped (fleet-ops#10491). Point them at their
+    # sibling directories instead. A link that is already relative is left alone.
+    - name: Read the pilot runner links
+      ansible.builtin.stat:
+        path: "/var/lib/fleet-runner/1/{{ item }}"
+      loop: [bin, externals]
+      register: pilot_links
+
+    - name: Point the pilot runner links at the copy
+      ansible.builtin.file:
+        src: "{{ item.stat.lnk_target | basename }}"
+        dest: "{{ item.stat.path }}"
+        state: link
+        owner: fleet-runner
+        group: fleet-runner
+      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^/home/nish/') | list }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
+
     - name: Install agent runner units
       ansible.builtin.template:
         src: actions.runner.Nishfleet.netcup-agent.service.j2
