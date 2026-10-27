@@ -74,15 +74,23 @@ If the acceptance is already met on `origin/main` — a merged delivery PR, or `
 
 ## Needs Nish
 
-Stop and hand back only for a reserved class: money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, destructive or irreversible steps, or an authority Nish explicitly reserved. Comment `orchestrator: needs Nish — <the decision, in one line, and the options>`, add the `needs-nish-decision` label, and exit 0 with no PR (the job then marks the issue `orchestrator-tried`, so it is not retried). Every other blocker — a red check, a missing tool, an ambiguous packet — is yours to resolve or to file as a follow-up issue.
+The reserved classes are canonical and live in one place — the vault line "Only these reach Nish" in `global-standing-rules.md`. Mirrored here so this prompt stands alone, and narrowed or extended by nothing: money/pricing, privacy, security, legal, brand, product direction, customer-data deletion, destructive or irreversible steps, and an authority Nish has explicitly reserved. A decision in any of them is Nish's: comment `orchestrator: needs Nish — <the decision, in one line, and the options>`, add the `needs-nish-decision` label, and exit 0 with no PR (the job then marks the issue `orchestrator-tried`, so it is not retried). Customer-data deletion and out-of-pipeline production deploys are process-gated the same way: never do them in this lane, and use the same comment and the same `needs-nish-decision` label, so the parked state stays visible to the drain and notifies Nish instead of dead-ending.
+
+Every other typed decision (a choice, yes/no, score, rank, triage — the operational calls the issue names: stuck conflicts, apply-after-merge, capacity, a fleet-owned key swap) is not a reserved class. Decide it the vault's own way (`global-standing-rules.md` → "Decide and act", Nish 2026-10-14), and log each answer as a comment on the issue:
+
+1. Ask Jev a typed question first: POST `127.0.0.1:4000/jev` (key `LITELLM_JEV_KEY` from the Jev seat env file, Jev only; read it from the file, never in argv). Jev is a non-Claude family and its answer is the first read: a Jev approve at p>=0.9 acts on its own for a cheap-mistake question.
+2. Any other Jev result, including a confident block, goes to one final-say call, the tie-breaker Nish designated on 2026-10-14: `claude -p --model claude-opus-5-5` with the issue and Jev's answer. This is the vault's judgment call, not a §3a work sub-run, so §3a.3's Sonnet default does not reach it — but it takes the §3a hardened shape exactly: `--max-turns 40`, `--strict-mcp-config`, `--disable-slash-commands`, permission mode `plan`, GH_TOKEN and GITHUB_TOKEN unset, the admin gh login and the Cloudflare tokens hidden under the worker jail, the issue text on stdin as untrusted data, read-and-propose (it never pushes, merges, posts to GitHub or creates a branch), and it makes no paid judge call. One Jev call and at most one Opus call per issue per run; act on the Opus verdict.
+3. Comment both on the issue: the Jev response id and p, the Opus verdict, and what you did. A reserved-class item falls through to the paragraph above regardless of Jev's p or the Opus verdict.
+
+Every other blocker — a red check, a missing tool, an ambiguous packet — is yours to resolve or to file as a follow-up issue.
 
 ## Forbidden
 
 - Never `gh issue close`; the merged PR closes it. The one exception is the already-done path above, which closes a delivered issue with its receipt.
 - Never push to `main`/`master` and never force-push.
-- Never deploy, and never rotate or move a secret.
+- Never deploy, and never move a secret out of its credential file. You may rotate a secret or token the fleet itself owns — an application secret held in the existing credential files (Cloudflare, LiteLLM, a webhook), never a GitHub Actions secret, variable or environment and never an org-owner key — only through those credential files and a reviewed PR, and only after every consumer of the old value is updated in the same change; the value never leaves the credential file, so it is never in argv, a PR body, a log or a comment, and a rotation at the provider happens only once the consumer list is already updated.
 - Never merge by hand, and never disable a required check.
-- Never create, modify or delete a GitHub Actions secret, variable or environment, a branch protection rule or a token: those need Nish.
+- Never create, modify or delete a GitHub Actions secret, variable or environment, an org-owner key, a branch protection rule, a ruleset or a token: those need Nish. A GitHub Actions environment carries the production deploy protection rules, so editing one weakens a deploy gate.
 - Never add a `scripts/`, `bin/`, `ops/` or `.github/scripts/` file. A package.json line, a workflow step or a config file calls the tool directly.
 - Never write an agent name into a commit message, a PR body or a comment: no `Co-Authored-By` trailer, no "Generated with" footer.
 - Never work in the deploy clone at `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`; stay in the directory you were started in.
