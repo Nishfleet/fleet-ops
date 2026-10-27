@@ -8,6 +8,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -27,6 +28,11 @@ esac
 
 def _y(expr):
     return subprocess.run(["yq", expr, WF], check=True, capture_output=True, text=True).stdout
+
+
+def _yj(expr):
+    return json.loads(subprocess.run(["yq", "-o=json", expr, WF], check=True,
+                                     capture_output=True, text=True).stdout)
 
 
 def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",)):
@@ -89,6 +95,30 @@ def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=3)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
+
+
+def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
+    """REQUEUE's counter and the comment that feeds it are one string shared by two jobs:
+    editing either alone leaves every ended hand-off uncounted, so the issue loops."""
+    counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE"))
+    assert counted, "REQUEUE no longer counts ended hand-offs with a startswith() prefix"
+    prefix = counted.group(1)
+    posted = [m for line in _y(".jobs.orchestrate.steps[] | select(.run) | .run").splitlines()
+              for m in re.findall(r'--body "([^"]*)"', line) if "gh issue comment" in line]
+    assert prefix in [body.split("$")[0] for body in posted], (prefix, posted)
+
+
+def test_requeue_step_runs_only_on_the_sweep_events():
+    """pull_request_target and workflow_run reach this workflow too, so a gate phrased as
+    "not issues" would run the sweep's writes for them; only the two sweep triggers may."""
+    expr = _y(f"{STEP} | .if")
+    allowed = set(re.findall(r"github\.event_name\s*==\s*['\"]([a-z_]+)['\"]", expr))
+    rest = re.sub(r"github\.event_name\s*==\s*['\"][a-z_]+['\"]", "", expr)
+    assert re.sub(r"[\s()|]", "", rest) == "", expr
+    assert allowed == {"schedule", "workflow_dispatch"}, expr
+    assert allowed <= set(_yj(".on | keys")), expr
+
+
 def test_a_stranger_cannot_escalate_an_issue(tmp_path):
     i = issue(1, ended=3)
     for c in i["comments"]:
