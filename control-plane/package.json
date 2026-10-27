@@ -1,0 +1,11 @@
+{
+  "name": "fleet-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Control-plane jobs moved out of workflow YAML into tested code, one job per PR (fleet-ops#10456)",
+  "license": "UNLICENSED",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/Nishfleet/fleet-ops.git" },
+  "scripts": { "test": "vitest run" },
+  "devDependencies": { "vitest": "5.0.3" }
+}
