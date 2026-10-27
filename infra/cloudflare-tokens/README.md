@@ -100,6 +100,38 @@ cannot prove what the live list holds; check with
 the old tokens in the Cloudflare dashboard (names start `gha-`) and apply again
 to mint fresh ones.
 
+### State encryption
+
+The state file holds the token values as OpenTofu wrote them, so the state is
+encrypted with OpenTofu's own state encryption (AES-GCM, key derived from a
+passphrase). The passphrase and the method settings are not in this repo: they
+are one `TF_ENCRYPTION` line in a private env file that
+`cloudflare-tokens-apply.service` loads when it exists
+(`EnvironmentFile=-`). `state-encryption.env.example` is the template. The file
+lives next to the other Cloudflare env files under `~/.config/cloudflare/`, so
+the nightly backup carries it with the state; without the passphrase the state
+cannot be read, so keep that backup.
+
+Turn it on once, by hand, with no one else applying at the same time:
+
+    umask 077
+    cp infra/cloudflare-tokens/state-encryption.env.example ~/.config/cloudflare/tofu-state-encryption.env
+    # replace the placeholder with the output of: openssl rand -base64 32
+    systemctl --user start cloudflare-tokens-apply.service
+
+The first apply reads the plain state through the `fallback` member and writes
+it encrypted. OpenTofu writes `.backup` only when the state changes, so the old
+`.backup` stays a plain copy: after checking that
+`grep -c '"resources"' ~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`
+prints 0 and `tofu plan` (run as below) shows no changes, delete that one
+`terraform.tfstate.backup`; the next state change writes an encrypted one. Then
+delete the `fallback` member from the env file so a plain state is refused from
+then on. With the passphrase lost, treat it like a lost state (see above).
+
+A hand run of `tofu` needs the same variable. Do not `source` the file (a shell
+strips the quotes in the JSON); use the unit, or
+`systemd-run --user --wait --pipe -p EnvironmentFile=$HOME/.config/cloudflare/tofu-state-encryption.env -p WorkingDirectory=<deploy clone> ~/.local/bin/tofu -chdir=infra/cloudflare-tokens plan`.
+
 ## Apply
 
 Install: OpenTofu `1.13.1` is installed by `ansible/host.yml` (pinned release,

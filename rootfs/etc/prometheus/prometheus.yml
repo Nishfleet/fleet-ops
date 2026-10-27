@@ -114,8 +114,8 @@ scrape_configs:
           - https://api.0509.io/
           - https://seofixkit.com/
           - https://siterep.net/
-          - https://tinystudio.io/
-          - https://tinystudio.in/
+          # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
+          # put https://tinystudio.io/ and https://tinystudio.in/ back at relaunch.
           - https://aiconverter.app/
           - https://inish.in/
     relabel_configs:

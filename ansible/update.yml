@@ -111,8 +111,6 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
-      - argv: [amp, update]
-        stdin: ""
     cua_cli: /opt/Cua Spaces/resources/native/cua
     cua_release_prefix: cua-spaces-v
     # A Cua Spaces release is taken only once it is this many hours old.
@@ -136,7 +134,7 @@
     # Hermes's own install dir keeps a driver the owner declined; an update or
     # an install must never bring it back.
     hermes_banned_tool_glob: "cua-driver-*"
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, amp, syncthing]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -693,8 +691,12 @@
                 deb: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
                 state: present
                 lock_timeout: 300
+              # The block's environment is nish's PATH, which has no sbin
+              # directory: dpkg then cannot find ldconfig or start-stop-daemon
+              # and the install fails (the 2026-10-23 run exited 2 on this).
               environment:
                 DEBIAN_FRONTEND: noninteractive
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
               when: cua_upgrade
 
             - name: Restart the daemon that hosts the desk agent

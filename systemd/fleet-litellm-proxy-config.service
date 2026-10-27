@@ -6,6 +6,7 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/8539
 Type=oneshot
 # `try-restart` restarts only a running proxy, so an edit never starts a
 # proxy that was stopped on purpose. LiteLLM has no reload signal, so a
-# restart (~38 s, drained by the 30-graceful-stop.conf drop-in) is the
-# only way to apply the config.
+# restart is the only way to apply the config. fleet-sync only rewrites the
+# live config when its bytes differ (the cmp guard in fleet-sync.service step
+# 7), so this unit runs on a real config change and on no other sync.
 ExecStart=/usr/bin/systemctl --user try-restart fleet-litellm-proxy.service

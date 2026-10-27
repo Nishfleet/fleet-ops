@@ -10,6 +10,13 @@ rail are in `README.md`; design and enforced rules are in
    deliberately down; respect it. Otherwise step 2 is the truth.
 2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers`.
 3. Same prefix, `systemctl --user list-units --state=failed` — must be empty.
+   From a shell inside a worker or runner jail this ends `Failed to connect to
+   bus: Permission denied` because the jail masks the user manager
+   (fleet-ops#9983): the error is the jail, not a host fault, and the
+   `root:root` mode-000 socket it reports is systemd's inaccessible
+   placeholder. From inside the jail the step stays not run and can never be
+   cleared. Partial fallback from any shell: `systemctl --failed` (system
+   scope), failed system units only.
 4. `curl -s 127.0.0.1:4000/health/readiness` (expect
    `{"status":"healthy","db":"connected"}`), then
    `curl -sL 127.0.0.1:4000/metrics | grep litellm_deployment_state` — one
@@ -53,6 +60,19 @@ gone (fleet-ops#8238).
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
+
+### Shell startup files
+
+Interactive shells do not read `~/.config/environment.d`. The systemd user
+manager does, for user units, so a value only a unit needs goes there. Do not
+add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
+a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
+not from an interactive shell (README, "systemd by default").
+
+The loader that ran the systemd environment generator in those files from
+2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
+was retired (`fleet-ops#10224`), which left the loader with nothing to carry, so
+it is deleted (`fleet-ops#10143`).
 
 ## Runner guard (fleet-ops#9317)
 
@@ -161,6 +181,87 @@ alert to trip on (fleet-ops#8936), so a person catches the crossing or nobody do
 leaves the variable deleted, so CI runs on GitHub-hosted runners until someone sets it again;
 that changed nothing running, because nothing read it (fleet-ops#9670).
 
+## Sentry monitors (org 0509-gg)
+
+Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
+Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
+the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+
+Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
+no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
+uptime monitors), read into a curl config fd so it never lands in argv:
+
+    SENTRY_ENV=~/.config/sentry/env
+    AUTH='s|^SENTRY_AUTH_TOKEN=\(.*\)|header = "Authorization: Bearer \1"|p'
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") https://sentry.io/api/0/organizations/0509-gg/uptime/
+    curl -s --config <(sed -n "$AUTH" "$SENTRY_ENV") \
+      https://sentry.io/api/0/projects/0509-gg/drive/uptime/10494402/checks/
+
+The checks list lags: the 07:48:47Z check was still missing at 07:55Z and appeared at
+07:56Z, so an empty tail is not a dead monitor.
+
+Verified on 2026-10-24:
+
+| Kind | Name | id | Project | Target | Green means |
+|---|---|---|---|---|---|
+| uptime | Drive access wall (pre-launch, private) | 10494402 | drive | `https://drive-pricing.nishant345.workers.dev/` | Access answered: the last response carries `cf-access-domain` |
+| cron | liveness-ping | `f2dbf08e-6a6d-49d3-b0e2-2b657205d482` | five-to-nine | `*/5 * * * *`, UTC | 0509's check-in arrived. The other nine monitors in that project are disabled |
+
+Nothing in this repo reads a monitor: no unit, no workflow. So a red is read in Sentry, or
+from `/checks/`, and no fleet unit pages on it.
+
+### The checker follows redirects, and asserts on the last response
+
+Measured on 10494402 on 2026-10-24. It records the status of the first response and asserts
+on the last. A check at 07:28:47Z showed `httpStatusCode: 302` and still failed
+`status_code_check` with `equals` and `value` 302, because the checker had followed to the
+Access login page and compared that page's 200. Against the same 302 on the record, `equals`
+200 passed at 07:40:47Z and 07:41:47Z. So an assertion on the drive hostname has to describe
+the login page, never the redirect.
+
+### drive is private until launch, so the monitor watches the wall
+
+fleet-ops#9014 deleted the dead VPS probes; Sentry carries site up/down instead
+(`rootfs/etc/prometheus/prometheus.yml`, the 2026-10-01 block). For drive,
+`cloudflare.config.ts` and `test/access-wall.test.mjs` in Nishfleet/drive keep the hostname
+behind Access until launch. Access answers every path before the Worker runs (`/api/health`
+included, and `/.well-known/cloudflare-access-protected-resource/...` is the one exempt path),
+so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
+was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
+turned into a 302, so its last checks read green on the wall's answer rather than drive's.
+The app-level check it pretended to be is fleet-ops#10226.
+
+10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
+merges into the monitor, so send only the fields you change:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"assertion":{"root":{"op":"header_check",
+      "key_op":{"cmp":"equals"},"key_operand":{"header_op":"literal","value":"cf-access-domain"},
+      "value_op":{"cmp":"always"},"value_operand":{"header_op":"none"}}}}
+
+It reds if the wall is bypassed (drive's own page carries no `cf-access-domain`), if Access
+stops sending that header, or if the hostname stops answering. Proven both ways on
+2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
+with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
+from 07:42:47Z on.
+
+### The assertion shape
+
+`assertion` is not in the API reference, so the API's own deserialization errors are the
+spec. `op` is one of `and` (with `children`), `or`, `not` (with `operand`),
+`status_code_check`, `json_path` and `header_check`. A comparison is `{"cmp": "equals" |
+"not_equal" | "less_than" | "greater_than" | "always" | "never"}`, and `always` on a header
+value means the header exists. `status_code_check` holds `value` and `operator`.
+`header_check` holds `key_op`, `key_operand`, `value_op` and `value_operand`, where an
+operand is `{"header_op": "literal", "value": "<name>"}` or `{"header_op": "none"}`.
+Sending `cmp` where `value_op` belongs is a 400 and changes nothing.
+
+An assertion change takes effect on the first check that starts after the PUT, not in the
+history already written. Read `uptimeStatus` with care: it flips only after
+`downtimeThreshold` failures in a row, so one failed check leaves it at 1. The live values are
+`intervalSeconds` 300 and `downtimeThreshold` 3; while experimenting, drop the first to 60 and
+raise the second to 10, then put both back to 300 and 3.
+
 ## LiteLLM stack (rebuild reference)
 
 Postgres, Redis and the proxy are Podman Quadlet containers defined in
@@ -227,9 +328,16 @@ crash-consistent and churned about 700 MiB a day). Restore with `pg_restore`.
 Retention is one policy for the backup and maintenance units, kept 7 daily,
 4 weekly and 3 monthly snapshots grouped by host and tags
 (`config/restic/retention.env`, `config/restic/README.md` "Retention"). The
-restic backup, verify and restore-test jobs are root units installed
-outside this repo (under `/etc/systemd/system/restic-r2-*`), with drop-ins from
-`rootfs/`, so this section does not schedule them.
+restic units are deliberately host-only, not an oversight: the backup,
+locked-copy, maintenance, restore-test and verify services, their timers and
+the size-guard service live only under `/etc/systemd/system/restic-r2-*`,
+because the unit files name the backup targets and this repo is public
+(Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
+`fleet-host-config.service`'s drift check skips them; this repo tracks only the
+additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
+section does not schedule them. A box rebuild cannot restore these units from
+the repo — copy them off the live box to private storage before wiping it, and
+never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
 fleet-litellm-redis.service fleet-litellm-proxy.service`, then `rm -rf` the
@@ -286,15 +394,21 @@ the user running the manager, `/root` (`man systemd.unit`, Specifiers), not
 names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
 the shared one.
 
-Readers in this repo: none (re-audited for every unit, drop-in, quadlet,
-workflow, prompt and recipe that starts `claude`, `pi`, `devin`, `opencode`,
-`cursor-agent` or a fleet worker):
+Readers of the shared file in this repo: none (re-audited for every unit,
+drop-in, quadlet, workflow, prompt and recipe that starts `claude`, `pi`,
+`devin`, `opencode`, `cursor-agent` or a fleet worker). One unit reads a
+single-name file of its own instead (fleet-ops#10222):
 
 - `claude-remote-control.service` is a system unit. A system manager never saw
-  the user manager environment, so it never inherited these names. Its header
-  says why it must stay without them: "that directory also exports
+  the user manager environment, so it never inherited these names, and it must
+  never hold `CLAUDE_CODE_OAUTH_TOKEN`: "that directory also exports
   CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the claude.ai login
-  instead."
+  instead." For the browser MCP entry in its user config (fleet-ops#10222) it
+  loads the one name it needs from its own file, the optional
+  `EnvironmentFile=-/home/nish/.config/claude/browser-use.env`
+  (`BROWSER_USE_API_KEY` only, mode 0600): a missing file costs the browser
+  tool, not the phone bridge. The file follows the `oauth.env` rules: never
+  tracked, never printed; check it with `test -s` and `stat -c %a`.
 - `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
   user manager either. The worker engines read their own credentials: devin and
@@ -334,6 +448,32 @@ this repo under `rootfs/etc/claude-code/roles/`, installed to
 | --- | --- | --- |
 | `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
 | `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
+
+### The browser MCP entry (fleet-ops#10222)
+
+#10136 made the browser MCP entry in the user configs expand
+`${BROWSER_USE_API_KEY}` from the session's environment. Interactive shells
+get the value from `~/.config/claude/oauth.env`; these two units did not, so
+the server warned at startup and its first browser call would have failed.
+One unit drops the entry, one gets the one name:
+
+- `tincan-listen-claude-vps.service`: the entry is gone from
+  `~/.claude-vps/.claude.json` (removed 2026-10-25 with `claude mcp remove
+  browser-use -s user` under that `CLAUDE_CONFIG_DIR`). The unit is locked to
+  no keys except Jev (Nish 2026-10-22) and runs `--strict-mcp-config
+  --mcp-config tincan-listener-mcp.json`, which never loaded the entry: it was
+  a warning and a false expectation, nothing else. Any new process reading
+  that config is clean from the moment of removal; a running server picks the
+  cleaned config up at its next restart.
+- `claude-remote-control.service` keeps the entry (its `~/.claude.json` is
+  shared with interactive sessions) and loads the one name from
+  `~/.config/claude/browser-use.env`, per the unit's `EnvironmentFile=` line.
+  Only Nish restarts that unit, so the line is staged like every other change
+  to it.
+
+Check the listener side any time:
+`jq '.mcpServers | has("browser-use")' ~/.claude-vps/.claude.json` must print
+`false`.
 
 `claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
 Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:
@@ -379,6 +519,22 @@ cost: the netcup provider VNC console.
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
 
+## Rebuild the box from nothing
+
+The step order for a fresh netcup box (user, SSH over Tailscale, `vps-fleet`
+key, deploy clone, `ansible-playbook ansible/host.yml`, fleet-sync, runners,
+credential files, restic restore, verification) lives in the private vault,
+not in this public repo — this repo holds no credentials and no restore
+steps. On this host the vault checkout is
+`~/workspaces/tooling/nish-vault/05 Playbooks/rebuild-from-nothing.md`
+(fleet-ops#9777); from anywhere else, the `nish3451/nish-vault` GitHub repo,
+same path. The first stage of that plan (fresh box up to a passing
+`ansible-playbook --syntax-check ansible/host.yml`) was rehearsed on a
+scratch ubuntu:24.04 rootfs on 2026-10-25: the syntax check passed and the
+rehearsal caught a uid-1000 collision in the user-creation step, which the
+plan now fixes. Data restore is that vault's
+`restic-r2-recovery-runbook.md`; lockout is its `break-glass.md`.
+
 ## Main has no ruleset bypass (2026-10-12)
 
 - Ruleset 23692529 has an empty `bypass_actors`. Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '.bypass_actors, .current_user_can_bypass'` prints `[]` and `"never"`.
@@ -392,3 +548,14 @@ cost: the netcup provider VNC console.
 - A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
 - Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
 - Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
+
+## Only require a status context that a run reports (2026-10-25)
+
+- A required context that no workflow reports blocks every pull request and every merge-queue entry, forever. A job skipped by `if:` reports success. A job that does not exist reports nothing (drive#499, written at drive `ci.yml`'s `changes` job).
+- fleet-ops#10259 was filed on the belief that drive had gained a job named `walk`. It had not: no drive workflow on any branch has that job. drive#760's walk runs inside `verify`, as `npm test` with `DRIVE_WALK_CLI: "1"` (drive PR #1077).
+- So a red walk already fails drive's required `verify`, and drive's ruleset 24262668 `main gate` keeps `verify`, `go` and `ratchet / ratchet`. Nothing was added: a `walk` context reports on no run, so every drive PR and every queue entry would have waited on it.
+- Proof that the walk already blocks (as of 2026-10-25): drive PR #1077's `verify` failed on the walk itself, `✖ the CLI mounts, uses and uninstalls with nothing left behind` (run 40176266059).
+- Check the required list: `gh api repos/<owner>/<repo>/rulesets/<id> --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
+- Check that a context is real before you require it: it must appear among the check runs of a fresh pull-request head, `gh api repos/<owner>/<repo>/commits/<pr head sha>/check-runs --jq '[.check_runs[].name]|unique'`. The check runs on a push to main list only the jobs that also run on `push`, so that list cannot clear a `pull_request`-only job on its own. A name quoted from an issue proves nothing.
+- The context must also arrive on the merge-queue entry, whose run has event `merge_group`: the queue waits on the required checks of the group commit, so a job that runs only on `pull_request` holds the queue too. drive's `ci.yml` carries that trigger for this reason (drive#499). A merged queue entry is the proof that both arrivals work.
+- Revisit when drive's `ci.yml` defines a job named `walk` that runs on `pull_request` and on `merge_group` and a pull-request head reports it. Then add it, guarded so a second run cannot duplicate it: `gh api repos/Nishfleet/drive/rulesets/24262668 | jq '.rules |= map(if .type=="required_status_checks" then .parameters.required_status_checks = ((.parameters.required_status_checks + [{"context":"walk"}]) | unique_by(.context)) else . end) | {name,target,enforcement,bypass_actors,conditions,rules}' | gh api -X PUT repos/Nishfleet/drive/rulesets/24262668 --input -`.
