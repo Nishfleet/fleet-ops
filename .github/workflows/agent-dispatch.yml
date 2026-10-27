@@ -1,7 +1,7 @@
 name: agent-dispatch
 on:
   issues:
-    types: [labeled, closed, reopened, opened]
+    types: [labeled, closed, reopened]
   issue_comment:
     types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
@@ -83,12 +83,7 @@ jobs:
   # Work skipped here is not lost: the sweep update.yml runs after clearing the
   # flag lists every agent-ready issue and stalled claim PR again.
   paused:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED == 'true' &&
-      (github.event_name != 'pull_request_target' || github.event.action == 'dequeued' || github.event.action == 'closed') &&
-      (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
-      (github.event_name != 'issues' || github.event.action != 'labeled' ||
-       contains(fromJSON('["agent-ready","agent-failed","needs-orchestrator","needs-triage"]'), github.event.label.name))
+    if: vars.FLEET_DISPATCH_PAUSED == 'true' && (github.event_name != 'pull_request_target' || github.event.action == 'dequeued' || github.event.action == 'closed') && (github.event_name != 'issue_comment' || startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) && (github.event_name != 'issues' || github.event.action != 'labeled' || contains(fromJSON('["agent-ready","agent-failed","needs-orchestrator","needs-triage"]'), github.event.label.name))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 5
     permissions: {}
@@ -101,9 +96,7 @@ jobs:
           echo "::notice::$msg"
           echo "$msg" >> "$GITHUB_STEP_SUMMARY"
   new:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' &&
-      ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && github.event_name == 'issues' && github.event.label.name == 'agent-ready' && ((inputs.agent_mode || vars.AGENT_MODE) == 'live' || contains(github.event.issue.labels.*.name, 'shadow-actions'))
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     # issues: write is what agent.yml's work job asks for (Router wall and the
     # strike step relabel with GITHUB_TOKEN).
@@ -232,13 +225,7 @@ jobs:
   # types are hold-risky's. A dropped arm on a safe claim PR is the sweep's
   # unarmed case, which re-arms it.
   ejected:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
-      github.event.action == 'dequeued' &&
-      github.event.pull_request.state == 'open' &&
-      startsWith(github.event.pull_request.head.ref, 'claim/issue-') &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' && github.event.action == 'dequeued' && github.event.pull_request.state == 'open' && startsWith(github.event.pull_request.head.ref, 'claim/issue-') && github.event.pull_request.head.repo.full_name == github.repository
     uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
@@ -1150,45 +1137,27 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
-  # An issue filed with no label never reaches the queue (fleet-ops#10218: 205
-  # open and unlabelled on 2026-10-24). Every sweep, and every newly opened
-  # issue, gives each open unlabelled issue an owner label: needs-orchestrator
-  # in fleet-ops (admit never self-admits it), needs-triage in a product repo
-  # (the admit job decides). tests/test_label_unlabelled.py runs this step.
+  # fleet-ops#10218: an issue filed with no label never reaches the queue. The
+  # sweep owner-labels each open unlabelled issue from a trusted author:
+  # needs-orchestrator in fleet-ops (admit never self-admits it), needs-triage
+  # in a product repo (admit decides). Trust rules and the grace window:
+  # see tests/test_label_unlabelled.py, which runs this step.
   label-unlabelled:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && (
-        (github.event_name == 'issues' && github.event.action == 'opened') ||
-        github.event_name == 'schedule' ||
-        (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 10
     permissions: {issues: write}
     steps:
-      - name: Label unlabelled issues
-        id: label
-        env:
+      - env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ "$REPO" = Nishfleet/fleet-ops ]; then label=needs-orchestrator; else label=needs-triage; fi
-          gh label create "$label" -R "$REPO" --color fbca04 --description "Owner label for an issue filed with none" >/dev/null 2>&1 || true
-          nums=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0)) | .number')
-          for n in $nums; do
-            gh issue edit "$n" -R "$REPO" --add-label "$label" >/dev/null
-            echo "label-unlabelled: #$n -> $label"
-          done
+          l=$([ "$REPO" = Nishfleet/fleet-ops ] && echo needs-orchestrator || echo needs-triage)
+          gh label create "$l" -R "$REPO" --color fbca04 --description "Owner label for an issue filed with none" >/dev/null 2>&1 || true
+          for n in $(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0) and ((.author_association | IN("OWNER","MEMBER","COLLABORATOR")) or (.author_association == "CONTRIBUTOR" and (.user.login | endswith("[bot]")))) and (now - (.created_at | fromdateiso8601) > 600)) | .number'); do gh issue edit "$n" -R "$REPO" --add-label "$l" >/dev/null && echo "label-unlabelled: #$n -> $l" || echo "label-unlabelled: #$n failed, skipped"; done
   admit:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      vars.ADMIT_TRIAGE != 'off' &&
-      github.repository != 'Nishfleet/fleet-ops' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && (
-        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-triage') ||
-        github.event_name == 'schedule' ||
-        (github.event_name == 'workflow_dispatch' && (inputs.task == 'admit' || (inputs.task == '' && inputs.issue == '')))
-      )
+    if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.ADMIT_TRIAGE != 'off' && github.repository != 'Nishfleet/fleet-ops' && (inputs.agent_mode || vars.AGENT_MODE) == 'live' && ((github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-triage') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'admit' || (inputs.task == '' && inputs.issue == ''))))
     concurrency:
       group: admit-${{ github.repository }}
       cancel-in-progress: false
