@@ -162,7 +162,8 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
-  # main moved (CI finished on a push to the default branch): a claim PR it
+  # main moved (a pull request merged into the default branch; ci.yml's
+  # pull_request and merge_group runs both finish before the merge lands): a claim PR it
   # left CONFLICTING sends no event of its own, so its issue sat
   # agent-in-progress with no run (fleet-ops#9063: drive #136 / PR #174).
   # Requeue each one with a "merge main" note, the same way red CI is.
@@ -171,9 +172,9 @@ jobs:
   conflicts:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == github.event.repository.default_branch
+      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' && github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       actions: read
