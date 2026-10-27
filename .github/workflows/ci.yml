@@ -1591,7 +1591,7 @@ jobs:
   # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
   # for the secrets and tokens), waits for /api/health, and fails when Grafana
   # exits or logs a provisioning error. Pull requests run it only when a path
-  # under config/grafana/, the quadlet or this workflow changed; push and merge_group runs
+  # under config/grafana/, the quadlet or this workflow changed; merge_group runs
   # always run it.
   grafana-boot:
     name: grafana-boot
@@ -1880,7 +1880,7 @@ jobs:
   # this job resolves the PR(s) in the queue entry, classifies each one's
   # changed files and fails when a risky PR's CURRENT head sha has no
   # `coordinator-approval: <sha>` comment or success status from an approver.
-  # On pull_request and push it passes, so a PR can be enqueued and the queue
+  # On pull_request it passes, so a PR can be enqueued and the queue
   # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
   # path list are read from the BASE commit's agent-dispatch.yml and
   # config/risky-paths.json, so ci.yml's case tests over them keep covering
