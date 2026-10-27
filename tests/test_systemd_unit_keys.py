@@ -928,6 +928,15 @@ def test_alertmanager_reads_the_repo_installed_config() -> None:
     assert "dest: /etc/default/prometheus-alertmanager" in host
 
 
+def test_prometheus_config_installs_world_readable() -> None:
+    """mode: preserve copied 0600 from a umask-077 clone and Prometheus kept its old rules (fleet-ops#10464)."""
+    host = HOST_YML.read_text()
+    task = host.split("- name: Install prometheus and blackbox exporter config", 1)[1].split("\n    - name:", 1)[0]
+    assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
+    assert re.search(r'^\s+mode: "0644"$', task, re.M), "the config folder must install as 0644, never preserve"
+    assert "preserve" not in task.replace("# Not preserve", "")
+
+
 def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
     cfg = (ROOT / "rootfs/etc/alertmanager/alertmanager.yml").read_text()
     assert "\n  routes:\n" in cfg, "the root route has no child routes"
