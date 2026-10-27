@@ -1721,12 +1721,14 @@ jobs:
           # A PR on any other branch (gate/*, claim/*) that closes the issue is
           # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
           # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
-          # includeClosedPrs is false: a closed unmerged PR does not count.
+          # Open and merged PRs count (default includeClosedPrs=false); a closed unmerged one does not.
           # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
-          if env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" \
+          # Fail closed: a read that fails or prints no count marks nothing.
+          linked=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" \
               -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' \
-              --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount' | grep -qxE '[1-9][0-9]*'; then
-            echo "orchestrate: #$ISSUE has a linked closing PR; nothing to mark"
+              --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount') || linked=
+          if [ "$linked" != 0 ]; then
+            echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed (${linked:-no count}); nothing to mark"
             exit 0
           fi
           # The writes need issues: write, which this job deliberately does not
