@@ -1719,7 +1719,7 @@ jobs:
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
           # credential, the same one the session pushes with).
-          env -u GH_TOKEN -u GITHUB_TOKEN gh label create agent-blocked -R "$REPO" --force --color D93F0B --description "Worker posted a proposal and released its claim"
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create agent-blocked -R "$REPO" 2>/dev/null || true
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           echo "orchestrate: #$ISSUE marked agent-blocked (no PR)"
