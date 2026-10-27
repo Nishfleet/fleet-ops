@@ -503,7 +503,7 @@
         dest: /etc/prometheus/
         owner: root
         group: root
-        mode: preserve
+        mode: "0644"
       notify:
         - Reload prometheus
         - Reload alertmanager
