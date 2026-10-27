@@ -1766,6 +1766,16 @@ def test_host_config_runs_once_after_every_boot() -> None:
     assert "state" not in enable, "starting the timer after boot would fire it at once"
 
 
+def test_daily_host_config_timer_is_retired() -> None:
+    """fleet-ops#10457: only a merge or a boot runs the host playbook; no daily timer."""
+    assert not (INSTALLED / "fleet-host-config.timer").exists()
+    retired = json.loads(subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout)
+    assert "/etc/systemd/system/fleet-host-config.timer" in retired
+    stop = _host_task("Stop and disable the retired daily host config timer")["ansible.builtin.systemd_service"]
+    assert stop["name"] == "fleet-host-config.timer" and stop["enabled"] is False and stop["state"] == "stopped"
+    assert (INSTALLED / "fleet-host-config-boot.timer").exists(), "the boot run stays"
+
+
 def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
     """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
     keys = _unit_keys(GRAFANA_PROVISIONING)
