@@ -10,4 +10,4 @@ DISPATCH = ROOT / ".github/workflows/agent-dispatch.yml"
 
 def test_workflow_run_trigger_filters_claim_branches():
     on = yaml.safe_load(DISPATCH.read_text())[True]
-    assert on["workflow_run"]["branches"] == ["claim/issue-*"]
+    assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"], "branches": ["claim/issue-*"]}
