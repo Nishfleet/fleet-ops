@@ -1,5 +1,3 @@
-"""The router loads only the seat key files it passes on, never a glob of all of them."""
-
 import re
 from pathlib import Path
 
