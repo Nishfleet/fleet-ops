@@ -34,7 +34,7 @@ def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",)):
     return {
         "number": number, "updatedAt": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "labels": [{"name": n} for n in labels],
-        "comments": [{"body": f"{ENDED}{number}{i}"} for i in range(ended)],
+        "comments": [{"body": f"{ENDED}{number}{i}", "authorAssociation": "OWNER"} for i in range(ended)],
     }
 
 
@@ -89,3 +89,10 @@ def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=3)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
+def test_a_stranger_cannot_escalate_an_issue(tmp_path):
+    i = issue(1, ended=3)
+    for c in i["comments"]:
+        c["authorAssociation"] = "NONE"
+    w = run(tmp_path, [i])
+    assert edits(w, "--add-label needs-nish-decision") == []
+    assert edits(w, "--add-label needs-orchestrator") == [1]

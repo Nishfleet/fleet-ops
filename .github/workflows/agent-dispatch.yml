@@ -721,17 +721,17 @@ jobs:
           REQUEUE: |
             [.[] | select(.labels | map(.name) | any(IN("needs-nish-decision", "needs-orchestrator")) | not)
               | select((.updatedAt | fromdateiso8601) < $now - 21600)
-              | {number, runs: [.comments[].body | select(startswith("orchestrator hand-off ended without a PR: "))]}
+              | {number, runs: [.comments[] | select(.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | select(startswith("orchestrator hand-off ended without a PR: "))]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | sort_by(.act) | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([3 - $queued, 0] | max)] | .[]
         run: |
-          queued=$(gh issue list -R "$GITHUB_REPOSITORY" -l needs-orchestrator -L 100 --json number --jq length)
+          queued=$(gh issue list -R "$GITHUB_REPOSITORY" -l needs-orchestrator -L 100 --json number --jq length) || queued=3
           gh issue list -R "$GITHUB_REPOSITORY" -l orchestrator-tried -L 100 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR: $(jq -r '.runs | map(ltrimstr("orchestrator hand-off ended without a PR: ")) | join(", ")' <<<"$r")"
+                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
+                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR: $(jq -r '.runs | map(ltrimstr("orchestrator hand-off ended without a PR: ")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
               else env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"; fi
             done
   unblocked:
