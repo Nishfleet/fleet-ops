@@ -1096,27 +1096,12 @@ jobs:
           # (/proc/<pid>/cmdline is world readable, #8403), and the request body goes in a file:
           # one argv string over 128 KiB (MAX_ARG_STRLEN) cannot start curl, and a guard diff can be that big.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
-          # Both run in the background and the caller waits for each whatever the other did.
-          # A seat is a capacity-limited group (senior is one row with max_parallel_requests 1,
-          # #10183), so a second call that lands while another holds the seat gets a 429, and a
-          # 429 moves the call to a peer row. Every call takes the seat's flock before it asks
-          # (a queue, not a cancel: a concurrency group keeps one pending run and drops the rest),
-          # and a call that fails or that a fallback row answered is tried again after 30 s, 60 s
-          # and 120 s, then the job's own retry() applies. The lock files live in $HOME because
-          # every runner on this host shares it.
-          mkdir -p "$HOME/.cache"
-          ask_row() { local rc=0 n=0 seat=$1 pre=$2 served R=${2^^}; vr=${R}_ROW
-            while :; do rc=0
+          # A seat has one slot (#10183): each call waits on the seat flock (in $HOME, shared by every runner), and a failure or a fallback row answering is retried after 30 s, 60 s, 120 s.
+          ask_row() { local n=0 seat=$1 pre=$2 vr=${2^^}_ROW served rc; while :; do rc=0
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && flock -w 600 "$HOME/.cache/fleet-review-$seat.lock" curl -sS --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
-            served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
-            # A failure, a 429 or a fallback row answering is capacity and not a verdict: wait and ask again.
-            [ "$rc" = 0 ] && [ "$served" = "${!vr}" ] && break
-            [ "$rc" != 0 ] && { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }
-            [ "$n" -lt 3 ] || break
-            n=$((n+1)); sleep $((15 * 2 ** n))
-            done; return "$rc"; }
+            served=$(sed -n "s/^[Xx]-[Ll]itellm-[Mm]odel-[Ii]d:[[:space:]]*//p" "$RUNNER_TEMP/$pre-headers.txt" | tr -d "\r" | head -n 1); { [ "$rc" = 0 ] && [ "$served" = "${!vr}" ]; } || [ "$n" -ge 3 ] || { n=$((n+1)); sleep $((15 * 2 ** n)); continue; }; break; done; [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
           ask_row "$SECOND_SEAT" second & p2=$!; ask_row "$THIRD_SEAT" third & p3=$!
           rc2=0; rc3=0; wait "$p2" || rc2=$?; wait "$p3" || rc3=$?
           { [ "$rc2" = 0 ] && [ "$rc3" = 0 ]; } || retry "an extra reviewer process died (exit $rc2 and $rc3)"
