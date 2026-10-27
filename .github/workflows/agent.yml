@@ -937,7 +937,7 @@ jobs:
   review:
     if: inputs.review_pr != '' && inputs.review_sha != ''
     runs-on: [self-hosted, agent]
-    timeout-minutes: 150  # two extra reviewers, each up to 4 calls of 480 s plus 210 s of backoff, then a fallback pass each (#10447)
+    timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
     # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
     # same bot, so one that edits the guard list or a workflow needs three independent reviews. Arming is the arm job's.
@@ -1086,7 +1086,7 @@ jobs:
           esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why
-            for d in 0 $REVIEW_BACKOFF; do
+            for d in 0 ${REVIEW_BACKOFF:-30 60 120}; do
               sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
               if [ "$rc" != 0 ] || ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the call failed or its answer was not JSON (curl exit $rc)"
               else
@@ -1106,8 +1106,8 @@ jobs:
             [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
             say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
             exit 1; }
-          seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" &
-          wait
+          seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
+          for r in second third; do rc=rc_$r; [ "${!rc}" = 0 ] || { [ "${!rc}" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited ${!rc} with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
           # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head, asked through the judge seat; the comment names it.
           used=$JUDGE_FAMILY
           for r in second third; do [ ! -s "$RUNNER_TEMP/$r-row" ] || used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"; done

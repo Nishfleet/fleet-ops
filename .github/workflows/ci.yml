@@ -1220,7 +1220,7 @@ jobs:
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
               GUARD_LIST_FAILS='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' SECOND_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
-            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
+            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
             case $e1 in
               PRIOR=*) # a comment the bot already left on this head
