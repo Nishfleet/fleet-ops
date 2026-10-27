@@ -605,3 +605,23 @@ tests:
       - eval_time: 30m
         alertname: GrafanaNotificationsFailing
         exp_alerts: []
+
+  # Swap free at 25% never fires; under 20% it fires once 15 minutes have passed.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_SwapTotal_bytes'
+        values: '8000x40'
+      - series: 'node_memory_SwapFree_bytes'
+        values: '2000x5 1000x35'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SwapLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Swap is over 80% used"
+              description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
