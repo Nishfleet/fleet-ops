@@ -719,13 +719,13 @@ jobs:
             [.[] | (.labels | map(.name)) as $l
               | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[] | select(.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | .body | select(startswith("orchestrator hand-off ended without a PR: "))]}
-              | select(.tried or ("orch/issue-\(.number)" | IN($prs[]) | not))
+              | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | .act = (if .tried and (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
           queued=$(for st in queued in_progress; do gh api "repos/$GITHUB_REPOSITORY/actions/workflows/agent-dispatch.yml/runs?status=$st&per_page=100" --jq '.workflow_runs[] | select(.event | IN("issues", "workflow_dispatch")) | .id' || exit 1; done |
             while read -r id; do gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.name == "orchestrate" and .status != "completed")] | length' || exit 1; done | awk '{s += $1} END {print s + 0}') || queued=5
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 100 --json headRefName --jq 'map(.headRefName)') || { prs=[]; queued=5; }
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { prs=[]; queued=5; }
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")

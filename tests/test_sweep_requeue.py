@@ -103,6 +103,11 @@ def test_labelled_idle_issue_is_refired(tmp_path):
     assert "--remove-label" in w[0]
 
 
+def test_open_pr_blocks_requeue_of_a_tried_issue(tmp_path):
+    w = run(tmp_path, [issue(1), issue(2, ended=3)], prs=["orch/issue-1", "orch/issue-2"])
+    assert w == []
+
+
 def test_api_error_requeues_nothing(tmp_path):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], api_ok=False)
     assert edits(w, "--add-label needs-orchestrator") == []
