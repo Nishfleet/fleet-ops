@@ -21,15 +21,14 @@
 #     `systemctl start fleet-host-config.service`. polkit
 #     (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules) lets user nish
 #     start THIS unit and nothing else, so the deploy job needs no sudo.
-#   - fleet-host-config.timer once a day. The named reason for a schedule: a
-#     hand edit or a hand-installed file in /etc has no event to react to.
-#     The daily run puts a hand edit back and fails on a hand-installed file.
+#   - fleet-host-config-boot.timer once after every boot. There is no daily
+#     timer (fleet-ops#10457): the host changes when main changes.
 #
 # Bootstrap, once per box (the unit cannot install itself the first time):
 #   sudo apt-get install -y ansible-core
 #   sudo ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main \
 #     --directory /var/lib/fleet-ops/repo --clean --inventory localhost, ansible/host.yml
-#   sudo systemctl enable --now fleet-host-config.timer
+#   sudo systemctl enable fleet-host-config-boot.timer
 [Unit]
 Description=Apply fleet-ops host config (ansible-pull of ansible/host.yml)
 Wants=network-online.target
