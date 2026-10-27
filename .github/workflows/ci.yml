@@ -38,16 +38,6 @@ jobs:
           bad=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
           [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
 
-  # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
-  # config/grafana/provisioning/alerting as alert provisioning, so a promtool
-  # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
-  # rule group has no folder set"). This job starts the image tag and plugin
-  # versions pinned in containers/quadlet/fleet-grafana.container with the
-  # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
-  # for the secrets and tokens), waits for /api/health, and fails when Grafana
-  # exits or logs a provisioning error. Pull requests run it only when a path
-  # under config/grafana/, the quadlet or this workflow changed; merge_group runs
-
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1595,6 +1585,15 @@ jobs:
           CASES
           test "$bad" -eq 0
 
+  # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
+  # config/grafana/provisioning/alerting as alert provisioning, so a promtool
+  # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
+  # rule group has no folder set"). This job starts the image tag and plugin
+  # versions pinned in containers/quadlet/fleet-grafana.container with the
+  # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
+  # for the secrets and tokens), waits for /api/health, and fails when Grafana
+  # exits or logs a provisioning error. Pull requests run it only when a path
+  # under config/grafana/, the quadlet or this workflow changed; merge_group runs
   # always run it.
   grafana-boot:
     name: grafana-boot
