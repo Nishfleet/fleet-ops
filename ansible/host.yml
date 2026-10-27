@@ -507,7 +507,9 @@
         dest: /etc/prometheus/
         owner: root
         group: root
-        mode: preserve
+        # Not preserve: a clone made under umask 077 holds these as 0600, and
+        # the prometheus user then cannot read the rules (fleet-ops#10472).
+        mode: "0644"
       notify:
         - Reload prometheus
         - Reload alertmanager
