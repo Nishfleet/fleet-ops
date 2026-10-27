@@ -19,6 +19,12 @@ WorkingDirectory=/home/nish/workspaces
 Environment=HOME=/home/nish SHELL=/usr/bin/zsh LANG=en_US.UTF-8
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+# The browser MCP entry in ~/.claude.json expands ${BROWSER_USE_API_KEY} from this
+# process's environment (fleet-ops#10222), so the one name comes from its own 0600
+# file, never the shared oauth.env: the claude.ai login stays out (fleet-ops#9020).
+# Optional (-) on purpose: a missing file costs the browser tool, not the phone
+# bridge. docs/RUNBOOK.md, "Claude session credentials", owns the convention.
+EnvironmentFile=-/home/nish/.config/claude/browser-use.env
 # The TUI redraws the status line to stdout (~2k journal lines an hour); errors go
 # to stderr and still reach the journal.
 StandardOutput=null
