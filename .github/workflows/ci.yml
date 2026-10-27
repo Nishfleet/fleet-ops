@@ -255,7 +255,10 @@ jobs:
       - name: router order-2 overflow runs against the pinned LiteLLM (fleet-ops#9658)
         # The test imports litellm, so pytest runs in an env that has the proxy's pinned v1.105.0.
         if: always()
-        run: uvx --with litellm==1.105.0 pytest@8.3.5 -q -p no:cacheprovider tests/test_router_order2_overflow.py
+        run: |
+          python3 -m venv "$RUNNER_TEMP/router-venv"
+          "$RUNNER_TEMP/router-venv/bin/pip" install -q pytest==8.3.5 litellm==1.105.0
+          "$RUNNER_TEMP/router-venv/bin/pytest" -q -p no:cacheprovider tests/test_router_order2_overflow.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
