@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { type Gh, type GhResult, redRework, runLive, sweep } from "../src/sweep.ts";
+import { type Gh, type GhResult, redRework, requeue, runLive, sweep } from "../src/sweep.ts";
 
 const config = (name: string) => JSON.parse(readFileSync(new URL(`../../config/${name}`, import.meta.url), "utf8"));
 
@@ -104,5 +104,76 @@ describe("sweep", () => {
     expect(out.refs).toEqual(["claim/issue-2", "claim/issue-1"]);
     expect(out.stalledRefs).toEqual(["claim/issue-11-miss-review"]);
     expect(calls).toContain("issue edit 11 -R o/r --remove-label agent-in-progress --add-label agent-ready");
+  });
+});
+
+describe("requeue", () => {
+  const ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/";
+  const now = Date.parse("2026-10-27T12:00:00Z") / 1000;
+  const tried = (number: number, hoursIdle = 7, ended = 1, labels = ["orchestrator-tried"], assoc = "OWNER") => ({
+    number,
+    updatedAt: new Date((now - hoursIdle * 3600) * 1000).toISOString(),
+    labels: labels.map((name) => ({ name })),
+    comments: Array.from({ length: ended }, (_, i) => ({ body: `${ENDED}${number}${i}`, authorAssociation: assoc })),
+  });
+  async function run(issues: object[], queued = 0) {
+    const writes: string[] = [];
+    const logins: boolean[] = [];
+    const gh: Gh = async (args, opts) => {
+      const key = args.join(" ");
+      if (/^issue list .*needs-orchestrator/.test(key)) return ok(Array.from({ length: queued }, (_, number) => ({ number })));
+      if (/^issue list/.test(key)) return ok(issues);
+      writes.push(key);
+      logins.push(opts?.runnerLogin === true);
+      return ok("");
+    };
+    await requeue({ repo: "o/r" }, { gh, sleep: async () => {}, log: () => {} }, now);
+    const edits = (label: string) => writes.filter((w) => w.startsWith("issue edit") && w.includes(label)).map((w) => Number(w.split(" ")[2]));
+    return { writes, logins, edits };
+  }
+
+  it("requeues an issue idle over 6 h and leaves a fresh one", async () => {
+    const r = await run([tried(1, 7), tried(2, 5)]);
+    expect(r.edits("--add-label needs-orchestrator")).toEqual([1]);
+    expect(r.writes[0]).toBe("issue edit 1 -R o/r --remove-label orchestrator-tried --add-label needs-orchestrator");
+  });
+  it("writes the requeue label as the runner login, not the job token", async () => {
+    expect((await run([tried(1)])).logins).toEqual([true]);
+  });
+  it("requeues at most 3 a sweep", async () => {
+    expect((await run([1, 2, 3, 4, 5, 6, 7].map((n) => tried(n)))).edits("--add-label needs-orchestrator")).toHaveLength(3);
+  });
+  it("already queued issues use up the batch", async () => {
+    expect((await run([1, 2, 3, 4].map((n) => tried(n)), 2)).edits("--add-label needs-orchestrator")).toHaveLength(1);
+  });
+  it("three ended hand-offs escalate instead of requeue", async () => {
+    const r = await run([tried(1, 7, 3), tried(2, 7, 2)]);
+    expect(r.edits("--add-label needs-nish-decision")).toEqual([1]);
+    expect(r.edits("--add-label needs-orchestrator")).toEqual([2]);
+    expect(r.writes.some((w) => w.startsWith("issue comment 1 ") && w.includes("runs/10") && w.includes("runs/12"))).toBe(true);
+  });
+  it("escalated and queued issues are left alone", async () => {
+    const r = await run([tried(1, 7, 3, ["orchestrator-tried", "needs-nish-decision"]), tried(2, 7, 1, ["orchestrator-tried", "needs-orchestrator"])]);
+    expect(r.writes).toEqual([]);
+  });
+  it("a full queue requeues nothing but still escalates", async () => {
+    const r = await run([tried(1), tried(2, 7, 3)], 3);
+    expect(r.edits("--add-label needs-orchestrator")).toEqual([]);
+    expect(r.edits("--add-label needs-nish-decision")).toEqual([2]);
+  });
+  it("a stranger's comments are not counted", async () => {
+    const r = await run([tried(1, 7, 3, ["orchestrator-tried"], "NONE")]);
+    expect(r.edits("--add-label needs-nish-decision")).toEqual([]);
+    expect(r.edits("--add-label needs-orchestrator")).toEqual([1]);
+  });
+  it("a refused write is a warning, not a failure", async () => {
+    const lines: string[] = [];
+    const gh: Gh = async (args) => {
+      const key = args.join(" ");
+      if (/^issue list .*needs-orchestrator/.test(key)) return ok([]);
+      return /^issue list/.test(key) ? ok([tried(1)]) : { code: 1, stdout: "", stderr: "denied" };
+    };
+    await requeue({ repo: "o/r" }, { gh, sleep: async () => {}, log: (l) => lines.push(l) }, now);
+    expect(lines).toEqual(["::warning::#1: re-queue refused"]);
   });
 });

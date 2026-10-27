@@ -6,11 +6,13 @@ export interface GhResult {
   stdout: string;
   stderr: string;
 }
-export type Gh = (args: string[]) => Promise<GhResult>;
+export type Gh = (args: string[], opts?: { runnerLogin?: boolean }) => Promise<GhResult>;
 
-export const ghCli: Gh = (args) =>
+export const ghCli: Gh = (args, opts) =>
   new Promise((resolve) => {
-    execFile("gh", args, { maxBuffer: 64 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+    const { GH_TOKEN: _token, ...login } = process.env;
+    const env = opts?.runnerLogin ? login : process.env;
+    execFile("gh", args, { env, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
       const code = error === null ? 0 : typeof error.code === "number" ? error.code : 1;
       resolve({ code, stdout, stderr: stderr || error?.message || "" });
     });
@@ -278,11 +280,44 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
   return { refs, stalledRefs: stalled };
 }
 
+const ENDED = "orchestrator hand-off ended without a PR: ";
+const TRUSTED = ["OWNER", "MEMBER", "COLLABORATOR"];
+const REQUEUE_IDLE_SECONDS = 21600;
+const REQUEUE_BATCH = 3;
+
+export async function requeue(env: Pick<Env, "repo">, deps: Deps, now = Date.now() / 1000): Promise<void> {
+  const { gh, log } = deps;
+  const { repo } = env;
+  const count = await gh(["issue", "list", "-R", repo, "-l", "needs-orchestrator", "-L", "100", "--json", "number"]);
+  const queued = count.code === 0 ? (JSON.parse(count.stdout) as unknown[]).length : REQUEUE_BATCH;
+  const listed = await gh(["issue", "list", "-R", repo, "-l", "orchestrator-tried", "-L", "100", "--json", "number,labels,updatedAt,comments"]);
+  if (listed.code !== 0) throw new Error(`orchestrator-tried read failed: ${listed.stderr.trim()}`);
+  type Tried = { number: number; labels: Label[]; updatedAt: string; comments: { body: string; authorAssociation: string }[] };
+  const idle = (JSON.parse(listed.stdout) as Tried[])
+    .filter((i) => !i.labels.some((l) => ["needs-nish-decision", "needs-orchestrator"].includes(l.name)))
+    .filter((i) => Date.parse(i.updatedAt) / 1000 < now - REQUEUE_IDLE_SECONDS)
+    .map((i) => ({ number: i.number, runs: i.comments.filter((c) => TRUSTED.includes(c.authorAssociation) && c.body.startsWith(ENDED)).map((c) => c.body) }));
+  const escalate = idle.filter((i) => i.runs.length >= 3);
+  const again = idle.filter((i) => i.runs.length < 3).slice(0, Math.max(REQUEUE_BATCH - queued, 0));
+  for (const i of escalate) {
+    const n = String(i.number);
+    const edit = await gh(["issue", "edit", n, "-R", repo, "--add-label", "needs-nish-decision"]);
+    if (edit.code !== 0) log(`::warning::#${n}: escalation refused`);
+    const body = `orchestrator: needs Nish. Three hand-offs ended without a PR: ${i.runs.map((r) => r.slice(ENDED.length)).join(", ")}`;
+    const comment = await gh(["issue", "comment", n, "-R", repo, "--body", body]);
+    if (comment.code !== 0) log(`::warning::#${n}: escalation comment refused`);
+  }
+  for (const i of again) {
+    const n = String(i.number);
+    const edit = await gh(["issue", "edit", n, "-R", repo, "--remove-label", "orchestrator-tried", "--add-label", "needs-orchestrator"], { runnerLogin: true });
+    if (edit.code !== 0) log(`::warning::#${n}: re-queue refused`);
+  }
+}
+
 if (import.meta.main) {
   const repo = process.env.GITHUB_REPOSITORY ?? "";
-  const out = await sweep(
-    { repo, issue: process.env.ISSUE ?? "", closed: process.env.CLOSED ?? "" },
-    { gh: ghCli, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), log: (l) => console.log(l) },
-  );
+  const deps = { gh: ghCli, sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), log: (l: string) => console.log(l) };
+  const out = await sweep({ repo, issue: process.env.ISSUE ?? "", closed: process.env.CLOSED ?? "" }, deps);
   appendFileSync(process.env.GITHUB_OUTPUT ?? (() => { throw new Error("GITHUB_OUTPUT is not set"); })(), `refs=${JSON.stringify(out.refs)}\nstalled_refs=${JSON.stringify(out.stalledRefs)}\n`);
+  if (["schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME ?? "")) await requeue({ repo }, deps);
 }

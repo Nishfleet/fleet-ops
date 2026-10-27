@@ -61,6 +61,16 @@ groups:
           summary: "Tasks are stalled waiting for memory"
           description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
 
+      # fleet-ops#10452: swap sat at ~90% with no alert. Visible, not paged.
+      - alert: SwapLow
+        expr: node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swap is over 80% used"
+          description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
+
       - alert: OOMKill
         expr: increase(node_vmstat_oom_kill[15m]) > 0
         labels:

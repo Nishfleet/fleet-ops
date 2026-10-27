@@ -29,20 +29,14 @@ on:
         type: string
       task:
         type: string
-      # JSON runs-on for the two GitHub-side jobs. A private caller whose
-      # hosted minutes ran out passes its own runners, e.g.
-      # '["self-hosted","Linux","X64"]' (drive, 2026-10-04: hosted jobs
-      # refused for billing, so the sweep never ran).
+      # JSON runs-on for the two GitHub-side jobs, e.g. '["self-hosted","Linux","X64"]'
+      # for a private caller whose hosted minutes ran out (drive, 2026-10-04).
       runner:
         type: string
         default: '"ubuntu-latest"'
-  # pull_request_target, not pull_request: pull_request never runs while a PR
-  # has a merge conflict. Invariant (Kimi K3 review L2, 2026-09-24): nothing in
-  # this file checks out PR code. ejected and miss-review-pr only run for a
-  # claim/issue-* (or a same-repo Revert) whose head repo is this repository,
-  # so a fork's PR never reaches a runner or a token. hold-risky runs for every
-  # PR on the last five types but only calls the API: it reads file names as
-  # data and never checks out or runs the head.
+  # pull_request_target, not pull_request: pull_request never runs while a PR has a merge
+  # conflict. Invariant: nothing in this file checks out PR code. ejected and miss-review-pr
+  # run only for same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run:
@@ -50,16 +44,12 @@ on:
     types: [completed]
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
-  # The sweep below catches both, and a rework event that never fired; hourly
-  # stays well under the 24h expiry and matches the drive and 0509 stubs.
+  # The sweep below catches both; hourly stays well under the 24h expiry.
   schedule:
     - cron: '17 * * * *'
 permissions: {}
-# One sweep running and one waiting per repo: a newer sweep replaces the waiting
-# one, and cancel-in-progress stays false so a running sweep finishes. 15 sweeps
-# queued behind 24 busy runners on 2026-09-28 (agent-dispatch #7798 since
-# 16:57Z), each listing the same issues. Every per-issue event (new, rework,
-# ejected, issue=<N> dispatch, a close) gets its own group and is not held back.
+# One sweep running and one waiting per repo (15 queued behind busy runners on 2026-09-28);
+# every per-issue event gets its own group.
 concurrency:
   group: agent-dispatch-${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')) && 'sweep' || github.run_id }}
   cancel-in-progress: false
@@ -76,12 +66,9 @@ env:
     | (if ($mine | length) > 0 then $mine else $w end) as $j
     | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
 jobs:
-  # FLEET_DISPATCH_PAUSED is true: say so, once per event that a dispatch job
-  # would have acted on, so a skipped run is not silent. It starts nothing and
-  # writes nothing. The plain PR events (hold-risky's) and ordinary comments
-  # and labels are left out, so a pause does not fill the runners with notices.
-  # Work skipped here is not lost: the sweep update.yml runs after clearing the
-  # flag lists every agent-ready issue and stalled claim PR again.
+  # FLEET_DISPATCH_PAUSED is true: say so once per event a dispatch job would have acted on.
+  # It starts and writes nothing. Skipped work is not lost: the sweep update.yml runs after
+  # clearing the flag lists every agent-ready issue and stalled claim PR again.
   paused:
     if: >-
       vars.FLEET_DISPATCH_PAUSED == 'true' &&
@@ -884,15 +871,8 @@ jobs:
             gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
-  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue
-  # (concurrency group); a second event inside 1 h is skipped in agent.yml's
-  # Gate. Design A (winner): stock GitHub events, one uses: agent.yml job.
-  # Design B (rejected): classify misses inside the 6 h sweep. That waits on a
-  # clock, and Nish 2026-10-04 said a review starts when something goes wrong,
-  # never on a clock. Graft: stalled still uses the existing sweep, because
-  # that requeue is the miss event and GitHub emits no other signal for it.
-  # failed / agent attempt cap is owned by agent.yml's Gate (the same run that
-  # posts the cap comment), so an issue_comment cannot start a second review.
+  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue (concurrency group);
+  # agent.yml's Gate skips a second event inside 1 h and owns the failed / agent attempt cap.
   miss-review:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
@@ -1499,7 +1479,7 @@ jobs:
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
-          # orchestrator-tried and skips; only a person clears the label.
+          # orchestrator-tried and skips; the sweep re-queues it after 6 h, up to 3 tries.
           if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
@@ -1510,7 +1490,7 @@ jobs:
           # credential, the same one the session pushes with).
           # --force makes the label idempotent, so a newly stubbed repo without
           # it does not fail the mark (drive#199, 2026-10-04).
-          env -u GH_TOKEN -u GITHUB_TOKEN gh label create orchestrator-tried -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; a person clears it to retry"
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create orchestrator-tried -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h"
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label orchestrator-tried --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           echo "orchestrate: #$ISSUE marked orchestrator-tried (no PR)"

@@ -112,6 +112,10 @@
     # (see the comment there). The drift check skips them too, so a --check
     # run, which removes nothing, still passes.
     retired:
+      # The daily drift run (fleet-ops#10457): deploy-box.yml applies every merge
+      # and fleet-host-config-boot.timer runs once per boot.
+      - /etc/systemd/system/fleet-host-config.timer
+      - /etc/systemd/system/timers.target.wants/fleet-host-config.timer
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/10-restart.conf
       # drive moved to Nishfleet (2026-10-06): its runners are org agent runners now.
       - /etc/systemd/system/actions.runner.nish3451-drive.netcup-agent-drive-.service.d
@@ -503,7 +507,9 @@
         dest: /etc/prometheus/
         owner: root
         group: root
-        mode: preserve
+        # Not preserve: a clone made under umask 077 holds these as 0600, and
+        # the prometheus user then cannot read the rules (fleet-ops#10472).
+        mode: "0644"
       notify:
         - Reload prometheus
         - Reload alertmanager
@@ -1661,14 +1667,16 @@
       # Under --check the copy above did not really install the unit yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: Enable the daily drift run
+    # The daily drift timer is gone (fleet-ops#10457): the host changes when main
+    # changes, through deploy-box.yml, and after a boot. Stopped and disabled
+    # here, and its file is in `retired`. A box where it is already gone is fine.
+    - name: Stop and disable the retired daily host config timer
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer
-        enabled: true
-        state: started
+        enabled: false
+        state: stopped
         daemon_reload: true
-      # Under --check the copy above did not really install the timer yet.
-      ignore_errors: "{{ ansible_check_mode }}"
+      failed_when: false
 
     # A reboot stops tether's Cua Space (Docker restart policy `no`) and its next
     # start publishes a new port, so the env file and the nft rule must be
