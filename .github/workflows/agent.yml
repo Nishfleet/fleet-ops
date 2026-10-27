@@ -1114,7 +1114,7 @@ jobs:
             jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$r-body.json" > "$RUNNER_TEMP/$r.txt" 2>/dev/null || retry "the $r reviewer seat's answer was not JSON"
             served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$r-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
             [ "$served" = "${!vr}" ] || retry "the $r reviewer seat was answered by ${served:-a row it did not name}, not the ${!vf} row ${!vr}"
-            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "token budget exceeded: the $r reviewer seat's answer hit its max_tokens limit (finish_reason length), so a re-run asks the same row with the same budget and is cut again. Raise max_tokens in ask_row or shorten the review output contract" " "
+            [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$r-body.json")" != length ] || retry "token budget exceeded: the $r reviewer seat's answer hit its max_tokens limit (finish_reason length), so a re-run asks the same row with the same budget and is usually cut again. Raise max_tokens in ask_row or shorten the review output contract" ""
             out=$(cat "$RUNNER_TEMP/$r.txt"); [ -n "${out//[[:space:]]/}" ] || retry "the $r reviewer gave no answer"
             rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true); ok=approved
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
