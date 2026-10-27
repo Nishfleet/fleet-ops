@@ -1,4 +1,3 @@
-"""The ansible-pull clone is the root-owned, read-only checkout (fleet-ops#10479)."""
 from pathlib import Path
 
 import yaml
