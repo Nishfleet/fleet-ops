@@ -1,7 +1,7 @@
 name: agent-dispatch
 on:
   issues:
-    types: [labeled, closed, reopened]
+    types: [labeled, closed, reopened, opened]
   issue_comment:
     types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
@@ -1150,6 +1150,35 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
+  # An issue filed with no label never reaches the queue (fleet-ops#10218: 205
+  # open and unlabelled on 2026-10-24). Every sweep, and every newly opened
+  # issue, gives each open unlabelled issue an owner label: needs-orchestrator
+  # in fleet-ops (admit never self-admits it), needs-triage in a product repo
+  # (the admit job decides). tests/test_label_unlabelled.py runs this step.
+  label-unlabelled:
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' && (
+        (github.event_name == 'issues' && github.event.action == 'opened') ||
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    timeout-minutes: 10
+    permissions: {issues: write}
+    steps:
+      - name: Label unlabelled issues
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$REPO" = Nishfleet/fleet-ops ]; then label=needs-orchestrator; else label=needs-triage; fi
+          gh label create "$label" -R "$REPO" --color fbca04 --description "Owner label for an issue filed with none" >/dev/null 2>&1 || true
+          nums=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0)) | .number')
+          for n in $nums; do
+            gh issue edit "$n" -R "$REPO" --add-label "$label" >/dev/null
+            echo "label-unlabelled: #$n -> $label"
+          done
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
