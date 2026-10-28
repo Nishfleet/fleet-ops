@@ -98,10 +98,20 @@ def test_empty_answer_is_refused(tmp_path):
 
 
 def test_retries_run_out_on_a_failed_call(tmp_path):
-    # Every call fails: one first try and one per REVIEW_BACKOFF delay, then exit 1 with the reason and no review.
     script = functions() + 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; return 7; }\nseat_try senior second GLM ""; echo "rc=$?"; cat "$RUNNER_TEMP/second-why"\n'
     env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0 0", "PATH": "/usr/bin:/bin"}
     out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
     assert "rc=1" in out and "curl exit 7" in out
-    assert len((tmp_path / "calls").read_text().split()) == 3
+    assert len((tmp_path / "calls").read_text().splitlines()) == 3
     assert not (tmp_path / "second.txt").exists()
+
+
+def test_a_failed_call_is_retried_until_a_review_lands(tmp_path):
+    (tmp_path / "h").write_text(OK_HEADERS)
+    (tmp_path / "b").write_text(OK_BODY)
+    script = functions() + 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; [ "$(wc -l < "$RUNNER_TEMP/calls")" -gt 1 ] || return 7; cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }\nseat_try senior second GLM ""; echo "rc=$?"; cat "$RUNNER_TEMP/second-row"\n'
+    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0 0", "H": str(tmp_path / "h"), "B": str(tmp_path / "b"), "PATH": "/usr/bin:/bin"}
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+    assert "rc=0" in out and out.endswith("synthetic-glm53flash-senior")
+    assert len((tmp_path / "calls").read_text().splitlines()) == 2
+    assert (tmp_path / "second.txt").read_text() == "APPROVE"
