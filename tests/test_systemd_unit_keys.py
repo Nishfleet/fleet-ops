@@ -1325,6 +1325,9 @@ WAKE_UNITS = (
     "systemd/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
+# Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
+# fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
+# claude-vps is the one narrowed unit because it had permissions.ask rules to honour (#9502). Revisit per vendor, units and pins together.
 WAKE_AGENT = {
     "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
     "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
