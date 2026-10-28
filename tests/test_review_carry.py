@@ -82,7 +82,7 @@ def approval(sha, login="github-actions[bot]", edited=False):
             "body": f"coordinator-approval: {sha}\n\nreviewer: {sha} approved."}
 
 
-def review(tmp_path, repo, base, head, comments):
+def review(tmp_path, repo, base, head, comments, guard="false"):
     origin, _ = repo
     bt, temp = tmp_path / "bt", tmp_path / "temp"
     temp.mkdir()
@@ -96,7 +96,7 @@ def review(tmp_path, repo, base, head, comments):
         'say() { printf "%s\\n" "$1" >> "$RUNNER_TEMP/said"; }\napprove() { echo "APPROVE $SHA" >> "$RUNNER_TEMP/said"; }\n'
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ORIGIN": str(origin), "COMMENTS": json.dumps(comments), "SHA": head,
-           "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt)}
+           "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt), "guard": guard}
     p = subprocess.run(["bash", "-c", stubs + block() + 'echo "scope=$scope note=$note"\n'], env=env, capture_output=True, text=True)
     read = lambda n: (temp / n).read_text() if (temp / n).exists() else ""
     return p, read("said"), read("out"), read("diff.txt")
@@ -175,3 +175,11 @@ def test_anything_else_gets_a_full_review(tmp_path, repo, comments):
     r, said, out, diff = review(tmp_path, repo, c["b1"], c["keep"], comments)
     assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout, r.stdout + r.stderr
     assert diff.startswith("diff --git") and "+y" in diff.splitlines() and "+b" in diff.splitlines()
+
+
+@pytest.mark.parametrize("head,base", [("clean", "b2"), ("added", "b0")])
+def test_guard_head_with_a_same_login_approval_gets_a_full_review(tmp_path, repo, head, base):
+    # a workflow in the PR could post this approval as the same bot, so a guard head neither carries nor narrows to an interdiff
+    c = repo[1]
+    r, said, out, diff = review(tmp_path, repo, c[base], c[head], [approval(c["old"])], guard="true")
+    assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout and diff.startswith("diff --git"), r.stdout + r.stderr

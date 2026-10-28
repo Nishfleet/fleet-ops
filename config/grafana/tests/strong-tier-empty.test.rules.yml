@@ -16,13 +16,7 @@ groups:
   name: strong-tier-empty
   rules:
   - alert: Strong group worker-capable has no healthy row
-    expr: "(sum(max by (model_id) (litellm_deployment_state{model_id=~\".+-worker-capable$\",litellm_model_name!~\"worker-capable|senior\"} == bool 0)) == bool 0)\n> 0"
-    labels:
-      grafana_folder: fleet
-      severity: warning
-      signal: strong-tier-empty
-  - alert: Strong group senior has no healthy row
-    expr: "(sum(max by (model_id) (litellm_deployment_state{model_id=~\".+-senior$\",litellm_model_name!~\"worker-capable|senior\"} == bool 0)) == bool 0)\n> 0"
+    expr: "(sum(max by (model_id) (litellm_deployment_state{model_id=~\".+-worker-capable$\",litellm_model_name!=\"worker-capable\"} == bool 0)) == bool 0)\n> 0"
     labels:
       grafana_folder: fleet
       severity: warning
