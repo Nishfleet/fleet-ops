@@ -118,12 +118,6 @@ jobs:
           miss=false
           case $REF in *-miss-review) miss=true ;; esac
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          miss_engine() {
-            case $1 in
-              *,strong-only,*) echo pi ;;
-              *) echo cursor ;;
-            esac
-          }
           # A miss event fires once; a silent lanes-full skip would lose the
           # review for good, so it leaves a replay line on the issue instead.
           miss_full() {
@@ -138,14 +132,10 @@ jobs:
               now_s=$(date +%s)
               [ $((now_s - last_s)) -lt 3600 ] && skip debounce
             fi
-            engine=$(miss_engine "$labels")
-            if [ "$engine" = cursor ]; then
-              [ "$(live cursor-agent)" -lt 1 ] || miss_full
-            else
-              # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
-              slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
-              [ "$(live pi)" -lt "$slots" ] || miss_full
-            fi
+            engine=pi
+            # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            [ "$(live pi)" -lt "$slots" ] || miss_full
             printf '%s\n' miss=true "issue=$i" "engine=$engine" go=true >> "$GITHUB_OUTPUT"
             exit 0
           }
@@ -218,12 +208,10 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only: a senior model other than SWE-2, Claude Code first,
-          # then Cursor (1 at once); with both full they stay agent-ready. Any other issue: pi while it
-          # has a free router slot (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3; fleet-ops#8975),
-          # else DeepSeek V4.1 Flash Free on the opencode CLI while fewer than 2 run (its free tier answers
-          # only that CLI, fleet-ops#8790), else Devin SWE-2 Max while fewer than 4 run ($0); all three full
-          # waits (lanes-full), no Cursor fallback (fleet-ops#8740). Live count: distinct worker or pi session dirs on bwrap lines, host-wide.
+          # Engine (Nish, 2026-09-25). strong-only: Claude Code first, then pi while it has a
+          # free router slot; with both full they stay agent-ready. Any other issue: pi while it
+          # has a free router slot (first-try clean 85% tune, 5/5 held-out; fleet-ops#8975); full
+          # waits (lanes-full). Live count: distinct worker or pi session dirs on bwrap lines, host-wide.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is
@@ -234,18 +222,13 @@ jobs:
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
-          # Devin is free while fewer than 4 run.
-          devin_free() {
-            [ "$(live devin)" -lt 4 ]
-          }
           # Claude does the judgment work, the free workers do the mechanical work,
           # and Jev decides which is which. strong-only (senior) work always goes to
           # Claude Code first. Any other issue is classified by Jev from its title
           # and body: p >= 0.9 that completing it needs engineering judgment sends
           # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
           # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, then opencode, then Devin, and never Cursor
-          # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
+          # free order is pi, the one free harness. Claude is Sonnet, or Opus with needs-opus or after two
           # failed runs. The seat follows the runner's number (netcup-agent-N):
           # odd runs seat a, even runs the default login (seat b), so
           # the jobs split across both seats and a job never changes seat (no
@@ -302,11 +285,7 @@ jobs:
           claude_ok=$want_claude
           if [ "$claude_ok" = true ]; then
             engine=claude
-          elif [ "$senior" = true ]; then
-            if [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor; else skip lanes-full; fi
           elif pi_free; then engine=pi
-          elif [ "$(live opencode)" -lt 2 ]; then engine=opencode
-          elif devin_free; then engine=devin
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
@@ -345,7 +324,7 @@ jobs:
           # the 55 minute step wall; this is a backstop under it.
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
-          # true for strong-only work; a judgment job that claude cannot take goes to pi, never Cursor.
+          # true for strong-only work; a judgment job that claude cannot take goes to pi.
           SENIOR: ${{ steps.gate.outputs.senior }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
@@ -393,13 +372,11 @@ jobs:
             # login). A name with no number keeps seat a. The seat never changes
             # inside a job, except to the other seat when its own login is missing
             # (below). A run that dies on a rate limit or
-            # a usage limit sends the same packet to the Cursor lane for senior
-            # work, or to pi (the first of the ordinary lanes) for any other job,
-            # which never uses Cursor; either continues from whatever the branch
-            # holds (worker.md step 2b). Other engines never see these seats'
-            # logins (the jail lines above); this one sees only the seat it runs on.
+            # a usage limit sends the same packet to pi, which continues from
+            # whatever the branch holds (worker.md step 2b). Other engines never
+            # see these seats' logins (the jail lines above); this one sees only
+            # the seat it runs on.
             fallback=pi
-            [ "$SENIOR" != true ] || fallback=cursor
             runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}
             if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
@@ -422,13 +399,8 @@ jobs:
                 if [ "$claude_seat" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; else unset CLAUDE_CONFIG_DIR; fi
               else
                 echo "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane"
-                if [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; then
-                  ENGINE=$fallback
-                  echo "fallthrough: $ENGINE (claude login missing)"
-                else
-                  echo "claude: no login on either seat, treated as 429 rate limit, cursor lane full" >&2
-                  exit 1
-                fi
+                ENGINE=$fallback
+                echo "fallthrough: $ENGINE (claude login missing)"
               fi
             fi
             if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
@@ -458,7 +430,7 @@ jobs:
               [ -z "$cfg" ] || rm -rf "$cfg"
             }
             authfail() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'api error: 401|authentication[_ ]error|unauthorized|invalid (api key|bearer|token|authentication)|token (has )?(expired|been revoked|revoked)|please run /login|not logged in'; }
-            # --chdir puts the worker directory on the bwrap command line, which is what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator session's: only the browser MCP server, no skills, no user settings; managed settings still apply. bypassPermissions is the same trust the other engines get (Devin runs --permission-mode dangerous, pi runs with its tools on): the bwrap jail is the boundary, not the permission prompt. The jail shows this lane only the seat it runs on. Project and local settings come from the worktree, which holds main's files plus what the model itself writes inside the same jail, so they add no reach; --settings turns every hook off, and --settings outranks project and local settings. CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the token out of the CLI's Bash tool environment. With that variable set the CLI forces permission mode to default and prints "Permission mode forced to default", so bypassPermissions alone does nothing in token mode: a headless run then cannot use a single tool, answers in text and exits 0 with no PR (fleet-ops#10101, tether#19, siterep-public#210). --allowedTools names every tool the worker needs, which is what the CLI's own message asks for; it widens nothing beyond what bypassPermissions granted, and the scrub stays on.
+            # --chdir puts the worker directory on the bwrap command line, which is what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator session's: only the browser MCP server, no skills, no user settings; managed settings still apply. bypassPermissions is the same trust the pi lane gets (pi runs with its tools on): the bwrap jail is the boundary, not the permission prompt. The jail shows this lane only the seat it runs on. Project and local settings come from the worktree, which holds main's files plus what the model itself writes inside the same jail, so they add no reach; --settings turns every hook off, and --settings outranks project and local settings. CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the token out of the CLI's Bash tool environment. With that variable set the CLI forces permission mode to default and prints "Permission mode forced to default", so bypassPermissions alone does nothing in token mode: a headless run then cannot use a single tool, answers in text and exits 0 with no PR (fleet-ops#10101, tether#19, siterep-public#210). --allowedTools names every tool the worker needs, which is what the CLI's own message asks for; it widens nothing beyond what bypassPermissions granted, and the scrub stays on.
             claude_try "$claude_tok"
             # A seat whose token was revoked or has expired fails every job on it, so one auth failure (not a rate limit; the CLI names it in its last lines) retries once with the other seat's token, before any fallthrough, and only while nothing is pushed (the model's own closing text can mention a 401; a run that did work is not redone). No token on the other seat, or a second failure, ends as a failed run.
             if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
@@ -473,71 +445,15 @@ jobs:
             fi
             unset claude_tok
             [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"; [ ! -f "$RUNNER_TEMP/try.out" ] || { claude_final="${RUNNER_TEMP%/*}/claude-final/$FLEET_TASK_ID.txt"; { mkdir -p "${claude_final%/*}" && cp "$RUNNER_TEMP/try.out" "$claude_final" && echo "claude lane: final answer kept on the VPS at $claude_final ($(wc -c <"$claude_final") bytes)"; } || echo "::warning::claude lane: could not keep the final answer"; } # print mode's final answer stays off the public log (fleet-ops#10309)
-            if [ "$rc" != 0 ] && refused && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
+            if [ "$rc" != 0 ] && refused; then
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
             else
               cat "$RUNNER_TEMP/try.err" >&2
-              # A refused seat is not a failed packet: say so where the Router
-              # wall step reads, so a branch with nothing pushed is requeued.
-              if [ "$rc" != 0 ] && refused; then echo "claude: 429 rate limit, cursor lane full" >&2; fi
               [ "$rc" = 0 ] || exit 1
             fi
           fi
-          if [ "$ENGINE" = devin ]; then
-            mark devin
-            for model in swe-2-max swe-2-high; do
-              rc=0
-              echo "$packet" | $jail_base --chdir "$dir" -- \
-                devin -p --prompt-file /dev/stdin --permission-mode dangerous --model "$model" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
-              [ "$rc" != 0 ] && [ "$model" = swe-2-max ] && grep -qi 'free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] && continue
-              break
-            done
-            # The refusal text reaches stderr (worker.err) only when the run
-            # ends here; after a fallthrough, the Router wall must judge the
-            # lane that actually ran.
-            if [ "$rc" != 0 ] && grep -qiE 'capacity issues|free model rate limit' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
-              if [ "$(live opencode)" -lt 2 ]; then ENGINE=opencode
-              else ENGINE=pi
-              fi
-              echo "fallthrough: $ENGINE"
-            else
-              cat "$RUNNER_TEMP/try.err" >&2
-              [ "$rc" = 0 ] || exit 1
-            fi
-          fi
-          if [ "$ENGINE" = opencode ]; then
-            # --auto approves what the worker needs outside --dir (prompts, gh, the repo).
-            mark opencode
-            rc=0
-            $jail opencode run --dir "$dir" -m opencode/deepseek-v4.1-flash-free --auto "$packet" >/dev/null 2> "$RUNNER_TEMP/try.err" || rc=$?
-            # A refused free seat is not a failed packet: with nothing pushed
-            # yet, the same run moves to pi (no benching, fleet-ops#8993).
-            if [ "$rc" != 0 ] && grep -qi 'rate limit exceeded' "$RUNNER_TEMP/try.err" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
-              ENGINE=pi
-              echo "fallthrough: $ENGINE"
-            else
-              cat "$RUNNER_TEMP/try.err" >&2
-              [ "$rc" = 0 ] || exit 1
-            fi
-          fi
-          if [ "$ENGINE" = cursor ]; then
-            # Alternate the two prepaid Cursor Ultra keys by issue number so
-            # neither stack is spent and both are paced (fleet-ops#8740):
-            # even $id -> cursor.env, odd $id -> cursor-2.env. $id's issue
-            # number is its last '-' field, so parity is on the issue number.
-            case ${id##*-} in
-              *[!0-9]*) cursor_env=cursor.env ;;   # not numeric: default to key 1
-              *) [ $(( ${id##*-} % 2 )) -eq 0 ] && cursor_env=cursor.env || cursor_env=cursor-2.env ;;
-            esac
-            set -a
-            # shellcheck disable=SC1090 # cursor_env is one of the two constant seat files set in the case just above
-            . "$HOME/.config/fleet-ops/seats/$cursor_env"
-            set +a
-            mark cursor
-            $jail cursor-agent -p --output-format text --model cursor-grok-4.6-high --force --trust \
-              --workspace "$dir" "$packet" >/dev/null
-          elif [ "$ENGINE" = pi ]; then
+          if [ "$ENGINE" = pi ]; then
             # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
             # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
             # file key. Without it only the lazy mobbin server fails, never the run.
@@ -561,7 +477,7 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             fi
-          elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ] && [ "$ENGINE" != claude ]; then
+          elif [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2
             exit 1
           fi
@@ -612,26 +528,18 @@ jobs:
           permission-pull-requests: write
       - name: Router wall
         id: wall
-        # A router seat wall or a Devin capacity refusal is infra, not a bad packet
-        # (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes
-        # anything, so a claim branch already ahead of main is requeued too. GITHUB_TOKEN on
+        # A router seat wall is infra, not a bad packet (fleet-ops#8543): no
+        # strike, back to agent-ready. The lane fails before it writes anything,
+        # so a claim branch already ahead of main is requeued too. GITHUB_TOKEN on
         # purpose: its label fires no workflow, so the issue waits for the next sweep instead
         # of going straight back to the lane that refused it (0509#6133, ~50 runs an issue).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
-          ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
-            # Cursor's own stall (fleet-ops#9275: "Connection stalled repeatedly", exit 1, and the packet was
-            # struck). The cursor-agent line in Worker discards stdout only, so this stderr reaches worker.err.
-            # Like a router 429 it is the provider, not the packet, so it needs the same 0-ahead proof that
-            # nothing was pushed. The Cursor cap stays 1.
-            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
-              { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
-            [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
-          fi
+          grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
+          [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           # shellcheck disable=SC2016 # $v is a jq variable
           n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
           [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
@@ -797,7 +705,7 @@ jobs:
         # Two strikes, counted from these comments since the newest park: comment
         # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
         # First strike re-queues via agent-ready (fleet-ops#8552) with strong-only, so the retry
-        # goes to the senior Cursor lane with the issue thread and pushed branch as its context,
+        # goes to the Claude lane with the issue thread and pushed branch as its context,
         # never to another worker model (Nish 2026-10-01, #9015); the second parks.
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
@@ -816,7 +724,7 @@ jobs:
           jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
             { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # fleet-ops#9291: a Worker death under host overload is infra, not a bad packet (the
-          # 2026-10-05 overload struck 52 drive fixes into the 1-slot strong-only lane while 93 pi
+          # 2026-10-05 overload struck 52 drive fixes into the strong-only lane while 93 pi
           # slots sat free). Three signatures count as infra: a cancelled Worker (the runner's
           # shutdown signal), a Worker that failed in under 10 minutes on a router 429/500
           # (fleet-ops#9372), and one that failed at the 55-minute cap (>= 54 min) while load1
@@ -876,9 +784,9 @@ jobs:
           slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
           strong_free=false; regular_free=false
           # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
-          # falls through to Cursor (cap 1) or pi in the Worker.
+          # falls through to pi in the Worker.
           strong_free=true
-          if [ "$(live devin)" -lt 4 ] || [ "$(live opencode)" -lt 2 ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
+          if [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
           # An issue whose labeled run still waits for a runner must not be
           # poked again: the new run displaces the waiting one in the
           # agent-<repo>-<ref> group, and GitHub cancels it (fleet-ops#9269:

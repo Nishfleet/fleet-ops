@@ -36,7 +36,7 @@ script, or prompt lands unseen.
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
   scheduled tasks), `quality-bar.md` and `incidents/` (one blameless
   write-up per outage, named `YYYY-MM-DD-<slug>.md`).
-- `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
+- `template/` — `agents/` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](template/README.md)).
 - `prompts/` — Pi agent prompts fed to workers on stdin.
@@ -75,7 +75,7 @@ script, or prompt lands unseen.
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
-  under `.pi/agent/sessions`, `.cursor/chats/*/` and
+  under `.pi/agent/sessions` and
   `.local/state/pi-issues`.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml` cites it for the App's grant).
@@ -132,23 +132,17 @@ script, or prompt lands unseen.
   so only its parent unit is verified. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
-- `systemd/tincan-listen-command-code.service`,
-  `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
-  `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
-  `tincan-listen-pi.service` and
-  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
+- `systemd/tincan-listen-fleet-worker.service`, `tincan-listen-pi.service`,
+  `tincan-listen-issue-desk.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the Tincan wake services
   and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
-  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
-  OpenCode and the paid pi seat, each reading its own
+  `tincan listen` for one agent: the free pi worker, the paid pi seat and the
+  issue desk, each reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
-  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
-  router with a virtual key of its own, kept in the fleet's local seat directory
-  (worker-cheap only, capped per day), minted with `POST /key/generate` like
-  every other consumer credential, because a prompt-injected message in that
-  lane could make the run print its environment. The router's master key is not
+  `~/.local/state/tincan-listen-<agent>`. The router's master key is not
   in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
   daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
-  The six wake services were hand-placed regular files under
+  The listeners were hand-placed regular files under
   `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
   them; the files here are the bytes that ran before, and `fleet-sync.service`
   step 2j links each one on every deploy (the `default.target.wants` links
@@ -158,23 +152,16 @@ script, or prompt lands unseen.
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
   bundled `cua` binary; step 2k retires its hand-placed copy once the installed
   one is there, and repoints its wants link at the installed file so the link
-  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
-  are enabled already (the wants link names the unit, and step 2j keeps the six
+  does not dangle. Run one by hand with `systemctl --user start <unit>`: all
+  are enabled already (the wants link names the unit, and step 2j keeps the
   wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. The OpenCode lane will not start without its own key file, so mint
-  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
-  limit) into the fleet's seat directory before its first start, the way the
-  Cursor lane's seat file is provisioned: a missing file fails the unit and
-  pages, which is the point, because the lane has no fallback to the admin key.
+  restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-command-code.service`
-  `systemctl --user disable --now tincan-listen-cursor-vps.service`
-  `systemctl --user disable --now tincan-listen-devin-vps.service`
   `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-opencode.service`
   `systemctl --user disable --now tincan-listen-pi.service`
+  `systemctl --user disable --now tincan-listen-issue-desk.service`
   `systemctl --user disable --now cua-desk-daemon.service`
-  Delete one of the six wake services by removing its name from
+  Delete one of the wake services by removing its name from
   `fleet-sync.service` step 2j, its file here and the live link, then
   `systemctl --user daemon-reload`. Delete the desk daemon with
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
@@ -241,10 +228,6 @@ script, or prompt lands unseen.
   default is 0002). Link it once after the merge with the drop-in `ln -sfn`
   idiom under "Install" (before the merge it would dangle), then
   `systemctl --user daemon-reload`; it applies at the next index run.
-  The same `UMask=0077` drop-in sits in
-  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
-  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
-  so the drop-in now applies on every deploy. Applies at the next restart.
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](#triage-admission-needs-triage) decides whether a worker starts)
@@ -425,19 +408,6 @@ both the unit and the cgroup read the new cap.
 ```
 systemctl show agent.slice -p MemorySwapMax      # 1073741824, not infinity
 cat /sys/fs/cgroup/agent.slice/memory.swap.max   # same number
-```
-
-### Devin workspace-trust key (fleet-ops#4825)
-
-`install.sh` used to merge `skip_workspace_trust: true` into
-`~/.config/devin/config.json` on every deploy, so a Devin auto-update that
-rewrote the config could not silently wall the seat. That merge is gone with
-the installer. The live config carries the key today; if the Devin CLI ever
-refuses with _"Refusing to run in an untrusted workspace"_, re-apply it once:
-
-```
-jq '. * ($o[0]) | del(.respect_workspace_trust)' --slurpfile o <repo>/template/devin-config.json \
-   ~/.config/devin/config.json > /tmp/devin.json && mv /tmp/devin.json ~/.config/devin/config.json
 ```
 
 ### Canonical checkout (fleet-ops#372)
@@ -625,7 +595,7 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone, amp, syncthing). Stale npm
+   plugins, uv, bun, rclone, amp, syncthing). Stale npm
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.
@@ -1194,25 +1164,20 @@ credential file does not hold them back.
 |---|---|
 | Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
 | Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
-| OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
-| Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its output lacks the command or any argument; a CLI that is not installed is skipped. |
-| Cursor | the play swaps the dead `camofox-browser` entry in `~/.cursor/mcp.json` for `chrome-devtools`, keeping the other servers. Cursor still asks for approval (`cursor-agent mcp enable chrome-devtools`). |
 | Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
 | Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
 
-- The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
-- Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
+- The Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
+- Verify: `chrome-devtools-mcp --version` prints the pin.
 - Switch off for one agent: remove its task (Claude Code has no plugin left to
   disable, so a worker lane that must lose the tool drops its `--mcp-config`
-  line); `copy` never
-  deletes, so also add `/etc/opencode/opencode.json` to `retired` for OpenCode.
-- Delete it all: remove the OpenCode tasks and the tasks from "Create the Chrome
+  line).
+- Delete it all: remove the tasks from "Create the Chrome
   DevTools MCP install directory" through "Add the chrome-devtools entry under
   Hermes' mcp_servers" in `ansible/host.yml`, `config/chrome-devtools-mcp/` and
-  `tests/test_chrome_devtools_mcp.py` with its `ci.yml` step, then
-  `devin mcp remove` and `cmd mcp remove` the entry by hand.
+  `tests/test_chrome_devtools_mcp.py` with its `ci.yml` step.
 - The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
-  every agent": the args match in every fragment, and the Cursor, Codex and
+  every agent": the args match in every fragment, and the Codex and
   Hermes tasks run twice against temp copies (the second run changes nothing).
 
 ## CI

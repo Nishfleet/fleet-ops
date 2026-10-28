@@ -157,14 +157,14 @@ ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy
 #     here the way 2h links its pair: a regular file, or a link to anywhere else,
 #     blocks `link`, so it is removed first. The default.target.wants links already
 #     point at these paths, so no `enable` runs here and a hand `systemctl --user
-#     disable --now` stays off. Off switch: delete this step and the six names in
+#     disable --now` stays off. Off switch: delete this step and the four names in
 #     it, then `systemctl --user disable --now` each unit and `systemctl --user
 #     unlink` it by hand. A unit edit applies at that unit's next restart, so no
 #     restart line runs here: these listeners are woken by work and a restart
 #     drops whatever wake is in flight. The Cua desk daemon is not here: it lives
 #     in rootfs/etc/systemd/user/ and step 2k retires its hand-placed copy.
-ExecStart=/bin/sh -c 'for f in tincan-listen-command-code.service tincan-listen-cursor-vps.service tincan-listen-devin-vps.service tincan-listen-fleet-worker.service tincan-listen-opencode.service tincan-listen-pi.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-command-code.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-cursor-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-devin-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-opencode.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service
+ExecStart=/bin/sh -c 'for f in tincan-listen-claude-vps.service tincan-listen-fleet-worker.service tincan-listen-issue-desk.service tincan-listen-pi.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-claude-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-issue-desk.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service
 # 2k. One file fleet-host-config.service installs as root into /etc/systemd/user
 #     (fleet-ops#10140): the Cua desk daemon unit. The gpg-agent OOM drop-in that
 #     used to be retired here is #10138's own delivery: ansible/host.yml lists it

@@ -738,8 +738,8 @@ jobs:
     strategy:
       fail-fast: false
       # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
-      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots,
-      # Devin's 4) is gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
+      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots) is
+      # gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}

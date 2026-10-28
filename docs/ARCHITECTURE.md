@@ -88,7 +88,7 @@ The rules still in force:
   claiming a review it did not get: the `in-run review: unavailable -
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
-  pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
+  pi. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
   with `needs-opus`). The seat is set by the runner's number
   (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
@@ -100,7 +100,7 @@ The rules still in force:
   token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
   (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
   run as shell, and the token is masked and given to the claude command alone, so
-  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  a fallthrough to pi does not inherit it. If claude fails with an auth
   error on that token, the lane retries once with the other seat's token (logged as
   `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
   so a backup copy restores it. With no such file the seat's login is used
@@ -110,8 +110,7 @@ The rules still in force:
   included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
-  limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
-  any other job. Nothing polls usage.
+  limit, the same packet falls through to pi. Nothing polls usage.
   Routing by judgment, in plain words: Claude does the judgment work, free
   workers do the mechanical work, and Jev decides which is which. For an issue
   that is not `strong-only`, the Gate asks Jev one typed question from the issue
@@ -119,9 +118,9 @@ The rules still in force:
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
   the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
-  or less it goes to the free lanes (pi, then opencode, then Devin). Anything
+  or less it goes to the free pi lane. Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
-  lanes; `strong-only` always goes to claude. The decision is written as
+  pi lane; `strong-only` always goes to claude. The decision is written as
   `judgment: p=<x> -> claude|free (<reason>)` to the log and the job summary.
   Eval numbers: `tests/evals/results/needs_judgment.json`. There is no cap on
   live claude workers: nothing stock gives N slots, and each worker sits under

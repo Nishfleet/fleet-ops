@@ -1220,7 +1220,7 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
 
 # Units whose output files hold agent session text. The user manager default is
 # UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d", "systemd/tincan-listen-devin-vps.service.d")
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d",)
 
 
 @pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
@@ -1291,20 +1291,12 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-command-code.service",
-    "systemd/tincan-listen-cursor-vps.service",
-    "systemd/tincan-listen-devin-vps.service",
     "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-opencode.service",
     "systemd/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
 WAKE_AGENT = {
-    "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
-    "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
-    "tincan-listen-devin-vps": ("devin -p", "--permission-mode dangerous"),
     "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
-    "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
 DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
@@ -1349,21 +1341,11 @@ def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
         assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
 
 
-def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own() -> None:
-    cursor = effective_directives(ROOT / "systemd/tincan-listen-cursor-vps.service")
-    assert "%h/.config/fleet-ops/seats/cursor.env" in cursor["EnvironmentFile"]
+def test_the_desk_daemon_loads_its_own_seat_file() -> None:
     desk = effective_directives(ROOT / DESK_UNIT)
     assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
     assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
-
-
-def test_the_opencode_listener_loads_its_own_router_key() -> None:
-    opencode = effective_directives(ROOT / "systemd/tincan-listen-opencode.service")
-    assert opencode["EnvironmentFile"] == ["%h/.config/fleet-ops/seats/tincan-opencode.env"], (
-        "this lane is woken by mail from other agents, so a prompt-injected message can read its "
-        "environment: the key in it must be the lane's own worker-cheap virtual key (fleet-ops#10221)"
-    )
 
 
 def test_no_unit_loads_the_litellm_master_key() -> None:

@@ -201,13 +201,8 @@
       - /usr/bin/google-chrome
       - --no-usage-statistics
       - --no-performance-crux
-    chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
-    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
-    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
-    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
     # when it is missing; the Redis requirepass fragment and the proxy env file are rendered
     # from it on every run, so the two cannot differ. Deleting the file mints a new password,
@@ -222,8 +217,6 @@
       - {name: grafana-telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
       - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
-    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
-    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     # ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
@@ -716,22 +709,6 @@
         mode: preserve
         validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
-    - name: Create the OpenCode managed config directory
-      ansible.builtin.file:
-        path: /etc/opencode
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Install the OpenCode managed config
-      ansible.builtin.copy:
-        content: "{{ {'$schema': 'https://opencode.ai/config.json', 'mcp': {'chrome-devtools': {'type': 'local', 'command': chrome_devtools_mcp_command, 'enabled': true}}} | to_nice_json(indent=2) }}\n"
-        dest: /etc/opencode/opencode.json
-        owner: root
-        group: root
-        mode: "0644"
-
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
     # that changes the URL and the checksum together, and this block's
@@ -840,7 +817,7 @@
     # so owner-only modes keep the runners working; no other user or group
     # reads these files. The leviathan directory is already 0700. SQLite gives a new -wal/-shm the
     # mode of the main database, so fixing the main file covers them.
-    # opencode.db (with -wal/-shm) and the Grafana database are covered too. The
+    # The Grafana database is covered too. The
     # Grafana container runs UserNS=keep-id, so its process is nish (uid 1000) on
     # the host and needs no group access; its data directory is already 0700.
     - name: Look for the agent state directories
@@ -849,8 +826,6 @@
       ansible.builtin.stat:
         path: "{{ item }}"
       loop:
-        - "{{ agent_share }}/devin"
-        - "{{ agent_share }}/devin/cli"
         # Pi worker session logs live under here (directory mode only; the
         # files inside are nish's and stay as the tool writes them).
         - "{{ nish_home }}/.pi"
@@ -873,15 +848,12 @@
       become_user: nish
       ansible.builtin.find:
         paths:
-          - "{{ agent_share }}/devin/cli"
           - "{{ agent_share }}/leviathan"
-          - "{{ agent_share }}/opencode"
           - "{{ agent_share }}/fleet-grafana"
         patterns:
           - sessions.db*
           - pi.db*
           - claude.db*
-          - opencode.db*
           - grafana.db*
         file_type: file
       register: agent_state_dbs
@@ -2037,66 +2009,6 @@
       when: shared_next != shared_now
       diff: false
 
-    - name: Read each agent CLI's chrome-devtools entry
-      become: true
-      become_user: nish
-      environment: "{{ nish_env }}"
-      ansible.builtin.command:
-        argv: ["{{ item }}", mcp, get, chrome-devtools]
-      loop: "{{ [nish_home ~ '/.local/bin/devin', nish_home ~ '/.local/bin/cmd'] | select('file') | list }}"
-      register: mcp_entry
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      timeout: 60
-
-    - name: Drop a stale chrome-devtools entry
-      become: true
-      become_user: nish
-      environment: "{{ nish_env }}"
-      ansible.builtin.command:
-        argv: ["{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
-      loop: "{{ mcp_entry.results }}"
-      loop_control:
-        label: "{{ item.item }}"
-      when: item.rc == 0 and (chrome_devtools_mcp_words | reject('in', item.stdout ~ item.stderr) | list | length) > 0
-      timeout: 60
-
-    - name: Add the chrome-devtools entry to each agent CLI
-      become: true
-      become_user: nish
-      environment: "{{ nish_env }}"
-      ansible.builtin.command:
-        argv: "{{ [item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
-      loop: "{{ mcp_entry.results }}"
-      loop_control:
-        label: "{{ item.item }}"
-      when: item.rc != 0 or (chrome_devtools_mcp_words | reject('in', item.stdout ~ item.stderr) | list | length) > 0
-      timeout: 60
-
-    - name: Read Cursor's MCP config
-      become: true
-      become_user: nish
-      ansible.builtin.slurp:
-        src: "{{ nish_home }}/.cursor/mcp.json"
-      register: cursor_mcp
-      failed_when: false
-      diff: false
-
-    - name: Swap Cursor's dead camofox entry for chrome-devtools
-      become: true
-      become_user: nish
-      ansible.builtin.copy:
-        content: "{{ cursor_next | to_nice_json(indent=2) }}\n"
-        dest: "{{ nish_home }}/.cursor/mcp.json"
-        mode: "0600"
-      vars:
-        cursor_now: "{{ (cursor_mcp.content | default('e30=') | b64decode | from_json) }}"
-        cursor_servers: "{{ (cursor_now.mcpServers | default({})) | dict2items | rejectattr('key', 'in', ['camofox-browser', 'chrome-devtools']) | items2dict }}"
-        cursor_next: "{{ cursor_now | combine({'mcpServers': cursor_servers | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args}})}) }}"
-      when: cursor_next != cursor_now
-      diff: false
-
     - name: Look for Codex's config
       become: true
       become_user: nish
@@ -2183,88 +2095,6 @@
         hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
       when: hermes_config.content is defined and hermes_text is not search('(?m)^bot_desktop:')
       diff: false
-
-    - name: Look for the Command Code seat
-      become: true
-      become_user: nish
-      ansible.builtin.stat:
-        path: "{{ commandcode_seat_file }}"
-      register: commandcode_seat_stat
-
-    - name: Read the Command Code seat (an unreadable seat is a warning, not a silent skip)
-      when: commandcode_seat_stat.stat.exists
-      block:
-        - name: Slurp the Command Code seat
-          become: true
-          become_user: nish
-          ansible.builtin.slurp:
-            src: "{{ commandcode_seat_file }}"
-          register: commandcode_seat
-          no_log: true
-          diff: false
-      rescue:
-        - name: Warn that the Command Code seat exists but cannot be read
-          ansible.builtin.debug:
-            msg: "WARNING: {{ commandcode_seat_file }} exists but could not be read; cmd keeps whatever login it has"
-
-        - name: Record that the Command Code seat could not be read
-          ansible.builtin.set_fact:
-            commandcode_problems: "{{ commandcode_problems | default([]) + ['the seat exists but could not be read'] }}"
-
-    - name: Log Command Code in from the seat (a login that already exists is never replaced)
-      when: commandcode_seat_key != ''
-      block:
-        - name: Create the Command Code login directory
-          become: true
-          become_user: nish
-          ansible.builtin.file:
-            path: "{{ commandcode_auth_dir }}"
-            state: directory
-            mode: "0700"
-
-        - name: Write the seat's key as the Command Code login unless a login file exists
-          become: true
-          become_user: nish
-          ansible.builtin.copy:
-            content: "{{ {'apiKey': commandcode_seat_key} | to_nice_json(indent=2) }}\n"
-            dest: "{{ commandcode_auth_file }}"
-            mode: "0600"
-            force: false
-          no_log: true
-          diff: false
-
-        - name: Keep the Command Code login at mode 0600, whatever key it holds
-          become: true
-          become_user: nish
-          ansible.builtin.file:
-            path: "{{ commandcode_auth_file }}"
-            mode: "0600"
-          when: not ansible_check_mode
-          no_log: true
-          diff: false
-
-        - name: Read the Command Code login to compare it with the seat
-          become: true
-          become_user: nish
-          ansible.builtin.slurp:
-            src: "{{ commandcode_auth_file }}"
-          register: commandcode_login_text
-          when: not ansible_check_mode
-          no_log: true
-          diff: false
-
-        - name: Say that the Command Code login does not hold the seat's key
-          ansible.builtin.debug:
-            msg: "NOTE: {{ commandcode_auth_file }} does not contain the seat's key (a login made by cmd, or a rotated or revoked seat key); it is left alone. To take the seat's key, delete the file and the next run writes it."
-          when: not ansible_check_mode and commandcode_seat_key not in (commandcode_login_text.content | b64decode)
-      rescue:
-        - name: Warn that the Command Code login could not be set up
-          ansible.builtin.debug:
-            msg: "WARNING: could not set up the Command Code login in {{ commandcode_auth_dir }} (step: {{ ansible_failed_task.name | default('unknown') }}); the rest of the run continues, then the run fails"
-
-        - name: Record that the Command Code login could not be set up
-          ansible.builtin.set_fact:
-            commandcode_problems: "{{ commandcode_problems | default([]) + ['the login could not be set up at step: ' ~ (ansible_failed_task.name | default('unknown'))] }}"
 
     - name: Read Hermes' scheduled jobs
       become: true
@@ -2453,12 +2283,6 @@
       ansible.builtin.assert:
         that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
-        quiet: true
-
-    - name: Fail when the Command Code login could not be set up
-      ansible.builtin.assert:
-        that: commandcode_problems | default([]) | length == 0
-        fail_msg: "Command Code login: {{ commandcode_problems | default([]) | join('; ') }}. cmd keeps whatever login it has; the rest of this run completed."
         quiet: true
 
     - name: Fail when a live digest prompt differs from config/hermes/
