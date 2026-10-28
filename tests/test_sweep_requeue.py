@@ -25,9 +25,13 @@ FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
   "issue list") cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
-  "api repos/o/r/actions/workflows/stub.yml/runs?per_page=100")
+  "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
-    [ "$3" = --jq ] && jq -r "$4" "$FAKE_DIR/runs.json" ;;
+    jq -r "$4" "$FAKE_DIR/runs.json" ;;
+  "api repos/o/r/actions/runs/"*)
+    [ -z "$FAIL_JOBS" ] || exit 1
+    id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
+    jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
@@ -56,14 +60,18 @@ def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",), refired
     }
 
 
-def live_run(title, status="in_progress"):
-    return {"display_title": title, "status": status}
+def job(name, status="in_progress"):
+    return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_runs=()):
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=()):
+    """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
-    runs = [live_run(f"orchestrate {900 + i}") for i in range(queued)]
-    (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [*other_runs, *runs]}))
+    jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
+    for i, j in enumerate(other_jobs):
+        jobs[str(100 + i)] = {"jobs": [j]}
+    (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [{"id": int(k)} for k in jobs]}))
+    (tmp_path / "jobs.json").write_text(json.dumps(jobs))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
     gh = tmp_path / "gh"
     gh.write_text(FAKE_GH)
@@ -95,10 +103,10 @@ def test_batch_is_five(tmp_path):
 
 
 def test_live_runs_use_up_the_batch(tmp_path):
-    """Only runs titled "orchestrate N" and not completed count: label-event runs, finished
-    orchestrate runs and sweeps ahead of them in the list must not hide them (fleet-ops#10475)."""
-    noise = [live_run("agent-dispatch", "queued") for _ in range(8)] + [live_run("orchestrate 5", "completed")]
-    w = run(tmp_path, [issue(n) for n in range(1, 5)], queued=3, other_runs=noise)
+    """Live orchestrate jobs count, whatever the run is titled, plain or behind a stub; other jobs and
+    finished orchestrate jobs do not (fleet-ops#10475)."""
+    noise = [job("list") for _ in range(8)] + [job("orchestrate", "completed")]
+    w = run(tmp_path, [issue(n) for n in range(1, 5)], queued=3, other_jobs=noise)
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
 
@@ -123,9 +131,15 @@ def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
     assert marker in _y(f"{STEP} | .env.REQUEUE"), "the counter and the posted marker must share one prefix"
 
 
-def test_failed_dispatch_leaves_labels_alone_and_writes_no_marker(tmp_path):
-    w = run(tmp_path, [issue(1, ended=0, labels=("needs-orchestrator",))], fail={"FAIL_DISPATCH": "1"}, out=True)
-    assert "re-fire refused" in w
+def test_failed_dispatch_fails_loud_and_counts_a_strike(tmp_path):
+    """A stub without the task and issue inputs refuses every dispatch: the marker still posts, so
+    the third sweep escalates instead of retrying forever."""
+    i = [issue(1, ended=0, labels=("needs-orchestrator",))]
+    out = run(tmp_path, i, fail={"FAIL_DISPATCH": "1"}, out=True)
+    assert "::error::#1: re-fire refused" in out
+    w = (tmp_path / "writes.log").read_text().splitlines()
+    assert [l for l in w if l.startswith("issue comment 1 ") and REFIRED.split("https")[0] in l]
+    assert not [l for l in w if l.startswith("issue edit")]
 
 
 def test_refires_count_toward_the_three_strikes(tmp_path):
@@ -134,6 +148,16 @@ def test_refires_count_toward_the_three_strikes(tmp_path):
     w = run(tmp_path, [issue(1, ended=0, labels=labelled, refired=3), issue(2, ended=1, labels=labelled, refired=1)])
     assert edits(w, "--add-label needs-nish-decision") == [1]
     assert [l for l in w if l.startswith("workflow run")] == ["workflow run stub.yml -R o/r -f task=orchestrate -f issue=2"]
+
+
+@pytest.mark.parametrize("login", ["github-actions", "github-actions[bot]"])
+def test_actions_token_marker_counts_under_graphql_and_rest_login(tmp_path, login):
+    """gh issue list (GraphQL) names the Actions token github-actions, the REST API github-actions[bot]."""
+    i = issue(1, ended=0, labels=("needs-orchestrator",), refired=3)
+    for c in i["comments"]:
+        c["author"] = {"login": login}
+    w = run(tmp_path, [i])
+    assert edits(w, "--add-label needs-nish-decision") == [1]
 
 
 def test_a_marker_from_another_author_is_not_counted(tmp_path):
@@ -149,7 +173,7 @@ def test_open_pr_blocks_requeue_of_a_tried_issue(tmp_path):
     assert w == []
 
 
-@pytest.mark.parametrize("fail", ["FAIL_RUNS", "FAIL_PRS"])
+@pytest.mark.parametrize("fail", ["FAIL_RUNS", "FAIL_JOBS", "FAIL_PRS"])
 def test_partial_api_error_requeues_nothing_but_escalates(tmp_path, fail):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=2, fail={fail: "1"})
     assert edits(w, "--add-label needs-orchestrator") == []
@@ -204,8 +228,3 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
     w = run(tmp_path, [i])
     assert edits(w, "--add-label needs-nish-decision") == []
     assert edits(w, "--add-label needs-orchestrator") == [1]
-
-
-def test_run_name_and_run_counter_share_one_title():
-    assert "format('orchestrate {0}'" in _y('."run-name"')
-    assert 'startswith("orchestrate ")' in _y(f"{STEP} | .run")

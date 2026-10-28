@@ -1,5 +1,4 @@
 name: agent-dispatch
-run-name: ${{ ((github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') || inputs.task == 'orchestrate') && format('orchestrate {0}', github.event.issue.number || inputs.issue) || github.event.pull_request.title || github.workflow }}
 on:
   issues:
     types: [labeled, closed, reopened]
@@ -480,7 +479,7 @@ jobs:
     permissions:
       issues: write
       pull-requests: read
-      # actions: `gh run view` liveness (fleet-ops#8777), write for re-fire. checks, statuses: statusCheckRollup.
+      # actions: `gh run view` liveness (fleet-ops#8777); write only for the sweep-only re-fire `gh workflow run` (no step checks out PR code).
       actions: write
       checks: read
       statuses: read
@@ -557,9 +556,8 @@ jobs:
               c=$p
             done
           else
-            # An issue left agent-in-progress by a run that died with its runner (a restart sends no
-            # event) and no claim PR yet goes back to agent-ready, so this sweep lists it
-            # (fleet-ops#9063, five drive issues). One with a claim PR is the orphans case below.
+            # agent-in-progress left by a run that died with its runner (no event) and no claim PR goes
+            # back to agent-ready (fleet-ops#9063). One with a claim PR is the orphans case below.
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
@@ -575,11 +573,9 @@ jobs:
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
             # after arming, so it never enters the queue and no event fires (0509#4384).
-            # The bulk list returns mergeable UNKNOWN until GitHub recomputes a
-            # PR after a push to main, so each armed PR is re-read per PR to
-            # trigger that computation (fleet-ops#8557). A PR in the merge queue
-            # is dropped by ref below; a queued PR can have autoMergeRequest
-            # null (0509#4688), so the CONFLICTING test alone cannot drop it.
+            # The bulk list returns mergeable UNKNOWN until GitHub recomputes after a push to main, so each
+            # armed PR is re-read (fleet-ops#8557). A merge-queue PR is dropped by ref below; it can have
+            # autoMergeRequest null (0509#4688), so the CONFLICTING test alone cannot drop it.
             all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
               --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
             if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
@@ -711,13 +707,17 @@ jobs:
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or (.author.login == "github-actions" and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
+                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
-          queued=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed" and (.display_title | startswith("orchestrate ")))] | length') || fail "run count"
+          queued=0; ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id') || fail "run list"
+          for id in $ids; do # live orchestrate jobs: a job name is set on any caller
+            c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length') || { fail "job read"; break; }
+            queued=$((queued + c))
+          done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
@@ -728,7 +728,7 @@ jobs:
               elif [ "$(jq -r .tried <<<"$r")" = true ]; then
                 env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
               else
-                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || { echo "::warning::#$n: re-fire refused"; continue; }
+                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
               fi
             done
