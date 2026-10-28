@@ -1,6 +1,7 @@
 """A unit file with an unknown directive must fail CI: systemd skips it with a warning and exit 0 (fleet-ops#9967)."""
 
 import fnmatch
+import ipaddress
 import json
 import os
 import re
@@ -172,14 +173,18 @@ HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d
 HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
 
 
-def _unit_keys(path: Path) -> dict[str, list[str]]:
+def _unit_keys_text(text: str) -> dict[str, list[str]]:
     keys: dict[str, list[str]] = {}
-    for line in path.read_text().replace("\\\n", " ").splitlines():
+    for line in text.replace("\\\n", " ").splitlines():
         line = line.strip()
         if "=" in line and not line.startswith(("#", ";", "[")):
             key, value = line.split("=", 1)
             keys.setdefault(key.strip(), []).append(value.strip())
     return keys
+
+
+def _unit_keys(path: Path) -> dict[str, list[str]]:
+    return _unit_keys_text(path.read_text())
 
 
 def _shipped_dropins() -> dict[str, list[Path]]:
@@ -1239,7 +1244,10 @@ def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
 GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
 GPG_AGENT_OOM_DROPIN = "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
 GPG_AGENT_HOST_COPY = '"{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"'
-BOX_ONLY_DROPINS = ("ssh.socket.d/override.conf", "smbd.service.d/tailscale.conf")
+BOX_ONLY_DROPINS = ("smbd.service.d/tailscale.conf",)
+SSH_SOCKET_DROPIN = ROOT / "rootfs/etc/systemd/system/ssh.socket.d/override.conf"
+TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired() -> None:
@@ -1257,10 +1265,137 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
 
 
-def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
+def test_the_file_sharing_access_path_dropin_stays_out_of_the_repo() -> None:
     for rel in BOX_ONLY_DROPINS:
         for base in (ROOT / "rootfs/etc/systemd/system", ROOT / "rootfs/etc/systemd/user", ROOT / "systemd"):
             assert not (base / rel).exists(), f"{base.name}/{rel} would publish an access path the box keeps off this repo"
+
+
+def ssh_bind_offenders(text: str) -> list[str]:
+    """ListenStream lines that are not a Tailscale listen address, the leading reset line aside."""
+    values = _unit_keys_text(text).get("ListenStream", [])
+    offenders: list[str] = []
+    for index, value in enumerate(values):
+        if not value:
+            if index != 0:
+                offenders.append("ListenStream= (a reset after the binds clears every listener)")
+            continue
+        if value.startswith("["):
+            end = value.find("]")
+            address = value[1:end] if end > 0 else value
+        else:
+            address = value.rsplit(":", 1)[0]
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            offenders.append(value)
+            continue
+        if parsed not in (TAILNET_V4 if parsed.version == 4 else TAILNET_V6):
+            offenders.append(value)
+    return offenders
+
+
+def test_ssh_socket_dropin_is_in_the_repo_and_binds_only_the_tailnet() -> None:
+    assert SSH_SOCKET_DROPIN.is_file(), (
+        f"{SSH_SOCKET_DROPIN.relative_to(ROOT)} is not in the repo: a rootfs restore or a rebuild then puts "
+        "ssh.socket back on the distro's 0.0.0.0:22 and [::]:22, on a machine that reaches SSH only over the tailnet"
+    )
+    text = SSH_SOCKET_DROPIN.read_text()
+    assert "[Socket]" in text, "the drop-in has no [Socket] section, so systemd ignores every bind in it"
+    values = _unit_keys(SSH_SOCKET_DROPIN).get("ListenStream", [])
+    assert values[:1] == [""], (
+        "the first ListenStream line must be the empty reset: without it the distro's wildcard binds stay in the list"
+    )
+    assert ssh_bind_offenders(text) == [], "ssh.socket would listen on a non-tailnet address"
+    assert len([value for value in values if value]) == 2, "keep one tailnet address per family (IPv4 and IPv6)"
+
+
+@pytest.mark.parametrize(
+    "listen",
+    (
+        "ListenStream=0.0.0.0:22",
+        "ListenStream=[::]:22",
+        "ListenStream=:22",
+        "ListenStream=22",
+        "ListenStream=*:22",
+        "ListenStream=localhost:22",
+        "ListenStream=203.0.113.7:22",
+        "ListenStream=[2001:db8::1]:22",
+    ),
+    ids=("all-v4", "all-v6", "no-address", "bare-port", "star", "hostname", "public-v4", "public-v6"),
+)
+def test_ssh_bind_check_fails_when_a_wildcard_is_reintroduced(listen: str) -> None:
+    text = "[Socket]\nListenStream=\n" + listen + "\n"
+    assert ssh_bind_offenders(text) != [], f"the check accepted {listen}"
+
+
+def test_ssh_bind_check_fails_on_a_reset_after_the_binds() -> None:
+    text = "[Socket]\nListenStream=100.108.184.97:22\nListenStream=\n"
+    assert ssh_bind_offenders(text) != [], "a trailing reset clears the tailnet binds and leaves the distro's own"
+
+
+def test_ssh_bind_check_accepts_the_tailnet_binds() -> None:
+    text = "[Socket]\nListenStream=\nListenStream=100.108.184.97:22\nListenStream=[fd7a:115c:a1e0::d23a:b862]:22\n"
+    assert ssh_bind_offenders(text) == []
+
+
+@pytest.mark.skipif(shutil.which("yq") is None, reason="yq is not installed")
+def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
+    tasks = _play_tasks()
+    tree = [
+        task["ansible.builtin.copy"]
+        for task in tasks
+        if task.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/"
+    ]
+    assert tree, "no host.yml task installs /etc/systemd/system"
+    assert tree[0]["src"] == "{{ rootfs }}/etc/systemd/system/", (
+        "the copy must ship the whole tree (trailing slash), so rootfs/etc/systemd/system/ssh.socket.d/override.conf "
+        "reaches /etc/systemd/system/ssh.socket.d/override.conf"
+    )
+    dedicated = [
+        task
+        for task in tasks
+        if task.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/ssh.socket.d/override.conf"
+    ]
+    assert dedicated, "no host.yml task installs the ssh.socket drop-in on its own, so its change signal is lost"
+    copy = dedicated[0]["ansible.builtin.copy"]
+    assert copy["src"] == "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+    notify = dedicated[0].get("notify")
+    notified = [notify] if isinstance(notify, str) else (notify or [])
+    assert "Restart ssh.socket" in notified, (
+        "a socket picks up new ListenStream addresses only on restart, so a rebuild that installs this drop-in "
+        "at the boot timer would leave SSH on the distro's wildcard binds"
+    )
+    assert SSH_SOCKET_DROPIN.is_relative_to(ROOT / "rootfs/etc/systemd/system")
+
+
+def test_host_playbook_restarts_ssh_socket_when_its_dropin_changes() -> None:
+    text = HOST_YML.read_text()
+    handler = [
+        block
+        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[1])
+        if block.startswith("Restart ssh.socket")
+    ]
+    assert len(handler) == 1, "the ssh.socket restart handler is missing"
+    assert "ansible.builtin.systemd_service:" in handler[0]
+    assert "name: ssh.socket" in handler[0]
+    assert "state: restarted" in handler[0]
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_systemd_analyze_accepts_the_ssh_socket_dropin(tmp_path: Path) -> None:
+    (tmp_path / "ssh.socket.d").mkdir()
+    shutil.copy(SSH_SOCKET_DROPIN, tmp_path / "ssh.socket.d/override.conf")
+    (tmp_path / "ssh.socket").write_text("[Unit]\nDescription=SSH socket\n\n[Socket]\nListenStream=22\n")
+    proc = subprocess.run(
+        ["systemd-analyze", "verify", "--man=no", "./ssh.socket"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0 and "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")

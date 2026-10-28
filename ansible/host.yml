@@ -308,6 +308,21 @@
         mode: preserve
       notify: Reload systemd
 
+    # The tree copy above has no per-file change signal, and a socket picks up
+    # new ListenStream addresses only on restart: without this task a rebuild
+    # installs the drop-in at the boot timer and leaves the running ssh.socket
+    # on the distro's 0.0.0.0:22 until the next reboot (fleet-ops#10541).
+    - name: Install the SSH socket bind and rebind the socket when it changes
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+        dest: /etc/systemd/system/ssh.socket.d/override.conf
+        owner: root
+        group: root
+        mode: preserve
+      notify:
+        - Reload systemd
+        - Restart ssh.socket
+
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/
     # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
@@ -2496,6 +2511,14 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # Existing SSH sessions run in their own ssh@.service instances and survive
+    # the listening socket's restart; only new connections wait a moment
+    # (fleet-ops#10541).
+    - name: Restart ssh.socket
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        state: restarted
 
     - name: Restart pilot runner
       ansible.builtin.systemd_service:
