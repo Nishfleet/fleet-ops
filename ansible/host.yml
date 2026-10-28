@@ -333,14 +333,22 @@
         mode: preserve
       notify: Reload systemd
 
-    # fleet-update.service reads two root-only env files: tincan's relay
-    # config path and the healthchecks.io success-ping URL. Neither value is
+    # fleet-update.service reads two root-only files: tincan's relay
+    # config path (env file) and the healthchecks.io success-ping URL (curl config). Neither value is
     # named in the repo (fleet-ops#9965), so both are discovered from the
     # box. The relay config path comes from the tincan configs already in
     # nish's home directory: any joined agent's config carries the same
     # relay, so the first one found names it. No tincan config on the box
     # leaves the file absent, and the play skips tincan by name instead of
     # failing.
+    - name: Make the directory for the update unit's root-only files
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
     - name: Name the update unit's tincan relay config in a root-only env file
       vars:
         tincan_configs: "{{ query('ansible.builtin.fileglob', nish_config ~ '/tincan/*.json') }}"
@@ -364,17 +372,22 @@
         src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
       register: hc_env_source
       failed_when: false
+      no_log: true
 
+    # Written as a curl config (`url = <URL>`), so the unit pings with a
+    # plain `curl --config` and the URL stays out of argv.
     - name: Hand the update unit its own healthchecks URL, root-only
       vars:
         hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
       ansible.builtin.copy:
-        dest: /etc/fleet-ops/update-hc.env
-        content: "{{ hc_update_lines | join('\n') }}\n"
+        dest: /etc/fleet-ops/update-hc.curl
+        content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
         owner: root
         group: root
         mode: '0600'
       when: hc_update_lines | length > 0
+      diff: false
+      no_log: true
 
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/

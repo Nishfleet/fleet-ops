@@ -34,6 +34,7 @@ def test_backup_runs_after_the_drain_and_before_any_update_step():
 def test_the_backup_is_the_stock_restic_unit_and_fails_on_a_failed_run():
     start = BACKUP_STEPS["Run the backup and wait for it to finish"]
     assert start["ansible.builtin.command"]["argv"] == ["systemctl", "start", "restic-r2-backup.service"]
+    assert start["timeout"] == 7200
     assert "not (pre_update_backup | default({})).failed | default(false)" in ASSERT["ansible.builtin.assert"]["that"]
 
 
@@ -66,17 +67,16 @@ def test_the_unit_resumes_on_any_stop_with_the_play():
     assert "--tags resume" in line
 
 
-def test_the_unit_reads_both_private_values_from_root_only_env_files():
+def test_the_unit_reads_the_relay_config_from_a_root_only_env_file():
     envfiles = [l for l in UNIT.splitlines() if l.startswith("EnvironmentFile=")]
-    assert "EnvironmentFile=-/etc/fleet-ops/update-tincan.env" in envfiles
-    assert "EnvironmentFile=-/etc/fleet-ops/update-hc.env" in envfiles
+    assert envfiles == ["EnvironmentFile=-/etc/fleet-ops/update-tincan.env"]
 
 
 def test_the_unit_pings_healthchecks_only_after_a_green_run_and_skips_without_a_url():
     line = next(l for l in UNIT.splitlines() if l.startswith("ExecStartPost="))
     assert line.startswith("ExecStartPost=-")
-    assert "HC_URL_UPDATE" in line
-    assert "--config" in line and "curl" in line
+    assert "bash" not in line
+    assert line.endswith("/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --config /etc/fleet-ops/update-hc.curl")
 
 
 def test_host_config_builds_both_root_only_env_files_from_the_box():
@@ -84,11 +84,15 @@ def test_host_config_builds_both_root_only_env_files_from_the_box():
     assert tincan["ansible.builtin.copy"]["dest"] == "/etc/fleet-ops/update-tincan.env"
     assert tincan["ansible.builtin.copy"]["mode"] == "0600"
     hc = HOST_TASKS["Hand the update unit its own healthchecks URL, root-only"]
-    assert hc["ansible.builtin.copy"]["dest"] == "/etc/fleet-ops/update-hc.env"
+    assert hc["ansible.builtin.copy"]["dest"] == "/etc/fleet-ops/update-hc.curl"
     assert hc["ansible.builtin.copy"]["mode"] == "0600"
+    assert hc["diff"] is False and hc["no_log"] is True
+    assert HOST_TASKS["Read the healthchecks ping URLs nish keeps for the box"]["no_log"] is True
+    assert HOST_TASKS["Make the directory for the update unit's root-only files"]["ansible.builtin.file"]["path"] == "/etc/fleet-ops"
     assert "HC_URL_UPDATE=" in hc["vars"]["hc_update_lines"]
     assert "keystone-hc.env" in HOST_TASKS["Read the healthchecks ping URLs nish keeps for the box"]["ansible.builtin.slurp"]["src"]
     assert "/etc/fleet-ops/update-tincan.env" in UNIT
+    assert "update-hc.curl" in UNIT
 
 
 def test_private_detail_scan_and_semgrep_block_the_return_of_both_patterns():

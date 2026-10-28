@@ -23,26 +23,25 @@ Environment=ANSIBLE_PIPELINING=1
 # writable; a missing parent makes ansible warn and write no log, not fail.
 # This is in addition to stdout, so the journal keeps its own record too.
 Environment=ANSIBLE_LOG_PATH=/var/lib/fleet-ops/fleet-update.log
-# Two root-only files the host config writes from what is already on the box:
-# tincan's relay config path (the play reads it, so no private path is named
-# in this repo, fleet-ops#9965) and the healthchecks.io success-ping URL. A
-# missing file is fine: the play skips tincan by name, the ping below SKIPs.
+# The host config writes tincan's relay config path from what is already on
+# the box (the play reads it, so no private path is named in this repo,
+# fleet-ops#9965). A missing file is fine: the play skips tincan by name.
 EnvironmentFile=-/etc/fleet-ops/update-tincan.env
-EnvironmentFile=-/etc/fleet-ops/update-hc.env
 ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout main --directory /var/lib/fleet-ops/update-repo --clean --verify-commit --inventory localhost, ansible/update.yml
 # Success ping, only after ExecStart succeeded (the playbook's final assert is
 # inside it), so a green ping means a fully green run. OnFailure= covers a
 # failed run; this covers a run that never starts at all (dead timer, box
 # down): the check's 1-day period and 7h grace go stale instead. curl --config
-# keeps the check's UUID out of argv (fleet-ops#8403). Unset URL = SKIP exit 0;
-# an unreachable healthchecks.io does not fail the update, a stale check is
+# keeps the check's UUID out of argv (fleet-ops#8403). A missing config file
+# makes curl fail and the - prefix ignores it; an unreachable healthchecks.io does not fail the update, a stale check is
 # the alert.
-ExecStartPost=-/bin/bash -c 'if ! grep -q "^HC_URL_UPDATE=." /etc/fleet-ops/update-hc.env 2>/dev/null; then echo SKIP: HC_URL_UPDATE unset; exit 0; fi; exec /usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --config <(sed -n "s|^HC_URL_UPDATE=\(.*\)|url = \1|p" /etc/fleet-ops/update-hc.env)'
+ExecStartPost=-/usr/bin/curl -fsS -m 10 --retry 3 -o /dev/null --config /etc/fleet-ops/update-hc.curl
 # A run killed at TimeoutStartSec (SIGKILL to the whole cgroup) never reaches
 # the playbook's always: block, so the dispatch flags it set would hold the
 # fleet until the next 03:32 run. This reruns only the play's resume-tagged
-# tasks (clear the flags a killed run set, drop its pause marker); it is a
-# no-op when the run finished cleanly. The play's own previous-run clear stays
+# tasks (clear the flags a killed run set, drop its pause marker); it does not restart the
+# runner services or timers the killed run stopped; those come back at the
+# next 03:32 run. It is a no-op when the run finished cleanly. The play's own previous-run clear stays
 # as the fallback for a box that died outright.
 ExecStopPost=-/usr/bin/ansible-playbook --inventory localhost, /var/lib/fleet-ops/update-repo/ansible/update.yml --tags resume
 # Drain (up to 150 min) + apt (up to 60) + tools + resume checks.
