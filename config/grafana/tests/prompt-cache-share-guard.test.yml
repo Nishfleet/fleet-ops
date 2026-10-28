@@ -29,7 +29,7 @@
 #
 # 7. opencodego on the shape that filed #10506, #10588, #10630 and #10757: a big
 #    worker-capable row at 0.956 plus a small row at 0.6 reads 0.9097, silent
-#    under its 0.8800 floor (it fired under the old 0.9221). The same mix with
+#    under its 0.8800 floor (it fired under the older floors). The same mix with
 #    the big row at 0.90 reads 0.861 and fires. Case 1 carries the silent
 #    half, the last case the firing half.
 #
