@@ -279,8 +279,7 @@ def main(root):
     bad, paging = check_datasource_refs(root, Path(root).parent), {}
     for c in contacts_doc:
         for rcv in c.get("receivers") or []:
-            tpl = ((rcv.get("settings") or {}).get("payload") or {}).get("template", "")
-            if ".GeneratorURL" in tpl:
+            if ".GeneratorURL" in json.dumps(rcv):
                 bad.append(f"{c['name']}: the issue body must not interpolate .GeneratorURL, the private Grafana host, because this repo is public (fleet-ops#10763)")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
