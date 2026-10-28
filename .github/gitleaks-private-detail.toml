@@ -54,6 +54,13 @@ regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
 condition = "AND"
 
 [[allowlists]]
+description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
