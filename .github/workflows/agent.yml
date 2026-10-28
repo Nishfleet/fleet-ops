@@ -1019,6 +1019,36 @@ jobs:
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
+          # An approval follows the change, not the commit (#10681): the newest head this bot approved is fetched, and the PR's
+          # own diff (merge-base to head, no context lines, so a line main added next to a hunk does not count) is compared
+          # by patch-id. The same patch-id carries the approval; a changed one is reviewed as the interdiff only. Any error
+          # here means a full review, as before. The combined result is still tested by CI and the merge queue.
+          prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at)
+            | .body | split("\n")[] | capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s | select(. != $sha)] | last // empty') || prior=
+          own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" | git -C "$bt" patch-id --stable | cut -d' ' -f1; }
+          # The interdiff is a diff of the two own diffs, as range-diff shows it; blob ids and hunk line numbers are dropped, so main moving under the PR is not shown.
+          own_text() { git -C "$bt" diff --no-color --binary "$1" "$2" | sed -E '/^index /d; s/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/'; }
+          carry() { local omb nmb a b rc=0
+            git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$prior:refs/prior" || return 1
+            omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) || return 1
+            a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] || return 1
+            [ "$a" != "$b" ] || { echo carry; return 0; }
+            own_text "$omb" refs/prior > "$RUNNER_TEMP/approved.diff" && own_text "$nmb" refs/head > "$RUNNER_TEMP/head.diff" || return 1
+            diff -u --label "approved $prior" --label "head $SHA" "$RUNNER_TEMP/approved.diff" "$RUNNER_TEMP/head.diff" > "$RUNNER_TEMP/interdiff.txt" || rc=$?
+            [ "$rc" = 1 ] || return 1; echo interdiff; }
+          scope=full; [ -z "$prior" ] || scope=$(carry) || scope=full
+          case $scope in carry|interdiff) ;; *) scope=full ;; esac
+          echo "review scope: $scope${prior:+ (approved head $prior)}"
+          note=
+          if [ "$scope" = carry ]; then
+            [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved; the newer event reviews it"; exit 0; }
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. Carried over from approved head %s: the change this PR makes is the same (same patch-id of its own diff after a rebase or a merge of main), so it was not reviewed again. CI still has to pass before it merges.' "$SHA" "$SHA" "$prior")"
+            echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [ "$scope" = interdiff ]; then
+            { printf '=== INTERDIFF: head %s of this PR was approved. Below is only what changed in the PR own diff since then, as a diff of the approved diff and the head diff (a line starting -+ or -- left the change, ++ or +- joined it); review this change. ===\n' "$prior"; cat "$RUNNER_TEMP/interdiff.txt"; } > "$RUNNER_TEMP/diff.txt"
+            printf -v note '\n\nOnly the interdiff against approved head %s was reviewed; the rest of the PR is unchanged since that approval.' "$prior"
+          fi
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
           git -C "$bt" ls-tree -r --name-only refs/base > "$RUNNER_TEMP/tree.txt"
@@ -1060,12 +1090,12 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.%s\n\n%s' "$SHA" "$SHA" "$note" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
-              say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
+              say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.%s\n\n%s' "$SHA" "$pct" "$note" "$text")"
             else
-              say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\n%s' "$SHA" "$text")"
+              say "$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.%s\n\n%s' "$SHA" "$note" "$text")"
             fi
             exit 0
           fi
@@ -1124,11 +1154,11 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s) both approved with no blockers. CI still has to pass before it merges.%s\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$note" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
-            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
+            say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.%s\n\nJudge (%s): %s\n%s%s' "$SHA" "$note" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
       # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
       # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
