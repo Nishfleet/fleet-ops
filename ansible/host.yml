@@ -190,6 +190,30 @@
       # repo stopped shipping it. `copy` never deletes, so the live file is
       # retired here or it keeps loading a plugin id no marketplace lists.
       - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
+      # The 2026-10-28 glue sweep's user-config debris (#10544). Every one is a
+      # finished one-off probe or a .bak copy of a file the repo does not ship,
+      # so the fix is the deletion and nothing is rebuilt. The two .d
+      # directories hold only NoNewPrivileges=no drop-ins, which would undo the
+      # units' own hardening if anything ever started them.
+      - "{{ nish_home }}/.config/systemd/user/nish-root.service"
+      - "{{ nish_home }}/.config/systemd/user/nish-root.exec"
+      - "{{ nish_home }}/.config/systemd/user/nish-root.service.d"
+      - "{{ nish_home }}/.config/systemd/user/nnp-probe.service"
+      - "{{ nish_home }}/.config/systemd/user/nnp-probe.service.d"
+      - /tmp/nish-root
+      # A copy of a unit fleet-ops now manages: the live name is a symlink into
+      # the deploy clone, and this .bak predates it.
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service.bak-20261024"
+      # Backups of live settings files, taken by hand and never read again.
+      - "{{ nish_home }}/.pi/agent/settings.json.bak-20261004-ysk"
+      - "{{ nish_home }}/.pi/agent/settings.json.bak-20261005"
+      - "{{ nish_home }}/.pi/agent/mcp-adapter.json.bak-executor"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-8766-20260925T200306Z"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-autoskills-20261009"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20260929"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20261008"
+      - "{{ nish_home }}/.hermes/sandbox.conf.bak-8766"
+      - "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23"
       # The daily Hermes reminder about the GitHub App from #9676 (#10137): the
       # 2026-10-23 glue audit named it, and #9676 carries the reminder now, so the
       # job's work is done. Only the file is named: this playbook cannot list
