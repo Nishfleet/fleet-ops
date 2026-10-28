@@ -96,6 +96,18 @@ def test_launch_gets_a_minted_token_limited_to_its_repo(mint):
     assert not re.search(r"bad-jwt|bad-body|unknown", log)
 
 
+def test_actions_instance_mints_an_actions_only_token_in_its_own_file(mint):
+    mint.mode.write_text("ok\n")
+    assert launch(mint, "true").returncode == 0
+    worker = read_env()
+    r = launch(mint, 'echo "$GH_TOKEN" | cut -c1-9', repo="actions:drive")
+    assert r.returncode == 0 and r.stdout.strip() == "ghs_stub_"
+    log = mint.log.read_text().splitlines()
+    assert "GET /repos/Nishfleet/drive/installation -> 200 ok" in log
+    assert log[-1].endswith("/access_tokens -> 201 ok actions")
+    assert read_env() == worker and read_env("actions:drive") != worker
+
+
 def test_each_launch_mints_a_fresh_token(mint):
     mint.mode.write_text("ok\n")
     assert launch(mint, "true").returncode == 0
