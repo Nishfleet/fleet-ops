@@ -90,11 +90,13 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the runner's number
-  (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
-  runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
-  an odd N keeps it (seat a), and a name with no number keeps seat a. The step
-  logs `claude lane: seat=a|b auth=token|login runner=<name>`. A seat with a
+  with `needs-opus`). The seat is set by the issue number's parity
+  (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
+  step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
+  default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
+  keeps seat a. The seat follows the issue, not the runner, so a retry of the
+  same issue keeps its seat and `claude -p --continue` resumes the earlier
+  session. The step logs `claude lane: seat=a|b auth=token|login issue=<n> runner=<name>`. A seat with a
   one-year `claude setup-token` file (`claude-seat-<x>.env` in the seat config
   directory, one line `CLAUDE_CODE_OAUTH_TOKEN=...`, mode 600) logs in with that
   token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
@@ -166,6 +168,15 @@ The rules still in force:
   is now redundant on fleet-ops and stays only until 0509 and drive have the
   check: their `agent-dispatch.yml` stubs call this shared workflow and their
   rulesets require no `coordinator-approval`.
+  The `review` and `arm` jobs run on `[self-hosted, review]`: runners
+  `netcup-agent-9` (seat a) and `netcup-agent-10` (seat b) carry the labels
+  `self-hosted, review` and not `agent`, so no build can take them and a review
+  never waits behind a multi-hour build (fleet-ops#10587). With `agent` kept,
+  GitHub hands a queued build to any idle runner that matches, so builds would
+  starve reviews again. The labels live at GitHub, not in ansible:
+  `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
+  To switch it off, give those two runners `agent` back and set both `runs-on`
+  lines back to `[self-hosted, agent]`.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
@@ -190,7 +201,11 @@ The rules still in force:
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
-  agent-authored PRs self-land green. The in-session held-PR approver loop (a
+  agent-authored PRs self-land green. The reviewer also runs by hand, so a
+  dispatch that cannot start never needs a person to approve: `gh workflow run
+  agent.yml -f review_pr=<N> -f review_sha=<sha>` runs the same job, from
+  agent.yml@main, and the verdict is still its own (fleet-ops#10199). The
+  in-session held-PR approver loop (a
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).

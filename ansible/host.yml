@@ -27,7 +27,7 @@
     # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
     # runner's registration lives at GitHub and removing it needs an org admin
     # token that the VPS key does not carry.
-    agent_runner_retired_ids: "{{ range(11, 37) | list }}"
+    agent_runner_retired_ids: "{{ range(31, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -171,6 +171,11 @@
       # lines that created this directory and link. tmpfiles is applied with
       # --create only, so the link outlived the file it pointed at.
       - "{{ nish_home }}/.config/prometheus-am-executor/config.yml"
+      # The chrome-devtools plugin left the nish-mods marketplace (2026-10-23
+      # glue audit), so the drop-in that enabled it enabled nothing and the
+      # repo stopped shipping it. `copy` never deletes, so the live file is
+      # retired here or it keeps loading a plugin id no marketplace lists.
+      - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -187,6 +192,26 @@
     digest_prompts:
       - digest-morning
       - digest-evening
+    # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
+    # it is given, so a job whose work is done stays until something deletes it.
+    # Listed by id and never searched for: a worker's fresh proof job is legitimate,
+    # and a rule that matched names would delete it on the next deploy. The live
+    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
+    # config/restic/include.txt.
+    hermes_retired_jobs:
+      # The two proof jobs from the digest runs (#9579, #9717). Both were still
+      # enabled on a schedule that fires once a year, so they would have run 1 Jan.
+      - 13d3db49b9c5
+      - f16c57bb6885
+      # The seven one-shot jobs whose run_at passed on 2026-10-23 to 2026-10-26.
+      - d4efa85f43c3
+      - 50229bbf6c4a
+      - 0de3952d8ecb
+      - df6163647275
+      - bdc37cb70a4a
+      - fc1c6a815b80
+      - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -358,6 +383,28 @@
       loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
       loop_control:
         label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
+
+    # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+    # paths, and the runner loads it over the unit's own HOME, so every job's gh read
+    # nish's .config/gh/config.yml and died with permission denied (fleet-ops#10510).
+    # HOME goes to the pilot's own; the other two point at nish's runtime and Claude seat,
+    # so they are dropped.
+    - name: Give the pilot runner its own HOME in the runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^HOME='
+        line: HOME=/var/lib/fleet-runner
+        insertbefore: BOF
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    - name: Drop nish's runtime paths from the pilot runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+        state: absent
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
       notify: Restart pilot runner
 
     # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
@@ -671,8 +718,10 @@
         mode: preserve
 
     # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-    # managed settings: here, the agents' auto-mode rules and the hook that
-    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
+    # managed settings: here, the agents' auto-mode rules, the hook that
+    # bounces routine asks to Nish, the Beacon telemetry env and the enabled
+    # plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+    # "Claude plugin drop-ins"). A drop-in
     # that does not parse stops Claude Code from starting on the whole box, so
     # validate refuses any file that is not a JSON object before it reaches
     # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
@@ -702,6 +751,20 @@
         owner: root
         group: root
         mode: "0644"
+
+    # The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
+    # drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
+    # a copy after a failed backup. Stopped, not removed: it is box-only. A box
+    # without the timer is fine.
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+      register: locked_copy_timer
+      failed_when:
+        - locked_copy_timer.failed | default(false)
+        - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
@@ -2246,6 +2309,22 @@
       failed_when: false
       diff: false
       no_log: true
+
+    - name: Delete the retired jobs from Hermes' cron store
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - remove
+          - "{{ item }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
+      vars:
+        hermes_jobs_ids: >-
+          {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+             | default([]) | map(attribute='id') | list }}
 
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
