@@ -41,4 +41,4 @@ def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
         entry = ENROLLED[name]
         assert entry["product"] is True, name
         assert set(ENROLLED["0509"]) <= set(entry), name
-        assert "siterep-public#173" in entry["enrolled_by"], name  # the dated end-of-push review
+        assert "siterep-public#173" in entry["enrolled_by"], name
