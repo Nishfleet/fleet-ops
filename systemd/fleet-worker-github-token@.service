@@ -7,10 +7,13 @@ Description=Mint a one-hour nishfleet-worker App token for Nishfleet/%i (fleet-o
 # of the App's grant (credentials/app-manifest.json), limited to the one repo
 # named by the instance. An instance named actions:<repo> mints a token that
 # holds Actions write only, into its own env file, for fleet-pr-sweep@.service
-# (fleet-ops#10601): no worker launch is handed Actions write, because with it
-# a fooled worker could dispatch an unjailed orchestrate run. It lives in the user
-# runtime dir (tmpfs, mode 0700), never on disk and never in argv: the App JWT
-# goes to curl as a config fd. Nothing secret reaches the journal.
+# (fleet-ops#10601). No worker launch line names it, because with Actions write
+# a fooled worker could dispatch an unjailed orchestrate run. That is the
+# launch lines' convention, not a wall: any process with this uid can start the
+# instance or read the App key itself, and fleet-pr-sweep@.service deletes and
+# revokes its token as soon as its calls end. It lives in the user runtime dir
+# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
+# as a config fd. Nothing secret reaches the journal.
 #
 # Switch off: `systemctl --user mask 'fleet-worker-github-token@*.service'`;
 # every detached launch then refuses to start.
