@@ -122,3 +122,32 @@ def test_the_box_wide_defaults_file_is_installed_as_itself():
     assert task, "no task installs the box-wide managed-settings.json"
     assert task["ansible.builtin.copy"]["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
     assert task["ansible.builtin.copy"]["dest"] == "/etc/claude-code/managed-settings.json"
+
+
+def test_force_with_lease_is_allowed_off_main_and_plain_force_still_asks() -> None:
+    """Nish 2026-10-28 ("Yes, allow it"): --force-with-lease on a non-default branch needs no prompt;
+    plain --force and -f, a lease push to main or master in any order or refspec form,
+    and a +refspec force push to main or master, still ask. fnmatch's * matches any run of
+    characters, as a Claude Code permission rule's * does."""
+    import fnmatch
+    ask = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.json").read_text())["permissions"]["ask"]
+    pats = [a[len("Bash("):-1] for a in ask if a.startswith("Bash(")]
+    asks = lambda cmd: any(fnmatch.fnmatchcase(cmd, p) for p in pats)
+    assert not asks("git push --force-with-lease origin claim/issue-1")
+    assert not asks("git push -u origin feature --force-with-lease")
+    assert asks("git push --force origin feature")
+    assert asks("git push origin feature --force")
+    assert asks("git push -f origin feature")
+    for cmd in [
+        "git push --force-with-lease origin main",
+        "git push origin main --force-with-lease",
+        "git push --force-with-lease origin HEAD:main",
+        "git push --force-with-lease origin feature:main",
+        "git push --force-with-lease=main origin main",
+        "git push --force-with-lease origin main --force-if-includes",
+        "git push origin --force-with-lease master",
+        "git push origin master --force-with-lease",
+        "git push origin +main",
+        "git push origin +HEAD:master",
+    ]:
+        assert asks(cmd), cmd
