@@ -1072,53 +1072,11 @@ jobs:
           # A guard or workflow head also needs two reviewers of other families (GLM, then Qwen), each ending on APPROVE with no blocker line.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # Both extra reviewers are called directly, not through pi, because the answering row is only in the response headers
-          # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
-          jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
-          ask_row() { local rc=0 seat=$1 pre=$2
-            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
-              && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
-                -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID-pr$PR-$pre-$seat" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
-            [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
-          # An extra reviewer may be answered by any row of its family; the family comes from the row id.
-          family_of() { case "${1,,}" in
-            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *) echo "family_of: unknown row id '$1'" >&2 ;;
-          esac; }
-          # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
-          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
-            for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
-              sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
-              if [ "$rc" != 0 ] || ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the call failed or its answer was not JSON (curl exit $rc)"
-              else
-                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served"); rerr=$(jq -r '(.error | if type == "object" then .message else . end) // empty' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null | head -c 200)
-                if [ -z "$fam" ] || { [ -n "$want" ] && [ "$fam" != "$want" ]; }; then why="answered by ${served:-no row id${rerr:+, the router said: $rerr}} (${fam:-no known non-Claude family}), not the ${want:-a} family"
-                elif [ -z "$want" ] && case " $used " in *" $fam "*) true ;; *) false ;; esac; then why="answered by $served ($fam), a family that already reviewed this head"
-                elif [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$pre-body.json")" = length ] || [ -z "${content//[[:space:]]/}" ]; then why="the answer was cut at its token limit or empty"
-                else printf '%s' "$content" > "$RUNNER_TEMP/$pre.txt"; printf '%s' "$served" > "$RUNNER_TEMP/$pre-row"; return 0; fi
-              fi
-              printf '%s' "$why" > "$RUNNER_TEMP/$pre-why"
-            done
-            return 1; }
-          # After every retry and the fallback family: one loud issue (never a silent stall), a PR comment without a re-run request, and a red job.
-          give_up() {
-            ttl="review of PR #$PR head ${SHA:0:12} could not finish after retries"
-            n=$(gh issue list -R "$REPO" --label review-retry --state open --json number,title --jq "map(select(.title == \"$ttl\"))[0].number // empty" || true)
-            [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
-            say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
-            exit 1; }
-          seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
-          for x in "second $rc_second" "third $rc_third"; do read -r r rc <<<"$x"; [ "$rc" = 0 ] || { [ "$rc" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited $rc with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
-          # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy, and Qwen is already the third reviewer.
-          used=$JUDGE_FAMILY
-          for r in second third; do [ ! -s "$RUNNER_TEMP/$r-row" ] || used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"; done
-          for r in second third; do
-            [ ! -s "$RUNNER_TEMP/$r-row" ] || continue
-            seat_try assistant "$r" "" "$used" || give_up "the $r reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")"
-            used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"
-          done
+          # Both extra reviewers, their retries and the fallback family run in a tested program read from main (#10551): it leaves <r>.txt, <r>-row and <r>-family, prints the families that reviewed, and files the loud issue itself when it gives up.
+          used=$(python3 -I "$HOME/workspaces/tooling/fleet-ops-deploy-clone/review/extra_reviewers.py")
           all=; blk=; both=true
           for r in second third; do
-            out=$(cat "$RUNNER_TEMP/$r.txt"); served=$(cat "$RUNNER_TEMP/$r-row"); fam=$(family_of "$served"); ok=approved
+            out=$(cat "$RUNNER_TEMP/$r.txt"); served=$(cat "$RUNNER_TEMP/$r-row"); fam=$(cat "$RUNNER_TEMP/$r-family"); ok=approved
             rs=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$out" || true); last=$(grep -vE '^[[:space:]]*$' <<<"$rs" | tail -n 1 || true)
             grep -qiE "^[[:space:]*_#>${tick}]*(verdict:?[[:space:]]*)?APPROVE[[:space:]*_${tick}.]*\$" <<<"$last" && [ -z "$(blockers_of "$rs")" ] || { ok=blocked; both=false; }
             h=$(printf '\n\n%s reviewer (%s family, served row %s): %s\n%s' "${r^}" "$fam" "$served" "$ok" "$(cut_text "$rs")"); all+=$h; [ "$ok" = approved ] || blk+=$h
