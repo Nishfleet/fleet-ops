@@ -334,6 +334,45 @@
         mode: preserve
       notify: Reload systemd
 
+    # fleet-update.service reads the healthchecks.io success-ping URL from a
+    # root-only curl config; the URL is not named in the repo (fleet-ops#9965).
+    - name: Make the directory for the update unit's root-only files
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # The update's own healthchecks ping URL lives with the box's other ping
+    # URLs in the keystone env file, so one paste covers it once the check
+    # exists (creating the check needs the healthchecks.io account; no API key
+    # is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+    # the update unit cannot ping the other checks. A missing line leaves the
+    # mirror absent, the unit pings SKIP, and its check simply goes stale,
+    # which is the alert.
+    - name: Read the healthchecks ping URLs nish keeps for the box
+      ansible.builtin.slurp:
+        src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+      register: hc_env_source
+      failed_when: false
+      no_log: true
+
+    # Written as a curl config (`url = <URL>`), so the unit pings with a
+    # plain `curl --config` and the URL stays out of argv.
+    - name: Hand the update unit its own healthchecks URL, root-only
+      vars:
+        hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-hc.curl
+        content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: hc_update_lines | length > 0
+      diff: false
+      no_log: true
+
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/
     # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration

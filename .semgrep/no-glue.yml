@@ -70,3 +70,20 @@ rules:
       # The exclude exists only so this rule's own literals cannot self-match.
       exclude:
         - /.semgrep/**
+  # yt-dlp's self-update replaced the running binary and broke the tool; the
+  # call was removed in fleet-ops#9971 (#9965). Its updater is the
+  # `uv tool upgrade --all` step in ansible/update.yml.
+  - id: no-yt-dlp-self-update
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      yt-dlp must not update itself: its self-update replaced the running
+      binary and broke the tool (the call was removed in fleet-ops#9971).
+      `uv tool upgrade --all` in ansible/update.yml is its only updater.
+    pattern-regex: '(?i)\byt-dlp\b[^\n]{0,80}(--update\b|\s-U(?:\s|$))'
+    paths:
+      include:
+        - "/ansible/"
+        - "/systemd/"
+        - "/rootfs/"
+        - "/.github/"
