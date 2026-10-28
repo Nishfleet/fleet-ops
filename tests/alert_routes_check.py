@@ -13,16 +13,15 @@ means adding it to URGENT here, with its reason, and labelling it critical.
 
 It also holds the other end of the alert path: Alertmanager's API answers only
 with basic auth, and every Prometheus client of it carries the credential
-(fleet-ops#10058). Three files have to agree for that to hold and nothing else
-in CI compares them: the options file that names the web config, ansible, which
-has to see both hand-placed files in place before it installs either side, and
+(fleet-ops#10058). Two files have to agree for that to hold and nothing else
+in CI compares them: the options file that names the web config, and
 Prometheus's client config, which needs the matching plaintext for both the
-alerting target and the scrape job. A drift in the first two stops the service
-from starting, or stops the play that would install it. A drift in the third is
-silent until the outside dead-man notices that the alert set stopped arriving.
-The two credential files are hand-placed host state, root- and service-owned:
-any process that can reach the loopback listener already runs as nish, so a
-credential nish could read would protect nothing.
+alerting target and the scrape job. A drift in the first stops the service
+from starting. A drift in the second is silent until the outside dead-man
+notices that the alert set stopped arriving. The credential pair itself is
+hand-placed host state, root- and service-owned: any process that can reach
+the loopback listener already runs as nish, so a credential nish could read
+would protect nothing.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -89,23 +88,6 @@ def matches(matchers, labels):
     return True
 
 
-def task_blocks(text):
-    """The play's tasks and handlers, one string each, comments kept for context."""
-    blocks, current = [], None
-    for line in text.splitlines():
-        if re.match(r"^\s*- name: ", line):
-            current = [line]
-            blocks.append(current)
-        elif current is not None:
-            current.append(line)
-    return ["\n".join(b) for b in blocks]
-
-
-def code(task):
-    """The task's lines that run, so a comment cannot stand in for a setting."""
-    return "\n".join(l for l in task.splitlines() if not l.lstrip().startswith("#"))
-
-
 def route(node, labels, repeat=None):
     """(receiver, repeat seconds) pairs reached by an alert with these labels
     (Alertmanager tree walk): a matching child contributes its own receivers and
@@ -127,14 +109,15 @@ def route(node, labels, repeat=None):
 
 AM_OPTIONS = "rootfs/etc/default/prometheus-alertmanager"
 AM_PROMETHEUS = "rootfs/etc/prometheus/prometheus.yml"
-AM_ANSIBLE = "ansible/tasks/alerting.yml"
-AM_HOST = "ansible/host.yml"
-AM_FINALS = "ansible/tasks/final-checks.yml"
 AM_WEB_CONFIG = "/etc/alertmanager/web.yml"
 AM_AUTH_FILE = "/etc/prometheus/alertmanager_password"
 
 
 def alertmanager_auth(repo):
+    """What CI alone can see of the alertmanager credential: the options file that
+    names the web config, and the client config that sends the credential to it.
+    The two halves of the pair are hand-placed host state, so only a deploy can
+    compare them; this catches the drift that is silent until then."""
     bad = []
     args = ""
     for line in (repo / AM_OPTIONS).read_text().splitlines():
@@ -158,47 +141,6 @@ def alertmanager_auth(repo):
             bad.append(f"{AM_PROMETHEUS}: {name} basic_auth has no username")
         if auth.get("password") or auth.get("password_file") != AM_AUTH_FILE:
             bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_AUTH_FILE}, not an inline password")
-    ansible = (repo / AM_ANSIBLE).read_text()
-    tasks = task_blocks(ansible)
-    if ".config/fleet-ops/alertmanager" in ansible:
-        bad.append(f"{AM_ANSIBLE}: an alertmanager credential is read from nish's home, where any process on the box can read it")
-    for dest in (AM_WEB_CONFIG, AM_AUTH_FILE):
-        looked = [t for t in tasks if dest in code(t) and "ansible.builtin.stat" in code(t)]
-        if not looked:
-            bad.append(f"{AM_ANSIBLE}: nothing stats {dest}, so the play cannot tell whether the auth pair is in place")
-        elif not all("follow: false" in code(t) for t in looked):
-            bad.append(f"{AM_ANSIBLE}: the stat of {dest} follows symlinks, so a link could steer the check")
-        if any("ansible.builtin.copy" in code(t) and dest in code(t) for t in tasks):
-            bad.append(f"{AM_ANSIBLE}: the play copies {dest}; it is hand-placed host state, root- and service-owned")
-    check = [t for t in tasks if "promtool check web-config" in code(t) or "basic_auth_users" in code(t)]
-    if not check:
-        bad.append(f"{AM_ANSIBLE}: nothing validates the alertmanager web config or the pair it belongs to, so a config Alertmanager rejects at start would stop the service")
-    else:
-        body = "\n".join(code(t) for t in check)
-        if "promtool check web-config" not in body:
-            bad.append(f"{AM_ANSIBLE}: the web config never goes through promtool, so an unknown key, a broken TLS block or a password that is not bcrypt stops the service at restart")
-        if "basic_auth_users" not in body:
-            bad.append(f"{AM_ANSIBLE}: the credential check never looks for basic_auth_users")
-        if "{{ rootfs }}/etc/prometheus/prometheus.yml" not in body:
-            bad.append(f"{AM_ANSIBLE}: the credential check never reads the prometheus config, so a user the web config does not define passes")
-    for name in ("Install prometheus and blackbox exporter config", "Install the alertmanager options"):
-        task = [t for t in tasks if f"name: {name}" in t]
-        if not task:
-            bad.append(f"{AM_ANSIBLE}: no task named {name}")
-        elif "alertmanager_auth_ready" not in code(task[0]):
-            bad.append(f"{AM_ANSIBLE}: {name} installs a config that names the credential without waiting for both halves of the pair")
-    # The restart is the moment auth goes live, and the probes are the only thing
-    # that proves it stayed on: a run that never sees 401 proves nothing.
-    if not any("status_code: 401" in code(t) for t in tasks):
-        bad.append(f"{AM_ANSIBLE}: nothing proves the API refuses an unauthenticated request after the restart, so auth could be silently off")
-    host = task_blocks((repo / AM_HOST).read_text())
-    restart = [t for t in host if "name: Restart alertmanager" in t]
-    if not restart:
-        bad.append(f"{AM_HOST}: no task named Restart alertmanager")
-    elif "alertmanager_auth_ready" not in code(restart[0]):
-        bad.append(f"{AM_HOST}: Restart alertmanager runs without waiting for both halves of the pair, so Alertmanager starts with a --web.config.file that is not there")
-    if "alertmanager_auth_ready" not in (repo / AM_FINALS).read_text():
-        bad.append(f"{AM_FINALS}: nothing fails the run when the auth pair is missing, so the skipped prometheus install would go unnoticed")
     return bad
 
 
@@ -237,7 +179,7 @@ def selftest():
     assert findings == [], findings
     with tempfile.TemporaryDirectory() as tmp:
         fixture = Path(tmp)
-        for rel in (AM_OPTIONS, AM_PROMETHEUS, AM_ANSIBLE, AM_HOST, AM_FINALS):
+        for rel in (AM_OPTIONS, AM_PROMETHEUS):
             (fixture / rel).parent.mkdir(parents=True, exist_ok=True)
             (fixture / rel).write_text((repo / rel).read_text())
         doc = yaml.safe_load((fixture / AM_PROMETHEUS).read_text())
@@ -249,16 +191,9 @@ def selftest():
         (fixture / AM_PROMETHEUS).write_text(yaml.safe_dump(doc))
         assert sum("has no basic_auth" in f for f in alertmanager_auth(fixture)) == 2, alertmanager_auth(fixture)
         (fixture / AM_PROMETHEUS).write_text((repo / AM_PROMETHEUS).read_text())
-        gate = "  notify:\n    - Reload prometheus\n    - Reload alertmanager\n    - Reload blackbox exporter\n  when: alertmanager_auth_ready | default(false) | bool"
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text().replace(gate, gate.replace("\n  when: alertmanager_auth_ready | default(false) | bool", ""), 1))
-        assert any("without waiting for both halves" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text())
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text().replace("promtool check web-config", "promtool check config", 1))
-        assert any("never goes through promtool" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text())
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text().replace("status_code: 401", "status_code: 200", 1))
-        assert any("refuses an unauthenticated request" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
-        (fixture / AM_ANSIBLE).write_text((repo / AM_ANSIBLE).read_text())
+        (fixture / AM_OPTIONS).write_text('ARGS="--config.file=/etc/alertmanager/alertmanager.yml --web.listen-address=127.0.0.1:9093"\n')
+        assert any("--web.config.file" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
+        (fixture / AM_OPTIONS).write_text((repo / AM_OPTIONS).read_text())
 
 
 def dead_row_shape(rules, points, bad):

@@ -70,46 +70,59 @@
 
 # promtool validates the web config alone. What it cannot see is the other end
 # of the credential: prometheus.yml must send a user the web config defines, and
-# the password file must be the one line Prometheus trims. This reads the three
-# files and prints names and fixed messages only, never a value.
-- name: Check that the alertmanager credential matches the client that sends it
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/python3
-      - -c
-      - |
-        import sys
-        import yaml
+# the password file must be the one line Prometheus trims. Stock slurp and
+# assert read the three files; no_log keeps a byte of either credential out of
+# the transcript, and the messages name files and fixed words only.
+- name: Read the alertmanager web config
+  ansible.builtin.slurp:
+    src: /etc/alertmanager/web.yml
+  register: alertmanager_web
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
 
-        web_path, password_path, config_path = sys.argv[1:4]
-        users = (yaml.safe_load(open(web_path)) or {}).get("basic_auth_users") or {}
-        password = open(password_path).read().strip()
-        problems = []
-        if not users:
-            problems.append(web_path + " defines no basic_auth_users")
-        if not password or password.split() != [password]:
-            problems.append(password_path + " must hold one line with no whitespace in it")
-        clients = yaml.safe_load(open(config_path))["alerting"]["alertmanagers"]
-        for index, client in enumerate(clients):
-            auth = client.get("basic_auth") or {}
-            if "username" not in auth or "password_file" not in auth:
-                problems.append(
-                    "alertmanagers[" + str(index) + "] in " + config_path
-                    + " needs both basic_auth.username and basic_auth.password_file"
-                )
-            elif auth["username"] not in users:
-                problems.append(
-                    "user " + auth["username"] + " in " + config_path
-                    + " is not a basic_auth_users key in " + web_path
-                )
-        if problems:
-            print("; ".join(problems))
-            sys.exit(1)
-      - /etc/alertmanager/web.yml
-      - /etc/prometheus/alertmanager_password
-      - "{{ rootfs }}/etc/prometheus/prometheus.yml"
-  changed_when: false
-  check_mode: false  # read-only; runs under --check too
+- name: Read the password Prometheus authenticates to alertmanager with
+  ansible.builtin.slurp:
+    src: /etc/prometheus/alertmanager_password
+  register: alertmanager_client_password
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: Read the prometheus config that sends the credential
+  ansible.builtin.slurp:
+    src: "{{ rootfs }}/etc/prometheus/prometheus.yml"
+  register: alertmanager_prometheus
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: Check that the alertmanager credential matches the client that sends it
+  ansible.builtin.assert:
+    that:
+      - alertmanager_web_users | length > 0
+      - alertmanager_client_auths | length == alertmanager_clients | length
+      - alertmanager_client_users | length == alertmanager_clients | length
+      - alertmanager_client_users | difference(alertmanager_web_users) | length == 0
+      - alertmanager_client_files | length == alertmanager_clients | length
+      - alertmanager_client_files | difference([alertmanager_password_file]) | length == 0
+      - alertmanager_inline_passwords | length == 0
+      - alertmanager_password_words | length == 1
+    fail_msg: >-
+      the alertmanager credential pair does not agree. {{ alertmanager_web_config }} needs a
+      basic_auth_users key for every user {{ alertmanager_prometheus_config }} sends, each of
+      them reading password_file {{ alertmanager_password_file }} and carrying no inline
+      password, and /etc/prometheus/alertmanager_password must hold one line with no
+      whitespace in it.
+    quiet: true
+  vars:
+    alertmanager_web_config: /etc/alertmanager/web.yml
+    alertmanager_prometheus_config: "{{ rootfs }}/etc/prometheus/prometheus.yml"
+    alertmanager_password_file: /etc/prometheus/alertmanager_password
+    alertmanager_web_users: "{{ (alertmanager_web.content | b64decode | from_yaml).basic_auth_users | default({}, true) | dict2items | map(attribute='key') | list }}"
+    alertmanager_clients: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers }}"
+    alertmanager_client_auths: "{{ alertmanager_clients | selectattr('basic_auth', 'defined') | map(attribute='basic_auth') | list }}"
+    alertmanager_client_users: "{{ alertmanager_client_auths | selectattr('username', 'defined') | map(attribute='username') | list }}"
+    alertmanager_client_files: "{{ alertmanager_client_auths | selectattr('password_file', 'defined') | map(attribute='password_file') | list }}"
+    alertmanager_inline_passwords: "{{ alertmanager_client_auths | selectattr('password', 'defined') | list }}"
+    alertmanager_password_words: "{{ (alertmanager_client_password.content | b64decode).split() }}"
   when: alertmanager_auth_ready | default(false) | bool
 
 - name: Install prometheus and blackbox exporter config
@@ -239,13 +252,6 @@
 # is the bcrypt of the password Prometheus sends. A mismatch stops every alert
 # push, Watchdog included, and only the dead-man outside the box would notice.
 # This is the runbook's proof, run on every deploy.
-- name: Read the password Prometheus sends to alertmanager
-  ansible.builtin.slurp:
-    src: /etc/prometheus/alertmanager_password
-  register: alertmanager_client_password
-  no_log: true
-  when: alertmanager_auth_ready | default(false) | bool
-
 - name: Check that alertmanager refuses the API without a credential
   ansible.builtin.uri:
     url: http://127.0.0.1:9093/-/ready
