@@ -144,6 +144,8 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Fail the run when a plaintext git credential file is in the way",
                 "Start the registered agent runners",
                 "Give the agent runners the tool PATH",
+                "Copy runner 1 to the pilot user once",
+                "Point the pilot runner links at the copy",
             ), task["name"]
     for name in ("Look for the agent state directories", "Keep the agent state directories private", "Give the agent runners the tool PATH"):
         task = TASKS[name]
