@@ -88,7 +88,7 @@ jobs:
           if grep -q 'bad-jwt\|bad-body\|unknown' "$d/log"; then echo "::error::stub rejected the unit's requests"; cat "$d/log"; exit 1; fi
           if sudo journalctl -u fleet-token-ci.service --no-pager | grep -q 'ghs_stub\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
           cat "$d/log"
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider -m systemd
+          pipx run --spec pytest==8.3.5 --pip-args=litellm==1.105.0 pytest -q -p no:cacheprovider -m systemd
       - name: Grafana token wiring is consistent across unit, quadlet and contact points
         # RuntimeDirectory, quadlet mount and $__file{} must name one directory.
         if: always()

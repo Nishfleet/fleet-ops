@@ -253,7 +253,7 @@ jobs:
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider -m grafana
+        run: pipx run --spec pytest==8.3.5 --pip-args=litellm==1.105.0 pytest -q -p no:cacheprovider -m grafana
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
