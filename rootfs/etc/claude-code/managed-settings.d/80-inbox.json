@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "inbox": {
+      "source": {
+        "source": "directory",
+        "path": "/home/nish/workspaces/tooling/claude-code-mods-petekp-inbox"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "inbox@inbox": true
+  }
+}

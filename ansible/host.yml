@@ -16,8 +16,68 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  # A change to tether.nft once failed a later task and dropped the pending
+  # "Reload nftables" handler; the next run saw no change and never reloaded.
+  # force_handlers runs notified handlers even when a later task fails.
+  force_handlers: true
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
+    tether_off_marker: /etc/fleet-ops/tether-off
+    # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
+    # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
+    # runner's registration lives at GitHub and removing it needs an org admin
+    # token that the VPS key does not carry.
+    agent_runner_retired_ids: "{{ range(31, 37) | list }}"
+    # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
+    # checked against the hash pinned here. The hash is the tar.xz line of that
+    # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
+    # A new version is a reviewed PR that changes both values.
+    tether_node_version: 22.23.3
+    tether_node_sha256: df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
+    tether_node_dir: "/opt/node-v{{ tether_node_version }}"
+    tether_node_cache: /var/cache
+    # The tether release: one exact version of the private repo Nishfleet/tether,
+    # built by its CI and checked against the sha256 pinned here (the value in the
+    # release's .sha256 asset). An upgrade is one reviewed PR that changes both
+    # values; a rollback is the revert of that PR. These two lines are the only
+    # place the version and the hash are written.
+    # 0.7.0 is the first release that uses its own Space's key from cua.env.
+    tether_version: 0.7.1
+    tether_sha256: b753ed661e96ccdf7fcfd71f15e00f77fe65d9aee6105fd6b320fa185633104a
+    # Everything below derives from the two pins. The directory and the cached
+    # file carry the version AND the first 12 hex of the hash, so a new hash at
+    # the same version is a new name and never reuses old content. The root and
+    # cache paths are vars so the test can point them at a temp dir.
+    tether_release_root: /opt/tether
+    tether_release_cache: /var/cache/tether-releases
+    tether_release_key: "{{ tether_version }}-{{ tether_sha256[:12] }}"
+    tether_release_dir: "{{ tether_release_root }}/{{ tether_release_key }}"
+    tether_release_stage: "{{ tether_release_root }}/.tmp-{{ tether_release_key }}"
+    tether_release_tarball: "{{ tether_release_cache }}/tether-v{{ tether_release_key }}.tar.gz"
+    tether_release_download: "{{ tether_release_cache }}/nish/tether-v{{ tether_version }}.tar.gz"
+    # The packaged gh, which stores nish's login in ~/.config/gh/hosts.yml (a
+    # file, not the keyring), so it also works as nish under sudo.
+    tether_gh: /usr/bin/gh
+    # Placed by hand, never created here. A var so the test can point it at a file.
+    tether_photon_env: /etc/tether/photon.env
+    tether_calendar_env: /etc/tether/calendar.env
+    # tether's own Cua Space: the only Cua target its key opens. The env file
+    # holds the Space's address and token, rendered by the tasks below. Docker
+    # publishes a Space's spacesd on a random loopback port that changes at
+    # every container start (pause and resume keep it), so the port is read
+    # live on each run and never kept in a var.
+    tether_cua_env: /etc/tether/cua.env
+    tether_space_name: tether
+    tether_space_ref: "local:{{ tether_space_name }}"
+    cua_cli: /opt/Cua Spaces/resources/native/cua
+    docker_cli: /usr/bin/docker
+    nft_cli: /usr/sbin/nft
+    nsenter_cli: /usr/bin/nsenter
+    ip_cli: /usr/sbin/ip
+    # The fence around tether's Cua Space. Its own file and tables, so the
+    # tether off marker, which removes tether.nft, leaves it in place.
+    tether_space_nft: /etc/nftables.d/tether-space.nft
+    tether_space_nft_src: "{{ playbook_dir }}/templates/tether-space.nft.j2"
     # Directories this repo owns. A regular file in one of them that rootfs/
     # does not ship is a hand install, and the run fails on it (last task).
     # /etc/prometheus is left out: it also holds alertmanager credentials.
@@ -49,6 +109,10 @@
     # (see the comment there). The drift check skips them too, so a --check
     # run, which removes nothing, still passes.
     retired:
+      # The daily drift run (fleet-ops#10457): deploy-box.yml applies every merge
+      # and fleet-host-config-boot.timer runs once per boot.
+      - /etc/systemd/system/fleet-host-config.timer
+      - /etc/systemd/system/timers.target.wants/fleet-host-config.timer
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/10-restart.conf
       # drive moved to Nishfleet (2026-10-06): its runners are org agent runners now.
       - /etc/systemd/system/actions.runner.nish3451-drive.netcup-agent-drive-.service.d
@@ -66,6 +130,52 @@
       - /etc/systemd/system.control/github-tsin.slice.d
       - /etc/systemd/system.control/user-1000.slice.d
       - /usr/local/bin/gh
+      # Replaced by dockerd-eval.service (fleet-ops#9983).
+      - /etc/systemd/system/podman-eval.service
+      # The Cua daemon's fixed loopback port (#10102): the daemon ignores a
+      # supplied token, so tether never used the route. The user manager is
+      # reloaded below so it forgets the drop-in.
+      - /etc/systemd/user/cua-desk-daemon.service.d
+      # The seo-fix-kit weekly D1 backup unit lived loose in nish's user
+      # directory, which the 2026-10-23 glue audit named (#10125). Its home is
+      # now that product repo, next to ops/backup-d1.sh (fleet-ops#10145), and
+      # its install there is for a machine that runs the export, not this box:
+      # no clock is added here (docs/mac-scheduled-tasks.md).
+      - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
+      - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
+      # directory, which shadows the installed one in /etc/systemd/user, so the
+      # bytes the repo ships were inert. The file, not the directory: a retired
+      # path is deleted, and the directory stays for the next drop-in. The user
+      # manager is reloaded below so it forgets the drop-in, and gpg-agent picks
+      # the installed one up at its next start.
+      - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
+      # The old hand-placed Alertmanager config (#10146): the running service
+      # reads /etc/alertmanager/alertmanager.yml, which the repo ships, and the
+      # only reader of this copy was the first-run chat-id seed, removed below.
+      # The guard above keeps this line from deleting a box's only chat id.
+      - /etc/prometheus/alertmanager.yml
+      # The TinyStudio SMB bridge (#10146): disabled, inactive, with no wants
+      # link, and no repo shipped it. The tasks above stop it first anyway. The
+      # SMB server (smbd.service) stays.
+      - /etc/systemd/system/tiny-studio-smb-bridge.service
+      # Leftovers the 2026-10-23 glue audit named (#10125, #10146): the products
+      # hook dir execs /Users/nish/Vibecoded projects/... and the vault's
+      # .git/hooks are macOS-only no-ops, and no checkout sets core.hooksPath;
+      # the one-shot tincan relink script's PR merged 2026-10-04.
+      - "{{ nish_home }}/workspaces/products/.githooks"
+      - "{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"
+      - "{{ nish_home }}/.cache/tincan-relink-once.sh"
+      # The alert-stack cut deleted the executor, its config and the tmpfiles
+      # lines that created this directory and link. tmpfiles is applied with
+      # --create only, so the link outlived the file it pointed at.
+      - "{{ nish_home }}/.config/prometheus-am-executor/config.yml"
+      # The chrome-devtools plugin left the nish-mods marketplace (2026-10-23
+      # glue audit), so the drop-in that enabled it enabled nothing and the
+      # repo stopped shipping it. `copy` never deletes, so the live file is
+      # retired here or it keeps loading a plugin id no marketplace lists.
+      - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -82,6 +192,26 @@
     digest_prompts:
       - digest-morning
       - digest-evening
+    # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
+    # it is given, so a job whose work is done stays until something deletes it.
+    # Listed by id and never searched for: a worker's fresh proof job is legitimate,
+    # and a rule that matched names would delete it on the next deploy. The live
+    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
+    # config/restic/include.txt.
+    hermes_retired_jobs:
+      # The two proof jobs from the digest runs (#9579, #9717). Both were still
+      # enabled on a schedule that fires once a year, so they would have run 1 Jan.
+      - 13d3db49b9c5
+      - f16c57bb6885
+      # The seven one-shot jobs whose run_at passed on 2026-10-23 to 2026-10-26.
+      - d4efa85f43c3
+      - 50229bbf6c4a
+      - 0de3952d8ecb
+      - df6163647275
+      - bdc37cb70a4a
+      - fc1c6a815b80
+      - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -94,13 +224,43 @@
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     nish_config: "{{ nish_home }}/.config"
+    agent_share: "{{ nish_home }}/.local/share"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
     commandcode_auth_dir: "{{ nish_home }}/.commandcode"
     commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
+    # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
+    # when it is missing; the Redis requirepass fragment and the proxy env file are rendered
+    # from it on every run, so the two cannot differ. Deleting the file mints a new password,
+    # the renders change, and the handler restarts Redis and then the proxy.
+    redis_password_file: /etc/fleet-ops/litellm-redis-password
+    redis_auth_conf: "{{ nish_config }}/fleet-ops/litellm-keys/redis-auth.conf"
+    redis_proxy_env: "{{ nish_config }}/fleet-ops/litellm-keys/redis.env"
+    # Grafana credentials as Podman secrets (mounted by containers/quadlet/fleet-grafana.container).
+    # The values are read from their original files the way systemd reads an EnvironmentFile
+    # (systemd-run, no parser of our own) and the secret is recreated only when it differs.
+    grafana_secrets:
+      - {name: grafana-telegram-bot-token, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_BOT_TOKEN}
+      - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
+      - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
     commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
+    # ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
+    # checkout that user units can read (fleet-ops#10479): root owns it, no
+    # worktree is attached to it, and every deploy moves it to the merged
+    # commit. UMask=0077 (20-umask.conf) leaves its newer files 0600, which
+    # locked readers out once already (#10472), so this makes the whole tree
+    # readable and not writable by anyone but root.
+    - name: Make the deploy checkout readable by every user and writable by root only
+      ansible.builtin.file:
+        path: "{{ (playbook_dir ~ '/..') | realpath }}"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false
@@ -116,6 +276,20 @@
       changed_when: false
       check_mode: false  # read-only; runs under --check too
 
+    # GitHub's public commit-signing keys (https://github.com/web-flow.gpg), so
+    # root can run `git verify-commit` on what ansible-pull fetches. Two keys,
+    # both matching keys.openpgp.org. Current, signs squash and merge commits:
+    # 9684 79A1 AFF9 27E3 7D1A  566B B569 0EEE BB95 2194. Expired 2024-01-16,
+    # kept for older history: 5DE3 E050 9C47 EA3C F04A  42D3 4AEE 18F8 3AFD EB23.
+    # The import into root's keyring is idempotent: gpg reports "imported" only
+    # the first time.
+    - name: Import GitHub's commit-signing keys into root's keyring
+      ansible.builtin.command: /usr/bin/gpg --batch --import {{ playbook_dir }}/files/github-web-flow.gpg
+      environment:
+        LC_ALL: C
+      register: github_signing_keys
+      changed_when: "'imported:' in github_signing_keys.stderr"
+
     # Per-role Claude Code allow lists (fleet-ops#9502). tincan-listen-claude-vps
     # passes --settings at /etc/claude-code/roles/tincan-listener.json, so this
     # copy must exist on the box before that user unit is restarted after merge.
@@ -129,6 +303,7 @@
         owner: root
         group: root
         mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
     # Restic backup include and exclude lists and the retention policy
     # (config/restic/). The backup and maintenance units read them from
@@ -159,6 +334,96 @@
         mode: preserve
       notify: Reload systemd
 
+    # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
+    # in common with nish. Its drop-in is rootfs/etc/systemd/system/
+    # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
+    # is copied once: only while the copy has no runsvc.sh, so a re-run never overwrites the
+    # runner's live state.
+    - name: Create the pilot runner user
+      ansible.builtin.user:
+        name: fleet-runner
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/fleet-runner
+        create_home: true
+
+    - name: Copy runner 1 to the pilot user once
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.local/share/agent-runner/1/"
+        dest: /var/lib/fleet-runner/1/
+        remote_src: true
+        local_follow: false
+        owner: fleet-runner
+        group: fleet-runner
+        mode: preserve
+        directory_mode: '0750'
+      when:
+        - (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
+        - "'/var/lib/fleet-runner/1/runsvc.sh' is not exists"
+      notify:
+        - Reload systemd
+        - Restart pilot runner
+
+    # The copy keeps `bin` and `externals` as the absolute links they are under
+    # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
+    # at once and the unit crash-looped (fleet-ops#10491). Point them at their
+    # sibling directories instead. A link that is already relative is left alone.
+    - name: Read the pilot runner links
+      ansible.builtin.stat:
+        path: "/var/lib/fleet-runner/1/{{ item }}"
+      loop: [bin, externals]
+      register: pilot_links
+
+    - name: Point the pilot runner links at the copy
+      ansible.builtin.file:
+        src: "{{ item.stat.lnk_target | basename }}"
+        dest: "{{ item.stat.path }}"
+        state: link
+        owner: fleet-runner
+        group: fleet-runner
+      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
+
+    # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+    # paths, and the runner loads it over the unit's own HOME, so every job's gh read
+    # nish's .config/gh/config.yml and died with permission denied (fleet-ops#10510).
+    # HOME goes to the pilot's own; the other two point at nish's runtime and Claude seat,
+    # so they are dropped.
+    - name: Give the pilot runner its own HOME in the runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^HOME='
+        line: HOME=/var/lib/fleet-runner
+        insertbefore: BOF
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    - name: Drop nish's runtime paths from the pilot runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+        state: absent
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
+    - name: Stop and disable the retired agent runners
+      ansible.builtin.systemd_service:
+        name: "actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+        enabled: false
+        state: stopped
+      loop: "{{ agent_runner_retired_ids }}"
+      when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
+
+    - name: Remove the retired agent runner units
+      ansible.builtin.file:
+        path: "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+        state: absent
+      loop: "{{ agent_runner_retired_ids }}"
+      notify: Reload systemd
+
     - name: Install systemd user-manager drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/systemd/user/"
@@ -186,6 +451,21 @@
         mode: preserve
       notify: Restart journald
 
+    # A plaintext git credential file at this path makes the tmpfiles `d` line
+    # fail and leaves the secrets in place. Nothing here deletes or moves it: a
+    # person does that, then reruns.
+    - name: Look for a plaintext git credential file in nish's home
+      ansible.builtin.stat:
+        path: "{{ nish_home }}/.git-credentials"
+        follow: false
+      register: git_credential_stat
+
+    - name: Fail the run when a plaintext git credential file is in the way
+      ansible.builtin.assert:
+        that: not (git_credential_stat.stat.exists and not git_credential_stat.stat.isdir)
+        fail_msg: "{{ nish_home }}/.git-credentials exists and is not a directory. Run mkdir -p /root/quarantine, mv it there, then rerun. Nothing deletes it for you; tmpfiles needs a directory there."
+        quiet: true
+
     - name: Install tmpfiles.d entries
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/tmpfiles.d/"
@@ -194,6 +474,36 @@
         group: root
         mode: preserve
       notify: Create tmpfiles
+
+    # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
+    # config instead of the host's /etc/docker/daemon.json, which sets the runsc
+    # runtime. rootlesskit comes from apt: the unit runs dockerd under it.
+    - name: Create the fleet-ops config directory
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the rootless Docker engine's config
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
+        dest: /etc/fleet-ops/dockerd-eval.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
+      ansible.builtin.apt:
+        name:
+          - rootlesskit
+          - slirp4netns
+          - uidmap
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        lock_timeout: 300
 
     - name: Install sysctl settings
       ansible.builtin.copy:
@@ -231,6 +541,43 @@
         mode: preserve
       notify: Reload nftables
 
+    # The drive eval engine's egress limit (fleet-ops#9983): its own table, loaded
+    # by nftables.service through the nftables.d include. Installed before the
+    # queued handlers run, so the table and its set exist when dockerd-eval.service
+    # starts and systemd adds the engine's cgroup to the set.
+    - name: Create the nftables drop-in directory for the eval engine's rule
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the eval engine's egress rule
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables.d/evalnet.nft"
+        dest: /etc/nftables.d/evalnet.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      notify: Reload nftables
+
+    # The postgres account is a package leftover with no login use: set its shell
+    # to nologin. Only when the account exists; this never creates it.
+    - name: Look up the postgres account
+      ansible.builtin.getent:
+        database: passwd
+        key: postgres
+        fail_key: false
+      register: postgres_passwd
+
+    - name: Set the postgres account shell to nologin
+      ansible.builtin.user:
+        name: postgres
+        shell: /usr/sbin/nologin
+      when: postgres_passwd.ansible_facts.getent_passwd.postgres is not none
+
     - name: Install the htpdate options
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/default/htpdate"
@@ -246,7 +593,9 @@
         dest: /etc/prometheus/
         owner: root
         group: root
-        mode: preserve
+        # Not preserve: a clone made under umask 077 holds these as 0600, and
+        # the prometheus user then cannot read the rules (fleet-ops#10472).
+        mode: "0644"
       notify:
         - Reload prometheus
         - Reload alertmanager
@@ -254,19 +603,7 @@
 
     # The Telegram chat id has no file option in Alertmanager, so it is kept out
     # of the repo: the repo copy holds chat_id 1 and the installed copy gets the
-    # id from a hand-placed file. First run only: the id is taken from the
-    # alertmanager.yml the box already has, so nothing needs placing by hand.
-    - name: Seed the telegram chat id file from the installed alertmanager config
-      ansible.builtin.shell: |
-        set -o pipefail
-        id=$(sed -n 's/^ *chat_id: *\(-\?[0-9]\+\) *\(#.*\)\?$/\1/p' /etc/prometheus/alertmanager.yml | head -n1)
-        [ -n "$id" ] && [ "$id" != 0 ] || exit 3
-        install -o root -g root -m 0600 /dev/stdin /etc/prometheus/telegram_chat_id <<< "$id"
-      args:
-        executable: /bin/bash
-        creates: /etc/prometheus/telegram_chat_id
-      register: chat_seed
-      failed_when: chat_seed.rc not in [0, 3]
+    # id from the hand-placed /etc/prometheus/telegram_chat_id.
 
     # Root-owned and not writable by the service: its bytes go into a root-owned
     # config, so the prometheus user must not be able to change them.
@@ -361,7 +698,7 @@
         name: prometheus-alertmanager.service
         enabled: true
         state: started
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     # polkitd watches rules.d itself; no reload needed.
     - name: Install polkit rules
@@ -382,17 +719,30 @@
         mode: preserve
 
     # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-    # managed settings: here, the agents' auto-mode rules and the hook that
-    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
+    # managed settings: here, the agents' auto-mode rules, the hook that
+    # bounces routine asks to Nish, the Beacon telemetry env and the enabled
+    # plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+    # "Claude plugin drop-ins"). The box-wide file those merge into,
+    # managed-settings.json, has its own task below (README, "Managed-settings
+    # defaults"). A drop-in
     # that does not parse stops Claude Code from starting on the whole box, so
     # validate refuses any file that is not a JSON object before it reaches
-    # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
-    # hand-installed. To switch this off, delete the file from rootfs/ and add
+    # /etc. /etc/claude-code is not in owned_dirs: the directory is installed
+    # file by file. To switch a file off, delete the file from rootfs/ and add
     # its /etc path to `retired`.
     - name: Install Claude Code managed-settings drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
         dest: /etc/claude-code/managed-settings.d/
+        owner: root
+        group: root
+        mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+    - name: Install the Claude Code managed-settings defaults file
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/claude-code/managed-settings.json"
+        dest: /etc/claude-code/managed-settings.json
         owner: root
         group: root
         mode: preserve
@@ -413,6 +763,20 @@
         owner: root
         group: root
         mode: "0644"
+
+    # The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
+    # drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
+    # a copy after a failed backup. Stopped, not removed: it is box-only. A box
+    # without the timer is fine.
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+      register: locked_copy_timer
+      failed_when:
+        - locked_copy_timer.failed | default(false)
+        - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
@@ -513,11 +877,928 @@
         name: claude-remote-control.service
         enabled: true
 
-    - name: Enable the daily drift run
+    # Local agent state (audit follow-up): the session databases and the runner
+    # credential files are for nish alone. Mode only, never owner, and each task
+    # does nothing when its files are absent. These run as nish, not root: the
+    # directories are nish's to write, so a root chmod could be steered through
+    # a symlink onto a file nish does not own. Checked 2026-10-22: all 26
+    # actions.runner.* units have User=nish and every runner process is nish's,
+    # so owner-only modes keep the runners working; no other user or group
+    # reads these files. The leviathan directory is already 0700. SQLite gives a new -wal/-shm the
+    # mode of the main database, so fixing the main file covers them.
+    # opencode.db (with -wal/-shm) and the Grafana database are covered too. The
+    # Grafana container runs UserNS=keep-id, so its process is nish (uid 1000) on
+    # the host and needs no group access; its data directory is already 0700.
+    - name: Look for the agent state directories
+      become: true
+      become_user: nish
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ agent_share }}/devin"
+        - "{{ agent_share }}/devin/cli"
+        # Pi worker session logs live under here (directory mode only; the
+        # files inside are nish's and stay as the tool writes them).
+        - "{{ nish_home }}/.pi"
+      register: agent_state_dirs
+
+    - name: Keep the agent state directories private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ agent_state_dirs.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish'
+
+    - name: Find the agent session databases
+      become: true
+      become_user: nish
+      ansible.builtin.find:
+        paths:
+          - "{{ agent_share }}/devin/cli"
+          - "{{ agent_share }}/leviathan"
+          - "{{ agent_share }}/opencode"
+          - "{{ agent_share }}/fleet-grafana"
+        patterns:
+          - sessions.db*
+          - pi.db*
+          - claude.db*
+          - opencode.db*
+          - grafana.db*
+        file_type: file
+      register: agent_state_dbs
+
+    - name: Keep the agent session databases private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ agent_state_dbs.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: agent_state_db_chmod
+      # SQLite deletes its -journal, -wal and -shm files on its own, so one
+      # found a moment ago can be gone by now (fleet-ops#10388). Only that
+      # error is ignored; any other failure still fails the run.
+      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
+
+    - name: Find the runner credential files
+      become: true
+      become_user: nish
+      ansible.builtin.find:
+        paths:
+          - "{{ agent_share }}/actions-runner"
+          - "{{ agent_share }}/agent-runner"
+          - "{{ agent_share }}/fleet-ci-runner"
+        patterns: ".credentials*"
+        hidden: true
+        recurse: true
+        depth: 2
+        file_type: file
+      register: runner_credentials
+
+    - name: Keep the runner credential files private
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: file
+        mode: "0600"
+      loop: "{{ runner_credentials.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      # A file nish does not own is skipped: nish cannot chmod it.
+      when: item.pw_name == 'nish'
+
+    # Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
+    # because per-user units silently ignore sandbox settings on this box. This
+    # run never enables or starts tether-agent.service: it stays disabled until
+    # the tasks below put a pinned, checksummed release at /opt/tether/current
+    # (root-owned, so the service user cannot rewrite its own code). The marker
+    # file is the lasting off-switch: while it exists this run creates nothing
+    # for tether, removes its firewall rule and keeps the unit disabled and
+    # stopped. The marker path is a var so the test in
+    # tests/test_systemd_unit_keys.py can run these tasks under --check.
+    - name: Look for the tether off marker
+      tags: [tether, tether-release]
+      ansible.builtin.stat:
+        path: "{{ tether_off_marker }}"
+      register: tether_off
+
+    # tether-agent.service is enabled by hand (this run never enables it), so
+    # the release-change restart handler fires only when that wants symlink
+    # exists. Read-only, so it runs with and without the marker.
+    - name: Look for an enabled tether-agent unit
+      tags: [tether, tether-release]
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/tether-agent.service
+        follow: false
+      register: tether_agent_enabled
+
+    - name: Create the tether group
+      tags: [tether]
+      ansible.builtin.group:
+        name: tether
+        system: true
+      when: not tether_off.stat.exists
+
+    - name: Create the tether service user
+      tags: [tether]
+      ansible.builtin.user:
+        name: tether
+        group: tether
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+      when: not tether_off.stat.exists
+
+    - name: Create the tether config directory
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/tether
+        state: directory
+        owner: root
+        group: tether
+        mode: "0750"
+      when: not tether_off.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the tether app directory, root-owned
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_release_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+
+    # Node for the unit: the official linux-x64 tarball, pinned by version and
+    # sha256, unpacked into a root-owned versioned directory. The unit's
+    # ExecStart names that binary by absolute path. The distro nodejs package
+    # is not used and is not touched.
+    - name: Download the pinned Node tarball for tether
+      tags: [tether]
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        checksum: "sha256:{{ tether_node_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not tether_off.stat.exists
+      # A --check run by a user that cannot write /var/cache (the test) fails here.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the versioned Node directory, root-owned
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_node_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_off.stat.exists
+
+    - name: Unpack the pinned Node for tether
+      tags: [tether]
+      ansible.builtin.unarchive:
+        src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+        dest: "{{ tether_node_dir }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+        creates: "{{ tether_node_dir }}/bin/node"
+      when: not tether_off.stat.exists
+      # Under --check the download above did not really happen.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The tether release. Download, verify, unpack and link share one block, so a
+    # GitHub or download failure cannot abort the host-config tasks after it: the
+    # rescue leaves `current` where it was and records the failure, and the last
+    # task of the play fails the run loudly once everything else is done.
+    # Order inside the block: download as nish (the only user with a GitHub login;
+    # the token stays in gh's own config), verify by copying into a root-owned
+    # file under the pinned sha256, unpack into a root-owned staging directory,
+    # check its layout and modes, rename it into place (atomic), and only then
+    # point `current` at it. A directory named <version>-<sha12> therefore only
+    # ever appears whole and verified; one that fails the check is removed and
+    # unpacked fresh. Under --check a task that cannot work without the real
+    # download is ignored, as for the Node tarball above.
+    - name: Install the pinned tether release, or record why it failed
+      tags: [tether, tether-release]
+      when: not tether_off.stat.exists
+      block:
+        - name: Create the tether release cache, root-owned
+          ansible.builtin.file:
+            path: "{{ tether_release_cache }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Create the nish download directory for tether releases
+          ansible.builtin.file:
+            path: "{{ tether_release_cache }}/nish"
+            state: directory
+            owner: nish
+            group: nish
+            mode: "0755"
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look for this tether release directory
+          ansible.builtin.stat:
+            path: "{{ tether_release_dir }}"
+          register: tether_rel_dir
+
+        # Every file, directory and hidden entry below the release, symlinks not
+        # followed. The result is filtered below for group- or other-writable
+        # entries and for owners other than root (uid 0); links are skipped,
+        # their mode is not theirs to set.
+        - name: Scan this tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_dir }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_rel_scan
+          check_mode: false  # read-only; runs under --check too
+          when: tether_rel_dir.stat.isdir | default(false)
+
+        - name: Record the writable or non-root files in this tether release
+          ansible.builtin.set_fact:
+            tether_rel_unsafe: "{{ ((tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+
+        - name: Look for the entry point of this tether release
+          ansible.builtin.stat:
+            path: "{{ tether_release_dir }}/dist/index.js"
+          register: tether_rel_entry
+
+        # Complete means: a real directory, a regular dist/index.js, and nothing
+        # in it that is group or other writable or not owned by root.
+        - name: Record whether this tether release is already installed whole
+          ansible.builtin.set_fact:
+            tether_rel_ok: "{{ (tether_rel_dir.stat.isdir | default(false)) and (tether_rel_entry.stat.isreg | default(false)) and (tether_rel_dir.stat.uid | default(1) == 0) and not (tether_rel_dir.stat.wgrp | default(true)) and not (tether_rel_dir.stat.woth | default(true)) and (tether_rel_unsafe | default(['x']) | length == 0) }}"
+
+        - name: Look for the verified tether tarball
+          ansible.builtin.stat:
+            path: "{{ tether_release_tarball }}"
+            checksum_algorithm: sha256
+          register: tether_rel_tar
+
+        - name: Record whether the tether release must be downloaded
+          ansible.builtin.set_fact:
+            tether_rel_fetch: "{{ not tether_rel_ok and not (tether_rel_tar.stat.exists and tether_rel_tar.stat.checksum == tether_sha256) }}"
+
+        # gh keeps nish's login in a file, so it works under become_user. When the
+        # login has lapsed `gh auth token` prints nothing, and this says so.
+        - name: Read whether gh is logged in for nish
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ tether_gh }}", auth, token]
+          register: tether_gh_token
+          changed_when: false
+          failed_when: false
+          no_log: true
+          check_mode: false  # read-only; runs under --check too
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Require nish's gh login before the download
+          ansible.builtin.assert:
+            that: tether_gh_token.rc == 0 and (tether_gh_token.stdout | length) > 0
+            fail_msg: "gh not authenticated for nish: run `gh auth login` as nish, then the next host-config run installs tether v{{ tether_version }}"
+            quiet: true
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Download the pinned tether release as nish
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: ["{{ tether_gh }}", release, download, "v{{ tether_version }}", -R, Nishfleet/tether, -p, "tether-v{{ tether_version }}.tar.gz", -D, "{{ tether_release_cache }}/nish", --clobber]
+            chdir: "{{ tether_release_cache }}/nish"
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # nish writes this directory (gh cannot write into a root-owned one), so
+        # root reads only a plain file there: a link to another file is refused
+        # before get_url follows it.
+        - name: Look at the unverified tether download
+          ansible.builtin.stat:
+            path: "{{ tether_release_download }}"
+          register: tether_rel_dl
+          when: tether_rel_fetch | bool
+
+        - name: Require the tether download to be a plain file
+          ansible.builtin.assert:
+            that: tether_rel_dl.stat.isreg | default(false)
+            fail_msg: "{{ tether_release_download }} is missing or is not a plain file; it is not read"
+            quiet: true
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Verify the tether release against the pinned sha256
+          ansible.builtin.get_url:
+            url: "file://{{ tether_release_download }}"
+            dest: "{{ tether_release_tarball }}"
+            checksum: "sha256:{{ tether_sha256 }}"
+            owner: root
+            group: root
+            mode: "0644"
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Remove the unverified tether download
+          ansible.builtin.file:
+            path: "{{ tether_release_download }}"
+            state: absent
+          when: tether_rel_fetch | bool
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Clear the tether staging directory
+          ansible.builtin.file:
+            path: "{{ tether_release_stage }}"
+            state: absent
+          when: not tether_rel_ok
+
+        - name: Create the tether staging directory, root-owned
+          ansible.builtin.file:
+            path: "{{ tether_release_stage }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # The tarball root holds dist/, package.json, package-lock.json and
+        # node_modules/ (no top folder). `mode` removes group and other write from
+        # every extracted file, whatever the archive says.
+        - name: Unpack the verified tether release into staging
+          ansible.builtin.unarchive:
+            src: "{{ tether_release_tarball }}"
+            dest: "{{ tether_release_stage }}"
+            remote_src: true
+            owner: root
+            group: root
+            mode: "u=rwX,go=rX"
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look for the entry point in the staged tether release
+          ansible.builtin.stat:
+            path: "{{ tether_release_stage }}/dist/index.js"
+          register: tether_stage_entry
+          when: not tether_rel_ok
+
+        - name: Scan the staged tether release for writable or non-root files
+          ansible.builtin.find:
+            paths: "{{ tether_release_stage }}"
+            file_type: any
+            recurse: true
+            hidden: true
+            follow: false
+          register: tether_stage_scan
+          check_mode: false  # read-only; runs under --check too
+          when: not tether_rel_ok
+
+        - name: Record the writable or non-root files in the staged tether release
+          ansible.builtin.set_fact:
+            tether_stage_unsafe: "{{ ((tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+          when: not tether_rel_ok
+
+        - name: Require the expected layout and modes before the release is moved into place
+          ansible.builtin.assert:
+            that:
+              - tether_stage_entry.stat.isreg | default(false)
+              - tether_stage_unsafe | length == 0
+            fail_msg: "The staged tether release has no dist/index.js, or has a group- or other-writable or non-root file ({{ tether_stage_unsafe | default([]) | join(', ') | truncate(200) }}): the tarball does not have the expected layout"
+            quiet: true
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # Only now, with a verified, checked replacement staged: a failure earlier
+        # in the block leaves whatever `current` points at in place.
+        - name: Remove a tether release directory that is incomplete or unsafe
+          ansible.builtin.file:
+            path: "{{ tether_release_dir }}"
+            state: absent
+          when: tether_rel_dir.stat.exists and not tether_rel_ok
+
+        - name: Move the staged tether release into place
+          ansible.builtin.command:
+            argv: [/usr/bin/mv, -T, "{{ tether_release_stage }}", "{{ tether_release_dir }}"]
+          when: not tether_rel_ok
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        - name: Look at where tether current points now
+          ansible.builtin.stat:
+            path: "{{ tether_release_root }}/current"
+          register: tether_cur
+
+        - name: Point tether current at the verified release
+          ansible.builtin.file:
+            src: "{{ tether_release_dir }}"
+            dest: "{{ tether_release_root }}/current"
+            state: link
+            owner: root
+            group: root
+          register: tether_link
+          # The running agent keeps the old release until it restarts (v0.1.2
+          # landed on 23 Oct and the unit kept running 0.1.1), so the link move
+          # notifies the restart handler.
+          notify: Restart tether-agent after its release changed
+          ignore_errors: "{{ ansible_check_mode }}"
+
+        # Keep the new release and the one `current` pointed at before: one
+        # rollback step. Only when `current` moved, so a repeat run never trims
+        # the previous release away.
+        - name: List the tether releases and staging leftovers
+          ansible.builtin.find:
+            paths: "{{ tether_release_root }}"
+            file_type: directory
+            hidden: true
+            use_regex: true
+            patterns: ['^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$', '^\.tmp-.*$']
+          register: tether_old_dirs
+          when: tether_link.changed | default(false)
+
+        - name: Remove tether releases older than the previous one
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ tether_old_dirs.files | default([]) | map(attribute='path') | difference([tether_release_dir, tether_cur.stat.lnk_source | default('')]) }}"
+          when: tether_link.changed | default(false)
+
+        - name: List the cached tether tarballs
+          ansible.builtin.find:
+            paths: "{{ tether_release_cache }}"
+            patterns: ['tether-v*.tar.gz']
+          register: tether_old_tars
+          when: tether_link.changed | default(false)
+
+        - name: Remove cached tether tarballs of releases that were removed
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ tether_old_tars.files | default([]) | map(attribute='path') | difference([tether_release_tarball, tether_release_cache ~ '/tether-v' ~ (tether_cur.stat.lnk_source | default('') | basename) ~ '.tar.gz']) }}"
+          when: tether_link.changed | default(false)
+
+      rescue:
+        - name: Record that the tether release did not install
+          ansible.builtin.set_fact:
+            tether_install_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}"
+
+        - name: Say that tether current was left alone
+          ansible.builtin.debug:
+            msg: "tether v{{ tether_version }} did not install ({{ tether_install_failure }}). {{ tether_release_root }}/current was not changed; the run goes on and fails at its last task."
+
+    # The credentials file is placed by hand and never created or written here:
+    # this only sets owner, group and mode, and only once the file exists. The
+    # unit's EnvironmentFile=- treats it as optional, so its absence must not
+    # fail the run and hold back every task after it.
+    - name: Look for the tether Photon credentials file
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_photon_env }}"
+      register: tether_photon
+
+    - name: Let the tether group read the Photon credentials file
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_photon_env }}"
+        state: file
+        owner: root
+        group: tether
+        mode: "0640"
+      when: not tether_off.stat.exists and tether_photon.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the tether calendar credentials file
+      tags: [tether]
+      ansible.builtin.stat:
+        path: "{{ tether_calendar_env }}"
+      register: tether_calendar
+
+    - name: Let the tether group read the calendar credentials file
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_calendar_env }}"
+        state: file
+        owner: root
+        group: tether
+        mode: "0640"
+      when: not tether_off.stat.exists and tether_calendar.stat.exists
+      # Under --check the group above was not really created yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # #10102 gave tether a fixed-port route to the Cua daemon with a token. The
+    # daemon ignores a supplied token, so nothing ever used the route. Its
+    # leftovers are removed by name here; the drop-in is in `retired`.
+    # The first task runs as root and carries the tether tag. The two that
+    # run as nish do not: CI runs `--tags tether --check` as an unprivileged
+    # user, where becoming nish fails.
+    - name: Remove the retired Cua daemon token file
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/fleet-ops/cua-daemon-token
+        state: absent
+
+    - name: Remove the retired Cua daemon env file
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ nish_config }}/fleet-ops/cua/daemon.env"
+        state: absent
+
+    # Only the named file above is deleted. The directory goes only when
+    # nothing else is in it: rmdir refuses a directory that holds anything.
+    - name: Remove the retired Cua daemon env directory when it is empty
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]
+      environment:
+        LC_ALL: C
+      register: cua_env_dir_rmdir
+      changed_when: cua_env_dir_rmdir.rc == 0
+      failed_when:
+        - cua_env_dir_rmdir.rc != 0
+        - "'Directory not empty' not in cua_env_dir_rmdir.stderr"
+        - "'No such file or directory' not in cua_env_dir_rmdir.stderr"
+
+    # tether's own Cua Space (Nish, 2026-10-23): a key that opens that one
+    # Space's spacesd and nothing else. It is created once and never recreated
+    # (its files and its token are its own), started when it is not running,
+    # and read for its live address and token. Docker restart policy is `no`,
+    # so a reboot leaves it stopped, and a start gives it a new published port
+    # while the Cua daemon keeps answering with the old one; `--embedded` reads
+    # Docker's live port. These tasks run as nish, like the other Cua tasks, and
+    # carry no tether tag (CI's `--tags tether --check` cannot become nish). A
+    # failure is recorded here and fails the run at its last tether task, so the
+    # rest of the host config still applies. tether.nft is then rendered with no
+    # Space port (it fails closed), the env file stays as it was, and the last
+    # rendered fence file (tether-space.nft) stays as it was: it is rendered
+    # inside the block, only from an address read this run, and never removed.
+    # The waits add up to about 110 s, well inside the deploy job's 10 minutes.
+    - name: Ready tether's own Cua Space, or record why it failed
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      when: not tether_off.stat.exists
+      block:
+        - name: Wait until the Cua daemon answers
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+          register: tether_space_ls
+          until: tether_space_ls.rc == 0
+          retries: 6
+          delay: 10
+          changed_when: false
+
+        - name: Create tether's Cua Space when it does not exist
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ tether_space_name }}", --on, local]
+          when: tether_space_ref not in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+
+        - name: Start tether's Cua Space when it exists and is not running
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, start, "{{ tether_space_ref }}"]
+          when:
+            - tether_space_ref in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+            - (tether_space_ls.stdout | from_json | selectattr('id', 'equalto', tether_space_ref) | map(attribute='state') | first) != 'running'
+
+        - name: Read tether's Cua Space address
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", --embedded, sandbox, info, "{{ tether_space_ref }}", --json]
+          register: tether_space_info
+          until: tether_space_info.rc == 0 and ((tether_space_info.stdout | from_json).endpoints.env | default('')) is match('^http://127\.0\.0\.1:[0-9]+$')
+          retries: 4
+          delay: 3
+          changed_when: false
+          no_log: true
+
+        - name: Require a container id before it reaches docker
+          ansible.builtin.assert:
+            that: (tether_space_info.stdout | from_json).provider_details.container_id is match('^[0-9a-f]{64}$')
+            quiet: true
+          no_log: true
+
+        # What the fence below depends on, read in one inspect: one network with
+        # one IPv4 address, no IPv6 (the fence is IPv4 only), and Docker's restart
+        # policy `no` (a reboot leaves the Space stopped until the boot run starts
+        # it, so the address in the rendered fence is never one Docker hands to
+        # another container before then). Anything else fails the step, which
+        # pages, and leaves the last rendered fence as it is.
+        - name: Read the network and restart policy of tether's Cua Space container
+          ansible.builtin.command:
+            argv:
+              - "{{ docker_cli }}"
+              - inspect
+              - --format
+              - "{% raw %}{\"restart\":{{json .HostConfig.RestartPolicy.Name}},\"privileged\":{{json .HostConfig.Privileged}},\"pid\":{{.State.Pid}},\"networks\":{{json .NetworkSettings.Networks}}}{% endraw %}"
+              - "{{ (tether_space_info.stdout | from_json).provider_details.container_id }}"
+          register: tether_space_net
+          until: >-
+            tether_space_net.rc == 0 and
+            (tether_space_net.stdout | trim | from_json).networks | length == 1 and
+            (tether_space_net.stdout | trim | from_json).pid | int > 1 and
+            ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress | length > 0
+          retries: 4
+          delay: 3
+          changed_when: false
+
+        - name: Require one IPv4 address, no IPv6, restart policy no and no privileged mode
+          ansible.builtin.assert:
+            that:
+              - (tether_space_net.stdout | trim | from_json).restart == 'no'
+              - (tether_space_net.stdout | trim | from_json).privileged == false
+              - (tether_space_net.stdout | trim | from_json).networks | length == 1
+              - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+              - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).GlobalIPv6Address == ''
+            fail_msg: "tether's Cua Space container must have restart policy no, no privileged mode, exactly one network, an IPv4 address and no IPv6 address."
+            quiet: true
+
+        # The host-side end of the container's veth, which a forged source
+        # address cannot change. Its eth0 in its own network namespace names the
+        # peer's index (link_index); the host interface with that index is the
+        # veth. Checked live with a runsc Space: the namespace layout is a plain
+        # veth pair on docker0. NET_RAW cannot be dropped through Cua (it sets no
+        # CapDrop), but a runsc container's root has no NET_RAW or NET_ADMIN, and
+        # the interface match holds either way.
+        - name: Read the peer interface index of tether's Cua Space container
+          become_user: root
+          ansible.builtin.command:
+            argv: ["{{ nsenter_cli }}", -t, "{{ (tether_space_net.stdout | trim | from_json).pid | int }}", -n, "{{ ip_cli }}", -j, link, show, eth0]
+          register: tether_space_peer
+          until: tether_space_peer.rc == 0 and (tether_space_peer.stdout | trim | from_json | first).link_index | default(0) | int > 0
+          retries: 2
+          delay: 3
+          changed_when: false
+
+        - name: Read the host interfaces
+          ansible.builtin.command:
+            argv: ["{{ ip_cli }}", -j, link, show]
+          register: tether_space_links
+          changed_when: false
+
+        - name: Require exactly one host veth for that index, enslaved to a bridge
+          ansible.builtin.assert:
+            that:
+              - tether_space_veths | length == 1
+              - (tether_space_veths | first).ifname is match('^veth[0-9a-f]{1,11}$')
+              - (tether_space_veths | first).master | default('') is match('^[A-Za-z0-9_-]{1,15}$')
+            quiet: true
+          vars:
+            tether_space_veths: "{{ tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | list }}"
+
+        - name: Keep the address and interface of tether's Cua Space container
+          ansible.builtin.set_fact:
+            tether_space_ip: "{{ ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress }}"
+            tether_space_veth: "{{ (tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | first).ifname }}"
+
+        # Rendered and loaded here, right after the address is known and before
+        # the token read and the env file, so a new address is fenced within
+        # seconds. A step above that fails never reaches this: the last rendered
+        # file stays. Not tagged tether and not tied to the tether marker.
+        - name: Render the fence around tether's Cua Space
+          become_user: root
+          ansible.builtin.template:
+            src: "{{ tether_space_nft_src }}"
+            dest: "{{ tether_space_nft }}"
+            owner: root
+            group: root
+            mode: "0644"
+            validate: "{{ nft_cli }} -c -f %s"
+
+        - name: Load the fence around tether's Cua Space
+          become_user: root
+          ansible.builtin.command:
+            argv: ["{{ nft_cli }}", -f, "{{ tether_space_nft }}"]
+          changed_when: false
+
+        - name: Record that the fence is loaded for tether's Cua Space
+          ansible.builtin.set_fact:
+            tether_space_fenced: true
+
+        - name: Read tether's Cua Space token, which also waits until the Space answers
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", --embedded, sandbox, exec, "{{ tether_space_ref }}", "cat /run/cua/env-token"]
+          register: tether_space_token_out
+          until: tether_space_token_out.rc == 0 and (tether_space_token_out.stdout | trim | length) > 0
+          retries: 8
+          delay: 3
+          changed_when: false
+          no_log: true
+
+        - name: Require a sane port and token before they are kept or written anywhere
+          ansible.builtin.assert:
+            that:
+              - (tether_space_info.stdout | from_json).endpoints.env is match('^http://127\.0\.0\.1:[0-9]+$')
+              - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) > 1024
+              - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) < 65536
+              - (tether_space_token_out.stdout | trim) is match('^[A-Za-z0-9._~+=-]{16,128}$')
+            quiet: true
+          no_log: true
+
+        - name: Keep the address and token of tether's Cua Space
+          ansible.builtin.set_fact:
+            tether_space_port: "{{ (tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int }}"
+            tether_space_token: "{{ tether_space_token_out.stdout | trim }}"
+          no_log: true
+      # Only the failed task's name is recorded: the messages of the no_log
+      # tasks above must not reach the run log. A Space that is not fenced for
+      # its current address (the fence was not loaded this run) is stopped here,
+      # through Cua and, when the daemon is the failure, through Docker, so a
+      # failed step never leaves it running open. A failure after the fence was
+      # loaded leaves it running and fenced.
+      rescue:
+        - name: Stop tether's Cua Space, which this run did not fence
+          ansible.builtin.command:
+            argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
+          register: tether_space_stop_cua
+          ignore_errors: true
+          when: tether_space_fenced is not defined
+
+        - name: Stop tether's Cua Space container through Docker when Cua could not
+          ansible.builtin.command:
+            argv: ["{{ docker_cli }}", stop, "{{ tether_space_name }}"]
+          register: tether_space_stop_docker
+          ignore_errors: true
+          when: tether_space_fenced is not defined and tether_space_stop_cua is failed
+
+        - name: Record that tether's Cua Space did not come up
+          ansible.builtin.set_fact:
+            tether_space_failure: >-
+              {{ ansible_failed_task.name }}{{ ' (the Space was stopped)' if tether_space_fenced is not defined and tether_space_stop_cua is not failed
+              else ' (the Space was stopped through Docker)' if tether_space_fenced is not defined and tether_space_stop_docker is not failed
+              else ' (the Space could NOT be stopped and is running unfenced)' if tether_space_fenced is not defined
+              else '' }}
+
+    # Under the tether off marker the Space block above does not run, so the
+    # fence file keeps the address of the last run, and the Space is stopped here:
+    # the switch contains the Space too. Nothing here removes the fence file. The
+    # listing may fail (daemon down: the Space is then down too); the stop may not.
+    - name: List the Cua Spaces while the tether marker exists
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+      register: tether_space_marker_ls
+      changed_when: false
+      failed_when: false
+      when: tether_off.stat.exists
+
+    - name: Stop tether's Cua Space while the tether marker exists
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
+      when:
+        - tether_off.stat.exists
+        - tether_space_marker_ls.rc == 0
+        - tether_space_ref in (tether_space_marker_ls.stdout | from_json | map(attribute='id') | list)
+        - (tether_space_marker_ls.stdout | from_json | selectattr('id', 'equalto', tether_space_ref) | map(attribute='state') | first) == 'running'
+
+    # The unit reads this at start, so a change notifies the restart handler.
+    # Written only from a live read, never from a default.
+    - name: Render tether's Cua Space env file
+      tags: [tether]
+      ansible.builtin.copy:
+        content: "TETHER_SPACE_URL=http://127.0.0.1:{{ tether_space_port }}\nTETHER_SPACE_TOKEN={{ tether_space_token }}\n"
+        dest: "{{ tether_cua_env }}"
+        owner: root
+        group: tether
+        mode: "0640"
+      no_log: true
+      diff: false
+      ignore_errors: "{{ ansible_check_mode }}"
+      when: not tether_off.stat.exists and tether_space_port is defined and tether_space_token is defined
+      notify: Restart tether-agent after its release changed
+
+    - name: Remove tether's Cua Space env file while the marker exists
+      tags: [tether]
+      ansible.builtin.file:
+        path: "{{ tether_cua_env }}"
+        state: absent
+      when: tether_off.stat.exists
+
+    # tether's egress firewall: its own table, loaded by the host's existing
+    # nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
+    # or `systemctl reload nftables` re-applies it). The rule matches the
+    # numeric uid, so a later `deluser tether` cannot break the file's load.
+    - name: Look up the tether uid
+      tags: [tether]
+      ansible.builtin.getent:
+        database: passwd
+        key: tether
+        fail_key: false
+      when: not tether_off.stat.exists
+
+    - name: Read the host's addresses and bridges
+      tags: [tether]
+      ansible.builtin.setup:
+        gather_subset: ["!all", "!min", network]
+      when: not tether_off.stat.exists
+
+    - name: Create the nftables drop-in directory
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the tether egress rule
+      tags: [tether]
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/tether.nft.j2"
+        dest: /etc/nftables.d/tether.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      vars:
+        tether_uid: "{{ getent_passwd.tether[1] }}"
+      # Always rendered, from what this run read: a failed Space step leaves
+      # tether_space_port and tether_space_ip undefined, so the rule has no Space
+      # port allow (a port a Docker-published service may reuse after a reboot)
+      # and no fence.
+      when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
+      notify: Reload nftables
+
+    # Runner egress (fleet-ops canary: fleet-ci-2). A plain file: the table and an
+    # empty set need no cgroup to exist, so `nft -c` passes on any host. The runner
+    # unit's own NFTSet= line (rootfs/etc/systemd/system/*/40-egress.conf) fills
+    # the set. Nothing here starts a unit, so a failure here cannot stop the run.
+    - name: Install the runner egress rule
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/nftables.d/runners.nft"
+        dest: /etc/nftables.d/runners.nft
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/nft -c -f %s
+      notify: Reload nftables
+
+    - name: Remove the tether egress rule while the marker exists
+      tags: [tether]
+      ansible.builtin.file:
+        path: /etc/nftables.d/tether.nft
+        state: absent
+      when: tether_off.stat.exists
+      notify: Reload nftables
+
+    - name: Keep tether disabled and stopped while the marker exists
+      tags: [tether]
+      ansible.builtin.systemd_service:
+        name: tether-agent.service
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      when: tether_off.stat.exists
+      # Under --check the copy above did not really install the unit yet.
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The daily drift timer is gone (fleet-ops#10457): the host changes when main
+    # changes, through deploy-box.yml, and after a boot. Stopped and disabled
+    # here, and its file is in `retired`. A box where it is already gone is fine.
+    - name: Stop and disable the retired daily host config timer
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      failed_when: false
+
+    # A reboot stops tether's Cua Space (Docker restart policy `no`) and its next
+    # start publishes a new port, so the env file and the nft rule must be
+    # rendered again: this runs this very playbook once after every boot.
+    # `enabled` only: a start now would fire the elapsed boot timer at once.
+    - name: Enable the host config run after boot
+      ansible.builtin.systemd_service:
+        name: fleet-host-config-boot.timer
         enabled: true
-        state: started
         daemon_reload: true
       # Under --check the copy above did not really install the timer yet.
       ignore_errors: "{{ ansible_check_mode }}"
@@ -529,6 +1810,53 @@
         enabled: true
         state: started
         daemon_reload: true
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The deploy request watcher. Its mailbox files come from tmpfiles.d, created
+    # by the handler flush above, so enabling it never fires on creation.
+    - name: Enable the deploy request watcher
+      ansible.builtin.systemd_service:
+        name: fleet-deploy.path
+        enabled: true
+        state: started
+        daemon_reload: true
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
+    # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
+    # once; a later edit to the unit file is staged until the next restart. It
+    # replaces podman-eval, which cannot run the eval (Inspect needs Docker Engine
+    # 24.0.6 or newer). The tmpfiles entry and the unit were installed above, and
+    # the queued handlers ran, before this point.
+    - name: Enable the rootless Docker engine for the drive eval
+      ansible.builtin.systemd_service:
+        name: dockerd-eval.service
+        enabled: true
+        state: started
+        daemon_reload: true
+      register: dockerd_eval_up
+      # A unit that fails to start must not stop the rest of the host config, so
+      # the error is not fatal here; the task below puts it in this run's output.
+      ignore_errors: true
+
+    # The engine is one unit among many: the eval's own run fails until it is
+    # fixed, and a failed unit is listed by fleet-unit-failed@.service.
+    - name: Report a rootless Docker engine that did not start
+      ansible.builtin.debug:
+        msg: "dockerd-eval.service did not start ({{ dockerd_eval_up.msg | default('no message') | trim }}). drive's agent eval fails until it does."
+      when: dockerd_eval_up is failed
+
+    # The retired podman engine: stopped and disabled, and its unit file is in
+    # `retired` below. A host where the unit is already gone is not an error.
+    - name: Stop and disable the retired rootless podman socket
+      ansible.builtin.systemd_service:
+        name: podman-eval.service
+        enabled: false
+        state: stopped
+      register: podman_eval_off
+      failed_when:
+        - podman_eval_off.failed | default(false)
+        - "'Could not find' not in (podman_eval_off.msg | default(''))"
       ignore_errors: "{{ ansible_check_mode }}"
 
     # gh comes from the vendor's apt repository, so the daily dist-upgrade in
@@ -558,7 +1886,71 @@
         cache_valid_time: 3600
         lock_timeout: 300
 
-    # Files the repo used to leave live and now removes. Each path is named,
+    # A deleted timer file does not stop a timer the user manager already
+    # loaded: it keeps running until it is stopped, and its next elapse would
+    # start a unit whose files are gone. Stop it first, then drop the enable
+    # link. A unit that is already gone answers non-zero, which is the state
+    # this leaves behind.
+    - name: Stop the retired seo-fix-kit D1 backup timer before its files go
+      ansible.builtin.command:
+        argv: [systemctl, --user, --machine=nish@.host, stop, seofixkit-d1-backup.timer]
+      register: seofixkit_timer_stop
+      changed_when: seofixkit_timer_stop.rc == 0
+      failed_when: >-
+        seofixkit_timer_stop.rc != 0
+        and 'not loaded' not in seofixkit_timer_stop.stderr | lower
+        and 'does not exist' not in seofixkit_timer_stop.stderr | lower
+      notify:
+        - Reload nish's user manager
+
+    - name: Disable the retired seo-fix-kit D1 backup timer before its files go
+      ansible.builtin.command:
+        argv: [systemctl, --user, --machine=nish@.host, disable, seofixkit-d1-backup.timer]
+      register: seofixkit_timer_disable
+      changed_when: seofixkit_timer_disable.rc == 0
+      failed_when: >-
+        seofixkit_timer_disable.rc != 0
+        and 'not loaded' not in seofixkit_timer_disable.stderr | lower
+        and 'does not exist' not in seofixkit_timer_disable.stderr | lower
+
+    # The old hand-placed alertmanager config is the Telegram chat id's only
+    # source on a box that never seeded the id file (#10146). Refuse to delete
+    # it while that is true: with no chat id, alertmanager does not start and
+    # the dead-man heartbeat and pages stop.
+    - name: Stat the retired alertmanager copy and the chat id file
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/prometheus/alertmanager.yml
+        - /etc/prometheus/telegram_chat_id
+      register: retired_alertmanager
+
+    - name: Refuse to delete the old alertmanager config while it holds the only chat id
+      ansible.builtin.assert:
+        that:
+          - not (retired_alertmanager.results[0].stat.exists and not retired_alertmanager.results[1].stat.exists)
+        fail_msg: >-
+          /etc/prometheus/alertmanager.yml is the only copy of the Telegram chat
+          id (/etc/prometheus/telegram_chat_id is missing). Copy the id into the
+          id file, then rerun; the old config is left in place until then.
+
+    # The bridge was disabled and inactive when the audit found it, but stop it
+    # first anyway, so a box that still had it running loses the listener before
+    # the unit file goes. smbd.service and its Tailscale drop-in stay.
+    - name: Stat the retired SMB bridge unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/tiny-studio-smb-bridge.service
+      register: retired_smb_bridge
+
+    - name: Stop and disable the retired SMB bridge
+      ansible.builtin.systemd_service:
+        name: tiny-studio-smb-bridge.service
+        state: stopped
+        enabled: false
+      when: retired_smb_bridge.stat.exists
+
+    # Files the repo used to leave live and now removes, and files a session
+    # hand-installed that the repo or a product repo now owns. Each path is named,
     # so a deletion is always a reviewed line in this file. system.control
     # holds `systemctl set-property` leftovers: the fleet-ci MemoryMax moved
     # to rootfs/.../netcup-fleet-ci-.service.d/10-fleet-ci.conf, the github-*
@@ -569,7 +1961,9 @@
         path: "{{ item }}"
         state: absent
       loop: "{{ retired }}"
-      notify: Reload systemd
+      notify:
+        - Reload systemd
+        - Reload nish's user manager
 
     # Agent lock (fleet-ops#9977). Every relay listener runs as a system unit
     # with User=nish, because systemd silently ignores sandbox settings in a
@@ -988,6 +2382,22 @@
       diff: false
       no_log: true
 
+    - name: Delete the retired jobs from Hermes' cron store
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - remove
+          - "{{ item }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
+      vars:
+        hermes_jobs_ids: >-
+          {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+             | default([]) | map(attribute='id') | list }}
+
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
       become_user: nish
@@ -1029,9 +2439,141 @@
         state: link
         force: true
 
+    # The three tasks below that touch the nish-writable litellm-keys directory run as nish, so a
+    # symlink planted there cannot steer a root chown or write; only the password lookup runs as root.
+    # The lookup writes the file (mode 0600) only when it is absent and reads it back
+    # otherwise. no_log and diff: false keep the value out of the ansible-pull log.
+    # Fail closed: fleet-litellm-redis.container bind-mounts redis-auth.conf and
+    # fleet-litellm-proxy.container reads redis.env without a `-` prefix, so if a render
+    # below failed or the file was removed, Redis and the proxy do not start (the unit fails,
+    # OnFailure= pings) instead of running with an unauthenticated or mismatched cache.
+    - name: Read the Redis password (the password lookup creates the file once)
+      ansible.builtin.set_fact:
+        redis_password: "{{ lookup('ansible.builtin.password', redis_password_file ~ ' length=40 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Make sure the directory for the Redis files exists
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ nish_config }}/fleet-ops/litellm-keys"
+        state: directory
+        mode: "0700"
+
+    - name: Render the Redis requirepass fragment from that file
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "requirepass {{ redis_password }}\n"
+        dest: "{{ redis_auth_conf }}"
+        mode: "0600"
+      no_log: true
+      diff: false
+      notify: Restart litellm redis then proxy
+
+    - name: Render the proxy's Redis environment file from that file
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "REDIS_PASSWORD={{ redis_password }}\n"
+        dest: "{{ redis_proxy_env }}"
+        mode: "0600"
+      no_log: true
+      diff: false
+      notify: Restart litellm redis then proxy
+
+    # Grafana credentials: each task runs as nish and none prints a value (no_log). A source or
+    # key that is missing or empty is reported by the check after the handlers, at the end of the play.
+    - name: Read the Grafana credentials the way systemd reads an EnvironmentFile
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-run
+          - --user
+          - --quiet
+          - -p
+          - "EnvironmentFile={{ item.src }}"
+          - --wait
+          - --pipe
+          - --collect
+          - /usr/bin/printenv
+          - "{{ item.key }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: grafana_secret_values
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Read the Grafana secrets that exist now
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/podman
+          - secret
+          - inspect
+          - --showsecret
+          - --format
+          - "{% raw %}{{.SecretData}}{% endraw %}"
+          - "{{ item.name }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: grafana_secret_current
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+
+    # Stock command, value on stdin (never in argv). Podman 4.9 fails `--replace` on a name that
+    # does not exist yet, so a missing secret is created and a differing one is replaced.
+    - name: Create each missing Grafana secret
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, secret, create, "{{ item.name }}", "-"]
+        stdin: "{{ value }}"
+        stdin_add_newline: false
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: i
+      vars:
+        value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
+        current: "{{ grafana_secret_current.results[i] }}"
+      when: value != '' and current.rc != 0
+      notify: Restart fleet-grafana
+      no_log: true
+
+    - name: Replace each Grafana secret whose value differs
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv: [/usr/bin/podman, secret, create, --replace, "{{ item.name }}", "-"]
+        stdin: "{{ value }}"
+        stdin_add_newline: false
+      environment: "{{ nish_env }}"
+      loop: "{{ grafana_secrets }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: i
+      vars:
+        value: "{{ (grafana_secret_values.results[i].stdout | default('')) | trim }}"
+        current: "{{ grafana_secret_current.results[i] }}"
+      when: value != '' and current.rc == 0 and (current.stdout | trim) != value
+      notify: Restart fleet-grafana
+      no_log: true
+
     - name: Fail when an alertmanager credential file is missing
       ansible.builtin.assert:
-        that: alertmanager_credentials.results | map(attribute='stat.exists') | min
+        that: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
         fail_msg: "Alertmanager is not running: a hand-placed credential file is missing from /etc/prometheus (deadman_url, telegram_bot_token or telegram_chat_id). The dead-man heartbeat and the hermes-gateway page are off until it is placed."
         quiet: true
 
@@ -1055,15 +2597,72 @@
         job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
         wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
 
+    - name: Apply pending handlers before the Grafana credential check
+      ansible.builtin.meta: flush_handlers
+
+    # After the handlers, so a missing source never stops them. A missing or empty credential
+    # fails the run here, naming the secret, key and file and never a value.
+    - name: Work out which Grafana credentials could not be read
+      ansible.builtin.set_fact:
+        grafana_secrets_missing: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for r in grafana_secret_values.results -%}
+          {%- if r.rc | default(1) != 0 or (r.stdout | default('') | trim) == '' -%}
+          {%- set ns.bad = ns.bad + [r.item.name ~ ' (' ~ r.item.key ~ ' in ' ~ r.item.src ~ ')'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+      no_log: true
+
+    - name: Fail when a Grafana credential source or key is missing or empty
+      ansible.builtin.assert:
+        that: grafana_secrets_missing | length == 0
+        fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
+        quiet: true
+
+    # A Cua Space that did not come up fails the run here, before the last two
+    # tasks; force_handlers still runs the pending handlers.
+    - name: Fail when tether's Cua Space could not be readied
+      tags: [tether]
+      ansible.builtin.fail:
+        msg: "tether's Cua Space did not come up ({{ tether_space_failure }}). {{ tether_cua_env }} and {{ tether_space_nft }} were left as they were, tether.nft was rendered without the Space port, and the rest of this run completed."
+      when: tether_space_failure is defined and not ansible_check_mode
+
+    # Last task of the play: a tether release that could not be installed (see the
+    # block above) fails the run here, after every other task and handler has
+    # run, so the deploy goes red and pages while the rest of the host config
+    # still applied.
+    - name: Apply pending handlers before the tether failure check
+      tags: [tether, tether-release]
+      ansible.builtin.meta: flush_handlers
+
+    - name: Fail when the tether release could not be installed
+      tags: [tether, tether-release]
+      ansible.builtin.fail:
+        msg: "tether v{{ tether_version }} was not installed: {{ tether_install_failure }}. {{ tether_release_root }}/current was not changed and the rest of this run completed."
+      when: tether_install_failure is defined and not ansible_check_mode
+
 
   handlers:
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    - name: Restart pilot runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
+
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
+
+    # One systemctl call, so one transaction: Redis first (the proxy is After= and Requires= it),
+    # then the proxy, restarted once. Fires only when a rendered Redis file changed (first
+    # creation, or the password file was deleted and re-minted), never in steady state.
+    # The proxy needs up to ~10 minutes to be healthy again after this.
+    - name: Restart litellm redis then proxy
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-litellm-redis.service fleet-litellm-proxy.service
 
     - name: Restart systemd-oomd
       ansible.builtin.systemd_service:
@@ -1089,11 +2688,30 @@
         name: nftables.service
         state: reloaded
 
+    # A moved `current` link is invisible to the running agent: v0.1.2 landed
+    # on 23 Oct and the unit kept running 0.1.1 until a hand restart. This
+    # fires only when the hand-enabled wants symlink exists, and never while
+    # the off marker exists (the marker run notifies nothing and keeps the
+    # unit stopped).
+    - name: Restart tether-agent after its release changed
+      ansible.builtin.systemd_service:
+        name: tether-agent.service
+        state: restarted
+      when:
+        - tether_agent_enabled.stat.islnk | default(false)
+        - not tether_off.stat.exists
+
     # htpdate reads /etc/default/htpdate only at start.
     - name: Restart htpdate
       ansible.builtin.systemd_service:
         name: htpdate.service
         state: restarted
+
+    # Reported when it fails, but it never stops the rest of the play. A running Grafana
+    # keeps the secret files it was started with, so it is restarted only after a change.
+    - name: Restart fleet-grafana
+      ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart fleet-grafana.service
+      ignore_errors: true
 
     - name: Reload prometheus
       ansible.builtin.systemd_service:
@@ -1104,16 +2722,39 @@
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: reloaded
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     # The options file is read only at start.
     - name: Restart alertmanager
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: restarted
-      when: alertmanager_credentials.results | map(attribute='stat.exists') | min
+      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
         state: restarted
+
+    # Last step of the self-repair loop (fleet-ops#10338): a oneshot that failed
+    # before its fix landed stays failed, and its alerts keep firing, until
+    # something starts it again. Only a unit that is failed now is started, and
+    # --no-block keeps a long backup from holding the deploy. The unit list is
+    # the start list in rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules,
+    # minus fleet-host-config.service itself.
+    - name: Read whether each re-runnable oneshot is failed
+      ansible.builtin.command: /usr/bin/systemctl is-failed {{ item }}
+      loop:
+        - fleet-update.service
+        - restic-r2-backup.service
+        - restic-r2-size-guard.service
+      register: oneshot_failed
+      changed_when: false
+      failed_when: oneshot_failed.rc not in [0, 1]
+
+    - name: Re-run each failed oneshot after the deploy
+      ansible.builtin.command: /usr/bin/systemctl start --no-block {{ item.item }}
+      loop: "{{ oneshot_failed.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout == 'failed'

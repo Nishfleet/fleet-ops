@@ -25,11 +25,37 @@
 # because the pattern reappears in update.yml (the source-of-truth assert
 # below) or because the tolerant idiom stops rendering a report expression
 # against a skipped registration.
+#
+# It is also the gate for a second class, fleet-ops#10074: a check inside the
+# block that aborts the block. The 2026-10-23 run's `npm_running` assert
+# matched four long-lived `npm exec @modelcontextprotocol/server-filesystem`
+# processes, so it aborted the block, so the pi smoke call never ran, and the
+# closing assert reported "pi smoke reply: no result" - a second failure that
+# was only a cascade. The section below fails if a check in update.yml aborts
+# the block again, if the npm check widens back to any npm on a command line,
+# if the readiness wait before the smoke goes unbounded, or if the closing
+# assert's failure text stops saying which of the two it saw.
 
 - name: A skipped registration does not break the run report (fleet-ops#9340)
   hosts: localhost
   connection: local
   gather_facts: false
+
+  # The closing assert's failure text reads a dozen registered variables.
+  # These are the healthy values, so the text below renders the whole line
+  # the way a clean run reports it, and only the pi smoke part changes.
+  vars:
+    dispatch_still_paused: []
+    tool_results: {}
+    hermes_update: {stderr: ok}
+    tincan_upgrade: {stderr: ok}
+    unpinned_extensions: {stdout_lines: []}
+    cua_update_failed: ok
+    podman_autoupdate: {stdout_lines: [ok], stderr: ""}
+    failed_system: {stdout_lines: []}
+    failed_user: {stdout_lines: []}
+    sweep_result: {}
+    rc_state: {stdout: ""}
 
   tasks:
     - name: Reproduce the registration update.yml had on the failing run
@@ -139,3 +165,277 @@
         fail_msg: >-
           ansible/update.yml still uses the fleet-ops#9340 crashing idiom, or
           a `.results` read that does not tolerate a skipped registration.
+
+    # The fleet-ops#10074 section. Everything here is read out of the real
+    # ansible/update.yml, so a change that reintroduces the class fails this
+    # gate instead of the next daily run.
+    - name: Read the npm check out of ansible/update.yml
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Check that no npm install or update runs as nish before its staging dirs go") | .["ansible.builtin.command"]][0]'
+          - "{{ playbook_dir }}/../update.yml"
+      register: npm_check_json
+      changed_when: false
+
+    - name: Hold the npm check as a fact
+      ansible.builtin.set_fact:
+        npm_check: "{{ npm_check_json.stdout | from_json }}"
+
+    - name: The npm check matches only install activity
+      ansible.builtin.command:
+        argv: [grep, -cE, "{{ npm_check.argv[-1] }}"]
+        stdin: |
+          npm install -g @openai/codex
+          npm update --global
+          npm ci
+          /usr/bin/npm i -g tincan
+          node /usr/lib/node_modules/npm/bin/npm-cli.js i -g tincan
+          npm run build
+          npm exec @modelcontextprotocol/server-filesystem /srv/notes
+      register: npm_install_lines
+      failed_when: false
+      changed_when: false
+
+    - name: The npm check ignores a long-lived npm exec
+      ansible.builtin.command:
+        argv: [grep, -qE, "{{ npm_check.argv[-1] }}"]
+        stdin: |
+          npm exec @modelcontextprotocol/server-filesystem /srv/notes
+          npm run build
+      register: npm_exec_lines
+      failed_when: false
+      changed_when: false
+
+    - name: The npm check separates an install from a long-lived npm exec
+      ansible.builtin.assert:
+        that:
+          # `pgrep -u nish -f <pattern>`: the user and the whole-command-line
+          # match are both load-bearing, so the shape is asserted too.
+          - npm_check.argv[0] == 'pgrep'
+          - npm_check.argv[1] == '-u'
+          - npm_check.argv[2] == 'nish'
+          - npm_check.argv[3] == '-f'
+          # Five of the seven lines above are install activity: the three
+          # global updates, the bare `npm ci`, and the same by bin name and
+          # by npm-cli.js. `npm run` and `npm exec` are not, and they are
+          # what the long-lived MCP file servers run as.
+          - npm_install_lines.stdout | trim == "5"
+          - npm_exec_lines.rc == 1
+        fail_msg: >-
+          The npm check in ansible/update.yml no longer separates install
+          activity from a long-lived `npm exec`, so the MCP file servers on
+          this box fail the run again (grep counted
+          {{ npm_install_lines.stdout | trim }} of 5 install lines and exited
+          {{ npm_exec_lines.rc }} on the two exec lines).
+
+    - name: Read the removal guard out of ansible/update.yml
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Remove them, because npm reads each as an invalid package name") | .when][0]'
+          - "{{ playbook_dir }}/../update.yml"
+      register: removal_when_json
+      changed_when: false
+
+    - name: Read the closing assert and the readiness wait out of ansible/update.yml
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Fail loudly if any step or check went wrong") | .["ansible.builtin.assert"]][0]'
+          - "{{ playbook_dir }}/../update.yml"
+      register: closing_assert_json
+      changed_when: false
+
+    - name: Hold the closing assert as a fact, so its failure text can be rendered
+      # A fact is templated on use, so the `{{ ... }}` inside the real
+      # fail_msg renders against this play's variables. A task-level var is
+      # not, and the text would come back with its braces intact.
+      ansible.builtin.set_fact:
+        closing_assert: "{{ closing_assert_json.stdout | from_json }}"
+
+    - name: Read the readiness wait out of ansible/update.yml
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | select(.name == "Wait for the model router to answer before the smoke call")][0]'
+          - "{{ playbook_dir }}/../update.yml"
+      register: router_wait_json
+      changed_when: false
+
+    - name: Read the block's task names out of ansible/update.yml
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.[0].tasks[] | ((.block // []) + (.always // []))[] | .name]'
+          - "{{ playbook_dir }}/../update.yml"
+      register: block_names_json
+      changed_when: false
+
+    - name: The assert that aborted the block is gone
+      ansible.builtin.command:
+        argv: [grep, -c, 'Refuse to remove staging dirs while an npm is running', "{{ playbook_dir }}/../update.yml"]
+      register: aborting_assert
+      failed_when: false
+      changed_when: false
+
+    - name: A running npm is recorded for the closing assert instead of raising
+      ansible.builtin.assert:
+        that:
+          - "'npm_running' in (removal_when_json.stdout | from_json)"
+          - "'npm_running' in (closing_assert.that | join(' '))"
+          - aborting_assert.rc == 1
+        fail_msg: >-
+          ansible/update.yml raises on a running npm again, or no longer
+          records it for the closing assert, so one bad check hides every
+          later step of the run and the closing assert reports a failure for
+          a step that never ran.
+
+    - name: The readiness wait is bounded and runs before the smoke call
+      ansible.builtin.assert:
+        that:
+          # Both names must still be there, so a removed task fails with the
+          # message below instead of an attribute error.
+          - "'Wait for the model router to answer before the smoke call' in block_names"
+          - "'Call pi for real, so a broken extension fails here' in block_names"
+          # `retries` and `delay` are the task's own keywords and `timeout`
+          # is the uri module's, so the wait's ceiling is their product.
+          - router_wait.retries * (router_wait.delay + router_wait['ansible.builtin.uri'].timeout) >= 300
+          - router_wait.retries * (router_wait.delay + router_wait['ansible.builtin.uri'].timeout) <= 900
+          - router_wait.until is search('router_before_smoke.status == 200')
+          - wait_position < smoke_position
+        fail_msg: >-
+          The readiness wait before the pi smoke call is unbounded, longer
+          than about 15 minutes, or no longer runs before the smoke, so the
+          redis restart `podman auto-update` does can fail the call again.
+      vars:
+        router_wait: "{{ router_wait_json.stdout | from_json }}"
+        block_names: "{{ block_names_json.stdout | from_json }}"
+        wait_position: "{{ block_names.index('Wait for the model router to answer before the smoke call') }}"
+        smoke_position: "{{ block_names.index('Call pi for real, so a broken extension fails here') }}"
+
+    - name: The closing assert still demands an OK from the smoke
+      ansible.builtin.assert:
+        that:
+          - smoke_line in (closing_assert.that | join(' '))
+        fail_msg: >-
+          The closing assert no longer requires the pi smoke call to answer
+          OK, so a broken pi install lands silently.
+      vars:
+        smoke_line: '(pi_smoke | default({})).stdout | default('''') is search(''OK'')'
+
+    - name: Write the closing assert's real failure text out as a template
+      # A var holding template text is not rendered by `debug`, and the
+      # `template` lookup renders a file. So the real fail_msg goes to a file
+      # first, and the three shapes below are rendered from that file, not
+      # from a copy of the text in this play.
+      ansible.builtin.copy:
+        dest: /tmp/fleet-update-failmsg.j2
+        content: "{{ closing_assert.fail_msg }}"
+        mode: preserve
+
+    - name: The failure text renders when the smoke never ran
+      ansible.builtin.set_fact:
+        rendered_never_run: "{{ lookup('template', '/tmp/fleet-update-failmsg.j2') }}"
+
+    - name: The failure text says the smoke never ran
+      ansible.builtin.assert:
+        that:
+          - rendered_never_run is search('not run, an earlier step in the block failed')
+          - "rendered_never_run is search('pi smoke: not run')"
+          - "'failed units: [];' in rendered_never_run"
+          - "rendered_never_run is not search('no reply, stderr:')"
+        fail_msg: >-
+          The closing assert's failure text no longer says the smoke never
+          ran, so the 2026-10-23 cascade ("pi smoke reply: no result") can
+          come back and read as a pi failure. It rendered as
+          {{ rendered_never_run }}.
+
+    - name: The failure text carries the git pins off the default branch
+      ansible.builtin.assert:
+        that:
+          - "rendered_never_run is search('git pins off the default branch: not run')"
+        fail_msg: >-
+          The closing assert's failure text no longer separates a git pin check
+          that ran and found nothing from one that never ran, so a red daily
+          run reads as a clean pin check. It rendered as
+          {{ rendered_never_run }}.
+
+    - name: The failure text renders the reply when the smoke answered
+      ansible.builtin.set_fact:
+        rendered_answered: "{{ lookup('template', '/tmp/fleet-update-failmsg.j2') }}"
+      vars:
+        pi_smoke: {rc: 0, stdout: "OK\n", stderr: ""}
+        off_branch_pins: {stdout_lines: []}
+
+    - name: The failure text reads the reply
+      ansible.builtin.assert:
+        that:
+          - "rendered_answered is search('pi smoke: reply OK')"
+          - rendered_answered is not search('not run, an earlier step')
+        fail_msg: >-
+          The closing assert's failure text no longer reports the smoke's
+          reply. It rendered as {{ rendered_answered }}.
+
+    - name: The failure text renders the stderr when the smoke ran and failed
+      ansible.builtin.set_fact:
+        rendered_failed: "{{ lookup('template', '/tmp/fleet-update-failmsg.j2') }}"
+      vars:
+        pi_smoke: {rc: 1, stdout: "", stderr: "litellm: connection refused\n"}
+        off_branch_pins: {stdout_lines: []}
+
+    - name: The failure text carries the stderr
+      ansible.builtin.assert:
+        that:
+          - "rendered_failed is search('pi smoke: no reply, stderr: litellm: connection refused')"
+          - rendered_failed is not search('not run, an earlier step')
+        fail_msg: >-
+          The closing assert's failure text no longer carries the smoke's
+          stderr, so a smoke failure reports nothing about why. It rendered
+          as {{ rendered_failed }}.
+
+    - name: The failure text stays short enough to read in the journal
+      ansible.builtin.assert:
+        that:
+          - rendered_failed | length < 3000
+        fail_msg: >-
+          The closing assert's failure text grew past 3000 characters, so it
+          no longer reads in the journal. It is {{ rendered_failed | length }}
+          characters long.
+
+    - name: Read the type of every conditional in the daily run
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.. | select(tag == "!!map" and has("ansible.builtin.assert")) | .["ansible.builtin.assert"].that // [] | (if tag == "!!seq" then .[] else . end) | tag] | unique'
+          - "{{ playbook_dir }}/../update.yml"
+      register: conditional_types_update
+      changed_when: false
+
+    - name: Read the type of every conditional in this gate
+      ansible.builtin.command:
+        argv:
+          - yq
+          - -o=json
+          - '[.. | select(tag == "!!map" and has("ansible.builtin.assert")) | .["ansible.builtin.assert"].that // [] | (if tag == "!!seq" then .[] else . end) | tag] | unique'
+          - "{{ playbook_dir }}/report-after-skipped-block.yml"
+      register: conditional_types_gate
+      changed_when: false
+
+    - name: No conditional collapsed into a mapping
+      ansible.builtin.assert:
+        that:
+          - "'!!map' not in conditional_types_update.stdout"
+          - "'!!map' not in conditional_types_gate.stdout"
+        fail_msg: >-
+          A conditional in one of these playbooks is a YAML mapping, not a
+          string. A `that` item that contains a colon and a space is parsed
+          as a mapping, and ansible-core 2.16 evaluates a mapping
+          conditional as true, so the check it belongs to passes without
+          checking anything. Quote the whole conditional.

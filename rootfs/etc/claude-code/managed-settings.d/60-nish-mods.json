@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "nish-mods": {
+      "source": {
+        "source": "directory",
+        "path": "/home/nish/workspaces/tooling/claude-mods"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "model-lanes@nish-mods": true,
+    "wake-check@nish-mods": true
+  }
+}

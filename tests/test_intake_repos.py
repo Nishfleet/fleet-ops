@@ -5,7 +5,7 @@ import pathlib
 CFG = json.loads((pathlib.Path(__file__).parent.parent / "config" / "intake-repos.json").read_text())
 ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"] for r in CFG["deferred"]}
-NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card")
+NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card", "tether")
 
 
 def test_new_product_repos_are_admitted():
@@ -35,9 +35,19 @@ def test_zero_five_nine_exclusive_deferrals_are_gone():
         assert "0509-exclusive" not in r.get("reason", "").lower(), r["name"]
 
 
-def test_launch_push_repo_is_enrolled_like_0509_with_a_dated_end_review():
+def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
     # Nish, 2026-10-15: two-week launch push for Site Rep and SEO Fix Kit.
-    entry = ENROLLED["siterep-public"]
-    assert entry["product"] is True
-    assert set(ENROLLED["0509"]) <= set(entry)
-    assert "siterep-public#173" in entry["enrolled_by"]  # the dated end-of-push review
+    for name in ("siterep-public", "seo-fix-kit"):
+        entry = ENROLLED[name]
+        assert entry["product"] is True, name
+        assert set(ENROLLED["0509"]) <= set(entry), name
+        assert "siterep-public#173" in entry["enrolled_by"], name
+
+
+def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
+    sweep_only = {r["name"] for r in CFG["sweep_only"]}
+    assert sweep_only == {"fleet-ops", "drive"}
+    assert not sweep_only & set(ENROLLED)
+    assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
+    agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
+    assert ".sweep_only[]?.name" in agent

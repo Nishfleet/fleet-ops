@@ -34,7 +34,7 @@ def settings(unit: Path) -> dict[str, list[str]]:
             key, _, value = stripped.partition("=")
             values.setdefault(key.strip(), []).extend(value.split())
     for key, tokens in values.items():
-        values[key] = [token.replace("%h", "~").replace("%S", "~/.local/state") for token in tokens]
+        values[key] = [token.replace("%h", "~").replace("/home/nish", "~").replace("%S", "~/.local/state") for token in tokens]
     return values
 
 

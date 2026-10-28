@@ -17,7 +17,7 @@ updates:
       time: "09:35"
       timezone: Asia/Kolkata
     cooldown:
-      default-days: 7
+      default-days: 3
     open-pull-requests-limit: 2
     commit-message:
       prefix: ci
