@@ -173,9 +173,10 @@
       - "{{ nish_home }}/.config/prometheus-am-executor/config.yml"
       # The 2025 Node install the 2026-10-28 glue sweep found (G11, #10548): a
       # second unversioned tree beside the live ~/.local/lib/node_modules. The
-      # npm and npx launchers are symlinks to ~/.hermes/node/bin, and the node
-      # binary at the top of this tree was a byte-identical copy of
-      # /usr/local/bin/node, so PATH still resolves once the tree is gone.
+      # npm launcher and its npm-exec alias in ~/.local/bin are symlinks to
+      # ~/.hermes/node/bin, and the node binary at the top of this tree was a
+      # byte-identical copy of /usr/local/bin/node, so PATH still resolves once
+      # the tree is gone.
       - "{{ nish_home }}/.local/bin/bin"
       - "{{ nish_home }}/.local/bin/include"
       - "{{ nish_home }}/.local/bin/lib"
