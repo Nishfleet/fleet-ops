@@ -60,6 +60,12 @@ def test_other_failure_still_fails(tmp_path):
     assert "limited" not in out
 
 
+def test_unparseable_output_still_fails(tmp_path):
+    r, out = _session(tmp_path, "not json", 1)
+    assert r.returncode == 1
+    assert "limited" not in out
+
+
 def test_success_passes_without_limited(tmp_path):
     r, out = _session(tmp_path, {"type": "result", "subtype": "success", "is_error": False}, 0)
     assert r.returncode == 0, r.stderr
