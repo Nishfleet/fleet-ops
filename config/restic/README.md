@@ -202,15 +202,19 @@ summary. The unit fails with exit **78** when either limit is crossed:
   fails the backup unit **before** its `ExecStart`, so nothing over the limit
   is uploaded and the heartbeat ping is not sent. It runs after the pg_dump
   line, so the fresh dump is part of what is measured.
-- `restic-r2-locked-copy.service.d/10-needs-backup.conf` gives the locked copy
-  `Requires=restic-r2-backup.service`, so the copy into the `-locked` bucket is
-  **skipped** when the backup fails. `Requires=` on a oneshot service *starts*
-  it first, so the 06:15 locked copy also runs a guarded backup before it
-  copies. That is the cost: the backup runs twice a day instead of once. It is
-  paid on purpose, because a copy that follows a failed backup would push an
-  unwanted snapshot into the locked bucket, which nothing can reclaim from. The
-  backup unit takes the same `flock` the locked copy already takes, so the two
-  cannot run concurrently; the second waits rather than duplicating work.
+- `restic-r2-backup.service.d/30-copy-on-success.conf` sets
+  `OnSuccess=restic-r2-locked-copy.service`, so the copy into the `-locked`
+  bucket only follows a backup that finished well: a failed backup or a tripped
+  size guard never reaches it, and nothing can be reclaimed from the locked
+  bucket for 30 days. `OnSuccess=` needs systemd 249 or later. It replaces
+  `Requires=restic-r2-backup.service`, which on a oneshot service *starts* the
+  backup first, so the old 06:15 copy ran a second backup every day.
+  `10-needs-backup.conf` keeps only `After=`. The box-only
+  `restic-r2-locked-copy.timer` is redundant: the playbook task "Stop the
+  locked-copy timer" disables it, because a timer copy after a failed 04:38
+  backup is the case the old `Requires=` blocked. Both units take the same
+  `flock`, so they cannot run together. A hand `systemctl start
+  restic-r2-locked-copy` no longer runs a backup first.
 - The failed unit is the signal: `systemctl list-units --state=failed` shows
   `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
   grew (`journalctl -u restic-r2-size-guard`), fix the include or exclude list,
@@ -326,9 +330,9 @@ and changes one thing:
 - `restic-r2-backup.service.d/20-retention.conf` and
   `restic-r2-maintenance.service.d/10-retention.conf` replace the box-only
   forget lines with the policy from `retention.env`.
-- `restic-r2-locked-copy.service.d/10-needs-backup.conf` makes the locked copy
-  `Requires=` the backup unit. The box-only unit's own `After=` still sets the
-  order.
+- `restic-r2-backup.service.d/30-copy-on-success.conf` starts the locked copy
+  through `OnSuccess=`; `restic-r2-locked-copy.service.d/10-needs-backup.conf`
+  keeps only the `After=` order.
 
 These must already exist on the box; they hold credentials and stay
 hand-installed:
