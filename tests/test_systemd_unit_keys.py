@@ -9,8 +9,6 @@ import shlex
 import shutil
 import subprocess
 import time
-
-import yaml
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -1036,9 +1034,9 @@ def shipped_repo_texts() -> tuple[tuple[str, str], ...]:
 
 @functools.cache
 def retired_entries() -> list[str]:
-    play = yaml.safe_load(HOST_YML.read_text(encoding="utf-8"))
-    entries = play[0]["vars"]["retired"]
-    assert entries, "host.yml retired nothing, so the list moved"
+    block = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", HOST_YML.read_text())
+    assert block, "host.yml retired nothing, so the list moved"
+    entries = [line.strip()[2:].strip("\"") for line in block.group(1).splitlines() if line.strip()]
     return list(entries)
 
 
