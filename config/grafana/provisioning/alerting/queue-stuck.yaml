@@ -19,7 +19,9 @@
 # non-risky PR), and a reviewer block written as a comment instead of a GitHub review
 # (fleet-ops#10361). "No update" is the PR's updated_at, so a push, a comment or a label
 # resets the clock. An issue's PR link is GitHub's own `linked:pr`, which a
-# `Closes #N` in a PR body sets.
+# `Closes #N` in a PR body sets. The needs-split rule reads the label the review job
+# adds on an over-250 KB diff, so its 2 hours start at that label or at any later
+# push, comment or label on the same PR.
 #
 # Known gaps: work stuck for more than 30 days leaves the read window and stops alerting;
 # `linked:pr` follows closing keywords only, so an issue whose PR says `Relates to #N` reads
@@ -113,6 +115,40 @@ groups:
         annotations:
           summary: '{{ if $values }}A pull request has failing checks or a requested change and no update for 2 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR blocked with no new push for 2h", so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}No rework started on it (fleet-ops#10306: PRs 10351 and 10356 sat blocked with no alert). Rework fires only for a red CI run on a claim/issue-* branch and stops at 3 runs, when the issue is parked needs-orchestrator; an orch/* or person branch gets none. Find which of those it is, fix that, and prove the PR moved. Dependabot PRs are left out; Dependabot rebases its own. A reviewer block that the reviewer wrote as a comment, not a GitHub review, is not seen here (fleet-ops#10361).{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+-author%3Aapp%2Fdependabot+status%3Afailure+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck}
+        isPaused: false
+
+      - uid: queue-stuck-pr-needs-split
+        title: PR labelled needs-split for 2h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false label:needs-split", timeField: 3}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS stuck
+                FROM (SELECT updated_at FROM A) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 7200
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}A pull request is labelled needs-split and has had no update for 2 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR labelled needs-split for 2h", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}The review job refused its diff at over 250 KB, too large for one review to read whole, and labelled it needs-split, and no lane picked the split up (fleet-ops#10514: two 0509 PRs sat refused with no label and no path out for 7 days). It cannot land as one PR. Split it into at most three PRs, each under 250 KB of diff and one behaviour each, in the order the behaviours depend on each other, and open each with its own proof: the orchestrator hand-off splits one when it takes the PR over (prompts/orchestrator-handoff.md). Drafts are left out; a draft is its author saying not yet.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+label%3Aneeds-split+sort%3Aupdated-asc'
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
 
