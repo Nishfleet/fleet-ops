@@ -93,9 +93,8 @@ jobs:
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
       - name: zizmor over .github/workflows/
-        # Stock security audit for workflows: dangerous triggers, template
-        # injection, persisted credentials, unpinned actions, over-broad
-        # permissions and App tokens. Offline, so it needs no token and cannot
+        # Stock security audit for workflows: dangerous triggers, template injection, persisted
+        # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
         # Policy and its kept exceptions: .github/zizmor.yml.
         if: always()
