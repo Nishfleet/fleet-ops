@@ -15,6 +15,10 @@ rules:
         # job and repo (fleet-ops#9983).
         Nishfleet/fleet-ops/.github/actions/runner-probe: ref-pin
         "*": hash-pin
+  self-repository:
+    ignore:
+      # actionlint rejects the $/ form this rule asks for, and ci runs both.
+      - secret-scan.yml
   dangerous-triggers:
     ignore:
       # pull_request_target carries dequeued (the ejected job, which runs on
