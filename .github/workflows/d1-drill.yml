@@ -48,7 +48,7 @@ jobs:
             for f in "$w"/*.sql.age; do
               [ -e "$f" ] || { say "- drive: cannot read backup (no dump in the artifact)"; break; }
               n=$(basename "$f" .sql.age)
-              if age -d -i <(printf '%s\n' "$AGE_KEY") -o "${f%.age}" "$f"; then restore "drive-${n%-*}" "${f%.age}"; else say "- drive-${n%-*}: cannot decrypt"; fi
+              if age -d -i - -o "${f%.age}" "$f" <<< "$AGE_KEY"; then restore "drive-${n%-*}" "${f%.age}"; else say "- drive-${n%-*}: cannot decrypt"; fi
             done
           else
             say "- drive: cannot read backup"
