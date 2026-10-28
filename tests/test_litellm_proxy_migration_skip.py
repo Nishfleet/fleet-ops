@@ -57,3 +57,19 @@ def test_the_marker_is_keyed_on_the_image_digest() -> None:
     line = migration_line()
     digest = re.search(r"@sha256:([0-9a-f]{64})", line)
     assert digest and "litellm-migrated-$${i##*@sha256:}-$$n" in line
+
+
+def test_the_stop_window_is_bounded_by_podman_inside_systemd() -> None:
+    """A restart's stop is `podman rm -f`, which waits the container's own --stop-timeout and then SIGKILLs.
+
+    That value is fixed when the container is created, so a unit edit changes the bound only for the next
+    container: the 2026-10-23 17:08 IST stop of a container made under --stop-timeout=110 waited out systemd's
+    new TimeoutStopSec=60 (Stopping timed out 17:09:55, SIGKILL 17:10:55). The pair must stay ordered so
+    podman's SIGKILL, which removes the container cleanly, always fires before systemd's.
+    """
+    text = QUADLET.read_text()
+    stop = [int(x) for x in re.findall(r"^PodmanArgs=--stop-timeout=(\d+)$", text, re.M)]
+    unit = [int(x) for x in re.findall(r"^TimeoutStopSec=(\d+)$", text, re.M)]
+    assert len(stop) == 1 and len(unit) == 1, (stop, unit)
+    assert stop[0] <= 45, "a restart must not stall longer than 45 s"
+    assert stop[0] + 10 <= unit[0], "systemd's timeout must leave room after podman's SIGKILL"

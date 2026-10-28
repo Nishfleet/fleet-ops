@@ -82,15 +82,19 @@ def test_live_config_tether_is_one_claude_row_falling_to_assistant_only():
     assert "context_window_fallbacks" not in cfg["router_settings"]
 
 
-def _router(port: int) -> Router:
+def _router(port: int, budget: bool = False) -> Router:
     cfg = _config()
     settings = cfg["router_settings"]
     tether = next(r for r in cfg["model_list"] if r["model_name"] == "tether")
+    tether_params = {"model": "openai/claude", "api_base": f"http://127.0.0.1:{port}/tether", "api_key": "k",
+                     "cooldown_time": tether["litellm_params"]["cooldown_time"]}
+    if budget:
+        tether_params["max_budget"] = tether["litellm_params"]["max_budget"]
+        tether_params["budget_duration"] = tether["litellm_params"]["budget_duration"]
     return Router(
         model_list=[
             {"model_name": "tether",
-             "litellm_params": {"model": "openai/claude", "api_base": f"http://127.0.0.1:{port}/tether", "api_key": "k",
-                                "cooldown_time": tether["litellm_params"]["cooldown_time"]},
+             "litellm_params": tether_params,
              "model_info": {"id": tether["model_info"]["id"],
                             "allowed_fails_policy": tether["model_info"]["allowed_fails_policy"]}},
             {"model_name": "assistant",
@@ -156,6 +160,44 @@ def test_claude_healthy_answers_without_touching_assistant():
         resp = asyncio.run(_router(srv.server_address[1]).acompletion(model="tether", messages=[{"role": "user", "content": "hi"}]))
         assert HITS == ["tether"]
         assert resp._hidden_params["model_id"] == "anthropic-sonnet55-tether"
+    finally:
+        litellm.callbacks = saved
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_tether_daily_budget_trip_falls_to_assistant_until_the_window_resets():
+    HITS.clear()
+    FAIL.clear()
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    saved = litellm.callbacks
+    tether_row = next(r for r in _config()["model_list"] if r["model_name"] == "tether")
+    spend_key = f"deployment_spend:{tether_row['model_info']['id']}:{tether_row['litellm_params']['budget_duration']}"
+    daily_budget = tether_row["litellm_params"]["max_budget"]
+
+    async def scenario():
+        router = _router(port, budget=True)
+        limiter = router._get_router_deployment_budget_limiter()
+        litellm.callbacks = [limiter]
+        await limiter.dual_cache.in_memory_cache.async_set_cache(key=spend_key, value=daily_budget)
+        resp = await router.acompletion(model="tether", messages=[{"role": "user", "content": "hi"}])
+        assert resp.choices[0].message.content == "ok"
+        assert HITS == ["assistant"]
+        assert resp._hidden_params["model_id"] == "assistant-row"
+        resp2 = await router.acompletion(model="tether", messages=[{"role": "user", "content": "still out of budget"}])
+        assert resp2.choices[0].message.content == "ok"
+        assert HITS == ["assistant"] * 2
+        await limiter.dual_cache.in_memory_cache.async_set_cache(key=spend_key, value=0.0)
+        resp3 = await router.acompletion(model="tether", messages=[{"role": "user", "content": "window rolled over"}])
+        assert resp3.choices[0].message.content == "ok"
+        assert HITS == ["assistant"] * 2 + ["tether"]
+        assert resp3._hidden_params["model_id"] == "anthropic-sonnet55-tether"
+
+    try:
+        asyncio.run(scenario())
     finally:
         litellm.callbacks = saved
         srv.shutdown()
