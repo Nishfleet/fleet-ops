@@ -112,6 +112,9 @@ from litellm.types.router import RetryPolicy
 import jsonschema
 import httpx
 import yaml
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"

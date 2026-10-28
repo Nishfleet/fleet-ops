@@ -2,9 +2,11 @@
 
 Runs the live config/litellm-proxy.yaml settings on a real litellm Router with a plain
 http.server standing in for the providers: the tether group answers the chosen failure,
-the assistant group answers 200. Run with the pinned litellm venv's python:
+the assistant group answers 200. Run on the proxy image's litellm (see
+containers/quadlet/fleet-litellm-proxy.container):
 
-  python -m pytest tests/test_router_tether_fallback.py
+  uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
+      python -m pytest -q tests/test_router_tether_fallback.py
 """
 from __future__ import annotations
 
@@ -22,6 +24,9 @@ pytest.importorskip("litellm")
 import litellm  # noqa: E402
 import yaml  # noqa: E402
 from litellm import Router  # noqa: E402
+from router_litellm_pin import require_pinned_litellm  # noqa: E402
+
+require_pinned_litellm(__file__)
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 HITS: list = []

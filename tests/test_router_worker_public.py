@@ -11,6 +11,9 @@ import pytest
 import yaml
 from litellm import Router
 from litellm.litellm_core_utils.duration_parser import duration_in_seconds
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 CONFIG = yaml.safe_load((Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml").read_text())
 STRAITLY_BASE = "https://api.straitly.ai/v1"

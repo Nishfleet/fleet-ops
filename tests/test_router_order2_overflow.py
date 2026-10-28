@@ -1,8 +1,8 @@
 """fleet-ops#9365: a cache-false worker row at order 2 still receives traffic
 when every order-1 row in its group is in cooldown.
 
-Runs against the pinned LiteLLM v1.98.0 Router with the proxy's production
-router settings (cooldown_time 60, allowed_fails 1, num_retries 0,
+Runs against the pinned proxy image's LiteLLM v1.105.0 Router with the proxy's
+production router settings (cooldown_time 60, allowed_fails 1, num_retries 0,
 simple-shuffle). Two failure modes could remove an order-1 row from the
 shuffle:
 
@@ -21,6 +21,9 @@ import asyncio
 import litellm
 from litellm import Router
 from litellm.router_utils.cooldown_handlers import _set_cooldown_deployments
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 
 def _row(mid, order, cache):
