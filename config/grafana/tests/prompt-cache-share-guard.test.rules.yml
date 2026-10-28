@@ -1,0 +1,59 @@
+# The deployed rule's A expression, inlined verbatim from
+# prompt-cache-share-guard.yaml, with the deployed `for: 15m` and labels.
+#
+# Grafana's C step is a threshold of `> 0` over A. A's own last steps filter
+# (`<` against the floors, then `and on (vendor)` against the volume gate), so A
+# returns only the vendors that breach, each at its own share (about 0.9), never
+# 0 and never 1. `> 0` therefore changes nothing here, and the fixture pins A
+# itself: a case that fires here is a case Grafana calls Alerting, and a vendor
+# A does not return is one Grafana never sees (an empty result reads NoData,
+# which the rule treats as OK).
+#
+# Do not swap the `<` for `< bool`: bool keeps every floor-matched vendor as a
+# 0-valued series, the volume gate's `and` then keeps that series too (`and`
+# matches label sets, not values), and A returns healthy vendors at 0 for the
+# threshold to read. The promql_expr_test case states that split.
+#
+# The sample interval is 12h on purpose: at 5m a case would hold minutes of data
+# and the 7d and 48h windows would hold the same samples, so the straddle case
+# could not tell the two windows apart, which is the one thing it exists for.
+groups:
+- interval: 12h
+  name: prompt-cache-share-guard
+  rules:
+  - alert: PromptCacheShareBelowBaseline
+    expr: |-
+      (
+        max by (vendor) (
+          label_replace((
+            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            /
+            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+          ), "span", "7d", "", "")
+          or label_replace((
+            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            /
+            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+          ), "span", "48h", "", "")
+        )
+        < on (vendor)
+        (
+          label_replace(vector(0.9396), "vendor", "stepfun", "", "")
+          or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
+          or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+          or label_replace(vector(0.9259), "vendor", "minimax", "", "")
+          or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+          or label_replace(vector(0.9056), "vendor", "zai", "", "")
+          or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
+          or label_replace(vector(0.8231), "vendor", "straitly", "", "")
+          or label_replace(vector(0.7566), "vendor", "cline", "", "")
+          or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
+        )
+      )
+      and on (vendor)
+      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+    for: 15m
+    labels:
+      grafana_folder: fleet
+      severity: warning
+      signal: prompt-cache-share-guard

@@ -1,0 +1,32 @@
+# The deploy, as root, started by fleet-deploy.path. The same two steps deploy-box.yml
+# starts one by one from the runner today: the user-scope sync (fleet-sync.service,
+# reached through nish's user manager with `systemctl --user --machine=nish@.host`,
+# man systemctl), then the root-owned host config (fleet-host-config.service, which
+# applies only reviewed main from its own clone, so a forged request can at most
+# redeploy main). A failing step stops the chain, as it did in the job.
+#
+# The verdict goes to /var/lib/fleet-deploy/result as one line,
+# `<request> <SERVICE_RESULT> <EXIT_STATUS> <UTC time>`, and the last journal lines
+# of the three units to /var/lib/fleet-deploy/log, because the runner cannot read
+# the system journal. The deploy-box job polls `result` for its own request line.
+# Rollback: delete this file, fleet-deploy.path and rootfs/etc/tmpfiles.d/fleet-deploy.conf
+# and add them to `retired` in ansible/host.yml.
+[Unit]
+Description=Apply a deploy request (fleet-sync, then fleet-host-config)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+# The chain is fleet-sync.service (up to 300s) then fleet-host-config.service
+# (up to 600s), so the whole unit is allowed 900s. The deploy-box job waits longer.
+TimeoutStartSec=900
+# The request this run serves is copied at the start, so the verdict below names
+# it even when a newer request lands while the run is going.
+ExecStartPre=/bin/cp /var/lib/fleet-deploy/request /var/lib/fleet-deploy/running
+ExecStart=/usr/bin/systemctl --user --machine=nish@.host start fleet-sync.service
+ExecStart=/usr/bin/systemctl start fleet-host-config.service
+ExecStopPost=/usr/bin/journalctl --sync
+ExecStopPost=/bin/sh -c 'journalctl --no-pager -n 100 -u fleet-deploy.service -u fleet-host-config.service --user-unit=fleet-sync.service >/var/lib/fleet-deploy/log'
+ExecStopPost=/bin/sh -c 'r=$$(head -c 80 /var/lib/fleet-deploy/running | tr -cd "A-Za-z0-9 ._-"); printf "%%s %%s %%s %%s\n" "$$r" "$$SERVICE_RESULT" "$$EXIT_STATUS" "$$(date -u +%%FT%%TZ)" >/var/lib/fleet-deploy/result'

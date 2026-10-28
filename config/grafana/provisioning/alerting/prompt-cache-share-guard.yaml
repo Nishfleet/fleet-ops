@@ -1,0 +1,195 @@
+# Prompt-cache share guard: the 7-day no-drop check for the LiteLLM v1.105.0
+# bump (fleet-ops#9385 point 3; the bump landed as #10071 on 2026-10-23T08:11Z).
+#
+# A vendor's cache-read share is the fraction of its input tokens the provider
+# served from its prompt cache. A miss pays the full input price, so the spend
+# per token of work tracks (1 - share). Before the bump four vendors read 0.000
+# while carrying 1.89B uncached input tokens; the bump taught cline and zai to
+# report the count (fleet-ops#9385 point 2).
+#
+# The bar: no vendor in use may fall more than 2 points below the share it read
+# in the 48h after the bump (opencodego excepted, below). That reading was taken on this box at
+# 2026-10-25T08:12Z, and the floors below are it minus 0.02:
+#
+#   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.8723
+#   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
+#   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
+#   opencodego   0.9421 -> 0.9021      anthropic   0.4531 -> 0.4331
+#   commandcode  0.9298 -> 0.9098
+#   zai          0.9256 -> 0.9056
+#
+# opencodego's floor is 4 points down, not 2 (fleet-ops#10630; the same alert
+# was filed as #10506 and #10588, each 0.0003 to 0.0005 under the old floor).
+# Its 48h read is a token-weighted mix of rows, and the 0.9421 baseline caught a
+# mix the box does not hold on a quiet day. Per row at 2026-10-28, from
+# litellm_input_*_metric_total: worker-capable 25.1M tokens at 0.956 (0.945 to
+# 0.956 on each of the last four days, 7M to 141M a day); assistant 2.7M at
+# 0.78; judge 0.9M at 0.73; worker-cheap 0.4M at 0.21. Worker-cheap read 0.956
+# on 19.4M tokens four days ago and carries 0.2M a day now, so its low share is
+# sparse calls finding a cold cache, not a changed prefix, and every row still
+# reports cached_tokens. The vendor 48h read has run 0.927 to 0.942 on days
+# with the same worker-capable share, so the 0.9421 baseline is the top of that
+# swing and 0.9021 is the baseline re-read from a fresh 48h (0.9216) minus 2
+# points. The cost: a 2 to 4 point drift on opencodego now passes; a failure on
+# the worker-capable row, which carries 86% of the tokens, still takes the
+# vendor under 0.9021 (a big row at 0.92 reads 0.8784, a test case below), and
+# the 1-hour paging rule covers a total one.
+#
+# alibaba (0.8484) is not judged (fleet-ops#10410). It carries only the one-shot
+# judge row alibaba-qwen38max-judge, about 100 requests and 3M input tokens a
+# day with a different prompt each time, so its share tracks how close together
+# the calls land, not whether the provider caches: 0.83 in the 2h to
+# 2026-10-25T11:46Z, 0.03 from 2026-10-26T11:00Z (14 requests in 6h), and the
+# row's own cache_proof shows the endpoint reports cached_tokens. A floor taken
+# from a burst fires on every quiet day.
+#
+# A vendor not listed is not judged. ollama, openrouter and xkiro carried no
+# traffic in that window; ollama's provider still cannot report a cached count
+# (berriai/litellm#45021) and the other two served none. Onboarding a vendor
+# means adding its floor here from its own 48h reading.
+#
+# Why both windows: until 2026-10-30 the 7-day window still holds pre-bump days,
+# so a vendor that recovered reads low over 7d (zai 0.613, cline 0.248,
+# opencodego2 0.682 at 2026-10-25T08:12Z) while its 48h is healthy (0.926,
+# 0.777, 0.944). Judging the 7d share alone would file an issue a day per
+# recovered vendor for nothing until the pre-bump days age out. `max` of the two
+# shares means both must sit under the floor, so the rule turns on a drop both
+# windows agree on. The two ratios carry a `span` label (`7d`, `48h`) because
+# `or` drops a right-hand series whose label set is already present, and after
+# `sum by (vendor)` both ratios have the same one; `max by (vendor)` then reads
+# the better of the two and the label goes no further. The cost of both windows
+# is latency: a fall of d points breaches the 2-point floor after about (2/d) of
+# the 7-day window, which is four hours for a total cache failure and 1.5 days
+# for a 9-point drop. The 1-hour paging rule (prompt-cache-hit.yaml, under 0.5
+# share) covers the fast and total failure.
+#
+# After 2026-10-30 the 7-day window holds no pre-bump day, so the 48h half and
+# the span/max machinery become dead weight: drop the 48h leg and the `or` at
+# that point, and re-base the floors from a fresh 48h reading if the bar moves.
+# The fixtures for this rule are run by the `promtool test rules
+# config/grafana/tests/*.test.yml` step in ci.yml.
+#
+# A vendor needs 1M input tokens in 48h to be judged, so a probe lane and a
+# vendor that is idling out stay silent (anthropic read 8.5k tokens today). Both
+# sides of each ratio carry the same `and on (model_id)` filter, so a row that
+# reports only one of the two counters cannot inflate either side
+# (fleet-ops#9881).
+#
+# What this rule cannot see: a deployment that stops returning the cached count
+# drops out of both sides of the ratio, so its share is undefined rather than
+# low, and the guard stays silent. That is the pre-bump shape (a vendor at
+# 0.000 with 1.89B uncached input) and it is fleet-ops#9884's scope, not this
+# rule's: this one holds a share that keeps being reported above its floor.
+#
+# Severity warning, not critical: a drifting share is a spend leak, not an
+# outage, and a warning lands on the fleet-alert-dispatch route, which files one
+# fleet-ops issue per 24h while it holds. Resolved against the policy tree in
+# cloudflare-spend-contact.yaml: severity warning + signal
+# prompt-cache-share-guard routes to fleet-alert-dispatch alone, repeat 86400s,
+# and reaches no paging contact point. Nish's money rules page; this reports.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: prompt-cache-share-guard
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: prompt-cache-share-guard
+        title: Prompt-cache share below its post-bump floor
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                (
+                  max by (vendor) (
+                    label_replace((
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      /
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                    ), "span", "7d", "", "")
+                    or label_replace((
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      /
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                    ), "span", "48h", "", "")
+                  )
+                  < on (vendor)
+                  (
+                    label_replace(vector(0.9396), "vendor", "stepfun", "", "")
+                    or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
+                    or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+                    or label_replace(vector(0.9259), "vendor", "minimax", "", "")
+                    or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+                    or label_replace(vector(0.9056), "vendor", "zai", "", "")
+                    or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
+                    or label_replace(vector(0.8231), "vendor", "straitly", "", "")
+                    or label_replace(vector(0.7566), "vendor", "cline", "", "")
+                    or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
+                  )
+                )
+                and on (vendor)
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 604800, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                /
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: B
+          - refId: D
+            relativeTimeRange: {from: 172800, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: |-
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                /
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: false
+              refId: D
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: threshold
+              refId: C
+              expression: A
+              # gte, not gt: A only returns vendors already under their floor, so
+              # any sample it returns is a breach, including a share of exactly
+              # 0.000 (a cached counter that stopped growing while input kept
+              # coming). gt would drop that one case, which is the shape this
+              # rule exists for.
+              conditions: [{evaluator: {params: [0], type: gte}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
+              intervalMs: 1000
+              maxDataPoints: 43200
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: 'Prompt-cache share on {{ $labels.vendor }} is under its post-bump floor'
+          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (4 for opencodego, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+        labels: {severity: warning, signal: prompt-cache-share-guard}
+        isPaused: false

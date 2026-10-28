@@ -30,10 +30,11 @@ URGENT = {
     "Cost alarm GitHub issue delivery failed": "money: the cost alarm could not report",
     "Prompt-cache read share below 50%": "money: every request pays full input price",
     # money: a paid plan sits unused, and cancelling it is Nish's call
-    "Cline idle": "money", "CommandCode idle": "money", "MiniMax idle": "money",
-    "StepFun idle": "money", "z.ai idle": "money", "Ollama idle": "money",
-    "OpenCode Go idle": "money", "Pareto idle": "money",
+    "CommandCode idle": "money", "MiniMax idle": "money",
+    "StepFun idle": "money", "z.ai idle": "money",
+    "OpenCode Go idle": "money",
     "Alibaba token-plan SG idle": "money",
+    "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
         "Nishfleet/mailbox", "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},
@@ -41,7 +42,7 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch"}
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
@@ -93,6 +94,21 @@ def route(node, labels, repeat=None):
     return out if matched else {(node["receiver"], repeat)}
 
 
+def group_key(node, labels):
+    """The Alertmanager group an alert lands in under this route: its group_by
+    labels ('...' means every label, so each instance is its own group)."""
+    by = node.get("group_by") or []
+    return tuple(sorted(labels.items())) if "..." in by else tuple((k, labels.get(k, "")) for k in by)
+
+
+def deepest(node, labels):
+    """The route node (the first matching child, recursively) that owns these labels."""
+    for child in node.get("routes") or []:
+        if matches(child.get("object_matchers") or [], labels):
+            return deepest(child, labels)
+    return node
+
+
 def selftest():
     tree = {"receiver": "root", "repeat_interval": "24h", "routes": [
         {"receiver": "a", "object_matchers": [["x", "=", "1"]], "continue": True, "repeat_interval": "1h",
@@ -112,7 +128,7 @@ def selftest():
 
 def main(root):
     selftest()
-    rules, policy, contacts = [], None, set()
+    rules, policy, contacts, contacts_doc = [], None, set(), []
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for g in doc.get("groups") or []:
@@ -121,6 +137,7 @@ def main(root):
             policy = p
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
+            contacts_doc.append(c)
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
     bad, paging = [], {}
@@ -159,6 +176,24 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    # fleet-ops#10327: one host event (20 units failing) must file one issue per
+    # alert name, not one per instance, and its body must name every instance.
+    units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
+              "prom_alertname": "SystemUnitFailed", "name": f"fleet-unit-{i}.service", "instance": "host"} for i in range(3)]
+    keys = {group_key(deepest(policy, u), u) for u in units}
+    if len(keys) != 1:
+        bad.append(f"3 SystemUnitFailed instances form {len(keys)} notification groups, want 1")
+    other = {**units[0], "prom_alertname": "RouterDown"}
+    if group_key(deepest(policy, other), other) in keys:
+        bad.append("two different alert names share one notification group")
+    sink = [c for c in contacts_doc if c["name"] == "prometheus-alert-dispatch"]
+    assert sink, "contact point prometheus-alert-dispatch not found"
+    for rcv in sink[0]["receivers"]:
+        tpl = rcv["settings"]["payload"]["template"]
+        if "maxAlerts" in rcv["settings"] or "range $$.Alerts" not in tpl:
+            bad.append("prometheus-alert-dispatch must not set maxAlerts and must range over every alert in its template")
+        else:
+            print(f"prometheus route: 3 SystemUnitFailed instances -> {len(keys)} group; template ranges over .Alerts")
     extra = sorted(set(paging) - set(URGENT))
     gone = sorted(set(URGENT) - set(paging))
     for t in sorted(paging):
