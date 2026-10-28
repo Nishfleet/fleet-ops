@@ -1442,10 +1442,21 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
-    values = " ".join(value for values in unit_directives(PR_SWEEP).values() for value in values)
-    assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|GITHUB_TOKEN|GH_TOKEN", values), (
-        "gh reads the user manager's login from ~/.config/gh/hosts.yml; no credential in the unit or in argv"
+    assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
+        "the Actions-write App token is minted per repo and loaded from its own env file (fleet-ops#10651)"
     )
+    stop = keys["ExecStopPost"]
+    assert len(stop) == 1, "one stop command: systemd reloads the EnvironmentFile for every command it spawns"
+    assert "gh api -X DELETE installation/token" in stop[0], "the token is revoked as soon as the two calls end"
+    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0], "its env file is deleted with it"
+    values = " ".join(value for values in unit_directives(PR_SWEEP).values() for value in values)
+    assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", values), (
+        "a token literal in the unit file or in argv; the minted token reaches gh through its env file only"
+    )
+    for command in [*starts, *keys.get("ExecStartPre", []), *stop]:
+        assert not re.search(r"(?<!\$)\$GH_TOKEN", command), (
+            "systemd would expand a bare $GH_TOKEN into argv, where ps can read it (fleet-ops#8403)"
+        )
 
 
 def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
