@@ -1271,7 +1271,7 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
+    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "the README names the unit this tunes"
 
 
 def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
@@ -1411,7 +1411,7 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
 
 
 def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "README.md").read_text()
+    readme = (ROOT / "docs" / "layout.md").read_text()
     assert "systemctl --user start <unit>" in readme, "the README lost the run line"
     for relative in WAKE_UNITS:
         unit = relative.split("/")[-1]
