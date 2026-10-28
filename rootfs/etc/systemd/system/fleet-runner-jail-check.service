@@ -1,0 +1,28 @@
+# A runner's jail goes stale when a path it hides is recreated after the unit
+# started (fleet-ops#10753). InaccessiblePaths= and TemporaryFileSystem= bind the
+# inode that exists at the moment the unit starts (fleet-ops#10081), so a
+# directory removed and made again is a NEW inode: the runner's mount namespace
+# still holds the old, empty one, and a job can read the live path through the
+# new one. On 2026-10-28 /run/user/1000/fleet-worker-github-token was recreated
+# at 23:29:32 IST, after the runners started, and 106 dispatches failed
+# runner-probe with "/run/user/1000/fleet-worker-github-token is readable from
+# this job" until the runners were restarted at 23:58.
+#
+# The fix in rootfs/etc/systemd/system/actions.runner.*.service.d hides the parent
+# (/run/user/1000), not each child, so a recreation no longer matters. This unit is
+# the detector for the paths that still hide a child by name and for any future
+# hide: it compares the birth time of every hidden path with the unit's start time
+# and fails when a path was made again after that, naming the path and the unit.
+# A failure pings the healthchecks.io fail URL through the same OnFailure= handler
+# the other host units use, so it reaches a person in one timer period.
+#
+# Read-only: it stats paths and reads unit properties. It runs as root because
+# /run/user/1000 is mode 0700 nish and the paths under it must be stat-able.
+[Unit]
+Description=Check every runner's hidden-path jail is still bound to the live path (fleet-ops#10753)
+# A failed run pings the healthchecks.io fail URL, same handler as the user units.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -o pipefail -c 'set -u; bad=0; for u in $(systemctl list-units --type=service --state=active --plain --no-legend --no-pager "actions.runner.*.service" | cut -d" " -f1); do start=$(systemctl show -p ActiveEnterTimestamp --value "$u"); t=$(date -d "$start" +%s 2>/dev/null) || continue; for p in $(systemctl show -p InaccessiblePaths --value "$u") $(systemctl show -p TemporaryFileSystem --value "$u"); do p=${p%%:*}; p=${p#-}; test -d "$p" || continue; b=$(stat -c %W "$p" 2>/dev/null) || continue; test "$b" -gt 0 || continue; if test "$b" -gt "$t"; then echo "runner-jail-stale: $u hides $p, created $(date -u -d "@$b" +%FT%TZ) after the unit started $start"; bad=1; fi; done; done; test "$bad" -eq 0 && echo "runner-jail-ok at $(date -u +%FT%TZ)"; exit $bad'

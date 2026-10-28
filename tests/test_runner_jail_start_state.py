@@ -21,15 +21,22 @@ AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
 # pool -> (drop-in with the start order and the pre-start step, drop-in with InaccessiblePaths=)
+AGENT1_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-1.service.d"
+CI3_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"
 POOLS = {
     "agent": (AGENT_DIR / "10-agent.conf", AGENT_DIR / "20-lockdown.conf"),
+    # agent-1 runs the pilot service user; same start conf, its own lockdown.
+    "agent-1-pilot": (AGENT_DIR / "10-agent.conf", AGENT1_DIR / "30-pilot-user.conf"),
     "fleet-ci": (FLEET_CI_DIR / "10-fleet-ci.conf", FLEET_CI_DIR / "20-lockdown.conf"),
+    # fleet-ci-3 runs drive's agent eval; same start conf, its own lockdown.
+    "fleet-ci-3-eval": (FLEET_CI_DIR / "10-fleet-ci.conf", CI3_DIR / "30-eval.conf"),
     # The vault runner has one drop-in, so the start order and the lockdown are the same file.
     "vault": (VAULT_DIR / "20-lockdown.conf", VAULT_DIR / "20-lockdown.conf"),
 }
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
 USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+USER_RUN_PARENT = "/run/user/1000"
 
 
 def values(text: str, key: str) -> list[str]:
@@ -42,13 +49,31 @@ def values(text: str, key: str) -> list[str]:
     return out
 
 
-def masked_user_run_names(lockdown_text: str) -> set[str]:
+def hidden_user_run_paths(lockdown_text: str) -> set[str]:
+    """Every path under /run/user/1000 the runner hides, and the parent itself when that is hidden.
+
+    A `TemporaryFileSystem=/run/user/1000` counts as hiding the whole dir: an empty tmpfs over it
+    hides its children the same way, and unlike a per-child hide it does not bind the child's inode at
+    unit start (fleet-ops#10753).
+    """
+    paths = set()
+    for key in ("InaccessiblePaths", "TemporaryFileSystem"):
+        for value in values(lockdown_text, key):
+            for token in shlex.split(value):
+                path = token.lstrip("-+").split(":")[0]
+                if path == USER_RUN_PARENT or path.startswith(USER_RUN):
+                    paths.add(path)
+    return paths
+
+
+def masked_user_run_names(lockdown_text: str, under_parent: set[str] = frozenset()) -> set[str]:
+    """Names under /run/user/1000 the runner hides. A hidden parent hides every name in `under_parent`."""
     names = set()
-    for value in values(lockdown_text, "InaccessiblePaths"):
-        for token in shlex.split(value):
-            path = token.lstrip("-+")
-            if path.startswith(USER_RUN):
-                names.add(path.removeprefix(USER_RUN).split("/")[0])
+    for path in hidden_user_run_paths(lockdown_text):
+        if path == USER_RUN_PARENT:
+            names |= set(under_parent)
+        else:
+            names.add(path.removeprefix(USER_RUN).split("/")[0])
     return names
 
 
@@ -83,9 +108,20 @@ def pre_created(agent_text: str) -> dict[str, str]:
 
 
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create.
+
+    When /run/user/1000 itself is hidden there is nothing to pre-create: a mkdir below an
+    InaccessiblePaths= parent fails with "Permission denied" and the runner never starts
+    (fleet-ops#10753). A leftover pre-create line under it is a finding, not a fix.
+    """
     later = runtime_dirs_of_user_units(unit_dirs)
     made = pre_created(agent_text)
+    if USER_RUN_PARENT in hidden_user_run_paths(lockdown_text):
+        return [
+            f"{path}: pre-created under a hidden {USER_RUN_PARENT}, which fails"
+            for path in sorted(made)
+            if path.startswith(USER_RUN)
+        ]
     bad = []
     for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
         mode, preserved = later[name]
@@ -202,25 +238,57 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
 
 @pool
 def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lockdown_conf: Path) -> None:
-    names = masked_user_run_names(lockdown_conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
+    later = set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
+    names = masked_user_run_names(lockdown_conf.read_text(), later) & later
     assert len(names) >= 2, "the hidden runtime dirs made by user services were not found"
-    assert uncovered(lockdown_conf.read_text(), start_conf.read_text(), USER_UNIT_DIRS) == []
+    # The effective ExecStartPre= of the pool, the way systemd merges its drop-ins (an empty one clears).
+    dirs = sorted({start_conf.parent, lockdown_conf.parent})
+    pre = "[Service]\n" + "".join(f"ExecStartPre={v}\n" for v in merged_values(dirs, "ExecStartPre"))
+    assert uncovered(lockdown_conf.read_text(), pre, USER_UNIT_DIRS) == []
+
+
+@pool
+def test_the_user_runtime_dir_is_hidden_by_its_parent(start_conf: Path, lockdown_conf: Path) -> None:
+    """A hide that names a child of /run/user/1000 binds that child's inode at unit start
+    (fleet-ops#10081), so a child removed and made again is a new inode the runner can read and the
+    jail is stale. On 2026-10-28 that cost 106 failed dispatches (fleet-ops#10753). Hide the parent.
+    """
+    paths = hidden_user_run_paths(lockdown_conf.read_text())
+    assert paths, "nothing under /run/user/1000 is hidden"
+    assert USER_RUN_PARENT in paths, f"hide {sorted(paths)}, not {USER_RUN_PARENT}: a recreated child is readable"
 
 
 @pool
 def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
-    lines = values(start_conf.read_text(), "ExecStartPre")
-    assert lines, "no ExecStartPre= pre-create line"
+    lines = merged_values(sorted({start_conf.parent, lockdown_conf.parent}), "ExecStartPre")
+    if USER_RUN_PARENT in hidden_user_run_paths(lockdown_conf.read_text()):
+        assert not any(USER_RUN in line for line in lines), start_conf.name
+    else:
+        assert lines, "no ExecStartPre= pre-create line"
     # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
     for conf in {start_conf, lockdown_conf}:
         assert not any(line.startswith("+") for line in values(conf.read_text(), "ExecStartPre")), conf.name
 
 
+def test_a_stale_runner_hide_pages_with_the_path_in_under_ten_minutes() -> None:
+    """fleet-ops#10753: a hide that goes stale must reach a person in under 10 minutes, naming the path."""
+    unit = (SYSTEM / "fleet-runner-jail-check.service").read_text()
+    timer = (SYSTEM / "fleet-runner-jail-check.timer").read_text()
+    assert "fleet-unit-failed@%N.service" in section_values(unit, "Unit", "OnFailure")
+    period = int(section_values(timer, "Timer", "OnUnitActiveSec")[0].removesuffix("min")) * 60
+    accuracy = int(section_values(timer, "Timer", "AccuracySec")[0].removesuffix("s"))
+    assert period + accuracy < 600, f"one period ({period}s) plus AccuracySec= ({accuracy}s) is not under 10 minutes"
+    check = " ".join(values(unit, "ExecStart"))
+    assert "runner-jail-stale" in check and "hides" in check, check
+    assert "ActiveEnterTimestamp" in check and "InaccessiblePaths" in check, check
+
+
 def test_every_runner_drop_in_that_hides_user_runtime_paths_is_covered() -> None:
     """A new runner pool that hides /run/user/1000/ paths must be added to POOLS, not skipped."""
+    later = set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
     hiding = set()
     for conf in SYSTEM.glob("actions.runner.*.service.d/*.conf"):
-        if masked_user_run_names(conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS)):
+        if masked_user_run_names(conf.read_text(), later) & later:
             hiding.add(conf)
     covered = {conf for pair in POOLS.values() for conf in pair}
     assert hiding <= covered, sorted(str(c.relative_to(ROOT)) for c in hiding - covered)

@@ -30,6 +30,20 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# A runner jail goes stale when a path it hides is recreated after the unit started
+# (fleet-ops#10753): InaccessiblePaths= binds the inode present at unit start, so a
+# directory made again is a new inode the runner can read. The runners' drop-ins now
+# hide /run/user/1000 whole, so a recreation changes nothing; this timer is the
+# detector for any hide that still names a child, and for a future one. It fails
+# within one period of 5 minutes, which pages through fleet-unit-failed@%N.service.
+- name: Enable the runner jail check
+  ansible.builtin.systemd_service:
+    name: fleet-runner-jail-check.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The deploy request watcher. Its mailbox files come from tmpfiles.d, created
 # by the handler flush above, so enabling it never fires on creation.
 - name: Enable the deploy request watcher

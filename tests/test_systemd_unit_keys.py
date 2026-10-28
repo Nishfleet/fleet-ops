@@ -25,6 +25,7 @@ def unit_files() -> list[Path]:
     found += sorted(INSTALLED.glob("*.slice"))
     found += sorted(INSTALLED.glob("fleet-deploy.*"))
     found += sorted(INSTALLED.glob("fleet-host-config*"))
+    found += sorted(INSTALLED.glob("fleet-runner-jail-check*"))
     found += sorted(INSTALLED.glob("fleet-update.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))

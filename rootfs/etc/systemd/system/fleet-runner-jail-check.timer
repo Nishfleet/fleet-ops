@@ -1,0 +1,13 @@
+# A stale runner jail must reach a person in under 10 minutes (fleet-ops#10753):
+# the period is 5 minutes and AccuracySec= adds at most 30 s, so the worst case is
+# one period plus the check itself.
+[Unit]
+Description=Check the runner jails are still bound (fleet-ops#10753)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
