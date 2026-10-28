@@ -1144,8 +1144,9 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
-  # fleet-ops#10218: label unlabelled trusted issues, 5 a run, with the App token (a GITHUB_TOKEN
-  # label starts no run). Owner issues in a product repo get needs-triage, the rest needs-orchestrator.
+  # fleet-ops#10218: label unlabelled issues from people, 5 a run, with the App token (a GITHUB_TOKEN
+  # label starts no run). Only the owner's fleet-ops issues get needs-orchestrator. Other people and the
+  # owner's product-repo issues get needs-triage. Bot-filed issues are left to the admit job (#8304).
   label-unlabelled:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && (
@@ -1156,32 +1157,21 @@ jobs:
     permissions: {}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
       - name: App token
         id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
       - env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for l in needs-orchestrator needs-triage; do gh label create "$l" -R "$REPO" --color fbca04 --force; done
-          list=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0) and ((.author_association | IN("OWNER","MEMBER","COLLABORATOR")) or .user.login == "nishfleet-worker[bot]") and (now - (.created_at | fromdateiso8601) > 600)) | "\(.number) \(.user.login)"')
+          for l in needs-orchestrator needs-triage; do gh api "repos/$REPO/labels/$l" >/dev/null 2>&1 || gh label create "$l" -R "$REPO" --color fbca04; done
+          list=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0) and (.user.login | endswith("[bot]") | not) and (.author_association | IN("OWNER","MEMBER","COLLABORATOR")) and (now - (.created_at | fromdateiso8601) > 600)) | "\(.number) \(.user.login)"')
           while read -r n who; do
-            l=needs-orchestrator
-            [ "$REPO" != Nishfleet/fleet-ops ] && [ "$who" = nish3451 ] && l=needs-triage
+            l=needs-triage
+            [ "$REPO" = Nishfleet/fleet-ops ] && [ "$who" = nish3451 ] && l=needs-orchestrator
             gh issue edit "$n" -R "$REPO" --add-label "$l" >/dev/null
             echo "label-unlabelled: #$n -> $l"
           done < <(grep . <<<"$list" | head -n 5)
@@ -1205,24 +1195,12 @@ jobs:
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       # agent.yml's two steps: the key stays on the runner and is masked; the token is issues: write.
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
       # No owner and no repositories: scoped to the calling repo, as in agent.yml.
       - name: App token
         id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
-          skip-token-revoke: "false"
       - name: Ask Jev and apply the verdict
         id: admit
         env:

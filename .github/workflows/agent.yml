@@ -72,20 +72,6 @@ jobs:
       GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
       # No owner and no repositories: the action then scopes the token to
       # GITHUB_REPOSITORY, the calling repo, which every caller event sets
       # (github.event.repository is not in every event payload). The three
@@ -94,10 +80,8 @@ jobs:
       # worker label and comment, the worker opens and arms its PR.
       - name: App token
         id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -601,10 +585,8 @@ jobs:
         # Scoped like app-token above. Router wall comments and relabels,
         # Arm auto-merge edits the PR body and runs gh pr merge --auto (a
         # squash needs contents), Deliverable reads the issue and PR list.
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -759,10 +741,8 @@ jobs:
       - name: App token for strike
         id: strike-token
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
       - name: Strike or requeue
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
@@ -1152,25 +1132,10 @@ jobs:
       REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
       - name: Arm token
         id: arm-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
           permission-pull-requests: write
       - name: Arm the approved head
@@ -1219,25 +1184,10 @@ jobs:
       URL: ${{ inputs.stuck_url }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
       - name: Issue token
         id: issue-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
       - name: File or update the stuck-PR issue
         env:
@@ -1302,21 +1252,6 @@ jobs:
           pushed=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://raw.githubusercontent.com/Nishfleet/inish-site/main/data/editions/$today.json" || true)
           echo "today=$today live=${live:-unknown} pushed=$pushed"
           if [ "$live" = "$today" ] || [ "$pushed" = 200 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Read App private key
-        if: steps.live.outputs.done != 'true'
-        id: app-key
-        run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
       # Two tokens for Nishfleet/inish-site: a read-only one for the jailed
       # model (the candidate fetch calls the GitHub search API), and a
       # contents-write one minted only after the model has finished, for the
@@ -1324,10 +1259,8 @@ jobs:
       - name: App token (read) for Nishfleet/inish-site
         if: steps.live.outputs.done != 'true'
         id: read-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           owner: Nishfleet
           repositories: inish-site
           permission-contents: read
@@ -1422,10 +1355,8 @@ jobs:
       - name: App token (write) for Nishfleet/inish-site
         if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
         id: write-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
           owner: Nishfleet
           repositories: inish-site
           permission-contents: write

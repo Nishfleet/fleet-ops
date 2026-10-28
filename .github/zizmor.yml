@@ -14,6 +14,7 @@ rules:
         # The probe runs from main, like agent.yml, so one definition serves every
         # job and repo (fleet-ops#9983).
         Nishfleet/fleet-ops/.github/actions/runner-probe: ref-pin
+        Nishfleet/fleet-ops/.github/actions/app-token: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:
