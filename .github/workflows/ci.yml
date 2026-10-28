@@ -569,7 +569,7 @@ jobs:
             esac
           done
           case "$*" in
-            "issue view"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
+            "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
             *git/ref/heads/*) exit 1 ;;
             *actions/runs/*/jobs*) flaky failj; all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
               if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
@@ -743,7 +743,7 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py || bad=1
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
