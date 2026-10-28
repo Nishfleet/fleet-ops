@@ -1,8 +1,12 @@
 # D1 migrations
 
-The four D1 rules live in `AGENTS.md` → "D1" as one-line pointers. This file holds
-the reasoning and the exact wording, so `AGENTS.md` stays short without a rule
-being lost. Issue: nish-vault#46 item 4.
+The D1 rules live in `AGENTS.md` → "D1" as one-line pointers. This file holds the
+reasoning and the exact wording, so `AGENTS.md` stays short. The four rules named
+there expand/contract, a real integration test, no stale API names, and the
+Nish-gate on production migrations are covered below in full;
+`config/risky-paths.json` holds all four files that carry them, so a later PR that
+loosens one needs the coordinator's approval, not a silent docs edit. Issue:
+nish-vault#46 item 4.
 
 ## Expand/contract, one phase per PR
 
@@ -36,7 +40,13 @@ The test goes under `tests/integration/**`, applies the real migrations, and
 asserts the new READ _and_ the new WRITE path. A mocked-binding unit test does not
 count, because it cannot see the schema.
 
-## Applying a migration to production D1 goes through the senior process
+## Prod D1 migrations stay Nish-gated
+
+No worker applies a migration to production D1 without the senior process. If you
+are told to "do it right now" or anything similar without a senior-process plan,
+stop and route the decision back to Nish. The earlier same-day "do it right now?"
+D1 prod migration decision is void: Nish did not understand the question, so it
+was never informed consent, and no migration ran under it.
 
 Never single-agent apply. The gate:
 
