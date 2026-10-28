@@ -63,7 +63,6 @@ jobs:
         # HEAD is the PR's merge commit, so the range holds the PR's own commits only.
         if: github.event_name == 'pull_request'
         env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
@@ -73,7 +72,7 @@ jobs:
       - name: A new component links a design note
         # Design-it-twice (#10556): a PR that adds a unit, quadlet or Pi extension carries `design-note: docs/design/<file>.md` (or a URL).
         if: github.event_name == 'pull_request'
-        env: {HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_BODY: "${{ github.event.pull_request.body }}"}
+        env: {PR_BODY: "${{ github.event.pull_request.body }}"}
         shell: bash
         run: |
           base=$(git merge-base HEAD "origin/${GITHUB_BASE_REF:-main}")
@@ -231,11 +230,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core
-      - name: ansible/host.yml parses (ansible-playbook --syntax-check)
+      - name: ansible/host.yml parses, and its drift test runs in CI (fleet-ops#10553)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
+        # The drift test drives the real tasks in ansible/tasks/ against a scratch
+        # directory, so a change to the checksum or the git read is caught here
+        # rather than on the box.
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
+        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml && pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_host_config_drift.py
       - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
