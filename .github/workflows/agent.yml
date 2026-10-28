@@ -1040,6 +1040,12 @@ jobs:
           ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' \
             --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
+          # A review that finds no rules still answers, so a runner whose HOME lacks the reviewer
+          # prompt would post a verdict with nothing behind it. Stop with the reason before any
+          # model call; a re-run lands on a runner that has the files (fleet-ops#10517).
+          for f in "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md"; do
+            [ -r "$f" ] || retry "this runner cannot review: $f is missing or unreadable, so a review here would carry no review rules"
+          done
           review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
