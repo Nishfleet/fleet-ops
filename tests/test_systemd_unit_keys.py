@@ -262,7 +262,7 @@ def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
         assert len(vault) == 1, f"{unit}: the vault drop is missing: {writable}"
         assert {home / ".hermes", home / ".local/state/hermes"} <= writable, (unit, writable)
         rest = writable - {home / ".hermes", home / ".local/state/hermes"} - vault
-        assert rest <= {home / ".config/gh"}, f"{unit}: an unmeasured grant: {rest}"
+        assert not rest, f"{unit}: an unmeasured grant (gh config stays read-only, fleet-ops#10184): {rest}"
         assert all(entry.startswith("-") for entry in raw if "nish-vault" in entry), f"{unit}: the vault drop may not exist yet, so it needs the - prefix"
         for key in ("NoNewPrivileges", "PrivateTmp", "PrivateDevices", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock"):
             assert _last(keys, key) in {"yes", "true", "1"}, (unit, key)
