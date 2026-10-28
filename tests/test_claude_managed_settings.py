@@ -16,6 +16,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
@@ -89,7 +90,7 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
 
 
 def _managed_copies():
-    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     tasks = [task for play in json.loads(out) for task in play.get("tasks", [])]
     copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
     return tasks, copies
