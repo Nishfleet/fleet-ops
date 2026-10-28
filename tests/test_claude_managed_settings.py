@@ -12,14 +12,16 @@ marketplace lists fails here instead of at Claude Code start-up.
 """
 import json
 import pathlib
+import shutil
+import subprocess
 
 import pytest
-import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
 DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
 JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
+NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 HOST_MARKETPLACES = pathlib.Path.home() / ".claude/plugins/known_marketplaces.json"
 
 
@@ -87,12 +89,13 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
 
 
 def _managed_copies():
-    plays = yaml.safe_load((ROOT / "ansible/host.yml").read_text())
-    tasks = [task for play in plays for task in play.get("tasks", [])]
+    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
+    tasks = [task for play in json.loads(out) for task in play.get("tasks", [])]
     copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
     return tasks, copies
 
 
+@NEEDS_YQ
 def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
     _, copies = _managed_copies()
     assert copies, "no host.yml copy task installs anything under /etc/claude-code/"
@@ -112,6 +115,7 @@ def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
         assert installed(path), f"{path.relative_to(ROOT)} is installed by no /etc/claude-code copy task"
 
 
+@NEEDS_YQ
 def test_the_box_wide_defaults_file_is_installed_as_itself():
     tasks, _ = _managed_copies()
     task = next((t for t in tasks if t.get("name") == "Install the Claude Code managed-settings defaults file"), None)
