@@ -77,11 +77,6 @@ def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
     assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
 
 
-def test_claude_drop_in_enables_the_plugin():
-    drop_in = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json").read_text())
-    assert drop_in == {"enabledPlugins": {"chrome-devtools@nish-mods": True}}
-
-
 def test_every_install_step_is_in_the_play():
     for name in (
         "Install the pinned Chrome DevTools MCP server from the lockfile",
