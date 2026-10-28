@@ -17,6 +17,8 @@ rules:
       call_tool(space=...).
     pattern-regex: '(?i)--select[ \t=]+["'']?cua-driver\b|\bcua[ \t]+agents[ \t]+setup\b[^\n]*--cua-driver\b|\bcua-driver["'']?(?:[ \t]+|[ \t]*,[ \t]*(?:"args"|args)[ \t]*:[ \t]*\[[ \t]*)["'']?mcp\b|\b(?:curl|wget|gh[ \t]+release[ \t]+download|(?:pipx?|uv[ \t]+tool|cargo|brew|npm|pnpm)[ \t]+(?:install|i|add))\b[^\n]*cua-driver'
     paths:
-      # The exclude exists only so this rule's own literals cannot self-match.
+      # The excludes exist only so this rule's own literals and fixtures cannot
+      # self-match in a repo scan; `semgrep --test` still reads the fixture.
       exclude:
         - /.semgrep/no-host-cua-driver.yml
+        - /.semgrep/no-host-cua-driver.txt
