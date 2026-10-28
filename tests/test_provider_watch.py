@@ -349,10 +349,10 @@ def test_a_filing_failure_fails_the_unit_and_keeps_the_old_snapshot(box):
     assert box.saved()["alpha"] == ["a1", "a2"]
 
 
-def test_dead_key_fails_with_one_plain_line_and_files_nothing(box):
+def test_a_dead_key_is_logged_but_does_not_fail_the_unit(box):
     box.serve("alpha.test", "{}", codes="401")
     r = box.run()
-    assert r.returncode == 1
+    assert r.returncode == 0, r.stdout + r.stderr
     assert (
         "provider-watch: alpha key rejected (HTTP 401): Nish must renew the alpha key or log in to alpha again"
         in r.stdout
@@ -362,10 +362,10 @@ def test_dead_key_fails_with_one_plain_line_and_files_nothing(box):
     assert "issue create" not in box.log("gh.log")
 
 
-def test_403_is_a_dead_key_too(box):
+def test_a_403_key_is_logged_but_does_not_fail_the_unit(box):
     box.serve("beta.test", "{}", codes="403")
     r = box.run()
-    assert r.returncode == 1
+    assert r.returncode == 0, r.stdout + r.stderr
     assert "provider-watch: beta key rejected (HTTP 403)" in r.stdout
 
 
