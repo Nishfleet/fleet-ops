@@ -510,6 +510,11 @@ cost: the netcup provider VNC console.
 - Use it when tailscaled will not return (`Restart=always` already applied),
   when the Tailscale interface is absent, or to confirm sshd still binds only
   Tailscale addresses. Never for routine work.
+- The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
+  is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and a test
+  fails if the file ever names a wildcard address (fleet-ops#10541). Edit it
+  there, never by hand.
 - Steps: netcup panel from a machine that does not depend on this VPS → VNC
   console → login as `nish` → `systemctl restart tailscaled` → `ss -ltn |`
   `grep ':22'` must show only `100.*`/`fd7a:*` — a `0.0.0.0:22` or `[::]:22`
