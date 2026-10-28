@@ -1305,6 +1305,8 @@ def test_cloudflare_tokens_unit_writes_secrets_as_the_secrets_app_not_a_personal
     text = CF_TOKENS_UNIT.read_text()
     assert "gh auth token" not in text and "GITHUB_TOKEN" not in text, "a personal login must not write repo secrets (fleet-ops#10601)"
     assert "TF_VAR_github_app_pem=" in text
+    # The App key can write every installed repo's secrets: it lives in the directory the worker jails hide.
+    assert "%h/.config/cloudflare/nishfleet-secrets.private-key.pem" in text
     assert "pem_file        = var.github_app_pem" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
 
 
