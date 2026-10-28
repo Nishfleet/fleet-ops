@@ -28,7 +28,7 @@ jobs:
         run: |
           set -uo pipefail
           w=$RUNNER_TEMP/drill; mkdir -p "$w"; : > "$w/report.txt"
-          trap 'rm -f "$w"/*.sql "$w"/*.age "$w"/*.zip "$w"/*.db "$w"/key.txt' EXIT
+          trap 'rm -f "$w"/*.sql "$w"/*.age "$w"/*.zip "$w"/*.db' EXIT
           say() { echo "$*" | tee -a "$w/report.txt" >> "$GITHUB_STEP_SUMMARY"; }
           restore() { # name, dump: one pass, at most one retry, then per-table row counts
             local db=$w/$1.db t out=""
@@ -36,7 +36,7 @@ jobs:
             for t in $(sqlite3 "$db" "select name from sqlite_master where type='table' and name not glob 'sqlite_*' and name not glob '_cf_*'"); do
               out+="$t=$(sqlite3 "$db" "select count(*) from \"$t\"") "
             done
-            say "- $1: ${out:+ok, restored once, rows: $out}${out:-restored but has no tables}; live count not run"
+            say "- $1: ${out:+ok, restored once, rows: ${out% }}${out:-restored but has no tables}; live count not run"
           }
           read -r key mod <<< "$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket seofixkit-backups --prefix d1/ --query 'sort_by(Contents,&LastModified)[-1].[Key,LastModified]' --output text 2>/dev/null)"
           if [ -n "${key:-}" ] && [ "$key" != None ] && aws s3 cp --only-show-errors --endpoint-url "$R2_ENDPOINT" "s3://seofixkit-backups/$key" "$w/seo.sql"; then
@@ -50,11 +50,10 @@ jobs:
             say "- drive: cannot decrypt (no age key)"
           elif id=$(api 'repos/Nishfleet/drive/actions/artifacts?name=d1-backup&per_page=1' -q '.artifacts[0].id // empty') && [ -n "$id" ] \
               && api "repos/Nishfleet/drive/actions/artifacts/$id/zip" > "$w/drive.zip" && unzip -oq "$w/drive.zip" -d "$w"; then
-            (umask 077; printf '%s\n' "$AGE_KEY" > "$w/key.txt")
             sudo apt-get update -qq && sudo apt-get install -y -qq age > /dev/null
             for f in "$w"/*.sql.age; do
               n=$(basename "$f" .sql.age)
-              if age -d -i "$w/key.txt" -o "${f%.age}" "$f"; then restore "drive-${n%-*}" "${f%.age}"; else say "- drive-${n%-*}: cannot decrypt"; fi
+              if age -d -i <(printf '%s\n' "$AGE_KEY") -o "${f%.age}" "$f"; then restore "drive-${n%-*}" "${f%.age}"; else say "- drive-${n%-*}: cannot decrypt"; fi
             done
           else
             say "- drive: cannot read backup"

@@ -1,5 +1,6 @@
 import re
 import subprocess
+import textwrap
 from pathlib import Path
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github/workflows/d1-drill.yml"
@@ -11,7 +12,7 @@ def restore_prelude():
     lines = WORKFLOW.read_text().splitlines()
     start = next(i for i, line in enumerate(lines) if line.strip() == "set -uo pipefail")
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("read -r key mod"))
-    return "\n".join(line[10:] for line in lines[start:end])
+    return textwrap.dedent("\n".join(lines[start:end]))
 
 
 def run_restore(tmp_path, dump):
@@ -42,4 +43,6 @@ def test_workflow_calls_no_cloudflare_write_and_obeys_the_drill_rules():
     assert "/home/" not in text
     assert "timeout-minutes: 20" in text
     assert "push:" not in text
-    assert 'trap ' in text and "EXIT" in text
+    assert "trap " in text
+    assert "EXIT" in text
+    assert "key.txt" not in text
