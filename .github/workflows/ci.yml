@@ -960,14 +960,12 @@ jobs:
           prog=$(yq '.jobs.hold-risky.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
           label=$(yq '.jobs.hold-risky.env.LABEL' .github/workflows/agent-dispatch.yml)
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$label" = needs-coordinator ]
-          jq -e '.paths["*"] | length > 0' config/risky-paths.json >/dev/null
           bad=0
           while IFS= read -r c; do
             cfg=$(jq -c --argjson c "$c" 'if ($c | has("paths")) then {paths: $c.paths} else . end' config/risky-paths.json)
             got=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$prog" <<<"$c")
-            [ "$(jq -r .risky <<<"$got")" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
-            # A "tier" case also checks the guard list, with agent.yml review's match (guard = three reviewers).
-            jq -e --argjson cfg "$cfg" '(has("tier") | not) or ((.tier == "guard") == any(.files[]; . as $x | any(($cfg.guard // [])[]; . as $re | $x | test($re; "i"))) and (.tier == "green") == (.want | not))' <<<"$c" >/dev/null || { echo "case $(jq -r .id <<<"$c"): tier $(jq -r .tier <<<"$c") does not match"; bad=1; }
+            # .risky must equal .want; a "tier" case also checks the guard list, with agent.yml review's match (guard = three reviewers).
+            jq -e --argjson got "$got" --argjson cfg "$cfg" '.want == $got.risky and ((has("tier") | not) or ((.tier == "guard") == any(.files[]; . as $x | any(($cfg.guard // [])[]; . as $re | $x | test($re; "i"))) and (.tier == "green") == (.want | not)))' <<<"$c" >/dev/null || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
           done < <(jq -c '.cases[]' config/risky-paths.json)
           # Every tests/*.py this file runs is a gate's own check, so it stays held on fleet-ops.
           grep -oE '\btests/[A-Za-z0-9_]+\.py\b' .github/workflows/ci.yml | sort -u | jq -Rn --slurpfile f config/risky-paths.json '[inputs | select(. as $x | any($f[0].paths["Nishfleet/fleet-ops"][]; . as $re | $x | test($re; "i")) | not)] | if length > 0 then error("ci.yml gate tests not held on fleet-ops: \(.)") else empty end' || bad=1
@@ -975,8 +973,7 @@ jobs:
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
           while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
-            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
+            [ "$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c") failed"; bad=1; }
           done < <(jq -c '.approval_cases[]' config/risky-paths.json)
           test "$bad" -eq 0
       - name: hold-risky fails closed (fake gh)
