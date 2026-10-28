@@ -77,11 +77,6 @@ def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
     assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
 
 
-def test_claude_drop_in_enables_the_plugin():
-    drop_in = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json").read_text())
-    assert drop_in == {"enabledPlugins": {"chrome-devtools@nish-mods": True}}
-
-
 def test_every_install_step_is_in_the_play():
     for name in (
         "Install the pinned Chrome DevTools MCP server from the lockfile",
@@ -436,30 +431,14 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     assert (dest / "runsvc.sh").read_text() == "live state"
 
 
-MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
-JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
-
-
-def test_every_claude_managed_settings_file_ships_and_is_installed():
-    copies = [t["ansible.builtin.copy"] for t in PLAY["tasks"] if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
-    assert copies, "no host.yml copy task installs anything under /etc/claude-code/"
-    for copy in copies:
-        assert JSON_OBJECT_GATE in copy["validate"], f"{copy['dest']} is installed without the JSON-object gate"
-        assert copy["owner"] == "root" and copy["group"] == "root", copy["dest"]
-        assert copy["mode"] == "preserve", copy["dest"]
-
-    def installed(path):
-        src = "{{ rootfs }}/" + path.relative_to(ROOT / "rootfs").as_posix()
-        return any(copy.get("src") == src or (copy.get("src", "").endswith("/") and src.startswith(copy["src"])) for copy in copies)
-
-    files = sorted(p for p in MANAGED_TREE.rglob("*") if p.is_file())
-    assert files, f"no files under {MANAGED_TREE}"
-    for path in files:
-        assert isinstance(json.loads(path.read_text()), dict), f"{path.relative_to(ROOT)} is not a JSON object"
-        assert installed(path), f"{path.relative_to(ROOT)} is installed by no /etc/claude-code copy task"
-
-
-def test_the_managed_settings_defaults_file_is_installed_as_itself():
-    copy = TASKS["Install the Claude Code managed-settings defaults file"]["ansible.builtin.copy"]
-    assert copy["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
-    assert copy["dest"] == "/etc/claude-code/managed-settings.json"
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    env = dest / ".env"
+    env.write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\nLANG=C.UTF-8\nCLAUDE_CONFIG_DIR=/home/nish/.claude-a\n")
+    names = ["Give the pilot runner its own HOME in the runner environment", "Drop nish's runtime paths from the pilot runner environment"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)

@@ -1,7 +1,5 @@
-# The fleet's only dispatcher (fleet-ops#8429). GitHub owns the queue, the
-# per-issue lock (concurrency group), the timeout and the logs. Capacity is
-# the number of runners in the `agent` runner group, which only this workflow
-# may use.
+# The fleet's only dispatcher (fleet-ops#8429). GitHub owns the queue, the per-issue lock (concurrency group),
+# the timeout and the logs. Capacity is the number of runners in the `agent` runner group, which only this workflow may use.
 name: agent
 on:
   workflow_call:
@@ -39,8 +37,7 @@ on:
   schedule:
     - cron: '0 2 * * *'     # inish-daily, 07:30 IST
     - cron: '0 5 * * *'     # inish-daily catch-up, 10:30 IST (no-op when live)
-  # A scheduled job must also be dispatchable, so a change to it is proven
-  # on demand, not the next morning: gh workflow run agent.yml -f job=inish-daily
+  # A scheduled job must also be dispatchable, so a change to it is proven on demand: gh workflow run agent.yml -f job=inish-daily
   workflow_dispatch:
     inputs:
       job:
@@ -49,6 +46,11 @@ on:
         options: [inish-daily]
         default: inish-daily
         required: true
+      # By hand from main, when agent-dispatch cannot start review-risky and a risky PR would otherwise wait on a
+      # person: gh workflow run agent.yml -f review_pr=<N> -f review_sha=<sha> (fleet-ops#10199, docs/ARCHITECTURE.md).
+      # Needs actions: write, so the orchestrator or Nish, never a worker App token. The names are workflow_call's.
+      review_pr: {description: "risky PR number to review by hand, when agent-dispatch cannot start it", type: string}
+      review_sha: {description: "its head sha, the one the review approves or blocks", type: string}
 permissions: {}
 jobs:
   work:
@@ -75,7 +77,7 @@ jobs:
       - name: Read App private key
         id: app-key
         run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"
@@ -935,7 +937,7 @@ jobs:
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
   review:
-    if: inputs.review_pr != '' && inputs.review_sha != ''
+    if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, agent]
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
@@ -1078,12 +1080,11 @@ jobs:
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
-                -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
+                -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID-pr$PR-$pre-$seat" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
           # An extra reviewer may be answered by any row of its family; the family comes from the row id.
           family_of() { case "${1,,}" in
-            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *) echo "family_of: unknown row id '$1'" >&2 ;;
-          esac; }
+            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
             for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
@@ -1136,7 +1137,7 @@ jobs:
   # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
-    if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
     permissions:
@@ -1155,7 +1156,7 @@ jobs:
       - name: Read App private key
         id: app-key
         run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"
@@ -1222,7 +1223,7 @@ jobs:
       - name: Read App private key
         id: app-key
         run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"
@@ -1270,15 +1271,13 @@ jobs:
           GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
           echo "filed $url for #$PR at $SHA"
   inish-daily:
-    # The Daily edition, published to https://nish.sh/daily (inish.in only redirects).
-    # Restored 2026-10-10 after #8954 deleted the job and the page sat stale from 2026-09-29.
-    # The editorial standard lives in the product repo (automation/HERMES_DAILY.md); the
-    # mechanical contract lives in prompts/inish-daily.md here, so a product-repo edit cannot
-    # widen what the job may do. The model never holds a write credential and nothing it writes
-    # is trusted: it runs jailed with a read-only token, and the workflow takes two data files
-    # into a fresh clone of main, rebuilds and tests there, then commits and pushes. The 10:30
-    # IST catch-up covers a runner down at 07:30; the first step is a cheap live check.
-    if: ${{ !inputs.ref && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
+    # The Daily edition, published to https://nish.sh/daily (inish.in only redirects). The editorial standard is the
+    # product repo's automation/HERMES_DAILY.md, the mechanical contract prompts/inish-daily.md here, so a product
+    # repo edit cannot widen the job, whose output is never trusted: it runs jailed with a read-only token on two data
+    # files cloned from main, rebuilds and tests there, then pushes. The 10:30 IST catch-up covers a runner down at
+    # 07:30, the first step is a cheap live check, and a review summons (review_pr set, job at its default) publishes
+    # nothing.
+    if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 150
     concurrency:
@@ -1306,7 +1305,7 @@ jobs:
         if: steps.live.outputs.done != 'true'
         id: app-key
         run: |
-          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"

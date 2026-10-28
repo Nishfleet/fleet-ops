@@ -190,7 +190,11 @@ The rules still in force:
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
-  agent-authored PRs self-land green. The in-session held-PR approver loop (a
+  agent-authored PRs self-land green. The reviewer also runs by hand, so a
+  dispatch that cannot start never needs a person to approve: `gh workflow run
+  agent.yml -f review_pr=<N> -f review_sha=<sha>` runs the same job, from
+  agent.yml@main, and the verdict is still its own (fleet-ops#10199). The
+  in-session held-PR approver loop (a
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).

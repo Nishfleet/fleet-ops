@@ -54,6 +54,13 @@ regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
 condition = "AND"
 
 [[allowlists]]
+description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
@@ -145,6 +152,16 @@ description = "The runner egress drop-in must list the CGNAT block 100.64.0.0/10
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.[^/]+\.service\.d/40-egress\.conf$''']
 regexes = ['''^100\.64\.0\.0$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The two Claude Code plugin drop-ins name the directory each marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only these two directories are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/(60-nish-mods|80-inbox)\.json$''']
+regexes = [
+  '''^home/nish/workspaces/tooling/claude-mods$''',
+  '''^home/nish/workspaces/tooling/claude-code-mods-petekp-inbox$''',
+]
 condition = "AND"
 
 [[allowlists]]
