@@ -1,0 +1,51 @@
+# Mints a GitHub App installation token from the App key on the runner (fleet-ops#10218).
+# The key stays on the runner, is masked, and goes only to create-github-app-token.
+# Scope: the calling repo unless owner and repositories are set. Permissions are opt-in.
+name: app-token
+description: Mint a scoped token for the fleet worker App from the key on the runner.
+inputs:
+  owner:
+    description: Owner of the repositories to scope to; empty means the calling repo.
+    default: ''
+  repositories:
+    description: Comma-separated repositories under owner.
+    default: ''
+  permission-contents:
+    description: contents permission, read or write.
+    default: ''
+  permission-issues:
+    description: issues permission, read or write.
+    default: ''
+  permission-pull-requests:
+    description: pull-requests permission, read or write.
+    default: ''
+outputs:
+  token:
+    description: The installation token.
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PERMS: ${{ inputs.permission-contents }}${{ inputs.permission-issues }}${{ inputs.permission-pull-requests }}
+      run: '[ -n "$PERMS" ] || { echo "::error::app-token needs at least one permission-* input"; exit 1; }'
+    - id: key
+      shell: bash
+      run: |
+        keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+        [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+        while IFS= read -r line || [ -n "$line" ]; do
+          [ -n "$line" ] && echo "::add-mask::$line"
+        done < "$keyfile"
+        { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
+    - id: mint
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: "4728578"
+        private-key: ${{ steps.key.outputs.pem }}
+        owner: ${{ inputs.owner }}
+        repositories: ${{ inputs.repositories }}
+        permission-contents: ${{ inputs.permission-contents }}
+        permission-issues: ${{ inputs.permission-issues }}
+        permission-pull-requests: ${{ inputs.permission-pull-requests }}
