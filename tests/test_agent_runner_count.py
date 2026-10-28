@@ -1,4 +1,4 @@
-"""Agent runners are sized to the box: 1-10 stay, 11-36 are retired (fleet-ops#10480)."""
+"""Agent runners are sized to the box: 1-16 stay, 17-36 are retired (fleet-ops#10480; 16 since 2026-10-28)."""
 
 from pathlib import Path
 
@@ -12,9 +12,9 @@ def tasks():
     return {t["name"]: t for t in PLAY["tasks"] if "name" in t}
 
 
-def test_retired_ids_are_11_to_36():
+def test_retired_ids_are_17_to_36():
     expr = PLAY["vars"]["agent_runner_retired_ids"]
-    assert expr == "{{ range(11, 37) | list }}"
+    assert expr == "{{ range(17, 37) | list }}"
 
 
 def test_retired_units_are_stopped_then_removed():

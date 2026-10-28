@@ -27,7 +27,7 @@
     # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
     # runner's registration lives at GitHub and removing it needs an org admin
     # token that the VPS key does not carry.
-    agent_runner_retired_ids: "{{ range(11, 37) | list }}"
+    agent_runner_retired_ids: "{{ range(17, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
