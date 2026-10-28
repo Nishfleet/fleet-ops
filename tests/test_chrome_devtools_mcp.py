@@ -14,6 +14,7 @@ import subprocess
 import tomllib
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
@@ -26,7 +27,7 @@ REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chr
 
 
 def _play():
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]
 
 
@@ -69,7 +70,7 @@ def test_install_is_an_ansible_core_module_from_the_lockfile():
 
 
 def test_no_runtime_fetch():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "@latest" not in text and "npx" not in text
 
 

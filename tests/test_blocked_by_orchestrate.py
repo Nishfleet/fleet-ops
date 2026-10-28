@@ -22,8 +22,8 @@ case "$*" in
   *"/dependencies/blocking"*) jq -r "$q" "$FAKE_DIR/blocking.json" ;;
   *"/parent"*) exit 1 ;;
   *git/ref/heads/*) exit 1 ;;
-  *actions/workflows/*/runs*) echo '{"workflow_runs":[]}' | jq -c "$q" ;;
-  *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
+  "issue comment"*) ;;
+  *issues/comments*) echo '[]' | jq -c "$q" ;;
   "api repos/o/r/issues/"*) n=${2##*/}; jq -r "$q" "$FAKE_DIR/issue-$n.json" 2>/dev/null || jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -46,9 +46,8 @@ def orchestrate(tmp_path, blocked_by):
         "state": "OPEN", "labels": [{"name": "needs-orchestrator"}],
         "issue_dependencies_summary": {"blocked_by": blocked_by}}))
     (tmp_path / "out").write_text("")
-    env = {**_fake(tmp_path), "REPO": "o/r", "ISSUE": "5", "GH_TOKEN": "x", "RUN_ID": "1",
-           "GITHUB_OUTPUT": str(tmp_path / "out"), "DAILY_MAX": "5",
-           "CAP_COUNT": _y(f"{ISSUE_STEP} | .env.CAP_COUNT")}
+    env = {**_fake(tmp_path), "REPO": "o/r", "ISSUE": "5", "GH_TOKEN": "x", "GITHUB_SERVER_URL": "https://github.com",
+           "GITHUB_RUN_ID": "1", "GITHUB_OUTPUT": str(tmp_path / "out"), "DAILY_MAX": "5"}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{ISSUE_STEP} | .run")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
