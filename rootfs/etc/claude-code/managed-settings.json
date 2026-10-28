@@ -71,10 +71,12 @@
       "Bash(shutdown*)",
       "Bash(git stash)",
       "Bash(git stash pop*)",
-      "Bash(git push --force-with-lease * main)",
-      "Bash(git push * --force-with-lease * main)",
-      "Bash(git push --force-with-lease * master)",
-      "Bash(git push * --force-with-lease * master)"
+      "Bash(git push *--force-with-lease*main*)",
+      "Bash(git push *main*--force-with-lease*)",
+      "Bash(git push *--force-with-lease*master*)",
+      "Bash(git push *master*--force-with-lease*)",
+      "Bash(git push *+*main*)",
+      "Bash(git push *+*master*)"
     ]
   }
 }
