@@ -152,8 +152,6 @@ RP_SHIPPED = {
     "BadRequestErrorRetries": 1,
     "ContentPolicyViolationErrorRetries": 0,
 }
-# fleet-ops#9375 as this commit ships it (1/2/1 after fleet-ops#10756 and
-# fleet-ops#10178), plus the two keys fleet-ops#9050 adds on litellm 1.105.0:
 RP_PROPOSED = {
     "AuthenticationErrorRetries": 1,
     "RateLimitErrorRetries": 2,
@@ -185,7 +183,7 @@ def _counts(paths: List[str]) -> dict:
 
 # --------------------------------------------------------------------------- #
 # HTTP mock: /fail -> 429 wall, /okcapable -> 200, /okcheap -> 200,
-# /gone401 -> 401 (the real CommandCode body), /gone403 -> 403, /gone404 -> 404
+# /gone403 -> 403, /gone404 -> 404
 # --------------------------------------------------------------------------- #
 class _Handler(http.server.BaseHTTPRequestHandler):
     """Answers the /fail rows with a real 429 JSON body so LiteLLM raises
@@ -214,11 +212,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
         if "/gone401" in path:
-            # The real CommandCode 401 body (probed 2026-10-07) has no
-            # invalid_request_error type, so litellm's _map_openai_exception
-            # falls through to its status_code == 401 branch and raises
-            # AuthenticationError. A type invalid_request_error body maps to
-            # BadRequestError, which the router-level 401 value cannot cool.
             body = json.dumps({"success": False, "error": {
                 "code": "UNAUTHORIZED",
                 "status": 401,
@@ -344,8 +337,8 @@ def _rows(port, park_on_first_429=False, seat_a_lane="/fail", peer_lane="/failca
 
 async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, calls=1,
                allowed_fails_policy=None):
-    """Run `calls` calls against one Router instance (the 404 park drill needs a
-    second call on the same router to prove the parked lane stays out). With
+    """Run `calls` calls against one Router instance (the 404 and 401 park drills
+    need a second call on the same router to prove the parked lane stays out). With
     calls == 1 the return keeps the old (attempts, outcome, pin) shape; with a
     higher count it returns ([attempts per call], [outcome per call], pin)."""
     server.hits.clear()
@@ -446,6 +439,23 @@ def test_config_retry_policy_is_the_fleet_ops_9375_fix():
     the audit numbers regress and this gate fails."""
     rp = _load_retry_policy()
     assert rp == RP_PROPOSED, rp
+
+
+def test_the_live_config_parks_a_401_row_on_its_first_failure():
+    """fleet-ops#10756 pre-flight, gated: the one retry a 401 gets is a peer retry
+    only because the router-level AuthenticationErrorAllowedFails is 0, so the row
+    that answered 401 parks on its first failure. The drill injects that policy, so
+    without this gate a config edit to 1 would leave every test green and the fix
+    dead in production. No row may name the class either: a row-level value is
+    resolved before the router policy, so it could raise the threshold."""
+    with open(CONFIG_PATH, "rb") as fh:
+        cfg = yaml.safe_load(fh)
+    policy = cfg["router_settings"]["allowed_fails_policy"]
+    assert policy["AuthenticationErrorAllowedFails"] == 0, policy
+    named = [row["model_name"] for row in cfg["model_list"]
+             if "AuthenticationErrorAllowedFails"
+             in (row.get("model_info", {}).get("allowed_fails_policy") or {})]
+    assert named == [], named
 
 
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
@@ -834,14 +844,20 @@ def test_a_404_lane_retries_onto_the_peer_and_then_parks():
 
 def test_a_401_lane_retries_onto_the_peer_and_then_parks():
     """fleet-ops#10756: a dead provider key answers 401 (CommandCode answered 401
-    on chat while its model list still answered 200 on 2026-10-28). The 401 row
+    on chat while its model list still answered 200 on 2026-10-28). The mock
+    answers the real CommandCode 401 body, which litellm maps to
+    AuthenticationError; a body carrying type invalid_request_error maps to
+    BadRequestError, which the router-level 401 value cannot cool. The 401 row
     parks on its first failure through the router-level
-    AuthenticationErrorAllowedFails: 0, so the one granted retry goes to a live
-    peer and the NEXT call on the same router goes straight to the peer - one
-    dead key no longer fails the whole session. seat-a carries the prod row
-    shape (a model_info.allowed_fails_policy naming only BadRequestError), so
-    the drill also holds the issue's pre-flight: a row policy that does not name
-    the 401 class does not override the router-level 0."""
+    AuthenticationErrorAllowedFails: 0 (config/litellm-proxy.yaml, held by
+    test_the_live_config_parks_a_401_row_on_its_first_failure), so the one
+    granted retry goes to a live peer and the NEXT call on the same router goes
+    straight to the peer - one dead key no longer fails the whole session. seat-a
+    carries the prod row shape (a model_info.allowed_fails_policy naming only
+    BadRequestError), so the drill also holds the issue's pre-flight: a row policy
+    that does not name the 401 class does not override the router-level 0. The
+    worker-capable group holds exactly one peer row (seat-c), so the retry has one
+    landing spot and the asserted pick order is deterministic."""
     server = _Server()
     try:
         batches, outcomes, pin = asyncio.run(_run(
@@ -864,6 +880,7 @@ if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
+        test_the_live_config_parks_a_401_row_on_its_first_failure,
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
         test_authentication_error_gets_one_retry,
         test_rate_limit_gets_two_retries,
