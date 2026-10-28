@@ -499,9 +499,9 @@ dontAsk on Remote Control is intended: Nish cannot approve a one-off command
 from the phone. A denied call is reported in the session and there is no
 prompt to tap.
 
-The tincan unit goes live after merge, when fleet-sync has the new file and
-the user unit is reloaded (`systemctl --user daemon-reload && systemctl
---user restart tincan-listen-claude-vps.service`). Remote Control stays on
+The tincan unit goes live after merge, when fleet-host-config has the new file and
+the root unit is reloaded (`systemctl daemon-reload && systemctl
+restart tincan-listen-claude-vps.service`). Remote Control stays on
 the old `ExecStart` until Nish restarts it.
 
 **Where denials show.** Each denied call is reported twice: in the unit's

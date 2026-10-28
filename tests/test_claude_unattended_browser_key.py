@@ -6,10 +6,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_CONTROL = ROOT / "rootfs/etc/systemd/system/claude-remote-control.service"
-LISTENERS = (
-    ROOT / "systemd/tincan-listen-claude-vps.service",
-    ROOT / "rootfs/etc/systemd/system/tincan-listen-claude-vps.service",
-)
+LISTENERS = (ROOT / "rootfs/etc/systemd/system/tincan-listen-claude-vps.service",)
 BROWSER_KEY_FILE = "-/home/nish/.config/claude/browser-use.env"
 
 

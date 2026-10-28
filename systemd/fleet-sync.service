@@ -49,19 +49,20 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    line now prints DEPLOY-BLOCKED, the branch and head it found, the commits that
 #    are not on main, and the fix.
 ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at %h/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; if git merge-base --is-ancestor refs/remotes/origin/main HEAD && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then exit 0; fi; echo "DEPLOY-BLOCKED: the deploy clone is not at origin/main, so no unit or config was updated."; echo "  branch $$(git rev-parse --abbrev-ref HEAD), head $$(git rev-parse --short HEAD), origin/main $$(git rev-parse --short refs/remotes/origin/main)"; git log --oneline -n 20 refs/remotes/origin/main..HEAD | sed "s/^/  not-on-main: /"; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then work from a worktree, not the deploy clone"; exit 1'
-# 2. Link the OnFailure handler, drop the retired prometheus-reload live
-#    links, then re-read unit files. Link first so daemon-reload loads
-#    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
-#    fleet-prometheus-reload.path/.service (fleet-ops#9088); README
-#    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
-#    they are gone, and without it LINK-GUARD fails on the dangling links.
+# 2. Link the OnFailure handler, then re-read unit files. Link first so
+#    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 # 2.1 The retired weekly retro and the stale user copy of the tincan claude
 #     listener (fleet-ops#10125) left live links to deleted deploy-clone files.
-#     rm -f is a no-op once they are gone; without it LINK-GUARD fails on them.
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/retro-weekly.service /home/nish/.config/systemd/user/retro-weekly.timer /home/nish/.config/systemd/user/retro-weekly-api.service /home/nish/.config/systemd/user/retro-weekly-api.socket /home/nish/.config/systemd/user/timers.target.wants/retro-weekly.timer /home/nish/.config/systemd/user/sockets.target.wants/retro-weekly-api.socket /home/nish/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf
-ExecStart=/bin/rmdir --ignore-fail-on-non-empty /home/nish/.config/systemd/user/tincan-listen-claude-vps.service.d
+#     Stop the units first, while the links still resolve, so a Monday slot
+#     cannot start a deleted service; then rm the unit links, the timer's
+#     enable link and the drop-in link. rm -f is a no-op once they are gone,
+#     and without it LINK-GUARD fails on the dangling links. The root
+#     tincan-listen-claude-vps.service is a system unit and is not touched
+#     here. Off switch: delete this step.
+ExecStart=-/usr/bin/systemctl --user stop retro-weekly.timer retro-weekly.service retro-weekly-api.socket tincan-listen-claude-vps.service
+ExecStart=/bin/rm -f %h/.config/systemd/user/retro-weekly.service %h/.config/systemd/user/retro-weekly.timer %h/.config/systemd/user/retro-weekly-api.service %h/.config/systemd/user/retro-weekly-api.socket %h/.config/systemd/user/timers.target.wants/retro-weekly.timer %h/.config/systemd/user/sockets.target.wants/retro-weekly-api.socket %h/.config/systemd/user/default.target.wants/retro-weekly.timer %h/.config/systemd/user/default.target.wants/retro-weekly-api.socket %h/.config/systemd/user/tincan-listen-claude-vps.service %h/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf %h/.config/systemd/user/default.target.wants/tincan-listen-claude-vps.service
+ExecStart=-/bin/rmdir --ignore-fail-on-non-empty %h/.config/systemd/user/tincan-listen-claude-vps.service.d
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
 #     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
@@ -73,13 +74,6 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
 #     delete this step and `systemctl --user unlink` it by hand.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-worker-github-token@.service
-# 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
-#     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
-#     lines then drop its live links and installed prompt dir. Delete these three lines
-#     once every host has deployed this (the checklist is Nishfleet/fleet-ops#9703).
-ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
-ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
-ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
 # 2b. Retired the Grok client-version pin (fleet-ops#9223): pi-grok 0.13 does
 #     its own lookup of https://x.ai/cli/stable, so the file and its install
 #     line are gone, and this rm drops the copy earlier hosts still carry.
@@ -109,11 +103,11 @@ ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
-# 2e. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
+# 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
 #     the timer runs every 15 minutes and must not read its list out of the
-#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2e,
+#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2g,
 #     because a timer that is silently off is the failure this ships to fix
 #     (fleet-ops#9376: a one-shot transient `later-*` timer died with the manager
 #     restart, and the issue sat unpromoted). Off switch: delete this step and
@@ -122,7 +116,7 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json %h/.config/fleet-ops/intake-repos.json
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer
 # 2g. The daily provider watch: link the unit pair so every deploy carries edits to it,
-#     the same way as step 2e. The timer is NOT enabled here: README "Provider watch"
+#     the same way as step 2f. The timer is NOT enabled here: README "Provider watch"
 #     enables it once, so a hand disable stays disabled. Off switch: delete this step,
 #     then `rm` the two links in ~/.config/systemd/user and `systemctl --user daemon-reload`.
 ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'

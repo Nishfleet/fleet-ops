@@ -2,6 +2,14 @@
 Description=Hermes backend server for Desktop app (Tailscale-only)
 After=network-online.target tailscaled.service
 Wants=network-online.target
+# A persistent bind failure (the tailnet address not up, or a changed node
+# address) restarts every RestartSec=10s. The stock budget is 5 starts in 10s
+# (man systemd.unit, StartLimitIntervalSec=), which a 10s cadence never spends,
+# so the loop never reaches `failed` and its failure readers never see it
+# (fleet-ops#10584). 5 starts inside 10min is reachable, so the loop stops and
+# the unit stays failed.
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Service]
 User=nish

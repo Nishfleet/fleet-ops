@@ -1,5 +1,5 @@
 # Tether: no group may fall into tether (the Claude credit is Tether's alone, and assistant -> tether with tether -> assistant is a cycle).
-# Built from the live config's judge, senior and tether rows and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
+# Built from the live config's judge, synthetic-glm53flashe-worker-capable and tether rows and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
 model_list:
 - model_name: judge
   litellm_params:
@@ -23,22 +23,22 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-- model_name: senior
+- model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 60
   model_info:
     mode: chat
     supports_prompt_caching: true
     cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
-    id: synthetic-glm53flash-senior
+    id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge
@@ -104,8 +104,6 @@ router_settings:
   redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
   fallbacks:
-  - judge:
-    - senior
   - worker-cheap:
     - worker-capable
   - worker-public:

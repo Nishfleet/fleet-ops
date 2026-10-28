@@ -55,6 +55,14 @@
 # row's own cache_proof shows the endpoint reports cached_tokens. A floor taken
 # from a burst fires on every quiet day.
 #
+# zai's row zai-glm53flash-senior is not judged either (fleet-ops#10692). It
+# started 2026-10-28 ~12:00 UTC (#10566) and takes one-shot review calls: 325
+# requests and 2.2M input tokens in 6h (about 6.9k each, a new diff every call),
+# at 0.095 cached, while every row still reports cached_tokens. Its share tracks
+# call spacing, not whether the provider caches, so every selector above leaves
+# it out and the zai floor stays 0.9056 for the worker rows (97% of zai's
+# tokens). The synthetic senior row stays judged: its 0.7700 floor was set with it.
+#
 # A vendor not listed is not judged. ollama, openrouter and xkiro carried no
 # traffic in that window; ollama's provider still cannot report a cached count
 # (berriai/litellm#45021) and the other two served none. Onboarding a vendor
@@ -121,14 +129,14 @@ groups:
                 (
                   max by (vendor) (
                     label_replace((
-                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                       /
-                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                     ), "span", "7d", "", "")
                     or label_replace((
-                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                       /
-                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                     ), "span", "48h", "", "")
                   )
                   < on (vendor)
@@ -146,7 +154,7 @@ groups:
                   )
                 )
                 and on (vendor)
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -159,9 +167,9 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                 /
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -174,9 +182,9 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                 /
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
