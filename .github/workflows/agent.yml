@@ -936,7 +936,7 @@ jobs:
           fi
   review:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
-    runs-on: [self-hosted, agent]
+    runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
     # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
@@ -1136,7 +1136,7 @@ jobs:
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    runs-on: [self-hosted, agent]
+    runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
     timeout-minutes: 10
     permissions:
       pull-requests: write
