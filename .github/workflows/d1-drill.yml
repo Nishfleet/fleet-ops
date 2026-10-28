@@ -1,23 +1,17 @@
-# Monthly restore drill (fleet-ops#9769). Reads each database's newest existing
-# backup, restores it once into a local sqlite3 file and counts rows. It calls no
-# Cloudflare API and uses no Cloudflare token (drill rules 1 to 5 in the issue).
+# Monthly restore drill (fleet-ops#9769): newest backups restored once into local sqlite3, rows counted. No Cloudflare API.
 name: D1 restore drill
 on:
   schedule:
     - cron: "17 4 1 * *"
   workflow_dispatch: {}
 concurrency: {group: d1-drill, cancel-in-progress: false}
-permissions:
-  contents: read
-  issues: write
+permissions: {contents: read, issues: write}
 jobs:
   drill:
-    name: drill
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Restore the newest backup of each database
-        timeout-minutes: 15
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.D1_DRILL_R2_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.D1_DRILL_R2_SECRET }}
@@ -30,7 +24,7 @@ jobs:
           w=$RUNNER_TEMP/drill; mkdir -p "$w"; : > "$w/report.txt"
           trap 'rm -f "$w"/*.sql "$w"/*.age "$w"/*.zip "$w"/*.db' EXIT
           say() { echo "$*" | tee -a "$w/report.txt" >> "$GITHUB_STEP_SUMMARY"; }
-          restore() { # name, dump: one pass, at most one retry, then per-table row counts
+          restore() {
             local db=$w/$1.db t out=""
             sqlite3 -bail "$db" < "$2" || { rm -f "$db"; sqlite3 -bail "$db" < "$2"; } || { say "- $1: restore failed twice"; return; }
             while IFS= read -r t; do
@@ -61,15 +55,12 @@ jobs:
             say "- drive: cannot read backup"
           fi
           for l in "siterep-public: no backup" "aiconverter-app: no backup" "TinyStudio.io-public: no backup" "0509: no export backup" "mailbox: no D1 database found"; do say "- $l"; done
-      - name: Open or update the one findings issue
+      - name: Open an issue when any database is not ok
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          f=$RUNNER_TEMP/drill/report.txt; t='D1 restore drill: findings'
-          [ -s "$f" ] || echo "- the drill wrote no report" > "$f"
+          f=$RUNNER_TEMP/drill/report.txt
           grep -qv ': ok,' "$f" || exit 0
-          { echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; cat "$f"; } > "$RUNNER_TEMP/body.md"
-          n=$(gh issue list --state open --search "\"$t\" in:title" --json number,title -q "map(select(.title==\"$t\"))[0].number // empty")
-          if [ -n "$n" ]; then gh issue edit "$n" --body-file "$RUNNER_TEMP/body.md"; else gh issue create --title "$t" --body-file "$RUNNER_TEMP/body.md"; fi
+          { echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; cat "$f"; } | gh issue create --title "D1 restore drill findings $(date +%F)" --body-file -
