@@ -1,0 +1,96 @@
+# The drift baseline, taken before any copy task runs. The copy tasks below put
+# back the repo's version of every file, so a hand edit is already gone by the
+# time the play ends; this snapshot, and the commit it is compared against, are
+# what let the run at the end of the play report it.
+- name: List the files rootfs/ ships, with checksums
+  ansible.builtin.find:
+    paths: "{{ owned_dirs | map('regex_replace', '^', rootfs) | list }}"
+    recurse: true
+    file_type: any
+    hidden: true
+    get_checksum: true
+  register: shipped_sums
+  check_mode: false  # read-only; runs under --check too
+
+- name: List the same files on the box, with checksums
+  ansible.builtin.find:
+    paths: "{{ owned_dirs | map('regex_replace', '^', host_root) | list }}"
+    recurse: true
+    file_type: any
+    hidden: true
+    get_checksum: true
+  register: live_sums
+  check_mode: false  # read-only; runs under --check too
+
+# A symlink in rootfs/ is not a file the repo ships bytes for: copy follows it
+# and installs the target's content at the link's own path (see the comment at
+# the top of host.yml). stat follows the link, so the checksum below is the
+# target's, which is what copy installs at that path. Without this half every
+# run reports the link as hand-edited, because the live file at that path holds
+# the target's bytes. The target's checksum also makes a change to the target
+# visible, which matters when the target sits outside rootfs/etc, where the
+# diff below cannot see it.
+- name: Read the checksum of the file each shipped symlink points at
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true  # stat defaults to the link itself, which has no checksum
+    get_checksum: true
+  loop: "{{ shipped_sums.files | selectattr('islnk') | map(attribute='path') | list }}"
+  register: shipped_link_stats
+  check_mode: false  # read-only; runs under --check too
+
+- name: Read the commit this run applies
+  ansible.builtin.command: git -C {{ rootfs }}/.. rev-parse HEAD
+  register: head_sha
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+
+- name: List the files this deploy changes in rootfs/
+  ansible.builtin.command: git -C {{ rootfs }}/.. diff --name-only {{ drift_baseline_sha }} {{ head_sha.stdout }} -- rootfs/etc
+  register: deploy_changes
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+  when: drift_baseline_sha != ''
+
+- name: Work out which shipped files were edited by hand
+  ansible.builtin.set_fact:
+    hand_edited: >-
+      {{ (shipped_files | difference(live_files) | map('regex_replace', ':[0-9a-f]*$', '') | list)
+         | intersect(live_paths)
+         | difference(deploy_changed)
+         | sort }}
+  vars:
+    # What the repo ships and what the box holds, each as "<path>:<checksum>",
+    # the path relative to the host root. An entry with no checksum is dropped
+    # rather than compared: find gives none for a directory, for a file it
+    # could not read, or for a link whose target is gone, and none of those is
+    # evidence of a hand edit. The box half therefore holds only the files the
+    # walk could actually read, and a file it could not read is left unchecked
+    # instead of reported.
+    shipped_files: >-
+      {{ (shipped_link_stats.results | default([]) | map(attribute='stat') | map(attribute='path') | list
+            | zip(shipped_link_stats.results | default([]) | map(attribute='stat') | map(attribute='checksum', default='')) | map('join', ':') | list
+          + shipped_sums.files | rejectattr('isdir') | map(attribute='path') | list
+            | zip(shipped_sums.files | rejectattr('isdir') | map(attribute='checksum', default='')) | map('join', ':') | list)
+         | reject('match', '^[^:]+:$')
+         | map('replace', rootfs, '')
+         | unique | list }}
+    live_files: >-
+      {{ live_sums.files | rejectattr('isdir') | map(attribute='path') | list
+         | map('regex_replace', '^' ~ host_root, '')
+         | zip(live_sums.files | rejectattr('isdir') | map(attribute='checksum', default=''))
+         | map('join', ':') | list
+         | reject('match', '^[^:]+:$') | list }}
+    live_paths: "{{ live_files | map('regex_replace', ':[0-9a-f]*$', '') | list }}"
+    # A link's content lands at the link's own path, but the file a change to it
+    # edits is the target, and the diff above only lists the target. So a link
+    # whose target this deploy changes is excused at its own path too, or the
+    # run reports a hand edit that is really this deploy's change.
+    deploy_changed: >-
+      {{ (deploy_changes.stdout_lines | default([]) | map('regex_replace', '^rootfs', '') | list)
+         | union(shipped_sums.files | selectattr('islnk') | map(attribute='path')
+            | zip(shipped_sums.files | selectattr('islnk') | map(attribute='path') | map('realpath')
+                 | map('replace', rootfs, '') | list)
+            | selectattr('1', 'in', deploy_changes.stdout_lines | default([]) | map('regex_replace', '^rootfs', '') | list)
+            | map('first') | map('replace', rootfs, '') | list) }}
+  when: drift_baseline_sha != ''

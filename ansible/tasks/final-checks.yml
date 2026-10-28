@@ -47,6 +47,29 @@
     fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
     quiet: true
 
+# Recorded before the drift assert below, so a run that reports a hand edit
+# still moves the baseline to the commit it applied. The copy tasks have already
+# put the repo's version of every file back, so the next run compares against
+# this run and does not report the same file twice.
+- name: Record the commit this run applied
+  ansible.builtin.copy:
+    content: "{{ head_sha.stdout }}\n"
+    dest: "{{ applied_sha_file }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: head_sha.stdout | default('') != ''
+
+# The snapshot from tasks/drift-baseline.yml, taken before the copy tasks put
+# every hand edit back. A file this deploy changes on purpose is excluded, so
+# what is left is a hand edit the repo does not know about.
+- name: Fail on a hand-edited file
+  ansible.builtin.assert:
+    that: hand_edited | default([]) | length == 0
+    fail_msg: "Hand-edited, differs from fleet-ops rootfs/ and not changed by this deploy (the copy tasks have put the repo's version back; make the change in the repo): {{ hand_edited | default([]) | join(', ') }}"
+    quiet: true
+  when: drift_baseline_sha != ''
+
 # A Cua Space that did not come up fails the run here, before the last two
 # tasks; force_handlers still runs the pending handlers.
 - name: Fail when tether's Cua Space could not be readied

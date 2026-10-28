@@ -86,7 +86,7 @@
 # files count.
 - name: List config files on the box in the directories the repo owns
   ansible.builtin.find:
-    paths: "{{ owned_dirs }}"
+    paths: "{{ owned_dirs | map('regex_replace', '^', host_root) | list }}"
     recurse: true
     file_type: file
     hidden: true
@@ -98,6 +98,7 @@
     recurse: true
     file_type: any
     hidden: true
+    get_checksum: true
   register: shipped
 
 - name: Fail on a hand-installed file
@@ -108,7 +109,7 @@
   vars:
     shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
     unmanaged: >-
-      {{ live.files | map(attribute='path')
+      {{ live.files | map(attribute='path') | map('regex_replace', '^' ~ host_root, '')
          | difference(shipped_paths) | difference(box_only)
          | reject('search', package_files | join('|'))
          | reject('search', '^(' ~ (retired | map('regex_escape') | join('|')) ~ ')(/|$)')
