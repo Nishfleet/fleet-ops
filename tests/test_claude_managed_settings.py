@@ -12,10 +12,9 @@ marketplace lists fails here instead of at Claude Code start-up.
 """
 import json
 import pathlib
-import shutil
-import subprocess
 
 import pytest
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
@@ -88,11 +87,10 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
 
 
 def _managed_copies():
-    if not shutil.which("yq"):
-        pytest.skip("yq missing")
-    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
-    tasks = json.loads(out)[0]["tasks"]
-    return tasks, [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
+    plays = yaml.safe_load((ROOT / "ansible/host.yml").read_text())
+    tasks = [task for play in plays for task in play.get("tasks", [])]
+    copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
+    return tasks, copies
 
 
 def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
@@ -116,7 +114,7 @@ def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
 
 def test_the_box_wide_defaults_file_is_installed_as_itself():
     tasks, _ = _managed_copies()
-    task = {t["name"]: t for t in tasks}.get("Install the Claude Code managed-settings defaults file")
+    task = next((t for t in tasks if t.get("name") == "Install the Claude Code managed-settings defaults file"), None)
     assert task, "no task installs the box-wide managed-settings.json"
     assert task["ansible.builtin.copy"]["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
     assert task["ansible.builtin.copy"]["dest"] == "/etc/claude-code/managed-settings.json"
