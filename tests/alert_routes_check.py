@@ -10,9 +10,14 @@ bypass the policy tree. This reads the provisioning files, walks the policy tree
 for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
+It also fails when a rule or a dashboard panel reads a data source this repo does
+not provision, or an owner this repo's GitHub App has no installation for: that
+read is blind, and a rule that reads nothing turns into a DatasourceError alert
+nobody can act on (fleet-ops#9803).
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -52,6 +57,14 @@ PLAN_REPEAT = 604800
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+# A data source that was provisioned and then removed keeps its readers blind, so
+# each one names the replacement the reader must take (fleet-ops#9803).
+RETIRED_DATASOURCES = {"fleet-github-personal": "fleet-github"}
+RETIRED_OWNERS = {"nish3451": "Nishfleet"}
+# Grafana writes the built-in sources several ways: the UI names two of them, the
+# expression engine uses __expr__, and a saved expression node carries -100 (older
+# rules) or "grafana" (newer ones) as its data source uid.
+BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
 
 
 def seconds(text):
@@ -124,11 +137,133 @@ def selftest():
     assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    refs = []
+    walk_refs({"datasource": {"uid": "x"}, "targets": [
+        {"datasource": ["a", "b"]},
+        {"datasource": {"uid": "fleet-github-personal"}, "queryType": "Issues", "owner": "nish3451"}]}, "f", refs)
+    assert ("f", "datasource", "x") in refs
+    assert ("f > targets[0]", "datasource", "a") not in refs
+    assert ("f > targets[1]", "datasource", "fleet-github-personal") in refs
+    assert ("f > targets[1]", "owner", "nish3451") in refs
+    var = []
+    walk_refs({"datasource": {"uid": "${DS}"}}, "f", var)
+    assert [v for _, k, v in var if k == "variable"] == ["${DS}"]
+    planted = ref_findings({"fleet-github"}, [
+        ("f", "datasource", "fleet-github"), ("f", "datasource", "fleet-github-personal"),
+        ("f", "owner", "nish3451"), ("f", "datasource", "gone"),
+        ("f", "datasource", "-100"), ("f", "variable", "${DS}")])
+    assert planted == ["f: data source fleet-github-personal was retired, read fleet-github instead",
+                       "f: reads owner nish3451, which this repo's App has no installation for; read Nishfleet",
+                       "f: data source gone is not provisioned in provisioning/datasources"], planted
+
+
+def dead_row_shape(rules, points, bad):
+    rule = next((r for r in rules if r.get("uid") == "router-dead-row"), None)
+    if rule is None:
+        bad.append("router-dead-row: the rule is gone, so the proxy-level naming shape is no longer held anywhere")
+        return
+    expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
+    row_side = 'sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))'
+    proxy_side = 'or sum by (requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))'
+    if row_side not in expr or proxy_side not in expr:
+        bad.append("router-dead-row: the query must fire per router row (model_id) and per proxy-level series (requested_model) separately, so a page with no router row id still names the model it probed (fleet-ops#10069)")
+    annotations = rule.get("annotations") or {}
+    summary = annotations.get("summary", "")
+    if '{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}' not in summary:
+        bad.append("router-dead-row: the summary must name a proxy-level series by its requested_model instead of 'unknown row'")
+    description = annotations.get("description", "")
+    if '{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}' not in description:
+        bad.append("router-dead-row: the journal grep must fall back to the requested_model when the series carries no model_id")
+    if "Do NOT remove or bench it without Nish's explicit yes" not in description or "{{ if $labels" in description:
+        bad.append("router-dead-row: the description must keep the remove-or-bench gate for every series, proxy-level included")
+    template = (points.get("router-dead-row-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
+    if ".Labels.requested_model" not in template or "proxy-level" not in template or "unnamed proxy request" not in template:
+        bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
+    if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
+        bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
+
+
+def provisioned_uids(provisioning):
+    uids = set()
+    for f in sorted((Path(provisioning) / "datasources").glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for d in doc.get("datasources") or []:
+            assert d.get("uid"), f"{f.name}: a data source without a uid cannot be referenced"
+            uids.add(d["uid"])
+    assert uids, f"no data source provisioned under {provisioning}/datasources"
+    return uids
+
+
+def walk_refs(node, where, out):
+    """Every data source uid, query owner and template variable in a rule model or
+    a dashboard panel tree, as (where, kind, value)."""
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        uid = ds.get("uid") if isinstance(ds, dict) else ds
+        if isinstance(uid, str) and uid:
+            out.append((where, "variable" if "${" in uid else "datasource", uid))
+        if node.get("datasourceUid"):
+            out.append((where, "datasource", node["datasourceUid"]))
+        if node.get("queryType") and node.get("owner"):
+            out.append((where, "owner", node["owner"]))
+        for key, value in node.items():
+            if isinstance(value, (dict, list)):
+                walk_refs(value, where if key in ("model", "options") else f"{where} > {key}", out)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            walk_refs(value, f"{where}[{i}]", out)
+
+
+def datasource_refs(root, provisioning):
+    """[(where, kind, value)] for every alert rule and dashboard panel that names one.
+    A file that carries a rule or a dashboard but names no data source at all is a
+    broken walk, not a silent pass."""
+    out, per_file = [], {}
+    for f in sorted(Path(root).glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        rules = [r for g in doc.get("groups") or [] for r in g["rules"]]
+        before = len(out)
+        for r in rules:
+            walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
+        if rules:
+            per_file[f.name] = len(out) - before
+    dash = Path(provisioning).parent / "dashboards"
+    files = sorted(dash.glob("*.json"))
+    assert files, f"no dashboard json under {dash}"
+    for f in files:
+        before = len(out)
+        walk_refs(json.loads(f.read_text()), f.name, out)
+        per_file[f.name] = len(out) - before
+    silent = sorted(k for k, n in per_file.items() if not n)
+    assert not silent, f"{silent} carry rules or a dashboard but name no data source, so the walk never reached them"
+    return out
+
+
+def ref_findings(uids, refs):
+    """Findings for every reference that reads a data source this repo does not
+    provision, or an owner its GitHub App has no installation for."""
+    bad = []
+    for where, kind, value in refs:
+        if kind == "owner" and value.lower() in RETIRED_OWNERS:
+            bad.append(f"{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value.lower()]}")
+        elif kind == "datasource" and value in RETIRED_DATASOURCES:
+            bad.append(f"{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
+        elif kind == "datasource" and value not in uids and value not in BUILTIN_DATASOURCES:
+            bad.append(f"{where}: data source {value} is not provisioned in provisioning/datasources")
+    return bad
+
+
+def check_datasource_refs(root, provisioning):
+    uids = provisioned_uids(provisioning)
+    bad = ref_findings(uids, datasource_refs(root, provisioning))
+    if not bad:
+        print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
+    return bad
 
 
 def main(root):
     selftest()
-    rules, policy, contacts, contacts_doc = [], None, set(), []
+    rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for g in doc.get("groups") or []:
@@ -137,10 +272,15 @@ def main(root):
             policy = p
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
+            points[c["name"]] = c
             contacts_doc.append(c)
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
-    bad, paging = [], {}
+    bad, paging = check_datasource_refs(root, Path(root).parent), {}
+    for c in contacts_doc:
+        for rcv in c.get("receivers") or []:
+            if ".GeneratorURL" in json.dumps(rcv):
+                bad.append(f"{c['name']}: the issue body must not interpolate .GeneratorURL, the private Grafana host, because this repo is public (fleet-ops#10763)")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():
@@ -176,6 +316,7 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    dead_row_shape(rules, points, bad)
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",

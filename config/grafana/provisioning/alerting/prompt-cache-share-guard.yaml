@@ -8,18 +8,18 @@
 # report the count (fleet-ops#9385 point 2).
 #
 # The bar: no vendor in use may fall more than 2 points below the share it read
-# in the 48h after the bump (opencodego excepted, below). That reading was taken on this box at
-# 2026-10-25T08:12Z, and the floors below are it minus 0.02:
+# in the 48h after the bump (opencodego and synthetic excepted, below). That reading was taken on this box at
+# 2026-10-25T08:12Z, and the floors below are it minus 0.02, except those two:
 #
-#   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.8723
+#   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.7700
 #   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
 #   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
-#   opencodego   0.9421 -> 0.9021      anthropic   0.4531 -> 0.4331
+#   opencodego   0.9421 -> 0.8800      anthropic   0.4531 -> 0.4331
 #   commandcode  0.9298 -> 0.9098
 #   zai          0.9256 -> 0.9056
 #
-# opencodego's floor is 4 points down, not 2 (fleet-ops#10630; the same alert
-# was filed as #10506 and #10588, each 0.0003 to 0.0005 under the old floor).
+# opencodego's floor is 6.2 points down, not 2 (fleet-ops#10757, after #10630's
+# 4; the same alert was filed as #10506, #10588 and #10630).
 # Its 48h read is a token-weighted mix of rows, and the 0.9421 baseline caught a
 # mix the box does not hold on a quiet day. Per row at 2026-10-28, from
 # litellm_input_*_metric_total: worker-capable 25.1M tokens at 0.956 (0.945 to
@@ -31,9 +31,44 @@
 # with the same worker-capable share, so the 0.9421 baseline is the top of that
 # swing and 0.9021 is the baseline re-read from a fresh 48h (0.9216) minus 2
 # points. The cost: a 2 to 4 point drift on opencodego now passes; a failure on
-# the worker-capable row, which carries 86% of the tokens, still takes the
-# vendor under 0.9021 (a big row at 0.92 reads 0.8784, a test case below), and
-# the 1-hour paging rule covers a total one.
+# the worker-capable row, which carries 86% of the tokens, took the
+# vendor under the floor, and the 1-hour paging rule covers a total one (see
+# #10757 below for the floor now in force).
+#
+# #10757 (2026-10-29): the 48h read was 0.9011, 0.0010 under 0.9021, with every
+# row still reporting cached_tokens. Per row over 48h: worker-capable 34.7M
+# tokens at 0.932; assistant 2.0M at 0.66; judge 0.9M at 0.73; worker-cheap
+# 0.6M at 0.20. The big row caused it: at its old 0.956 the mix reads 0.923 and
+# stays silent. Its spend-log share (LiteLLM_SpendLogs, model_id
+# opencodego-ds41flash-worker-capable, cached_tokens over prompt_tokens) was
+# 0.944, 0.941, 0.955, 0.936 and 0.928 a day from 2026-10-24 to 10-28, with no
+# row missing the field since 10-24. The 2026-10-28 dip is two bursts after
+# idle: hour 12 UTC read 0.467 on 0.2M tokens and hour 13 read 0.822 on 3.6M,
+# while hours 05 and 06 read 0.941 and 0.964. So the prefix held and the fall is
+# cold caches at the start of each burst; the row's traffic is bursty (7M to
+# 130M a day), and the proxy restarted at about 14:30 UTC (counter reset 18.4M
+# to 0.1M), which empties the counters but not the vendor cache. The 7d read of
+# 0.749 is the pre-bump days still in the window (0.7705 on 49.6M tokens), and
+# the rule fires only when both windows are under the floor. The floor is the
+# fresh 48h read (0.9011) minus 2 points, 0.8800, which is 6.2 points under the
+# 0.9421 baseline. This is the second loosening in two days (0.9221, 0.9021,
+# 0.8800), and each rests on the same cold-burst cause, so a fifth filing means
+# stop moving the floor and look at the row's burst pattern. The cost: a
+# worker-capable row at about 0.91 now passes (about 4.6 points more full-price
+# input on 86 to 91% of the tokens); one at 0.90 beside the usual small rows
+# reads 0.861 and fires (a test case below).
+#
+# synthetic's floor is 12 points down, not 2 (fleet-ops#10654). Its senior row
+# (glm53flash-senior, 16.7M of 44.8M input tokens in the 48h to 2026-10-28)
+# swings with load: its 24h share read 0.89, 0.88, 0.73, 0.57 and 0.85 on five
+# days running, and the small rows read 0.00 to 0.03 on quiet days (sparse calls
+# finding a cold cache). Every row still reports cached_tokens, so this is mix
+# and call spacing, not a lost prefix. The vendor 48h read from
+# litellm_input_*_metric_total on successive days: 0.790, 0.872, 0.900, 0.895,
+# 0.872, 0.865, and 0.804 now (7d 0.870). 0.7700 sits under the lowest. The
+# cost: a 2 to 12 point drift on synthetic now passes; the senior row losing its
+# cache outright (37% of the tokens) still takes the vendor to about 0.63 and
+# fires, and the 1-hour paging rule covers a total one.
 #
 # alibaba (0.8484) is not judged (fleet-ops#10410). It carries only the one-shot
 # judge row alibaba-qwen38max-judge, about 100 requests and 3M input tokens a
@@ -42,6 +77,14 @@
 # 2026-10-25T11:46Z, 0.03 from 2026-10-26T11:00Z (14 requests in 6h), and the
 # row's own cache_proof shows the endpoint reports cached_tokens. A floor taken
 # from a burst fires on every quiet day.
+#
+# zai's row zai-glm53flash-senior is not judged either (fleet-ops#10692). It
+# started 2026-10-28 ~12:00 UTC (#10566) and takes one-shot review calls: 325
+# requests and 2.2M input tokens in 6h (about 6.9k each, a new diff every call),
+# at 0.095 cached, while every row still reports cached_tokens. Its share tracks
+# call spacing, not whether the provider caches, so every selector above leaves
+# it out and the zai floor stays 0.9056 for the worker rows (97% of zai's
+# tokens). The synthetic senior row stays judged: its 0.7700 floor was set with it.
 #
 # A vendor not listed is not judged. ollama, openrouter and xkiro carried no
 # traffic in that window; ollama's provider still cannot report a cached count
@@ -109,32 +152,32 @@ groups:
                 (
                   max by (vendor) (
                     label_replace((
-                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                       /
-                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                     ), "span", "7d", "", "")
                     or label_replace((
-                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                       /
-                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                     ), "span", "48h", "", "")
                   )
                   < on (vendor)
                   (
                     label_replace(vector(0.9396), "vendor", "stepfun", "", "")
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-                    or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+                    or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
                     or label_replace(vector(0.9259), "vendor", "minimax", "", "")
                     or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
-                    or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
+                    or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
                     or label_replace(vector(0.8231), "vendor", "straitly", "", "")
                     or label_replace(vector(0.7566), "vendor", "cline", "", "")
                     or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
                   )
                 )
                 and on (vendor)
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -147,9 +190,9 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
                 /
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -162,9 +205,9 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
                 /
-                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -190,6 +233,6 @@ groups:
         for: 15m
         annotations:
           summary: 'Prompt-cache share on {{ $labels.vendor }} is under its post-bump floor'
-          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (4 for opencodego, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (about 6 for opencodego and 12 for synthetic, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
         labels: {severity: warning, signal: prompt-cache-share-guard}
         isPaused: false

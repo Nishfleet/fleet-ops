@@ -8,13 +8,14 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
-PLAY = json.loads(subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout)[0]
+PLAY = json.loads(subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout)[0]
 TASKS = {t["name"]: t for t in PLAY["tasks"]}
 APT = TASKS["Install the Bot Desktop packages Hermes computer_use needs on a headless host"]
 OPT_IN = TASKS["Let Hermes start its own headless Bot Desktop when computer_use needs a display"]
