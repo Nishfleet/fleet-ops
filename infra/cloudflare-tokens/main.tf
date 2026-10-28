@@ -97,14 +97,6 @@ locals {
       zone        = []
       vps_only    = false
     }
-    "inish-mail-filter" = {
-      repo        = "inish-mail-filter"
-      environment = null
-      secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Workers Scripts Write", "Account Settings Read"]
-      zone        = []
-      vps_only    = false
-    }
     "seo-fix-kit" = {
       repo        = "seo-fix-kit"
       environment = null
