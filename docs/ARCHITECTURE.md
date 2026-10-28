@@ -231,9 +231,14 @@ no second dispatcher, no Kubernetes.
 
 Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
-`Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
-a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
+`Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`
+set so the restart cadence can spend the budget — a unit whose cadence can never
+reach the limit restarts for ever and never becomes `failed`, so the one reader
+it has (its `OnFailure=` hook, the `node_systemd_unit_state` gauge on a system
+unit or the manager's failed list) sees nothing
+(`tests/test_systemd_unit_keys.py` gates this), a `.path` unit or a
+named-reason timer, a `systemd-run --user` transient unit, or Pi's stock dispatch
+(`.github/workflows/agent.yml`). If no existing
 owner fits, open a design proposal through the senior-conference channel — do
 not build by fiat.
 
