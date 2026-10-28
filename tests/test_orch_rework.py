@@ -139,7 +139,8 @@ def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
     env, log = _issue_env(tmp_path, True, 1, pulls_fail=True)
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
-    assert "go=true" not in (tmp_path / "out").read_text() if (tmp_path / "out").exists() else True
+    out = tmp_path / "out"
+    assert not out.exists() or "go=true" not in out.read_text()
     assert "the PR list for orch/issue-77 failed; skip" in log.read_text() + r.stdout
 
 
