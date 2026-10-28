@@ -1,0 +1,101 @@
+# The queue itself is down: agent-dispatch cannot start (fleet-ops#10204, part B).
+#
+# Why: on 2026-10-23 a breaking change made every agent-dispatch run end
+# startup_failure, the queue could not fix itself, and nobody was told for 16 h.
+#
+# Signal: the stock GitHub data source (fleet-github, read-only) lists the runs of
+# agent-dispatch.yml in fleet-ops in the last 3 days (Workflow_Runs). The SQL
+# expression keeps the newest finished run, skips skipped and cancelled ones, and
+# reads 1 when it ended startup_failure, 0 otherwise. Enrolled repos call this same
+# file, so a break in it shows here first. for: 30m means the newest run must still
+# be a startup_failure 30 minutes later (2h for the second rule). No finished run is NoData, which is OK.
+#
+# Two rules on the same query, as deploy-failed does: queue-down (warning, 30m)
+# files one agent-ready issue; queue-down-2h (critical, for 2h) texts Nish, because
+# if it is still down then the queue cannot have fixed it.
+#
+# Known gaps: a run that fails in a job (not at startup) is the worker lanes' to
+# report. Starting the orchestrator by hand needs a GitHub token with actions:write,
+# which the issue-filing token lacks, and the dispatch inputs of fleet-ops#10199,
+# which are not on main yet. Until then the filed issue and the 2 h text are the
+# whole response. Enrolled repos' own runs are not read; add one rule per repo by
+# copying this one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: queue-down
+    folder: fleet
+    interval: 5m
+    rules:
+      - uid: queue-down-fleet-ops
+        title: Queue down agent-dispatch startup_failure
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN conclusion = 'startup_failure' THEN 1 ELSE 0 END AS down
+                FROM A
+                WHERE status = 'completed' AND conclusion NOT IN ('skipped', 'cancelled')
+                ORDER BY id DESC
+                LIMIT 1
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}The queue is down: the newest agent-dispatch run in fleet-ops ended startup_failure and nothing has started since.{{ else }}The fleet cannot read GitHub runs for the queue-down rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}No agent can pick up work until agent-dispatch starts again. Read the run page for the startup error, fix the workflow, and prove a new run starts. Nish is texted if this is still firing after 2 hours.{{ else }}Check the GitHub data source in Grafana.{{ end }} Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent-dispatch.yml'
+        labels: {severity: warning, signal: queue-down}
+        isPaused: false
+
+      - uid: queue-down-2h-fleet-ops
+        title: Queue down for 2h agent-dispatch startup_failure
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN conclusion = 'startup_failure' THEN 1 ELSE 0 END AS down
+                FROM A
+                WHERE status = 'completed' AND conclusion NOT IN ('skipped', 'cancelled')
+                ORDER BY id DESC
+                LIMIT 1
+        noDataState: OK
+        execErrState: Error
+        for: 2h
+        annotations:
+          summary: '{{ if $values }}The queue is down: the newest agent-dispatch run in fleet-ops ended startup_failure and nothing has started since.{{ else }}The fleet cannot read GitHub runs for the queue-down rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}No agent can pick up work until agent-dispatch starts again. Read the run page for the startup error, fix the workflow, and prove a new run starts. Nish is texted: the queue could not fix this in 2 hours.{{ else }}Check the GitHub data source in Grafana.{{ end }} Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent-dispatch.yml'
+        labels: {severity: critical, signal: queue-down}
+        isPaused: false
