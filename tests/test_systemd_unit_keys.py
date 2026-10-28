@@ -1960,3 +1960,164 @@ def test_retro_stoppost_is_quiet_on_a_delivered_run(tmp_path: Path) -> None:
     result, _, _, _ = _run_retro_stoppost(tmp_path)
     assert result.returncode == 0
     assert result.stdout == "" and result.stderr == ""
+
+
+RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}
+
+DESIGNED_FLAPPERS = {
+    "rootfs/etc/systemd/system/tailscaled.service": "SSH is tailnet-only, so it is the lifeline and must keep coming back",
+    "rootfs/etc/systemd/system/claude-remote-control.service": "rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf pages on every exit through ExecStopPost=, so it needs no failed state",
+    "rootfs/etc/systemd/system/hermes-gateway.service": "HermesGatewayDown (rootfs/etc/prometheus/fleet_rules.yml) pages a 5-minute window with no active state, so it needs no failed state",
+}
+
+# A unit that sets neither key inherits systemd's own defaults below, and a span
+# is a number with one of TIME_SPANS' units or 'infinity' (systemd.time's span
+# grammar; systemd.unit, StartLimitIntervalSec= and StartLimitBurst=):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=
+DEFAULT_START_INTERVAL_SEC = 10.0
+DEFAULT_START_BURST = 5.0
+DEFAULT_RESTART_SEC = 0.1
+
+TIME_SPANS = {
+    "usec": 1e-6,
+    "us": 1e-6,
+    "µs": 1e-6,
+    "msec": 1e-3,
+    "ms": 1e-3,
+    "s": 1.0,
+    "sec": 1.0,
+    "second": 1.0,
+    "seconds": 1.0,
+    "m": 60.0,
+    "min": 60.0,
+    "minute": 60.0,
+    "minutes": 60.0,
+    "h": 3600.0,
+    "hr": 3600.0,
+    "hour": 3600.0,
+    "hours": 3600.0,
+    "d": 86400.0,
+    "day": 86400.0,
+    "days": 86400.0,
+    "w": 604800.0,
+    "week": 604800.0,
+    "weeks": 604800.0,
+    "M": 2629746.0,
+    "month": 2629746.0,
+    "months": 2629746.0,
+    "y": 31557600.0,
+    "year": 31557600.0,
+    "years": 31557600.0,
+}
+_TIME_SPAN_SUFFIXES = "|".join(sorted(TIME_SPANS, key=len, reverse=True))
+_TIME_SPAN_PATTERN = rf"([0-9]*\.?[0-9]+)\s*({_TIME_SPAN_SUFFIXES})?"
+
+
+def _seconds(value: str) -> float:
+    """A systemd time span in seconds: a bare number is seconds, 'infinity' is 0.
+
+    The suffixes are matched longest first, so 'usec' is not cut at 'us'.
+    """
+    text = value.strip()
+    if text == "infinity":
+        return 0.0
+    spans = re.findall(_TIME_SPAN_PATTERN, text)
+    assert spans, f"{value!r} is not a systemd time span"
+    residue = re.sub(_TIME_SPAN_PATTERN, "", text).strip()
+    assert not residue, f"{value!r}: {residue!r} is not a systemd time-span part"
+    return sum(float(number) * TIME_SPANS.get(unit, 1.0) for number, unit in spans)
+
+
+def unit_sources() -> dict[str, list[Path]]:
+    """Unit path to every file that layers onto it, in systemd's apply order.
+
+    The key is the unit's path, because the same unit name ships twice here: a
+    linked user unit in systemd/ and a root-owned one in rootfs/etc/systemd are
+    different units with different failure hooks. A drop-in directory names a unit
+    even when its base is not in this repo: the self-hosted runners and tailscaled
+    ship their base from the vendor, and that drop-in is the whole restart policy.
+    A quadlet is a source too: podman generates the unit from it and passes its
+    [Unit] keys through.
+    """
+    sources: dict[str, list[Path]] = {}
+    for pattern in (
+        "systemd/*.service",
+        "rootfs/etc/systemd/system/*.service",
+        "rootfs/etc/systemd/user/*.service",
+        "containers/quadlet/*.container",
+    ):
+        for path in sorted(ROOT.glob(pattern)):
+            key = f"{path.parent.relative_to(ROOT)}/{path.name}"
+            sources[key] = [path, *sorted(path.parent.glob(f"{path.name}.d/*.conf"))]
+    for dropin_dir in sorted(
+        [*ROOT.glob("systemd/*.d"), *ROOT.glob("rootfs/etc/systemd/system/*.d"), *ROOT.glob("rootfs/etc/systemd/user/*.d")]
+    ):
+        key = f"{dropin_dir.parent.relative_to(ROOT)}/{dropin_dir.name[: -len('.d')]}"
+        sources.setdefault(key, sorted(dropin_dir.glob("*.conf")))
+    return sources
+
+
+def effective_values(name: str) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for layer in unit_sources()[name]:
+        for key, layer_values in _unit_keys(layer).items():
+            values.setdefault(key, []).extend(layer_values)
+    return values
+
+
+def restarting_units() -> list[str]:
+    return sorted(name for name in unit_sources() if effective_values(name).get("Restart", [None])[-1] in RESTART_POLICIES)
+
+
+def _last_value(values: dict[str, list[str]], key: str, default: float) -> float:
+    return _seconds(values[key][-1]) if key in values else default
+
+
+def test_every_restart_surface_is_covered() -> None:
+    sources = unit_sources()
+    units = restarting_units()
+    assert units, "no unit with Restart=on-failure or always was found"
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    missing = [surface for surface in surfaces if not any(str(sources[name][0]).startswith(f"{ROOT}/{surface}/") for name in units)]
+    assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
+
+
+def test_designed_flappers_are_restarting_units() -> None:
+    """Every exemption is a live restart policy, so a stale key cannot hide a real gap."""
+    stale = sorted(set(DESIGNED_FLAPPERS) - set(restarting_units()))
+    assert not stale, f"DESIGNED_FLAPPERS lists units that ship no restart policy: {stale}"
+
+
+@pytest.mark.parametrize("name", restarting_units())
+def test_start_limit_is_reachable_before_a_crash_loop_hides(name: str) -> None:
+    """A crash loop must reach `failed`, the state its failure readers poll.
+
+    Which reader that is depends on the unit: an OnFailure= hook, the
+    node_systemd_unit_state gauge on a system unit, or the manager's failed
+    list. A unit with a Restart= policy and no StartLimitIntervalSec inherits
+    systemd's default 5 starts in 10 s. At any cadence slower than 2 s that
+    budget never fills, so the unit never enters `failed`, no reader fires,
+    and a crash loop restarts for ever with nothing to see (fleet-ops#10253).
+    DESIGNED_FLAPPERS holds the units that must never be benched, each with
+    its reason.
+    """
+    values = effective_values(name)
+    interval = _last_value(values, "StartLimitIntervalSec", DEFAULT_START_INTERVAL_SEC)
+    burst = _last_value(values, "StartLimitBurst", DEFAULT_START_BURST)
+    if name in DESIGNED_FLAPPERS:
+        assert interval == 0, f"{name} no longer disables the start limit; drop it from DESIGNED_FLAPPERS"
+        return
+    restart_text = values["RestartSec"][-1].strip() if "RestartSec" in values else ""
+    assert restart_text != "infinity", (
+        f"{name}: RestartSec=infinity schedules no restart after an exit, so a crash never comes back; "
+        f"set a finite RestartSec"
+    )
+    restart = _last_value(values, "RestartSec", DEFAULT_RESTART_SEC)
+    spent = burst * restart
+    assert spent < interval, (
+        f"{name}: Restart={values['Restart'][-1]} RestartSec={restart:g}s spends its start limit at "
+        f"{burst:g} x {restart:g}s = {spent:g}s, which never fills inside StartLimitIntervalSec={interval:g}s, "
+        f"so a crash loop restarts for ever and never reaches `failed`, the state its failure readers poll "
+        f"(fleet-ops#10253). Set StartLimitIntervalSec=10min and StartLimitBurst=5, or list the "
+        f"unit in DESIGNED_FLAPPERS with its reason."
+    )
