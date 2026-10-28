@@ -31,9 +31,13 @@ terraform {
 provider "cloudflare" {}
 
 # The secrets are written by the nishfleet-secrets GitHub App (Secrets and Environments write, metadata read,
-# installed only on the repos below), never a person's login (fleet-ops#10601). app_auth reads GITHUB_APP_ID,
-# GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PEM_FILE (the key's contents) from the environment, set by the unit.
+# installed only on the repos in main.tf), never a person's login (fleet-ops#10601).
+# The key's contents arrive as the sensitive variable github_app_pem (TF_VAR_github_app_pem, set by the unit).
 provider "github" {
   owner = var.github_owner
-  app_auth {}
+  app_auth {
+    id              = var.github_app_id
+    installation_id = var.github_app_installation_id
+    pem_file        = var.github_app_pem
+  }
 }

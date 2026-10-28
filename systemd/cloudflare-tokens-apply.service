@@ -40,8 +40,6 @@ Environment=TF_IN_AUTOMATION=1
 ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
 # GitHub: the nishfleet-secrets App, not the owner's personal login (fleet-ops#10601). The key file is 0600 in a
 # 0700 directory; its contents go to the provider through the environment of this one process only.
-Environment=GITHUB_APP_ID=5509997
-Environment=GITHUB_APP_INSTALLATION_ID=176168389
-ExecStart=/bin/sh -c 'GITHUB_APP_PEM_FILE=$$(cat %h/.config/fleet-secrets-app/nishfleet-secrets.private-key.pem) && export GITHUB_APP_PEM_FILE && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
+ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/fleet-secrets-app/nishfleet-secrets.private-key.pem) && export TF_VAR_github_app_pem && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
 TimeoutStartSec=900
 UMask=0077

@@ -1304,8 +1304,8 @@ def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_in
 def test_cloudflare_tokens_unit_writes_secrets_as_the_secrets_app_not_a_personal_login() -> None:
     text = CF_TOKENS_UNIT.read_text()
     assert "gh auth token" not in text and "GITHUB_TOKEN" not in text, "a personal login must not write repo secrets (fleet-ops#10601)"
-    assert "GITHUB_APP_ID=" in text and "GITHUB_APP_INSTALLATION_ID=" in text and "GITHUB_APP_PEM_FILE=" in text
-    assert "app_auth {}" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
+    assert "TF_VAR_github_app_pem=" in text
+    assert "pem_file        = var.github_app_pem" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
 
 
 def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:

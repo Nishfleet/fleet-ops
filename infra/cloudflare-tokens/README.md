@@ -135,8 +135,7 @@ sha256 checked) into `~/.local/bin/tofu`.
 
     cd infra/cloudflare-tokens
     set -a; . ~/.config/cloudflare/token-minter.env; set +a
-    export GITHUB_APP_ID=5509997 GITHUB_APP_INSTALLATION_ID=176168389
-    export GITHUB_APP_PEM_FILE="$(cat ~/.config/fleet-secrets-app/nishfleet-secrets.private-key.pem)"
+    export TF_VAR_github_app_pem="$(cat ~/.config/fleet-secrets-app/nishfleet-secrets.private-key.pem)"
     tofu init && tofu plan && tofu apply
 
 Run it from an interactive session of the admin login, not from a jailed worker:
