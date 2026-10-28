@@ -65,6 +65,11 @@ RETIRED_OWNERS = {"nish3451": "Nishfleet"}
 # expression engine uses __expr__, and a saved expression node carries -100 (older
 # rules) or "grafana" (newer ones) as its data source uid.
 BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
+# The issue route is fail-closed: its url is an env reference only the
+# production quadlet sets, so a copy of the provisioning without the env fails
+# to provision at boot instead of filing real fleet-ops issues (fleet-ops#9795).
+GITHUB_API = "https://api.github.com/"
+ENV_ISSUE_URL = "$__env{FLEET_GITHUB_ISSUES_URL}"
 
 
 def seconds(text):
@@ -265,19 +270,20 @@ def main(root):
     selftest()
     rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
     for f in sorted(Path(root).glob("*.y*ml")):
-        text = f.read_text()
-        if "api.github.com" in text:
-            print(f"::error::{f}: a literal GitHub URL lets a scratch Grafana with a real token file real fleet-ops issues (fleet-ops#9795); use $__env{{FLEET_GITHUB_ISSUES_URL}}, which only the production quadlet sets, so a copy without the env fails provisioning at boot")
-            return 1
-        doc = yaml.safe_load(text) or {}
-        for g in doc.get("groups") or []:
-            rules += g["rules"]
-        for p in doc.get("policies") or []:
-            policy = p
+        doc = yaml.safe_load(f.read_text()) or {}
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
             points[c["name"]] = c
             contacts_doc.append(c)
+            for r in c.get("receivers") or []:
+                url = (r.get("settings") or {}).get("url")
+                if url and url.startswith(GITHUB_API):
+                    print(f"::error::{f}: contact point {c['name']} receiver {r.get('uid')} posts to the literal {url}; use {ENV_ISSUE_URL}, which only the production quadlet sets, so a copy of the provisioning without the env fails provisioning at boot (fleet-ops#9795)")
+                    return 1
+        for g in doc.get("groups") or []:
+            rules += g["rules"]
+        for p in doc.get("policies") or []:
+            policy = p
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
     bad, paging = check_datasource_refs(root, Path(root).parent), {}

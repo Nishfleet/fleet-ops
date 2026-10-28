@@ -216,7 +216,9 @@ jobs:
           # never a literal in the provisioning files: a scratch Grafana that
           # copies the provisioning without the env then fails at boot instead of
           # filing real fleet-ops issues (fleet-ops#9795).
-          grep -q '^Environment=FLEET_GITHUB_ISSUES_URL=https://api.github.com/repos/Nishfleet/fleet-ops/issues$' "$q" || { echo "::error::$q must set FLEET_GITHUB_ISSUES_URL to the fleet-ops issues API"; exit 1; }
+          # -x matches the whole line, so no anchors; -F is a fixed string, so the
+          # dots in api.github.com are not regex wildcards (fleet-ops#9795 review).
+          grep -qxF 'Environment=FLEET_GITHUB_ISSUES_URL=https://api.github.com/repos/Nishfleet/fleet-ops/issues' "$q" || { echo "::error::$q must set FLEET_GITHUB_ISSUES_URL to the fleet-ops issues API"; exit 1; }
           if grep -rq 'api.github.com' config/grafana/provisioning/; then
             grep -rn 'api.github.com' config/grafana/provisioning/
             echo "::error::a literal GitHub URL in config/grafana/provisioning bypasses FLEET_GITHUB_ISSUES_URL; a scratch Grafana with a real token would file real issues"
@@ -1681,6 +1683,66 @@ jobs:
             exit 1
           fi
           echo "grafana-boot: $image healthy, no provisioning error"
+      - name: A Grafana with no FLEET_GITHUB_ISSUES_URL cannot provision the issue route (fleet-ops#9795)
+        # The issue-filing route is fail-closed only if a copy of the provisioning
+        # that does not set the env cannot boot, and every container above sets it
+        # (the boot step points it at a dead port, the reload drill at the sink).
+        # This step is the only proof of that: the same pinned image, the same real
+        # provisioning files, the same secret mounts, and every Environment= and
+        # Secret= the quadlet sets EXCEPT FLEET_GITHUB_ISSUES_URL, read from the
+        # quadlet itself so the two cannot drift. Grafana must exit instead of
+        # becoming healthy, and its log must name the contact point that lost its
+        # url, so a scratch Grafana holding a real token can post to nothing.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          q=containers/quadlet/fleet-grafana.container
+          image=$(sed -n 's/^Image=docker\.io\///p' "$q")
+          d=$RUNNER_TEMP/no-env
+          mkdir -p "$d/prov" "$d/data"
+          chmod 0777 "$d/data"
+          cp config/grafana/provisioning/alerting/*.yaml "$d/prov/"
+          docker rm -f grafana-no-env >/dev/null 2>&1 || true
+          # The dummy secrets are written by the "Start the quadlet's Grafana"
+          # step above; the alerting provisioning is the only dir mounted here,
+          # because that is the file that must fail to parse.
+          pw="$RUNNER_TEMP/secrets/grafana-admin-password"
+          test -s "$pw" || { echo "::error::dummy admin password file missing or empty; the boot step must write it"; exit 1; }
+          args=()
+          while IFS= read -r l; do
+            case "$l" in
+              FLEET_GITHUB_ISSUES_URL=*|GF_SERVER_HTTP_PORT=*) continue ;;
+            esac
+            args+=(--env "$l")
+          done < <(sed -n 's/^Environment=//p' "$q")
+          while IFS= read -r n; do echo dummy > "$RUNNER_TEMP/secrets/$n"; chmod 0644 "$RUNNER_TEMP/secrets/$n"; args+=(-v "$RUNNER_TEMP/secrets/$n:/run/secrets/$n:ro"); done < <(sed -n 's/^Secret=\([^,]*\),.*/\1/p' "$q")
+          docker run -d --name grafana-no-env --network host --user "$(id -u):$(id -g)" \
+            "${args[@]}" --env GF_SERVER_HTTP_PORT=3999 \
+            -v "$d/prov:/etc/grafana/provisioning/alerting:ro" \
+            -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
+            -v "$pw:/run/secrets/grafana-admin-password:ro" \
+            -v "$d/data:/var/lib/grafana" \
+            "docker.io/$image" >/dev/null
+          up=0
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:3999/api/health" >/dev/null 2>&1; then up=1; break; fi
+            [ "$(docker inspect -f '{{.State.Running}}' grafana-no-env)" = true ] || break
+            sleep 2
+          done
+          if [ "$up" = 1 ]; then
+            docker logs grafana-no-env 2>&1 | grep -E 'level=(error|crit)' | cut -c1-400 | head -n 8 || true
+            echo "::error::a Grafana with no FLEET_GITHUB_ISSUES_URL became healthy: its issue-filing route is not fail-closed"
+            exit 1
+          fi
+          if [ "$(docker inspect -f '{{.State.Running}}' grafana-no-env)" = true ]; then
+            echo "::error::a Grafana with no FLEET_GITHUB_ISSUES_URL is still running after 60s"
+            exit 1
+          fi
+          docker logs grafana-no-env 2>&1 | grep -E 'level=error' > "$RUNNER_TEMP/noenv.txt" || true
+          grep -q 'Failed to provision alerting' "$RUNNER_TEMP/noenv.txt" || { cat "$RUNNER_TEMP/noenv.txt"; echo "::error::no provisioning failure in the log of a Grafana with no FLEET_GITHUB_ISSUES_URL"; exit 1; }
+          grep -q "required field 'url' is not specified" "$RUNNER_TEMP/noenv.txt" || { cut -c1-400 "$RUNNER_TEMP/noenv.txt" | head -n 8; echo "::error::the contact point loaded without its url"; exit 1; }
+          cut -c1-400 "$RUNNER_TEMP/noenv.txt" | head -n 4
+          echo "grafana-boot: a Grafana with no FLEET_GITHUB_ISSUES_URL exited, and its log names the contact point that lost its url"
       - name: Provisioning reload path unit covers every mounted dir and its reload call works
         # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so
         # a merged rule change sat unloaded for 31 hours and paged a false

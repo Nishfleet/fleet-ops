@@ -33,11 +33,20 @@ RestartSec=20
 ExecCondition=/usr/bin/systemctl --user is-active --quiet fleet-grafana.service
 # git merge writes the changed files one after another; let the last one land.
 ExecStartPre=/bin/sleep 5
-# The stock admin API, same calls as the "Reload provisioning configurations"
-# section of the Grafana HTTP API docs. Basic auth as admin, with the password
-# handed to curl as a config fd (quoted and escaped, so any password works)
-# so it never reaches argv (docs/RUNBOOK.md, LiteLLM admin-API note). Both
-# endpoints are always tried; the unit fails (and fleet-unit-failed alerts) if
-# the password file is missing or empty, or either call answers non-2xx.
+# A provisioning file can name an $__env{} variable or a $__file{} path that
+# only a new quadlet Environment= or Secret= line provides, and the running
+# container does not have it yet. The deploy is one `git merge --ff-only`, so it
+# writes the quadlet and the provisioning file together, and the reload below
+# would answer 500 until something restarted fleet-grafana by hand (fleet-ops
+# #9795: the 1h GitHub token would expire in that window and every webhook would
+# 401). Compare the running container's environment names and secret names with
+# the quadlet's Environment= and Secret= names, and restart fleet-grafana when
+# one is missing, so the reload always runs against a process that can resolve
+# every reference. The running fleet-grafana was started before
+# FLEET_GITHUB_ISSUES_URL was added to the quadlet and was still running without
+# it five days later. A container that already matches (every ordinary reload,
+# including the 20 min token refresh) is left alone, and one whose names cannot
+# be read is left alone too, so this never blocks the reload.
+ExecStartPre=/bin/bash -c "d=$$(mktemp -d); q=%h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container; { /usr/bin/podman inspect -f '{{range .Config.Env}}{{println .}}{{end}}' fleet-grafana 2>/dev/null | cut -d= -f1; /usr/bin/podman inspect -f '{{range .Config.Secrets}}{{println .Name}}{{end}}' fleet-grafana 2>/dev/null; } | sort -u > $$d/run; if [ ! -s $$d/run ]; then echo '[fleet-grafana-provisioning] could not read the running fleet-grafana environment; skipping the restart check'; rm -rf $$d; exit 0; fi; { sed -n 's/^Environment=\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' \"$$q\"; sed -n 's/^Secret=\\([A-Za-z0-9_.-]*\\),.*/\\1/p' \"$$q\"; } | sort -u > $$d/want; miss=$$(comm -13 $$d/run $$d/want | tr '\\n' ' '); rm -rf $$d; if [ -n \"$$miss\" ]; then echo \"[fleet-grafana-provisioning] the running fleet-grafana is missing the quadlet names: $$miss; restarting fleet-grafana before the reload\"; /usr/bin/systemctl --user daemon-reload; /usr/bin/systemctl --user restart fleet-grafana.service; else echo '[fleet-grafana-provisioning] the running fleet-grafana has every Environment= and Secret= the quadlet sets'; fi"
 ExecStart=/bin/bash -c "set -euo pipefail; f=$$1; test -s \"$$f\" || { echo \"grafana admin password file missing or empty: $$f\" >&2; exit 1; }; rc=0; for e in alerting datasources; do /usr/bin/curl -fsS --connect-timeout 5 --max-time 30 --retry 3 --retry-connrefused -X POST --config <(/usr/bin/sed 's/[\"\\\\]/\\\\&/g; s/^/user = \"admin:/; s/$$/\"/' \"$$f\") \"http://127.0.0.1:3001/api/admin/provisioning/$$e/reload\" || rc=1; echo; done; exit $$rc" bash %h/.config/fleet-ops/grafana-admin-password
 TimeoutStartSec=120
