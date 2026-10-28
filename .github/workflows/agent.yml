@@ -610,11 +610,8 @@ jobs:
           permission-pull-requests: write
       - name: Router wall
         id: wall
-        # A router seat wall or a Devin capacity refusal is infra, not a bad packet
-        # (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes
-        # anything, so a claim branch already ahead of main is requeued too. GITHUB_TOKEN on
-        # purpose: its label fires no workflow, so the issue waits for the next sweep instead
-        # of going straight back to the lane that refused it (0509#6133, ~50 runs an issue).
+        # Infra, not a bad packet (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes, so it skips the ahead_by proof.
+        # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133, ~50 runs an issue).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
@@ -622,11 +619,10 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           if ! { [ "$ENGINE" = devin ] && grep -qiE 'capacity issues|free model rate limit|cognition\.ai/retryable": true' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; then
-            # Cursor's own stall (fleet-ops#9275: "Connection stalled repeatedly", exit 1, and the packet was
-            # struck). The cursor-agent line in Worker discards stdout only, so this stderr reaches worker.err.
-            # Like a router 429 it is the provider, not the packet, so it needs the same 0-ahead proof that
-            # nothing was pushed. The Cursor cap stays 1.
-            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
+            # Cursor's stall (fleet-ops#9275) and a 402/400 dead seat (fleet-ops#9007, #9011) are the
+            # provider, not the packet: the router cools only 401/404/408/429 of the 4xx, so a row that
+            # answers only these keeps its share. Bare 400 stays out: pi's own BadRequestError must strike.
+            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
               { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
@@ -961,13 +957,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
-          # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10);
-          # Fable is never a reviewer (44% of a seat's weekly limit in ~2 days). The verdict is always Jev's.
+          # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10). Fable is not a default
+          # reviewer (44% of a seat's weekly limit in ~2 days); it is the second reviewer of guard and workflow heads only (Nish 2026-10-28, #10608).
           FIRST_MODEL_OTHER: claude-opus-5-5
           FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
-          SECOND_SEAT: senior
-          SECOND_FAMILY: GLM
+          SECOND_MODEL: claude-fable-5-1
+          SECOND_FAMILY: Claude
           # Seconds slept before each retry of an extra reviewer that failed for infrastructure reasons.
           REVIEW_BACKOFF: "30 60 120 240 480"
           THIRD_SEAT: judge
@@ -1040,11 +1036,11 @@ jobs:
           # The model gets the diff as text and no tools (--tools ""): a tool could open the
           # runner's key files and the review is posted publicly (claude honors an empty --tools,
           # checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did
-          # not finish: retry. No fallback to another family, no approval without this review.
-          review=
-          review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
+          # not finish: retry. No fallback to another family, no approval without this review. The guard head's second review (Fable) is the same call.
+          ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' \
-            --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$RUNNER_TEMP/diff.txt") || review=
+            --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
+          review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
@@ -1069,10 +1065,10 @@ jobs:
             fi
             exit 0
           fi
-          # A guard or workflow head also needs two reviewers of other families (GLM, then Qwen), each ending on APPROVE with no blocker line.
+          # A guard or workflow head also needs two more reviewers (Fable 5.1 on a Claude seat, and Qwen), each ending on APPROVE with no blocker line.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # Both extra reviewers are called directly, not through pi, because the answering row is only in the response headers
+          # The third reviewer is called directly, not through pi, because the answering row is only in the response headers
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
@@ -1082,7 +1078,7 @@ jobs:
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
           # An extra reviewer may be answered by any row of its family; the family comes from the row id.
           family_of() { case "${1,,}" in
-            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
+            *claude*) echo Claude ;; *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
             for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
@@ -1105,16 +1101,14 @@ jobs:
             [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
             say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
             exit 1; }
-          seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
-          for x in "second $rc_second" "third $rc_third"; do read -r r rc <<<"$x"; [ "$rc" = 0 ] || { [ "$rc" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited $rc with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
-          # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy, and Qwen is already the third reviewer.
-          used=$JUDGE_FAMILY
-          for r in second third; do [ ! -s "$RUNNER_TEMP/$r-row" ] || used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"; done
-          for r in second third; do
-            [ ! -s "$RUNNER_TEMP/$r-row" ] || continue
-            seat_try assistant "$r" "" "$used" || give_up "the $r reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")"
-            used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"
-          done
+          { r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt") && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row"; } & p2=$!
+          seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
+          [ "$rc_second" = 0 ] || retry "the second review ($SECOND_MODEL) gave no answer"
+          [ "$rc_third" = 0 ] || { [ "$rc_third" = 1 ] && [ -e "$RUNNER_TEMP/third-why" ]; } || give_up "reviewer process crashed: the third reviewer exited $rc_third with no reason written" # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
+          # Qwen with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy.
+          used="$JUDGE_FAMILY $SECOND_FAMILY"
+          [ -s "$RUNNER_TEMP/third-row" ] || seat_try assistant third "" "$used" || give_up "the third reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/third-why" 2>/dev/null || echo "the review process died")"
+          used+=" $(family_of "$(cat "$RUNNER_TEMP/third-row")")"
           all=; blk=; both=true
           for r in second third; do
             out=$(cat "$RUNNER_TEMP/$r.txt"); served=$(cat "$RUNNER_TEMP/$r-row"); fam=$(family_of "$served"); ok=approved
@@ -1124,7 +1118,7 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two reviewers from other families (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change edits the merge guard or a workflow, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
@@ -1223,12 +1217,8 @@ jobs:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
-    permissions:
-      pull-requests: read
-      issues: read
-    concurrency:
-      group: stuck-${{ github.repository }}-${{ inputs.stuck_pr }}
-      cancel-in-progress: false
+    permissions: {pull-requests: read, issues: read}
+    concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.stuck_pr }}
@@ -1237,56 +1227,7 @@ jobs:
       URL: ${{ inputs.stuck_url }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
-      - name: Issue token
-        id: issue-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-issues: write
-      - name: File or update the stuck-PR issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          pr=$(gh api "repos/$REPO/pulls/$PR")
-          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the next sweep decides"; exit 0; }
-          marker="stuck-pr: #$PR"
-          why="PR #$PR ($(jq -r .head.ref <<<"$pr")) has waited over an hour at ${SHA:0:7}: $REASON."
-          [ -z "$URL" ] || why="$why Blocking comment: $URL"
-          old=$(gh issue list -R "$REPO" --state open -L 100 --search "\"$marker\" in:body" --json number,body |
-            jq -c --arg m "$marker" '[.[] | select(.body | split("\n") | any(.[]; startswith($m + " ")))] | first // empty')
-          if [ -n "$old" ]; then
-            n=$(jq -r .number <<<"$old")
-            if gh issue view "$n" -R "$REPO" --json body,comments --jq '[.body, .comments[].body] | join("\n")' | grep -qF "$marker $SHA"; then
-              echo "#$n already reports #$PR at $SHA"
-              exit 0
-            fi
-            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "$(printf '%s %s\n\n%s' "$marker" "$SHA" "$why")"
-            echo "updated #$n for #$PR at $SHA"
-            exit 0
-          fi
-          body=$(printf '%s %s\n\n%s\n\nTake the PR over: fix the blocker lines or merge main on its branch and push (a new head gets a fresh review and the sweep arms it once approved), or close it as superseded. %s' \
-            "$marker" "$SHA" "$why" "$(jq -r .html_url <<<"$pr")")
-          url=$(GH_TOKEN=$ISSUE_TOKEN gh issue create -R "$REPO" --title "Stuck PR #$PR: $REASON" --body "$body")
-          # Labelled after creation, so the labeled event that starts the
-          # orchestrate job is its own event from the App.
-          GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
-          echo "filed $url for #$PR at $SHA"
+      - uses: Nishfleet/fleet-ops/.github/actions/stuck@main
   inish-daily:
     # The Daily edition, published to https://nish.sh/daily (inish.in only redirects). The editorial standard is the
     # product repo's automation/HERMES_DAILY.md, the mechanical contract prompts/inish-daily.md here, so a product
@@ -1360,8 +1301,8 @@ jobs:
         # The candidate fetch (Jev key, GitHub search token, optional X key from seats/x-api.env for Nish's X posts) runs outside the jail before the model starts.
         # The jail hides both, Nish's gh login, the Cloudflare tokens, the seat files, the App key and
         # litellm-master-key.env (the model reads outsider text, fleet-ops#9274). pi instead reads a virtual
-        # key bound at that path (fleet-ops#9634): models worker-capable and senior only (the loop's two
-        # --model values; this is the step's only trap), 3h (two 40m attempts plus fetch and builds), $5
+        # key bound at that path (fleet-ops#9634): model worker-capable only (the loop's
+        # --model value; this is the step's only trap), 3h (two 40m attempts plus fetch and builds), $5
         # for the whole run, revoked on exit. The key file in $RUNNER_TEMP holds only that virtual key.
         # Nothing the model leaves is trusted: after each attempt only its edition JSON is taken (a regular
         # file, size-capped), a fresh clone of main is made, the edition and the
@@ -1374,7 +1315,7 @@ jobs:
           key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") # gitleaks:allow
           [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file (Jev ranks through the router's /jev, not TypeSafe direct); an unranked edition is not worth 40 minutes of model time"; exit 1; }
           admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
-          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\",\"senior\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
+          trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
           echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"; x_key=$(sed -n 's/^X_BEARER_TOKEN=//p' "$HOME/.config/fleet-ops/seats/x-api.env" 2>/dev/null | head -n 1 | tr -d "\"'" || true); [ -z "$x_key" ] || echo "::add-mask::$x_key" # gitleaks:allow
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; }
@@ -1416,7 +1357,7 @@ jobs:
           }
           n=0
           # shellcheck disable=SC2086 # $jail_base is a command line to split, as in the work job
-          for model in worker-capable senior; do
+          for model in worker-capable worker-capable; do # two attempts, each a new session, so the second can land on another row
             n=$((n + 1))
             out="$RUNNER_TEMP/inish-daily-$n.out"
             rc=0

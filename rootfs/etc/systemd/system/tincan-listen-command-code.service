@@ -1,5 +1,7 @@
 # The command-code relay listener, as a system unit (fleet-ops#9977). See
-# tincan-listen-pi.service for why this is not a user unit.
+# tincan-listen-pi.service for why this is not a user unit. Every path is
+# absolute because a system unit's %h is /root, and HOME and PATH come from the
+# shared drop-in.
 [Unit]
 Description=Agent Tincan wake for command-code (tincan listen -> headless command-code drains the inbox)
 Wants=network-online.target
@@ -13,12 +15,12 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=%h/.config/tincan/command-code.json
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/command-code.json
 Environment=FLEET_TASK_ID=tincan-command-code
-WorkingDirectory=%h/.local/state/tincan-listen-command-code
+WorkingDirectory=/home/nish/.local/state/tincan-listen-command-code
 Restart=always
 RestartSec=10
-ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/command-code -p "$$(cat %h/.config/tincan/prompts/command-code.txt)" --trust --yolo'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/command-code -p "$$(cat /home/nish/.config/tincan/prompts/command-code.txt)" --trust --yolo'
 
 [Install]
 WantedBy=multi-user.target

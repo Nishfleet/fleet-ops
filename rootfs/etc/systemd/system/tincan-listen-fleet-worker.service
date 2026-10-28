@@ -1,7 +1,8 @@
 # The fleet-worker relay listener, as a system unit (fleet-ops#9977). See
 # tincan-listen-pi.service for why this is not a user unit. It keeps the
 # human gh login readable: its prompt runs gh commands and it is not given a
-# worker token of its own.
+# worker token of its own. Every path is absolute because a system unit's %h is
+# /root, and HOME and PATH come from the shared drop-in.
 [Unit]
 Description=Agent Tincan wake for fleet-worker (tincan listen -> headless pi drains the inbox)
 Wants=network-online.target
@@ -15,12 +16,12 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=%h/.config/tincan/fleet-worker.json
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/fleet-worker.json
 Environment=FLEET_TASK_ID=tincan-fleet-worker
-WorkingDirectory=%h/.local/state/tincan-listen-fleet-worker
+WorkingDirectory=/home/nish/.local/state/tincan-listen-fleet-worker
 Restart=always
 RestartSec=10
-ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/pi --print --provider litellm --model worker-cheap < %h/.config/tincan/prompts/fleet-worker.txt'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/pi --print --provider litellm --model worker-cheap < /home/nish/.config/tincan/prompts/fleet-worker.txt'
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,99 @@
+# Agent lock (fleet-ops#9977). Every relay listener runs as a system unit with
+# User=nish, because systemd silently ignores sandbox settings in a user unit on
+# this box (kernel.apparmor_restrict_unprivileged_userns=1). The probe runs the
+# contract's hide list and need list inside a transient unit that carries the
+# same User= and InaccessiblePaths=, so the switch below happens only after the
+# machine itself has shown one agent cannot read the other agents' keys and can
+# still read what it needs.
+# tincan-listen-claude-vps is not in the probe: its unit hides all of /home with
+# ProtectHome=tmpfs and lists back what it needs, and that shape was proved on
+# the box with a live ask before this file shipped it unchanged.
+#
+# The switch-over order is start, prove active, then disable the user unit, so a
+# listener is never left with no unit running. The old user unit file is left on
+# disk: the rollback is "enable that unit again", one command per agent.
+
+- name: Read the agent lock contract
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../config/agent-locks.json"
+    name: agent_locks
+
+- name: Show one agent cannot read the other agents' keys
+  # The contract spells its paths with ~, and systemd takes them relative to the
+  # host's root (systemd.exec(5)), so they are expanded here before they reach
+  # --property=InaccessiblePaths=. The probe runs as the service user, not as
+  # root: access(2) is checked as that user, and root would read a mode-000
+  # hidden path straight through the lock.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemd-run
+      - --quiet
+      - --wait
+      - --pipe
+      - --collect
+      - "--property=User={{ agent_locks.user }}"
+      - "--property=InaccessiblePaths={{ agent_locks.agents[item].must_hide | map('regex_replace', '^~', '/home/' + agent_locks.user) | join(' ') }}"
+      - /bin/sh
+      - -c
+      - >-
+        for p in {{ agent_locks.agents[item].must_hide | map('regex_replace', '^~', '/home/' + agent_locks.user) | join(' ') }}; do
+        test -r "$p" && { echo "READABLE $p"; exit 1; };
+        done;
+        for p in {{ agent_locks.agents[item].needs | map('regex_replace', '^~', '/home/' + agent_locks.user) | join(' ') }}; do
+        test -r "$p" || { echo "MISSING $p"; exit 1; };
+        done
+  loop: "{{ agent_locks.agents | dict2items | map(attribute='key') | reject('equalto', 'tincan-listen-claude-vps') | list }}"
+  changed_when: false
+
+# state: started, never restarted: this playbook runs on every merge to main and
+# once a day, and restarting eight listeners that often throws away in-flight
+# work for no change. daemon_reload picks up the unit files copied above.
+- name: Start the locked listeners
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list }}"
+
+# Restart=on-failure with RestartSec=30 means a start job can succeed and the
+# process still die seconds later, so "started" is not the proof. is-active
+# exits non-zero while any listener is activating, dead or in a restart backoff,
+# which fails this run and leaves every user unit below untouched.
+- name: Wait until every locked listener is active
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - --quiet
+      - "{{ agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list | join(' ') }}"
+  register: locked_listeners
+  until: locked_listeners.rc == 0
+  retries: 8
+  delay: 5
+  changed_when: false
+
+# The contract lists the unlocked user unit files, not the ones the box
+# happens to have: a listener whose user unit the repo never shipped
+# (tincan-listen-amp) must not fail the run with "Unit ... does not exist",
+# and one that is there is still retired. list-unit-files names only what is
+# installed, and answers rc 1 when nothing matches, which is not a failure.
+- name: List the unlocked listener units the box still has
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - --user
+      - --machine=nish@.host
+      - list-unit-files
+      - --plain
+      - --no-legend
+      - "{{ agent_locks.stale_user_units | map('basename') | list | join(' ') }}"
+  register: stale_listener_units
+  changed_when: false
+  failed_when: stale_listener_units.rc > 1
+
+- name: Retire the unlocked user-scope listeners
+  ansible.builtin.command:
+    argv: [/usr/bin/systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
+  loop: "{{ stale_listener_units.stdout_lines | map('split') | map('first') | select | list }}"
+  changed_when: false

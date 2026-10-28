@@ -50,7 +50,7 @@ locals {
       vps_only    = false
     }
     "0509-support-inbox" = {
-      repo        = "0509-support-inbox"
+      repo        = "mailbox" # renamed from 0509-support-inbox; the key stays so the token is not replaced
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       account     = ["Workers Scripts Write", "Account Settings Read"]
@@ -83,14 +83,6 @@ locals {
     }
     "aiconverter-app" = {
       repo        = "aiconverter-app"
-      environment = null
-      secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Pages Write", "Account Settings Read"]
-      zone        = []
-      vps_only    = false
-    }
-    "tinystudio-in" = {
-      repo        = "tinystudio-in"
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       account     = ["Pages Write", "Account Settings Read"]

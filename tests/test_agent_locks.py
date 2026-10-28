@@ -42,6 +42,14 @@ def covers(path: str, roots: list[str]) -> bool:
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
 
 
+def env(values: dict[str, list[str]], key: str) -> str:
+    for pair in values.get("Environment", []):
+        name, _, value = pair.partition("=")
+        if name == key:
+            return value
+    return ""
+
+
 def hidden(values: dict[str, list[str]], path: str) -> bool:
     if covers(path, values.get("InaccessiblePaths", [])):
         return True
@@ -65,6 +73,23 @@ def test_locked_agent_is_a_system_unit_with_a_service_user(name: str) -> None:
         f"{name} keeps the privilege-escalation path open"
     )
     assert not values.get("SupplementaryGroups"), f"{name} keeps a supplementary group"
+
+
+@pytest.mark.parametrize("name", sorted(AGENTS), ids=str)
+def test_a_locked_agent_gets_the_service_users_home_and_path(name: str) -> None:
+    # settings() rewrites both %h and /home/nish to ~, so these assertions are
+    # about the resolved value, not about which spelling the unit uses.
+    values = settings(ROOT / AGENTS[name]["unit"])
+    assert env(values, "HOME") == "~", (
+        f"{name} sets no HOME, so a CLI that expands ~ writes to /root"
+    )
+    path = env(values, "PATH").split(":")
+    assert path[:1] == ["~/.local/bin"], (
+        f"{name} does not start PATH with /home/{CONTRACT['user']}/.local/bin, where node, "
+        "npm and every agent CLI live, so an #!/usr/bin/env node shebang fails and the "
+        "unit restart-loops"
+    )
+    assert "/usr/bin" in path and "/bin" in path, f"{name} leaves /usr/bin or /bin off its PATH"
 
 
 @pytest.mark.parametrize("name", sorted(AGENTS), ids=str)
@@ -126,3 +151,24 @@ def test_every_other_relay_identity_is_hidden(name: str) -> None:
     values = settings(ROOT / AGENTS[name]["unit"])
     missing = [path for path in others if not hidden(values, path)]
     assert missing == [], f"{name} does not hide the relay identities {missing}"
+
+
+def test_the_probe_expands_the_contracts_tilde_before_systemd_sees_it() -> None:
+    """systemd.exec(5) takes InaccessiblePaths= relative to the host's root, so a
+    ~ the contract spells out must be expanded before it reaches --property=,
+    and the shell body must test the same expanded paths it was given. Without
+    the expansion the probe reports every need as MISSING and stops the
+    switch-over on a box where the lock holds.
+    """
+    import yaml
+
+    tasks = yaml.safe_load((ROOT / "ansible/tasks/agent-lock.yml").read_text())
+    probe = next(t for t in tasks if t["name"] == "Show one agent cannot read the other agents' keys")
+    argv = probe["ansible.builtin.command"]["argv"]
+    hidden = [a for a in argv if a.startswith("--property=InaccessiblePaths=")]
+    body = argv[argv.index("/bin/sh") + 2]
+    assert len(hidden) == 1, "The probe passes no InaccessiblePaths=, so it hides nothing"
+    for rendered in (hidden[0], body):
+        assert "'^~'" in rendered, (
+            "The probe hands systemd a ~ path, which it reads relative to the host's root"
+        )

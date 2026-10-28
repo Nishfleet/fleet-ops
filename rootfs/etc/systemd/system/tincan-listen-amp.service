@@ -1,5 +1,7 @@
 # The amp relay listener, as a system unit (fleet-ops#9977). See
-# tincan-listen-pi.service for why this is not a user unit.
+# tincan-listen-pi.service for why this is not a user unit. Every path is
+# absolute because a system unit's %h is /root, and HOME and PATH come from the
+# shared drop-in.
 [Unit]
 Description=Agent Tincan wake for amp (tincan listen -> headless amp drains the inbox)
 Wants=network-online.target
@@ -13,13 +15,13 @@ Type=simple
 User=nish
 Group=nish
 SupplementaryGroups=
-Environment=TINCAN_CONFIG=%h/.config/tincan/amp.json
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/amp.json
 Environment=FLEET_TASK_ID=tincan-amp
-Environment=CLAUDE_CONFIG_DIR=%h/.claude-vps
-WorkingDirectory=%h/.local/state/tincan-listen-amp
+Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps
+WorkingDirectory=/home/nish/.local/state/tincan-listen-amp
 Restart=always
 RestartSec=10
-ExecStart=%h/.local/bin/tincan listen --exec '%h/.local/bin/amp -x'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/amp -x'
 
 [Install]
 WantedBy=multi-user.target
