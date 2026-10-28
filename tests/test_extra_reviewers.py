@@ -149,7 +149,7 @@ def test_curl_gets_the_key_on_stdin_never_in_argv(tmp_path):
     (bin_ / "curl").write_text("""#!/bin/sh
 printf '%s\\n' "$*" >> "$RUNNER_TEMP/argv"; cat >> "$RUNNER_TEMP/stdin"
 while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) r=${2#@} ;; esac; shift; done
-case $(grep -o '"model": "[a-z]*"' "$r") in *senior*) row=glm-x ;; *) row=qwen-x ;; esac
+case $(grep -o '"model": "[a-z0-9-]*"' "$r") in *senior*) row=glm-x ;; *) row=qwen-x ;; esac
 printf 'x-litellm-model-id: %s\\r\\n' "$row" > "$h"
 printf '{"choices":[{"finish_reason":"stop","message":{"content":"APPROVE"}}]}' > "$b"
 """)

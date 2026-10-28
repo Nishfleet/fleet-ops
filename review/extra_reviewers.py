@@ -156,7 +156,7 @@ def give_up(why):
 
 def main():
     seats = {"second": (env("SECOND_SEAT"), env("SECOND_FAMILY")), "third": (env("THIRD_SEAT"), env("THIRD_FAMILY"))}
-    ok, crashed = {}, {}
+    ok, crashed = dict.fromkeys(seats, False), {}
 
     def one(r):
         try:
