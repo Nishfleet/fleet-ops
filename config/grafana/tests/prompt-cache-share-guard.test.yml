@@ -27,10 +27,10 @@
 #    no threshold step and fires on any sample, so the rule file carries that
 #    half and this case pins that A returns the row at all.
 #
-# 7. opencodego on the shape that filed #10506, #10588 and #10630: a big
+# 7. opencodego on the shape that filed #10506, #10588, #10630 and #10757: a big
 #    worker-capable row at 0.956 plus a small row at 0.6 reads 0.9097, silent
-#    under its 0.9021 floor (it fired under the old 0.9221). The same mix with
-#    the big row at 0.92 reads 0.8784 and fires. Case 1 carries the silent
+#    under its 0.8800 floor (it fired under the older floors). The same mix with
+#    the big row at 0.90 reads 0.861 and fires. Case 1 carries the silent
 #    half, the last case the firing half.
 #
 # The alert name, `for` and labels here are the deployed ones, so a case that
@@ -126,7 +126,7 @@ tests:
             (
               label_replace(vector(0.9396), "vendor", "stepfun", "", "")
               or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-              or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+              or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
               or label_replace(vector(0.9259), "vendor", "minimax", "", "")
               or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
               or label_replace(vector(0.9056), "vendor", "zai", "", "")
@@ -198,7 +198,7 @@ tests:
       - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
         values: '0+87000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
-        values: '0+80040000x14'
+        values: '0+78300000x14'
       - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
         values: '0+13000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
