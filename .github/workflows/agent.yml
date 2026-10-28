@@ -1112,9 +1112,12 @@ jobs:
             [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
             say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
             exit 1; }
-          { r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt" 2> "$RUNNER_TEMP/second.err") && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row" || { printf '%s\n' "$r2" >> "$RUNNER_TEMP/second.err"; false; }; } & p2=$!
+          { rc=0; r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt" 2> "$RUNNER_TEMP/second.err") || rc=$?
+            { [ "$rc" = 0 ] && [ "$(grep -c . <<<"$r2")" -gt 1 ]; } || printf '%s\n' "$r2" >> "$RUNNER_TEMP/second.err"
+            [ "$rc" = 0 ] && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row"; } & p2=$!
           seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
-          [ "$rc_second" = 0 ] || { hold_at_limit "$RUNNER_TEMP/second.err" "second review" "$SECOND_MODEL"; retry "the second review ($SECOND_MODEL) gave no answer"; }
+          hold_at_limit "$RUNNER_TEMP/second.err" "second review" "$SECOND_MODEL"
+          [ "$rc_second" = 0 ] || retry "the second review ($SECOND_MODEL) gave no answer"
           [ "$rc_third" = 0 ] || { [ "$rc_third" = 1 ] && [ -e "$RUNNER_TEMP/third-why" ]; } || give_up "reviewer process crashed: the third reviewer exited $rc_third with no reason written" # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
           # Qwen with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy.
           used="$JUDGE_FAMILY $SECOND_FAMILY"
