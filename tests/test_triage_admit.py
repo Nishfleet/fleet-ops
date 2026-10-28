@@ -333,6 +333,18 @@ def test_unlabelled_issue_from_a_stranger_is_skipped(tmp_path):
     assert r.returncode == 0 and w == "" and calls == 0
 
 
+@pytest.mark.parametrize("labels", [(), ("needs-triage",)])
+def test_an_empty_author_is_never_trusted(tmp_path, labels):
+    # TRUSTED_LOGINS ends with a blank line; an empty login must not match it (fleet-ops#10687).
+    r, w, calls = _run(tmp_path, iss=issue(labels=labels, author=""), listed=(7,) if labels else (), found=() if labels else (7,), resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+
+
+def test_an_empty_labeller_is_never_trusted(tmp_path):
+    r, w, calls = _run(tmp_path, actor="", resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+
+
 def test_unlabelled_issue_still_hits_the_exclusions_and_the_daily_cap(tmp_path):
     r, w, calls = _run(tmp_path, iss=issue("Change the Stripe key", "x", labels=()), listed=(), found=(7,), resp=_answer(0.99))
     assert calls == 0 and "--add-label agent-ready" not in w
