@@ -408,7 +408,6 @@
         - "'/var/lib/fleet-runner/1/runsvc.sh' is not exists"
       notify:
         - Reload systemd
-        - Keep pilot runner stopped
 
     # The copy keeps `bin` and `externals` as the absolute links they are under
     # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
@@ -430,7 +429,6 @@
       loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
       loop_control:
         label: "{{ item.stat.path }}"
-      notify: Keep pilot runner stopped
 
     # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
     # paths, and the runner loads it over the unit's own HOME, so every job's gh read
@@ -444,7 +442,6 @@
         line: HOME=/var/lib/fleet-runner
         insertbefore: BOF
       when: "'/var/lib/fleet-runner/1/.env' is exists"
-      notify: Keep pilot runner stopped
 
     - name: Drop nish's runtime paths from the pilot runner environment
       ansible.builtin.lineinfile:
@@ -452,13 +449,13 @@
         regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
         state: absent
       when: "'/var/lib/fleet-runner/1/.env' is exists"
-      notify: Keep pilot runner stopped
 
     # Runner 1 is still registered with the `agent` label, so a running unit takes production
     # jobs it cannot run (42 failed on 2026-10-28, fleet-ops#10706). Until it is re-registered
     # with a pilot-only label and passes its own test job, a deploy leaves it stopped and
-    # disabled; a change to the pilot tasks above stops it too, never starts it. Switch off:
-    # delete this task and start the unit by hand after the re-registration.
+    # disabled, and a change to the pilot tasks never starts it. The stop waits up to
+    # TimeoutStopSec (5 min) for a running job. Switch off: delete this task, in the same PR
+    # that re-registers runner 1 with a pilot-only label, then start the unit.
     - name: Leave the pilot runner stopped while it carries the agent label
       ansible.builtin.systemd_service:
         name: actions.runner.Nishfleet.netcup-agent-1.service
@@ -2645,12 +2642,6 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
-
-    - name: Keep pilot runner stopped
-      ansible.builtin.systemd_service:
-        name: actions.runner.Nishfleet.netcup-agent-1.service
-        enabled: false
-        state: stopped
 
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
