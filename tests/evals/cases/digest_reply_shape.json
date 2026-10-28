@@ -11,7 +11,15 @@
     "group": "worker-cheap",
     "served_model": "openai/z-ai/glm-5.3-flash",
     "calls": 1,
-    "labelled": ["m11", "e11", "m12", "e12", "m13", "e20", "e19"],
+    "labelled": [
+      "m11",
+      "e11",
+      "m12",
+      "e12",
+      "m13",
+      "e20",
+      "e19"
+    ],
     "note": "the two 2026-10-19 and 2026-10-20 reply shapes were labelled by a non-Claude model from the digests' own lane (worker-cheap), blind to which replies are new and to the builder's intent; the builder wrote none (AI-decision rule). Task id orch-fleet-ops-9921-eval, 2026-10-20. The same call re-labelled the five earlier fixtures and agreed with every stored label."
   },
   "cases": [
@@ -118,6 +126,74 @@
       "label": "clean",
       "why": "A broken-fact line mentioning a checkout failure with product-level detail only. No tool sentence present.",
       "reply": "One item broken: the checkout flow returned a timeout error on the payment step and customers see a blank screen."
+    },
+    {
+      "id": "n1",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 20:03 IST with the daily edition filed as news; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Edition listed among merged changes and described as 'brand-new,' presenting routine success as news",
+      "reply": "3 merged in the last 12 hours: the daily page shipped its nightly edition, a deploy-credentials fix, and a CI check.\nGateway and relay are both active.\nThe daily page published a brand-new edition (2026-10-20) today.\nTwo deploys that were failing are now green: the console app and the site scanner.\n51 watched items unchanged; nothing new to wait on."
+    },
+    {
+      "id": "n2",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 20:03 IST with the daily edition filed as news; names, links and issue titles replaced",
+      "label": "clean",
+      "why": "Edition appears as a brief routine confirmation ('Daily edition: out') separate from the real changes",
+      "reply": "3 merged: a deploy-credentials fix and a CI check for the console app.\nProduction deploy failed https://example.com/alpha/actions/runs/1\nTwo things are waiting on you: the billing question https://example.com/alpha/issues/3 and the support email routing https://example.com/beta/issues/4\n4 items unchanged\nDaily edition: out (2026-10-20)"
+    },
+    {
+      "id": "n3",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 20:03 IST with the daily edition filed as news; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "Edition listed among the '3 merged' items as if it were a real change that matters",
+      "reply": "3 merged in the last 12 hours: the daily page released its nightly edition, a deploy-credentials fix, and a CI check.\nTwo things are waiting on you: the billing question https://example.com/alpha/issues/3\n51 items unchanged"
+    },
+    {
+      "id": "n4",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 20:03 IST with the daily edition filed as news; names, links and issue titles replaced",
+      "label": "clean",
+      "why": "No edition line present; only real changes and waiting items reported",
+      "reply": "3 merged: a deploy-credentials fix and a CI check for the console app.\nTwo things are waiting on you: the billing question https://example.com/alpha/issues/3 and the support email routing https://example.com/beta/issues/4\n51 items unchanged"
+    },
+    {
+      "id": "n5",
+      "split": "fitted",
+      "source": "synthetic fixture shaped like the digest-evening reply that shipped 2026-10-20 20:03 IST with the daily edition filed as news; names, links and issue titles replaced",
+      "label": "violation",
+      "why": "'Shipped today: a fresh edition…is out now' presents routine success as a ship announcement",
+      "reply": "Shipped today: a fresh edition of the daily page is out now, plus the deploy-credentials fix.\nTwo things are waiting on you: the billing question https://example.com/alpha/issues/3\n48 items unchanged"
+    },
+    {
+      "id": "r1",
+      "split": "held-out",
+      "source": "written and labelled by the non-Claude labeller in one call from the issue's plain question; the builder never saw it before labelling",
+      "label": "violation",
+      "reply": "New: today's daily edition is live!\nWe just shipped a fresh edition with updated content.\nRead it here: https://example.com/edition\nAlso this week:\n- Search loads 40% faster\n- Fixed a login timeout"
+    },
+    {
+      "id": "r2",
+      "split": "held-out",
+      "source": "written and labelled by the non-Claude labeller in one call from the issue's plain question; the builder never saw it before labelling",
+      "label": "violation",
+      "reply": "This week's updates:\n- Daily edition published successfully\n- New onboarding flow for teams\n- Fixed export timeout\n- Improved notification delivery\nhttps://example.com/changelog"
+    },
+    {
+      "id": "r3",
+      "split": "held-out",
+      "source": "written and labelled by the non-Claude labeller in one call from the issue's plain question; the builder never saw it before labelling",
+      "label": "clean",
+      "reply": "Daily edition: out (2026-10-20)\n\nNew this week:\n- Onboarding redesigned for teams\n- Export timeout fixed\n- Notifications now batch hourly\nhttps://example.com/changelog"
+    },
+    {
+      "id": "r4",
+      "split": "held-out",
+      "source": "written and labelled by the non-Claude labeller in one call from the issue's plain question; the builder never saw it before labelling",
+      "label": "clean",
+      "reply": "New this week:\n- Team onboarding redesigned\n- Fixed export timeout\n- Notifications batch hourly now\nFull notes: https://example.com/changelog"
     }
   ],
   "heldout_labeller": {
@@ -125,5 +201,16 @@
     "served_model": "model judge (litellm)",
     "calls": 1,
     "note": "held-out cases h1-h6 written and labelled by the judge seat, one call, task id orch-fleet-ops-9580-labels; the builder wrote and labelled none; scored after the class was written against the fitted set, disclosed as 5/6 before the widening to capability/web-fetch/cached-copy sentences, 6/6 after"
+  },
+  "question_9925": "fleet digest reply shape, second question: no routine background-job success (a scheduled job's own publish, the same thing every day with only the date changing) filed as news; an edition line, if kept at all, is a brief routine confirmation, never news, and never one of the changes that matter (Nishfleet/fleet-ops#9925)",
+  "labeller_9925": {
+    "group": "judge",
+    "served_model": "openai/qwen3.8-max (judge group per the 9706 labeller record; the group routes with proxy-owned fallbacks)",
+    "calls": 2,
+    "task_ids": [
+      "orch-fleet-ops-9925-heldout",
+      "orch-fleet-ops-9925-labels"
+    ],
+    "note": "labels for n* and the text+labels for r* written by a non-Claude model before the prompt rewrite; the builder graded none (AI-decision rule). Call 1 wrote and labelled the held-out r* cases from the issue's plain question; call 2 labelled the builder's fitted n* fixtures. Both calls predate every edit."
   }
 }
