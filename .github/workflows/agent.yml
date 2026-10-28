@@ -1078,7 +1078,7 @@ jobs:
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
-            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
+            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID-pr$PR-$pre-$seat" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
