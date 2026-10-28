@@ -307,6 +307,11 @@ def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() ->
     assert _last(keys, "Restart") == "on-failure", "a clean exit must stay exited, not loop"
     assert _last(keys, "RestartSec") == "10"
     assert _last(keys, "RestartPreventExitStatus") == "78", "the config-error exit must not restart"
+    interval = _last(keys, "StartLimitIntervalSec")
+    assert interval.endswith("min") and int(interval.removesuffix("min")) > 0, "a zero interval disables the start limit, so a bind-failure loop never reaches failed"
+    burst = int(_last(keys, "StartLimitBurst"))
+    assert burst > 0
+    assert burst * int(_last(keys, "RestartSec")) < int(interval.removesuffix("min")) * 60, "the start limit must be reachable inside its interval, or the bind-failure loop never reaches failed (fleet-ops#10584)"
 
 
 def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
