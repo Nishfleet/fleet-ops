@@ -7,6 +7,9 @@
 # (fleet-worker-github-token@actions:%i.service), the required EnvironmentFile=
 # loads it as GH_TOKEN, which beats ~/.config/gh/hosts.yml, and a failed or
 # empty mint refuses the start. No credential is in this file or argv.
+# ExecStopPost= deletes the env file and revokes the token as soon as the two
+# calls end, so a detached worker (same uid, same runtime dir) never finds a
+# live Actions-write token there between sweeps (review of PR 10651).
 # gh is found on the user manager's PATH (/usr/bin/gh on the box, apt)
 # through env, so the unit names no home path and verifies on a CI runner.
 # Second ExecStart (fleet-ops#9668): a run that ends in startup_failure has no
@@ -34,6 +37,8 @@ EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env
 ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN"'
 ExecStart=/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i
 ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq 'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'
+ExecStopPost=/bin/rm -f %t/fleet-worker-github-token/actions:%i.env
+ExecStopPost=/usr/bin/env gh api -X DELETE installation/token
 TimeoutStartSec=120
 # A network blip retries twice in the hour, then the unit stays failed and
 # OnFailure pages.
