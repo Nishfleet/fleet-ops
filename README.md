@@ -22,6 +22,10 @@ script, or prompt lands unseen.
 - `ansible/update.yml` — the daily safe full update of the box (see
   [Daily update](#daily-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
+- `mac/` — the Mac's daily `topgrade` job: `com.nish.topgrade.plist` (the
+  launchd agent) and `topgrade.toml` (the steps it runs, see
+  [Mac daily update](#mac-daily-update)). `tests/test_mac_topgrade.py` pins
+  both.
 - `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
   token per repo and writes it into that repo's GitHub Actions secret, replaced
   every 30 days. Its README says how to apply, rotate and delete it.
@@ -677,6 +681,44 @@ number after the restart is the real test.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
 
+## Mac daily update
+
+`mac/` is the Mac counterpart of [Daily update](#daily-update), owned by Nish.
+A launchd agent runs `topgrade` once a day at 04:30 local time, at low priority
+and with no prompts, and reads the config installed with it. Homebrew formulae
+and casks are left to `brew autoupdate`, so the steps the job does run are the
+`disable` and `commands` lists in `mac/topgrade.toml`. Neither file carries an
+absolute home path: launchd does not expand `~`, so the plist names only system
+paths, and `~` appears only in the custom commands, which topgrade runs through
+a shell. `tests/test_mac_topgrade.py` pins the schedule, the arguments, the
+steps and that rule; it reads the repo copy, so the diffs under "Check" below
+are what tie the Mac to it.
+
+It keeps the label the hand-written job used, so step 4's bootout is what
+removes that job.
+
+- Install it, or push a change to it:
+  1. `mkdir -p ~/.config ~/Library/LaunchAgents`
+  2. `install -m 0644 mac/topgrade.toml ~/.config/topgrade.toml`
+  3. `install -m 0644 mac/com.nish.topgrade.plist ~/Library/LaunchAgents/com.nish.topgrade.plist`
+  4. `launchctl bootout gui/$(id -u)/com.nish.topgrade 2>/dev/null` then
+     `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nish.topgrade.plist`
+     (bootout first: launchd reads a plist once, on load)
+- Check the Mac still runs the repo copy:
+  `diff mac/topgrade.toml ~/.config/topgrade.toml` and
+  `diff mac/com.nish.topgrade.plist ~/Library/LaunchAgents/com.nish.topgrade.plist`
+  both print nothing. `brew autoupdate status` shows the separate Homebrew job
+  is loaded, which is what covers formulae and casks.
+- Run it now: `launchctl kickstart -p gui/$(id -u)/com.nish.topgrade` prints the
+  pid and exits 0, and `launchctl print gui/$(id -u)/com.nish.topgrade` shows the
+  loaded job. The plist names no log file, because a log path is a home path, so
+  look for the run in the system log:
+  `log show --last 1d --predicate 'process == "topgrade"'`.
+- Switch it off: `launchctl bootout gui/$(id -u)/com.nish.topgrade` stops it and
+  leaves it unloaded until the next install.
+- Delete it: `launchctl bootout gui/$(id -u)/com.nish.topgrade`, then
+  `rm ~/Library/LaunchAgents/com.nish.topgrade.plist ~/.config/topgrade.toml`.
+
 ## Tether: our own always-on agent (fleet-ops#9980)
 
 Phase 1 of our own agent: iMessage chat, its own memory, and crash-proofing,
@@ -777,7 +819,7 @@ rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and
 ```
 
 The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
-the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+the on-merge and after-boot `fleet-host-config.service` run recreates the `tether`
 user and `/etc/tether`. While the marker exists that run creates nothing for
 tether, removes its firewall rule, and keeps the unit disabled and stopped.
 Remove the marker to allow it again. To delete tether for good, open a PR that
@@ -1138,7 +1180,7 @@ credential file does not hold them back.
 
 ## CI
 
-`.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
+`.github/workflows/ci.yml` splits its test work into four jobs by concern (`lint`, `systemd-verify`, `unit`, `simulations`), each with its own timeout, on every PR and every merge-queue entry. The one required check `ci` runs no tests and needs every other job. Its
 checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
@@ -1209,8 +1251,9 @@ So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agen
 only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
 at startup the `review` job never runs. What works is an approver's unedited
 `coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
-`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
-takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
+`hold-risky` read, which is how #10194 landed. `agent.yml`'s `workflow_dispatch` now takes
+`review_pr` and `review_sha`, so the reviewer runs by hand from `main` (fleet-ops#10199;
+docs/ARCHITECTURE.md has the command), and the deadlock is gone.
 
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
@@ -1339,7 +1382,9 @@ Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
-  newly stubbed repo cannot sit off by omission.
+  newly stubbed repo cannot sit off by omission. Start one by hand with
+  gh workflow run agent-dispatch.yml -f task=orchestrate -f issue=<N>
+  (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
@@ -1394,8 +1439,8 @@ config/stuck-pr-cases.json runs this program in CI.
 
 ## Worker capacity
 
-The concurrency bound is the runner count (#8429): 22 `agent` runners
-(`actions.runner.Nishfleet.netcup-agent-1..22` in org runner group 3, shared
+The concurrency bound is the runner count (#8429): 10 `agent` runners
+(`actions.runner.Nishfleet.netcup-agent-1..10` in org runner group 3, shared
 by every enrolled repo including drive since 2026-10-06; live count:
 `gh api orgs/Nishfleet/actions/runner-groups/3/runners --jq .total_count`;
 sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
@@ -1403,12 +1448,10 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
 
-A new runner unit needs no root step: `ansible/host.yml` renders
-`actions.runner.Nishfleet.netcup-agent-<N>.service` for the ids in
-`agent_runner_ids` from one template, and enables and starts a unit only when
-its directory holds both halves of a registration (`.runner` and
-`.credentials`). Registration is the one hand step left, because `config.sh`
-needs an org admin token the VPS key does not hold (#10236).
+Runners 11-36 are retired (#10480): `ansible/host.yml` stops, disables and
+deletes their units from `agent_runner_retired_ids`. Their registrations at
+GitHub stay until an org admin removes them, because that needs a token the VPS
+key does not hold.
 
 ## Private detail scan
 

@@ -118,7 +118,6 @@ tests:
               or label_replace(vector(0.9056), "vendor", "zai", "", "")
               or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
               or label_replace(vector(0.8231), "vendor", "straitly", "", "")
-              or label_replace(vector(0.8284), "vendor", "alibaba", "", "")
               or label_replace(vector(0.7566), "vendor", "cline", "", "")
               or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
             )

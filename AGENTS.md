@@ -12,12 +12,12 @@
 ## Hard lines
 
 - **Canonical reserved-classes list** — the only things that reach Nish:
-  money/pricing, privacy, security, legal, brand, product direction,
-  customer-data deletion, destructive/irreversible steps, and authority he has
-  explicitly reserved. It lives in the vault (`global-standing-rules.md` →
-  "Only these reach Nish"); older or shorter surface lists fold into it, and a
-  surface is a pointer, not a second source (fleet-ops#5586). Stop for approval
-  only for those classes or irreversible work — present the plan and begin
+  money, a security action only he can take (owner login, 2FA, passkeys,
+  org-owner keys), and a blocker no machine can fix (Nish 2026-10-14). Every
+  other typed decision goes to Jev, then one Opus 5.5 final say
+  (`prompts/orchestrator-handoff.md` → "Needs Nish"). Customer-data deletion
+  and out-of-pipeline production deploys stay process-gated. A surface is a
+  pointer, not a second source (fleet-ops#5586). Present the plan and begin
   everything else (fleet-ops#6610).
 - **Stock first, no glue** (`prompts/worker.md` → "Stock first, no glue";
   fleet-ops#9614): the reason (audit fleet-ops#9619), the trigger and the
@@ -37,9 +37,9 @@
 - Money is Nish's alone. No payments, cards, or paid trials.
 - Paid `/jev` and eval or judge calls: a run makes only the ones its own task
   calls for. `/jev` is called by worker.md step 4, only when its
-  orchestrator-versus-nish-decision choice is live, by miss-review, and by the
-  agent.yml Gate's judgment routing (one call per claimed issue that is not
-  `strong-only`). A
+  orchestrator-versus-nish-decision choice is live, by miss-review, by the
+  orchestrator hand-off's "Needs Nish" step, and by the agent.yml Gate's
+  judgment routing (one call per claimed issue that is not `strong-only`). A
   report-only or check-only issue makes none, and no run re-asks a judge or
   eval for a second read: 16 rows x 3 questions x 3 repeats was 144 paid calls
   nobody asked for (0509#6967, 2026-10-04). worker.md's own planner
