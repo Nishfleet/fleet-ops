@@ -1,5 +1,5 @@
 {
-  "description": "The one risky-change list for agent-dispatch.yml's hold-risky job. A PR is risky when it carries the needs-coordinator label, or a changed path (or a rename's old path) matches a pattern under \"*\" (and is not a docs file under \"safe\") or under its own repo, or an added diff line matches a \"diff\" entry whose \"files\" regex matches that file (and \"not_files\" does not). Only four kinds of change are risky on \"*\": data deletion, secrets or credentials, billing or money, production data or deploys; everything else merges on green checks. A repo key adds that repo's own paths on top of \"*\", for a lock its CODEOWNERS asks for and no other repo shares: \"Nishfleet/0509\" and \"Nishfleet/fleet-ops\" hold scripts, wrappers and script dirs (the no-glue lock, fleet-ops#8459); on fleet-ops this replaced Nish's CODEOWNERS review (fleet-ops#10336). The same patterns sit in \"guard\", so a script change needs all three reviewers; a change to files under tests/ alone stays held for one review but is not guard, because tests are checked by CI on every run (Nish 2026-10-28: review weight matched to real risk, nish-vault#46 item 3). The same file names in another repo stay under \"*\". A file the API returns no patch for (large or binary) that a diff entry's files regex covers holds. A risky PR merges only once its exact head sha carries a coordinator-approval=success commit status or an approver's comment (prompts/orchestrator-handoff.md step 4). Patterns are case-insensitive regexes on repo-relative paths or added diff lines. \"guard\" lists the paths that define the guard itself: a PR that touches one is approved only when the judge and a second reviewer of another model family both approve it; no person is asked. The job reads this file from fleet-ops main by URL at run time, so every caller repo uses this same copy. CI runs the job's own CLASSIFY program against every case and its APPROVAL program against every approval_case below; cases carry optional \"patches\": [{file, patch}]; approval_cases carry their own approvers, the live list is APPROVERS in the job; a case with sha and comments tests the comment path (an approver's unedited PR comment with the line \"coordinator-approval: <full head sha>\").",
+  "description": "The one risky-change list for agent-dispatch.yml's hold-risky job. A PR is risky when it carries the needs-coordinator label, or a changed path (or a rename's old path) matches a pattern under \"*\" (and is not a docs file under \"safe\") or under its own repo, or an added diff line matches a \"diff\" entry whose \"files\" regex matches that file (and \"not_files\" does not). Only four kinds of change are risky on \"*\": data deletion, secrets or credentials, billing or money, production data or deploys; everything else merges on green checks. A repo key adds that repo's own paths on top of \"*\", for a lock its CODEOWNERS asks for and no other repo shares: \"Nishfleet/0509\" and \"Nishfleet/fleet-ops\" hold scripts, wrappers and script dirs (the no-glue lock, fleet-ops#8459); on fleet-ops this replaced Nish's CODEOWNERS review (fleet-ops#10336). Files under tests/ alone are not held: CI checks tests on every run (Nish 2026-10-28, nish-vault#80, fleet-ops#10621: three tiers, guard, held, green). The same file names in another repo stay under \"*\". A file the API returns no patch for (large or binary) that a diff entry's files regex covers holds. A risky PR merges only once its exact head sha carries a coordinator-approval=success commit status or an approver's comment (prompts/orchestrator-handoff.md step 4). Patterns are case-insensitive regexes on repo-relative paths or added diff lines. \"guard\" lists the paths that define the guard itself (workflows, this file, the risky-review prompt, nothing else): a PR that touches one is approved only when the judge and a second reviewer of another model family both approve it; no person is asked. The job reads this file from fleet-ops main by URL at run time, so every caller repo uses this same copy. CI runs the job's own CLASSIFY program against every case and its APPROVAL program against every approval_case below; cases carry optional \"patches\": [{file, patch}] and an optional \"tier\" (guard, held or green) that CI also checks against \"guard\"; approval_cases carry their own approvers, the live list is APPROVERS in the job; a case with sha and comments tests the comment path (an approver's unedited PR comment with the line \"coordinator-approval: <full head sha>\").",
   "paths": {
     "*": [
       "(^|/)\\.env",
@@ -22,9 +22,9 @@
       "(^|/)scripts/"
     ],
     "Nishfleet/fleet-ops": [
-      "\\.(sh|py|bash|zsh)$",
-      "(^|/)bin/",
-      "(^|/)scripts/",
+      "^(?!tests/).*\\.(sh|py|bash|zsh)$",
+      "^(?!tests/)(.*/)?bin/",
+      "^(?!tests/)(.*/)?scripts/",
       "^\\.github/",
       "^docs/(REBUILD-|engines/|quality-bar\\.md)",
       "(^|/)AGENTS\\.md$",
@@ -39,7 +39,7 @@
       "^rootfs/",
       "^\\.semgrep/",
       "^\\.gitleaksignore$",
-      "security"
+      "^systemd/"
     ]
   },
   "safe": ["^docs/", "^docs-site/.*\\.mdx?$", "(^|/)(README|CHANGELOG|CONTRIBUTING|LICENSE)[^/]*$"],
@@ -52,13 +52,9 @@
     {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "guard": [
-    "^\\.github/",
+    "^\\.github/workflows/",
     "^config/risky-paths\\.json$",
-    "^prompts/risky-review\\.md$",
-    "^credentials/",
-    "^(?!tests/).*\\.(sh|py|bash|zsh)$",
-    "(^|/)bin/",
-    "(^|/)scripts/"
+    "^prompts/risky-review\\.md$"
   ],
   "cases": [
     {"id": "drive-docs-only", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 2, "files": ["docs/guide.md", "README.md"], "patches": [{"file": "docs/guide.md", "patch": "@@ -1 +1 @@\n-a\n+b"}, {"file": "README.md", "patch": "@@ -1 +1 @@\n+x"}]},
@@ -119,9 +115,24 @@
     {"id": "rename-into-risky-path", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 2, "files": ["app/routes/x.ts", "core/billing.js"], "patches": [{"file": "app/routes/x.ts", "patch": "@@ -1 +1 @@\n+x"}]},
     {"id": "mixed-one-risky", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 3, "files": ["app/routes/a.tsx", "app/components/b.tsx", "core/billing.js"], "patches": [{"file": "app/routes/a.tsx", "patch": "+x"}, {"file": "app/components/b.tsx", "patch": "+x"}]},
     {"id": "fleet-ops-policy-doc", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["docs/quality-bar.md"]},
-    {"id": "fleet-ops-github-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"]},
-    {"id": "fleet-ops-script", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["tests/test_alerts.py"]},
-    {"id": "fleet-ops-root-shell", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["install.sh"]},
+    {"id": "fleet-ops-github-dir", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"]},
+    {"id": "fleet-ops-tests-only-green", "want": false, "tier": "green", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 2, "files": ["tests/test_alerts.py", "tests/bin/fake-gh"]},
+    {"id": "fleet-ops-tier-guard-list", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["config/risky-paths.json"]},
+    {"id": "fleet-ops-tier-guard-review-prompt", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["prompts/risky-review.md"]},
+    {"id": "fleet-ops-tier-held-systemd", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["systemd/litellm.service"]},
+    {"id": "fleet-ops-tier-held-credentials", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["credentials/app-manifest.json"]},
+    {"id": "fleet-ops-tier-held-codeowners", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/CODEOWNERS"]},
+    {"id": "fleet-ops-tier-held-script-not-guard", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["template/run.sh"]},
+    {"id": "fleet-ops-tier-held-claude-dir", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".claude/settings.json"]},
+    {"id": "fleet-ops-tier-green-code", "want": false, "tier": "green", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["pi-extensions/x/index.ts"]},
+    {"id": "0509-tier-guard-workflow", "want": true, "tier": "guard", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": [".github/workflows/deploy-production.yml"]},
+    {"id": "0509-tier-held-billing", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/billing/plans.ts"]},
+    {"id": "0509-tier-green-old-arm-allowlist", "want": false, "tier": "green", "repo": "Nishfleet/0509", "labels": [], "changed_files": 7, "files": ["app/routes/home.tsx", "app/components/nav.tsx", "app/lib/competitor/x.ts", "app/lib/onboarding/y.ts", "tests/unit/home.test.ts", "e2e/home.spec.ts", "docs/notes.md"]},
+    {"id": "0509-tier-green-outside-old-allowlist", "want": false, "tier": "green", "repo": "Nishfleet/0509", "labels": [], "changed_files": 2, "files": ["package.json", "app/lib/auth.server.ts"], "patches": [{"file": "package.json", "patch": "@@ -1 +1 @@\n+  \"x\": \"1\""}, {"file": "app/lib/auth.server.ts", "patch": "@@ -1 +1 @@\n+export const x = 1"}]},
+    {"id": "drive-tier-guard-workflow-secret", "want": true, "tier": "guard", "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": [".github/workflows/ci.yml"], "patches": [{"file": ".github/workflows/ci.yml", "patch": "@@ -1 +1 @@\n+        env: { T: ${{ secrets.NEW_TOKEN }} }"}]},
+    {"id": "drive-tier-held-billing", "want": true, "tier": "held", "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["core/billing.js"], "patches": [{"file": "core/billing.js", "patch": "@@ -1 +1 @@\n+const a = 1"}]},
+    {"id": "drive-tier-green-src", "want": false, "tier": "green", "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/app.js"], "patches": [{"file": "src/app.js", "patch": "@@ -1 +1 @@\n+const a = 2"}]},
+    {"id": "fleet-ops-root-shell", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["install.sh"]},
     {"id": "fleet-ops-bin-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["bin/x"]},
     {"id": "fleet-ops-scripts-dir", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["scripts/x.json"]},
     {"id": "fleet-ops-bin-word", "want": false, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["cabin/notes.txt"]},

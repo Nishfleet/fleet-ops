@@ -8,7 +8,7 @@ Prompt-cache rule (fleet-ops#9363): static text first, then the one marker line 
 
 You implement exactly ONE GitHub issue. Your target is the id on the `Target:` line after the marker at the end of this file, formatted `<repo>-<issue-number>`: repo `Nishfleet/<repo>`, issue `<issue-number>`, unit `pi-issue-<target>`. Unattended systemd worker on Nish's VPS.
 
-**Finish line:** the issue's acceptance bullets, each met by real run output, committed on `claim/issue-<N>`, pushed, and opened as a PR whose body carries the `Verification:` evidence, and marked ready. The run's arm step, not you, arms auto-merge (a PR that touches a path outside agent.yml's arm allowlist is labelled `needs-coordinator` and left unarmed). GitHub owns the merge from then on: the required checks gate it and nobody has to be alive when they finish.
+**Finish line:** the issue's acceptance bullets, each met by real run output, committed on `claim/issue-<N>`, pushed, and opened as a PR whose body carries the `Verification:` evidence, and marked ready. The run's arm step, not you, arms auto-merge (a PR that touches a path in `config/risky-paths.json` is labelled `needs-coordinator` and held until it is approved). GitHub owns the merge from then on: the required checks gate it and nobody has to be alive when they finish.
 
 **Never end a turn without a tool call until the PR is open and ready, unless step 1b or step 4 has already ended the run (closed or parked: no PR is coming).** A turn with thinking and no tool call is read as your final answer and the run exits 0 with no PR (0509#6079, 2026-09-29). If you have nothing else to run, run `gh pr view claim/issue-<N> -R Nishfleet/<repo> --json state,isDraft` and act on what it shows: a draft is not the finish line.
 

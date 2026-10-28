@@ -971,6 +971,8 @@ jobs:
             cfg=$(jq -c --argjson c "$c" 'if ($c | has("paths")) then {paths: $c.paths} else . end' config/risky-paths.json)
             got=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$prog" <<<"$c")
             [ "$(jq -r .risky <<<"$got")" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
+            # A "tier" case also checks the guard list, with agent.yml review's match (guard = three reviewers).
+            jq -e --argjson cfg "$cfg" '(has("tier") | not) or ((.tier == "guard") == any(.files[]; . as $x | any($cfg.guard[]; . as $re | $x | test($re; "i"))) and (.tier == "green") == (.want | not))' <<<"$c" >/dev/null || { echo "case $(jq -r .id <<<"$c"): tier $(jq -r .tier <<<"$c") does not match"; bad=1; }
           done < <(jq -c '.cases[]' config/risky-paths.json)
           approved=$(yq '.jobs.hold-risky.env.APPROVAL' .github/workflows/agent-dispatch.yml)
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
@@ -1043,7 +1045,7 @@ jobs:
             want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
             if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
           done <<'CASES'
-          risky-unapproved||||yes|0
+          worker-armed-risky-unapproved-is-disarmed||||yes|0
           pr-read-fails|pulls/7$|||yes|0
           pr-read-fails-safe-files|pulls/7$||1|yes|0
           files-read-fails|/files\?|||yes|0
@@ -1099,7 +1101,7 @@ jobs:
             PATH="$t/bin:$PATH" bash "$t/gate.sh" > "$t/$name/out" 2>&1 || rc=$?
             if [ "$rc" != "$want" ]; then echo "case $name: exit=$rc (want $want)"; cat "$t/$name/out"; bad=1; fi
           done <<'CASES'
-          risky-unapproved|7|Add x (#7)|7|||||1
+          worker-armed-risky-unapproved-cannot-merge|7|Add x (#7)|7|||||1
           label-only-unapproved|7|Add x (#7)||7||||1
           risky-approved|7|Add x (#7)|7||7|||0
           risky-approval-for-old-head|7|Add x (#7)|7||7|1||1

@@ -650,38 +650,31 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            changed=$(gh pr view "$REF" -R "$REPO" --json changedFiles --jq .changedFiles)
-            files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
-            safe='^(app/(routes|components)/|app/lib/(competitor|feeds|hiring|mentions|site|onboarding)/|tests/.*\.test\.tsx?$|e2e/[^/]+\.spec\.ts$|docs/)'
-            policy='^docs/(REBUILD-|engines/|quality-bar\.md)'
-            if [ "$changed" -ge 3000 ] || [ -z "$files" ] || grep -qvE "$safe" <<<"$files" || grep -qE "$policy" <<<"$files"; then
-              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
-              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+            # Every PR is armed: config/risky-paths.json is the one gate list, and hold-risky plus the
+            # coordinator-approval required check hold a risky head until it is approved (fleet-ops#10621).
+            # A head whose required checks are red is not armed, the test Deliverable fails
+            # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
+            # the strike step requeues the issue and the next run arms the fixed head. Pending
+            # checks still arm (nothing re-arms a head that later goes green; the required checks
+            # hold the merge). No required checks judges all of them; an unreadable result is
+            # red. The runner user's gh login reads the checks: the App token has no checks: read.
+            q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
+            red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+              8) ;; # gh's pending exit: --jq still printed any red names, empty if none
+              *) case ${red,,} in
+                   *"no required checks reported"*)
+                     red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                       case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
+                   *"no checks reported"*) red= ;;
+                   *) red="unreadable ($red)" ;;
+                 esac ;;
+            esac
+            if [ -n "$red" ]; then
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+              echo "::error::claim PR #$n not armed, red required checks on its head: $red"
+              exit 1
             else
-              # A head whose required checks are red is not armed, the test Deliverable fails
-              # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
-              # the strike step requeues the issue and the next run arms the fixed head. Pending
-              # checks still arm (nothing re-arms a head that later goes green; the required checks
-              # hold the merge). No required checks judges all of them; an unreadable result is
-              # red. The runner user's gh login reads the checks: the App token has no checks: read.
-              q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-              red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
-                8) ;; # gh's pending exit: --jq still printed any red names, empty if none
-                *) case ${red,,} in
-                     *"no required checks reported"*)
-                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
-                         case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
-                     *"no checks reported"*) red= ;;
-                     *) red="unreadable ($red)" ;;
-                   esac ;;
-              esac
-              if [ -n "$red" ]; then
-                gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
-                echo "::error::claim PR #$n not armed, red required checks on its head: $red"
-                exit 1
-              else
-                gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
-              fi
+              gh pr merge "$REF" -R "$REPO" --auto --squash  # a merge queue overrides the method; repos without one need it
             fi
           fi
       - name: Deliverable
