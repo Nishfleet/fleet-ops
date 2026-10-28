@@ -28,7 +28,13 @@
 # On the slice, oomd kills the descendant cgroup under the most pressure once
 # the slice has held 80% for the 60s in oomd.conf.d/99-fleet.conf, the same
 # rule user-1000.slice uses.
+# CPUWeight and IOWeight (2026-10-28, 30 runners): memory is held by protection above, but CPU and disk were
+# not. At the default weight of 100 the runners compete equally with sshd and the router. On 2026-10-28 12:30 IST,
+# disk writeback from agent work took SSH down for 10 minutes. At 20 the host wins any contention, and idle
+# CPU and disk still go to the runners.
 [Slice]
+CPUWeight=20
+IOWeight=20
 MemoryHigh=26G
 MemoryMax=28G
 MemorySwapMax=1G
