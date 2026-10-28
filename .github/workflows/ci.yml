@@ -1099,14 +1099,11 @@ jobs:
           CASES
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
-        # Runs the review job's own run block and the arm job's, read out of agent.yml, against a fake
-        # gh, curl and git. A PR that edits the guard or a workflow is approved only when the judge
-        # (>= 0.9, no blocker line) AND two more reviewers approve, each answered by its own family's
-        # router row and each called directly so that row is in the response headers (the GLM senior
-        # row and the judge group's Qwen row); each block, a low judge, an unreadable guard list, an
-        # extra reviewer with no answer, a row from another family and a row it did not name leave it
-        # unapproved, and none of them asks a person. The review never arms itself: the arm job does, on
-        # the exact head, and refuses a stale one.
+        # Runs the review job's and the arm job's own run blocks from agent.yml against a fake gh, curl and git.
+        # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two more reviewers
+        # of other families approve. An infrastructure failure retries, and a real block, a low judge or an
+        # unreadable guard list leaves it unapproved. None of them asks a person. The review never arms itself:
+        # the arm job does, on the exact head, and refuses a stale one.
         if: always()
         run: |
           set -euo pipefail
@@ -1121,12 +1118,13 @@ jobs:
           yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
           yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
           for s in review arm; do { [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh"; } || { echo "$s step missing"; exit 1; }; done
-          for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY SECOND_ROW THIRD_SEAT THIRD_FAMILY THIRD_ROW FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
+          for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY REVIEW_BACKOFF THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL
+          export SECOND_ROW=synthetic-glm53flash-senior THIRD_ROW=alibaba-qwen38max-judge REVIEW_BACKOFF="0 0 0"
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
@@ -1148,6 +1146,7 @@ jobs:
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
             *"pulls/7/files"*) case "${GUARD:-}" in fail) exit 1 ;; rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;; "") echo app/routes/home.tsx ;; 1) echo .github/workflows/new.yml ;; *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;; esac ;;
+            "issue "*) case "$*" in *create*) echo "$*" >> "$STATE/issues"; echo https://github.com/Nishfleet/fleet-ops/issues/99 ;; esac ;;
             *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
@@ -1165,7 +1164,7 @@ jobs:
               [ -z "${JUDGE_SLEEPS:-}" ] || sleep "$JUDGE_SLEEPS"
               h= b= req=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; esac; shift; done
               m=$(jq -r .model "$req")
-              if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
+              if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; [ -z "${SECOND_ONCE:-}" ] || [ -e "$STATE/second-once" ] || { : > "$STATE/second-once"; exit 7; }; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
               elif [ "$m" = "$THIRD_SEAT" ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; cut=${THIRD_CUT:-}; ans=$THIRD
               else echo "mock curl: unexpected model $m" >&2; exit 7; fi
               if [ -n "$noh" ]; then : > "$h"; else printf 'x-litellm-model-id: %s\r\n' "$mi" > "$h"; fi
@@ -1219,9 +1218,9 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER=''
+              GUARD_LIST_FAILS='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' SECOND_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
-            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"
+            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
             case $e1 in
               PRIOR=*) # a comment the bot already left on this head
@@ -1268,12 +1267,11 @@ jobs:
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
-            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -q "$THIRD_FAMILY" "$STATE/comments" || problem="$problem no third family in the approval"
             # An approval names both served rows, so the family in the comment can be checked against the row that answered (fleet-ops#10172).
-            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$SECOND_ROW" "$STATE/comments" || problem="$problem the GLM row was not named on the PR"
-            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$THIRD_ROW" "$STATE/comments" || problem="$problem the Qwen row was not named on the PR"
-            [ -z "${SECOND_MODEL_ID:-}" ] || grep -qF "$SECOND_MODEL_ID" "$STATE/comments" || problem="$problem the non-GLM row was not named on the PR"
-            [ -z "${THIRD_MODEL_ID:-}" ] || grep -qF "$THIRD_MODEL_ID" "$STATE/comments" || problem="$problem the non-Qwen row was not named on the PR"
+            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${SECOND_MODEL_ID:-$SECOND_ROW}" "$STATE/comments" || problem="$problem the second row was not named on the PR"
+            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${THIRD_MODEL_ID:-$THIRD_ROW}" "$STATE/comments" || problem="$problem the third row was not named on the PR"
+            [ -z "${WANT_ISSUE:-}" ] || { [ -s "$STATE/issues" ] && grep -q 'Issue #99 is filed' "$STATE/comments"; } || problem="$problem no loud issue after the retries ran out"
+            [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/second-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the second reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"
@@ -1291,18 +1289,18 @@ jobs:
           guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5
           guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5
           guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5
-          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none|no|1|claude-opus-5-5
-          guard-third-call-fails|1|approve|0.95|clean|clean_ok|JUDGE_FAILS|no|1|claude-opus-5-5
-          guard-third-answered-by-deepseek-is-not-approved|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|no|1|claude-opus-5-5
+          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none WANT_ISSUE|no|1|claude-opus-5-5
+          guard-third-family-down-falls-back-to-deepseek-and-names-it|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|yes|0|claude-opus-5-5
           guard-diff-over-128-KiB-reaches-the-judge-in-a-file|1|approve|0.95|clean|clean_ok|DIFF_MID=1|yes|0|claude-opus-5-5
-          guard-third-model-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|JUDGE_NO_HEADER|no|1|claude-opus-5-5
-          guard-third-answer-cut-at-the-limit|1|approve|0.95|clean|clean_ok|THIRD_CUT|no|1|claude-opus-5-5
-          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3|no|1|claude-opus-5-5
+          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3 WANT_ISSUE|no|1|claude-opus-5-5
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5
-          guard-second-answered-by-another-row-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=opencodego2-ds41flash-judge|no|1|claude-opus-5-5
-          guard-second-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_NO_HEADER|no|1|claude-opus-5-5
-          guard-second-answer-cut-at-the-limit|1|approve|0.95|clean|clean_ok|SECOND_CUT|no|1|claude-opus-5-5
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS WANT_ISSUE|no|1|claude-opus-5-5
+          guard-second-answered-by-another-row-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=opencodego2-ds41flash-judge WANT_ISSUE|no|1|claude-opus-5-5
+          guard-second-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5
+          guard-second-answer-cut-at-the-limit|1|approve|0.95|clean|clean_ok|SECOND_CUT WANT_ISSUE|no|1|claude-opus-5-5
+          guard-second-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|SECOND_ONCE|yes|0|claude-opus-5-5
+          guard-any-glm-row-is-accepted|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=synthetic-glm53flash-other|yes|0|claude-opus-5-5
+          guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|blocked_b|SECOND_ONCE THIRD=clean_ok|no|0|claude-opus-5-5
           guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5
           prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5
           prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5
