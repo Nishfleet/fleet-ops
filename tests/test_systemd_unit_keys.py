@@ -977,7 +977,7 @@ NODE_INSTALL_LAYOUT = (
     ".local/bin/share",
 )
 
-NODE_LAYOUT_SPELLINGS = ("{{{{ nish_home }}}}/{{path}}", "~nish/{{path}}", "~/{{path}}", "%h/{{path}}")
+NODE_LAYOUT_SPELLINGS = ("{{{{ nish_home }}}}/{path}", "/home/nish/{path}", "~nish/{path}", "~/{path}", "%h/{path}")  # gitleaks:allow
 NODE_SCANNED = ("ansible", "systemd", "rootfs", "config", "prompts", "template")
 NODE_LIVE_PATHS = (".local/bin/npm", ".local/bin/npx")
 
@@ -1007,6 +1007,8 @@ def test_glue_sweep_node_layout_is_retired_and_nothing_in_the_repo_reads_it() ->
             text = path.read_text(errors="ignore")
             readers += [f"{path.relative_to(ROOT)}: {needle}" for needle in needles if needle in text]
     assert readers == [], f"an install task or unit still reads the retired layout: {readers}"
+
+
 GLUE_SWEEP_USER_CONFIG_DEBRIS = (
     "{{ nish_home }}/.config/systemd/user/nish-root.service",
     "{{ nish_home }}/.config/systemd/user/nish-root.exec",
