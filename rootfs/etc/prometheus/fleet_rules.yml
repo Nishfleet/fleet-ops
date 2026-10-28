@@ -291,11 +291,13 @@ groups:
       # counters are used because the router's own "all slots in use" rejection never reaches a deployment, so it has no
       # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
       # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
+      # requested_model="other" is the proxy's bucket for calls that name no model group, such as /jev with a bad key;
+      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788).
       - alert: RouterGroupJammed
         expr: |
-          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total[10m]))
-            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 0.9)
-          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 3)
+          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total{requested_model!="other"}[10m]))
+            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 0.9)
+          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 3)
         for: 10m
         labels:
           severity: nish

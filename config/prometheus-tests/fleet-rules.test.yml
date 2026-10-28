@@ -560,6 +560,10 @@ tests:
         values: '0+2x30'
       - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
         values: '0+1x30'
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
+        values: '0+5x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
+        values: '0+5x30'
     alert_rule_test:
       - eval_time: 8m
         alertname: RouterGroupJammed
