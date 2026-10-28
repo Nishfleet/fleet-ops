@@ -11,10 +11,9 @@ runs:
       run: |
         set -euo pipefail
         install_dir="${RUNNER_TEMP:?}/gitleaks"
-        mkdir -p -- "$install_dir"
         archive="$install_dir/gitleaks.tar.gz"
         curl --fail --silent --show-error --location \
-          --retry 5 --retry-all-errors --max-time 180 --output "$archive" \
+          --create-dirs --retry 5 --retry-all-errors --max-time 180 --output "$archive" \
           "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
         printf '%s  %s\n' "$GITLEAKS_SHA256" "$archive" | sha256sum --check --strict -
         tar -xzf "$archive" -C "$install_dir" gitleaks

@@ -1,8 +1,7 @@
 # Monthly restore drill (fleet-ops#9769): newest backups restored once into local sqlite3, rows counted. No Cloudflare API.
 name: D1 restore drill
 on:
-  schedule:
-    - cron: "17 4 1 * *"
+  schedule: [{cron: "17 4 1 * *"}]
   workflow_dispatch: {}
 concurrency: {group: d1-drill, cancel-in-progress: false}
 permissions: {contents: read, issues: write}
@@ -33,7 +32,7 @@ jobs:
             done < <(sqlite3 "$db" "select name from sqlite_master where type='table' and name not glob 'sqlite_*' and name not glob '_cf_*'")
             say "- $1: ${out:+ok, restored once, rows: ${out% }}${out:-restored but has no tables}; live count not run"
           }
-          read -r key mod <<< "$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket seofixkit-backups --prefix d1/ --query 'sort_by(Contents,&LastModified)[-1].[Key,LastModified]' --output text 2>/dev/null)"
+          read -r key mod <<< "$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket seofixkit-backups --prefix d1/ --query 'sort_by(Contents,&LastModified)[-1].[Key,LastModified]' --output text)"
           if [ -n "${key:-}" ] && [ "$key" != None ] && aws s3 cp --only-show-errors --endpoint-url "$R2_ENDPOINT" "s3://seofixkit-backups/$key" "$w/seo.sql"; then
             say "- seo-fix-kit: ok, found newest backup $key, $(( ($(date +%s) - $(date -d "$mod" +%s)) / 86400 )) days old"
             restore seo-fix-kit "$w/seo.sql"
@@ -62,5 +61,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           f=$RUNNER_TEMP/drill/report.txt
+          [ -s "$f" ] || echo "- the drill wrote no report" > "$f"
           grep -qv ': ok,' "$f" || exit 0
           { echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"; echo; cat "$f"; } | gh issue create --title "D1 restore drill findings $(date +%F)" --body-file -
