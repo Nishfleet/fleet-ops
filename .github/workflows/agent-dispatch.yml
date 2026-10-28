@@ -695,10 +695,35 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then dispatch (a tried one is re-labelled first; the runner has no gh login or App key, and a job-token label edit fires no event, fleet-ops#10640); 3 ended or re-fired, then needs-nish-decision.
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  requeue:
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' && (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
+      inputs.task != 'miss-review' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, agent]
+    timeout-minutes: 20
+    # The App token does every write. The App key lives only on the self-hosted runners, so this is not a step of the hosted list job.
+    permissions: {}
+    steps:
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-actions: write
+          permission-issues: write
+          permission-pull-requests: read
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then dispatch (a tried one is re-labelled first); 3 ended or re-fired, then needs-nish-decision. App token: the job token cannot dispatch and a job-token label edit fires no event (fleet-ops#10640).
+      - id: requeue
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l

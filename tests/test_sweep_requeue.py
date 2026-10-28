@@ -17,7 +17,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
-STEP = ".jobs.list.steps[] | select(.env.REQUEUE)"
+JOB = ".jobs.requeue"
+STEP = f"{JOB}.steps[] | select(.env.REQUEUE)"
 REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
 ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/"
 
@@ -101,8 +102,8 @@ def test_idle_six_hours_requeues_and_fresh_waits(tmp_path):
 
 
 def test_tried_requeue_dispatches_and_needs_no_runner_login(tmp_path):
-    """The job runs hosted: no gh login to unset, and a job-token label edit starts no run, so the
-    sweep dispatches the orchestrate run itself (fleet-ops#10640)."""
+    """No gh login to unset, and a label edit by a token starts no run, so the sweep dispatches the
+    orchestrate run itself (fleet-ops#10640)."""
     w = run(tmp_path, [issue(1)])
     assert "env -u GH_TOKEN" not in _y(f"{STEP} | .run")
     assert w == ["issue edit 1 -R o/r --remove-label orchestrator-tried --add-label needs-orchestrator",
@@ -231,10 +232,8 @@ def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
 def test_requeue_step_runs_only_on_the_sweep_events():
     """pull_request_target and workflow_run reach this workflow too, so a gate phrased as
     "not issues" would run the sweep's writes for them; only the two sweep triggers may."""
-    expr = _y(f"{STEP} | .if")
+    expr = _y(f"{JOB}.if")
     allowed = set(re.findall(r"github\.event_name\s*==\s*['\"]([a-z_]+)['\"]", expr))
-    rest = re.sub(r"github\.event_name\s*==\s*['\"][a-z_]+['\"]", "", expr)
-    assert re.sub(r"[\s()|]", "", rest) == "", expr
     assert allowed == {"schedule", "workflow_dispatch"}, expr
     assert allowed <= set(_yj(".on | keys")), expr
 
@@ -251,3 +250,17 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
 def test_list_job_asks_no_more_than_the_caller_stubs_grant():
     got = subprocess.run(["yq", ".jobs.list.permissions.actions", WF], capture_output=True, text=True, check=True).stdout.strip()
     assert got == "read"
+
+
+def test_requeue_dispatches_with_the_app_token_on_a_self_hosted_runner():
+    """The job token has no actions: write, so a dispatch with it gets a 403; the list job stays read
+    (above) and only this job mints the App token, whose key file exists on self-hosted runners alone
+    (fleet-ops#10640)."""
+    assert _y(f"{STEP} | .env.GH_TOKEN").strip() == "${{ steps.app-token.outputs.token }}"
+    assert "github.token" not in _y(f"{STEP} | .env | to_json")
+    assert _yj(f"{JOB}.runs-on") == ["self-hosted", "agent"]
+    assert _yj(f"{JOB}.permissions") == {}
+    mint = _yj(f'{JOB}.steps[] | select(.id == "app-token")')
+    assert mint["with"]["permission-actions"] == "write"
+    assert mint["with"]["private-key"] == "${{ steps.app-key.outputs.pem }}"
+    assert _yj(f"{JOB}.steps[0].id") == "app-key"
