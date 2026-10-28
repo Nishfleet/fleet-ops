@@ -63,7 +63,19 @@ def test_reviewer_request_disables_router_fallbacks():
     assert "disable_fallbacks: true" in ask
 
 
-def test_stepfun_row_from_assistant_fallback_is_refused(tmp_path):
-    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "stepfun-step5preview-worker-capable")
+def test_row_from_no_known_family_is_refused(tmp_path):
+    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "acme-model1-assistant")
     out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev GLM Qwen")
     assert "rc=1" in out and "no known non-Claude family" in out
+
+
+def test_stepfun_row_is_a_new_family(tmp_path):
+    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "stepfun-step5preview-worker-capable")
+    out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev GLM Qwen")
+    assert "rc=0" in out and out.endswith("stepfun-step5preview-worker-capable")
+
+
+def test_stepfun_row_is_refused_once_stepfun_reviewed(tmp_path):
+    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "stepfun-step5preview-worker-capable")
+    out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev GLM StepFun")
+    assert "rc=1" in out and "a family that already reviewed this head" in out
