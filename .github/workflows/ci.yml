@@ -972,8 +972,10 @@ jobs:
             got=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$prog" <<<"$c")
             [ "$(jq -r .risky <<<"$got")" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
             # A "tier" case also checks the guard list, with agent.yml review's match (guard = three reviewers).
-            jq -e --argjson cfg "$cfg" '(has("tier") | not) or ((.tier == "guard") == any(.files[]; . as $x | any($cfg.guard[]; . as $re | $x | test($re; "i"))) and (.tier == "green") == (.want | not))' <<<"$c" >/dev/null || { echo "case $(jq -r .id <<<"$c"): tier $(jq -r .tier <<<"$c") does not match"; bad=1; }
+            jq -e --argjson cfg "$cfg" '(has("tier") | not) or ((.tier == "guard") == any(.files[]; . as $x | any(($cfg.guard // [])[]; . as $re | $x | test($re; "i"))) and (.tier == "green") == (.want | not))' <<<"$c" >/dev/null || { echo "case $(jq -r .id <<<"$c"): tier $(jq -r .tier <<<"$c") does not match"; bad=1; }
           done < <(jq -c '.cases[]' config/risky-paths.json)
+          # Every tests/*.py this file runs is a gate's own check, so it stays held on fleet-ops.
+          grep -oE '\btests/[A-Za-z0-9_]+\.py\b' .github/workflows/ci.yml | sort -u | jq -Rn --slurpfile f config/risky-paths.json '[inputs | select(. as $x | any($f[0].paths["Nishfleet/fleet-ops"][]; . as $re | $x | test($re; "i")) | not)] | if length > 0 then error("ci.yml gate tests not held on fleet-ops: \(.)") else empty end' || bad=1
           approved=$(yq '.jobs.hold-risky.env.APPROVAL' .github/workflows/agent-dispatch.yml)
           ctx=$(yq '.jobs.hold-risky.env.CONTEXT' .github/workflows/agent-dispatch.yml)
           [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
@@ -1045,7 +1047,7 @@ jobs:
             want=no; ap=no; [ "$held" != no ] || [ -z "$safe" ] || [ "$safe" = fork ] || want=yes; [ ! -f "$STATE/approved" ] || ap=yes  # a same-repo PR that is not risky gets a review on the head it classified (SAFE=fork: a fork's head repo)
             if [ "$ap" != "$want" ] || { [ "$ap" = yes ] && ! grep -q "commit_id=$SHA" "$STATE/approved"; }; then echo "case $name: review posted=$ap (want $want)"; bad=1; fi
           done <<'CASES'
-          worker-armed-risky-unapproved-is-disarmed||||yes|0
+          risky-unapproved||||yes|0
           pr-read-fails|pulls/7$|||yes|0
           pr-read-fails-safe-files|pulls/7$||1|yes|0
           files-read-fails|/files\?|||yes|0
@@ -1080,7 +1082,7 @@ jobs:
           has() { [[ " $1 " == *" $2 "* ]]; }
           case $args in
             *"/compare/"*) tr ';' '\n' <<<"$SUBJECTS" ;;
-            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo '{"f":".github/workflows/deploy-production.yml","p":null,"patch":"@@ -1 +1 @@\n+x"}'; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
+            *"/pulls/"*"/files?"*) n=${args#*pulls/}; n=${n%%/*}; if has "$RISKY" "$n"; then echo "{\"f\":\"${RFILE:-.github/workflows/deploy-production.yml}\",\"p\":null,\"patch\":\"@@ -1 +1 @@\\n+x\"}"; else echo '{"f":"app/routes/home.tsx","p":null,"patch":"@@ -1 +1 @@\n+x"}'; fi ;;
             *"/pulls/"*) n=${args##*pulls/}; l='[]'; ! has "$LABELED" "$n" || l='[{"name":"needs-coordinator"}]'; echo "{\"state\":\"open\",\"head\":{\"sha\":\"$(sha "$n")\"},\"labels\":$l,\"changed_files\":1}" ;;
             *"/statuses?"*) ;;
             *"/issues/"*"/comments?"*) n=${args#*issues/}; n=${n%%/*}
@@ -1091,9 +1093,9 @@ jobs:
           chmod +x "$t/bin/gh"
           export GITHUB_REPOSITORY=Nishfleet/fleet-ops BASE_DIR=. BASE_SHA=b GROUP_SHA=g GH_TOKEN=x
           bad=0
-          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit
-          while IFS='|' read -r name pr subjects risky labeled approved stale fail want; do
-            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail
+          # case: name|head ref PR|commit subjects (;)|risky PRs|labelled PRs|approved PRs|stale approval|FAIL regex|want exit|risky file|repo
+          while IFS='|' read -r name pr subjects risky labeled approved stale fail want rfile repo; do
+            export RUNNER_TEMP=$t/$name GITHUB_STEP_SUMMARY=$t/$name/summary SUBJECTS=$subjects RISKY=$risky LABELED=$labeled APPROVED=$approved STALE=$stale FAIL=$fail RFILE=$rfile GITHUB_REPOSITORY=${repo:-Nishfleet/fleet-ops}
             export HEAD_REF=refs/heads/gh-readonly-queue/main/pr-$pr-0123456789abcdef0123456789abcdef01234567
             [ "$pr" != badref ] || HEAD_REF=refs/heads/feature
             mkdir -p "$RUNNER_TEMP"
@@ -1101,7 +1103,8 @@ jobs:
             PATH="$t/bin:$PATH" bash "$t/gate.sh" > "$t/$name/out" 2>&1 || rc=$?
             if [ "$rc" != "$want" ]; then echo "case $name: exit=$rc (want $want)"; cat "$t/$name/out"; bad=1; fi
           done <<'CASES'
-          worker-armed-risky-unapproved-cannot-merge|7|Add x (#7)|7|||||1
+          risky-unapproved|7|Add x (#7)|7|||||1
+          worker-armed-auth-unlabelled-unapproved|7|Add x (#7)|7|||||1|app/lib/auth.server.ts|Nishfleet/0509
           label-only-unapproved|7|Add x (#7)||7||||1
           risky-approved|7|Add x (#7)|7||7|||0
           risky-approval-for-old-head|7|Add x (#7)|7||7|1||1
