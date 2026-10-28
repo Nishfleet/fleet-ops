@@ -1081,17 +1081,20 @@ file and its live copy in `~/.config/user-tmpfiles.d/`, then
 managed settings file itself, not a drop-in. `ansible/host.yml` installs it with
 the same `validate:` as the drop-ins, so a file that is not a JSON object never
 reaches `/etc` and cannot stop Claude Code from starting. It carries the
-subagent model, the per-model settings, the hand-picked `model-lanes` plugin and
-the box-wide permission `deny` and `ask` lists. `/etc/claude-code` is not in
-`owned_dirs`; every file in it is installed by its own task.
+subagent model, the advisor model, the per-model settings, the hand-picked
+`model-lanes` plugin and the box-wide permission `deny` and `ask` lists.
+`/etc/claude-code` is not in `owned_dirs`; every file in it is installed by its
+own task.
 
-- Verify: `claude -p hi --output-format stream-json --verbose` starts, and its
-  init line shows `claude-haiku-5-5` as the subagent model.
+- Verify: `cmp /etc/claude-code/managed-settings.json
+  rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
+  repo copy), and `claude -p hi` starts on the box.
 - Switch it off: a PR that deletes the file from `rootfs/` and adds
   `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
 - The check is `tests/test_chrome_devtools_mcp.py`: every file under
-  `rootfs/etc/claude-code/` is a JSON object where it is JSON, and the playbook
-  installs it under `/etc/claude-code/` with the JSON-object `validate:`.
+  `rootfs/etc/claude-code/` is a JSON object, its copy task runs that
+  JSON-object `validate:` as root and keeps the file's mode, and the defaults
+  file is installed as itself and not as part of a directory copy.
 
 ## Agent autonomy drop-in
 

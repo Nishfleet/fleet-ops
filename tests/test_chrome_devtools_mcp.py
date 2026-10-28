@@ -443,6 +443,10 @@ JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys
 def test_every_claude_managed_settings_file_ships_and_is_installed():
     copies = [t["ansible.builtin.copy"] for t in PLAY["tasks"] if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
     assert copies, "no host.yml copy task installs anything under /etc/claude-code/"
+    for copy in copies:
+        assert JSON_OBJECT_GATE in copy["validate"], f"{copy['dest']} is installed without the JSON-object gate"
+        assert copy["owner"] == "root" and copy["group"] == "root", copy["dest"]
+        assert copy["mode"] == "preserve", copy["dest"]
 
     def installed(path):
         src = "{{ rootfs }}/" + path.relative_to(ROOT / "rootfs").as_posix()
@@ -451,13 +455,11 @@ def test_every_claude_managed_settings_file_ships_and_is_installed():
     files = sorted(p for p in MANAGED_TREE.rglob("*") if p.is_file())
     assert files, f"no files under {MANAGED_TREE}"
     for path in files:
-        if path.suffix == ".json":
-            assert isinstance(json.loads(path.read_text()), dict), f"{path.relative_to(ROOT)} is not a JSON object"
+        assert isinstance(json.loads(path.read_text()), dict), f"{path.relative_to(ROOT)} is not a JSON object"
         assert installed(path), f"{path.relative_to(ROOT)} is installed by no /etc/claude-code copy task"
 
 
-def test_the_managed_settings_defaults_file_validates_a_json_object():
+def test_the_managed_settings_defaults_file_is_installed_as_itself():
     copy = TASKS["Install the Claude Code managed-settings defaults file"]["ansible.builtin.copy"]
     assert copy["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
     assert copy["dest"] == "/etc/claude-code/managed-settings.json"
-    assert JSON_OBJECT_GATE in copy["validate"]

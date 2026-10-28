@@ -278,6 +278,7 @@
         owner: root
         group: root
         mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
     # Restic backup include and exclude lists and the retention policy
     # (config/restic/). The backup and maintenance units read them from
