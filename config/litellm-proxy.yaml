@@ -1,5 +1,16 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Long note 1: docs/litellm-router-notes.md
+# Approved models, one line per router provider (API key variable lowercased, no _API_KEY), as the row's model without its openai/ or anthropic/ prefix. tests/test_provider_watch.py fails CI on a row outside this list.
+# A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
+# Approved opencode: deepseek-v4.1-flash
+# Approved commandcode: z-ai/glm-5.3-flash
+# Approved minimax: MiniMax-M3.1-Flash-Preview
+# Approved stepfun: step-5-preview
+# Approved synthetic: hf:zai-org/GLM-5.3-Flash
+# Approved zai: glm-5.3-flash
+# Approved straitly: deepseek/deepseek-v4-1-flash
+# Approved alibaba-coding: qwen3.8-max
+# Approved anthropic: claude-sonnet-5-5
 # Anthropic: claude-sonnet-5-5, in the tether group only (Nish 2026-10-22, fleet-ops#9980 comment 6347106070, and 2026-10-23, Nishfleet/tether#7). The row, its fallback to assistant and its cost are recorded above the router_settings block.
 # Cline: stealth/space-bunny-alpha. (Historical: no Cline row remains since 2026-10-23; the same goes for the Cline entries in the free-rows lines above.)
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
@@ -1163,7 +1174,7 @@ router_settings:
   enable_tag_filtering: false
   retry_policy:
     # Long note 9: docs/litellm-router-notes.md
-    AuthenticationErrorRetries: 0
+    AuthenticationErrorRetries: 1
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1
