@@ -917,6 +917,44 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
     )
 
 
+NODE_INSTALL_LAYOUT = (
+    '"{{ nish_home }}/.local/bin/bin"',
+    '"{{ nish_home }}/.local/bin/include"',
+    '"{{ nish_home }}/.local/bin/lib"',
+    '"{{ nish_home }}/.local/bin/node"',
+    '"{{ nish_home }}/.local/bin/README.md"',
+    '"{{ nish_home }}/.local/bin/CHANGELOG.md"',
+    '"{{ nish_home }}/.local/bin/LICENSE"',
+)
+
+NODE_LIVE_PATHS = (
+    '"{{ nish_home }}/.local/bin/npm"',
+    '"{{ nish_home }}/.local/bin/npx"',
+)
+
+
+def test_glue_sweep_node_layout_is_retired_and_nothing_in_the_repo_reads_it() -> None:
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    for path in NODE_INSTALL_LAYOUT:
+        assert f"- {path}\n" in retired.group(1), f"host.yml deletes {path} from the host"
+    for live in NODE_LIVE_PATHS:
+        assert f"- {live}\n" not in retired.group(1), f"the live {live} shim is not retired"
+    assert '"{{ nish_home }}/.local/lib/node_modules"' not in retired.group(1)
+    assert not (ROOT / "rootfs/home").exists(), "fleet-ops ships no copy of the layout"
+    needles = [path.strip('"').replace("{{ nish_home }}", "/home/nish") for path in NODE_INSTALL_LAYOUT]
+    scanned = ["ansible", "systemd", "rootfs", "config", "prompts", "template"]
+    readers = []
+    for name in scanned:
+        for path in (ROOT / name).rglob("*"):
+            if not path.is_file() or path == HOST_YML:
+                continue
+            text = path.read_text(errors="ignore")
+            readers += [f"{path.relative_to(ROOT)}: {needle}" for needle in needles if needle in text]
+    assert readers == [], f"an install task or unit still reads the retired layout: {readers}"
+
+
 def test_alertmanager_reads_the_repo_installed_config() -> None:
     options = (ROOT / "rootfs/etc/default/prometheus-alertmanager").read_text()
     assert "--config.file=/etc/alertmanager/alertmanager.yml" in options, (
