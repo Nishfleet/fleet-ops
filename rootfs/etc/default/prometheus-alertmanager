@@ -1,7 +1,14 @@
-# Alertmanager's options. Loopback only: its API takes alerts and silences with
-# no authentication, so the listener must never face the network. HA gossip is
-# off (empty --cluster.listen-address). fleet-host-config.service installs this
-# file and restarts prometheus-alertmanager.service when it changes
-# (ansible/host.yml). Silences and the notification log live in the package's
-# state directory, which the service user owns.
-ARGS="--config.file=/etc/alertmanager/alertmanager.yml --storage.path=/var/lib/prometheus/alertmanager --web.listen-address=127.0.0.1:9093 --cluster.listen-address="
+# Alertmanager's options. Its API takes alerts and silences, so it needs auth of
+# its own: --web.config.file points at the exporter-toolkit web config installed
+# as /etc/alertmanager/web.yml (basic_auth_users, bcrypt hash), and Prometheus
+# authenticates with the matching plaintext from
+# /etc/prometheus/alertmanager_password. Both are hand-placed host state, never
+# in git. The listener also stays on loopback, so a process off this box cannot
+# reach it even with the credential. HA gossip is off (empty
+# --cluster.listen-address). fleet-host-config.service installs this file and
+# restarts prometheus-alertmanager.service when it changes (ansible/host.yml).
+# --web.config.file needs alertmanager 0.24 or later; this box runs the distro
+# package 0.26.0 (alertmanager --version), and an older binary refuses to start.
+# Silences and the notification log live in the package's state directory,
+# which the service user owns.
+ARGS="--config.file=/etc/alertmanager/alertmanager.yml --storage.path=/var/lib/prometheus/alertmanager --web.listen-address=127.0.0.1:9093 --cluster.listen-address= --web.config.file=/etc/alertmanager/web.yml"
