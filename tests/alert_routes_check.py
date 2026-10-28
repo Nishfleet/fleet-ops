@@ -126,9 +126,35 @@ def selftest():
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
 
 
+def dead_row_shape(rules, points, bad):
+    rule = next((r for r in rules if r.get("uid") == "router-dead-row"), None)
+    if rule is None:
+        bad.append("router-dead-row: the rule is gone, so the proxy-level naming shape is no longer held anywhere")
+        return
+    expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
+    row_side = 'sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))'
+    proxy_side = 'or sum by (requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))'
+    if row_side not in expr or proxy_side not in expr:
+        bad.append("router-dead-row: the query must fire per router row (model_id) and per proxy-level series (requested_model) separately, so a page with no router row id still names the model it probed (fleet-ops#10069)")
+    annotations = rule.get("annotations") or {}
+    summary = annotations.get("summary", "")
+    if '{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}' not in summary:
+        bad.append("router-dead-row: the summary must name a proxy-level series by its requested_model instead of 'unknown row'")
+    description = annotations.get("description", "")
+    if '{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}' not in description:
+        bad.append("router-dead-row: the journal grep must fall back to the requested_model when the series carries no model_id")
+    if "Do NOT remove or bench it without Nish's explicit yes" not in description or "{{ if $labels" in description:
+        bad.append("router-dead-row: the description must keep the remove-or-bench gate for every series, proxy-level included")
+    template = (points.get("router-dead-row-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
+    if ".Labels.requested_model" not in template or "proxy-level" not in template or "unnamed proxy request" not in template:
+        bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
+    if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
+        bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
+
+
 def main(root):
     selftest()
-    rules, policy, contacts, contacts_doc = [], None, set(), []
+    rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
         for g in doc.get("groups") or []:
@@ -137,6 +163,7 @@ def main(root):
             policy = p
         for c in doc.get("contactPoints") or []:
             contacts.add(c["name"])
+            points[c["name"]] = c
             contacts_doc.append(c)
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
@@ -176,6 +203,7 @@ def main(root):
         if got is not None and got != want:
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
+    dead_row_shape(rules, points, bad)
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
