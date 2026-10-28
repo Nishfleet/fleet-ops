@@ -234,6 +234,23 @@ def test_bot_labeller_never_admits(tmp_path, actor):
     assert r.returncode == 0 and w == "" and calls == 0
 
 
+@pytest.mark.parametrize("events", [
+    [{"event": "labeled", "label": {"name": "needs-triage"}, "actor": {"login": ""}, "created_at": "2026-10-10T10:00:00Z"}],
+    [{"event": "labeled", "label": {"name": "needs-triage"}, "actor": None, "created_at": "2026-10-10T10:00:00Z"}],
+])
+def test_empty_actor_is_never_trusted(tmp_path, events):
+    # TRUSTED_LOGINS ends with a blank line; an empty actor must not match it (fleet-ops#10687).
+    r, w, calls = _run(tmp_path, events=events, resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+    assert "not applied by a trusted login" in r.stdout
+
+
+def test_empty_author_is_never_trusted(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue(author=""), resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+    assert "untrusted login" in r.stdout
+
+
 def test_strangers_issue_is_skipped(tmp_path):
     # A trusted login labelled it, but the author is not the owner (fleet-ops#8313).
     r, w, calls = _run(tmp_path, iss=issue(author="a-stranger"), resp=_answer(0.99))
