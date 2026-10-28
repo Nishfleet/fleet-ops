@@ -1082,8 +1082,7 @@ jobs:
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
           # An extra reviewer may be answered by any row of its family; the family comes from the row id.
           family_of() { case "${1,,}" in
-            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *) echo "family_of: unknown row id '$1'" >&2 ;;
-          esac; }
+            *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
             for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do

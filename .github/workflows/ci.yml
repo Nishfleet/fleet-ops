@@ -1182,7 +1182,7 @@ jobs:
               h= b= req= sid=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; -H) case $2 in x-litellm-session-id:*) sid=${2#*: } ;; esac ;; esac; shift; done
               m=$(jq -r .model "$req"); echo "$m $sid" >> "$STATE/sessions"
               if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; [ -z "${SECOND_ONCE:-}" ] || [ -e "$STATE/second-once" ] || { : > "$STATE/second-once"; exit 7; }; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
-              elif [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; cut=${THIRD_CUT:-}; ans=$THIRD
+              elif [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; [ "$m" != assistant ] || mi=${FALLBACK_MODEL_ID:-$mi}; cut=${THIRD_CUT:-}; ans=$THIRD
               else echo "mock curl: unexpected model $m" >&2; exit 7; fi
               if [ -n "$noh" ]; then : > "$h"; else printf 'x-litellm-model-id: %s\r\n' "$mi" > "$h"; fi
               fr=stop; [ -z "$cut" ] || fr=length; printf '{"id":"chatcmpl-mock","model":"judge","choices":[{"index":0,"finish_reason":"%s","message":{"role":"assistant","content":"%s"}}]}' "$fr" "$ans" > "$b" ;;
@@ -1235,7 +1235,7 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' SECOND_ONCE='' WANT_ISSUE=''
+              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' SECOND_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1312,6 +1312,7 @@ jobs:
           guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3 WANT_ISSUE|no|1|claude-opus-5-5
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
           guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS WANT_ISSUE|no|1|claude-opus-5-5
+          guard-second-falls-back-to-another-family|1|approve|0.95|clean|clean_ok|SECOND_FAILS FALLBACK_MODEL_ID=stepfun-step5previewe-worker-capable SECOND_MODEL_ID=stepfun-step5previewe-worker-capable|yes|0|claude-opus-5-5
           guard-second-answered-by-another-row-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=opencodego2-ds41flash-judge WANT_ISSUE|no|1|claude-opus-5-5
           guard-second-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5
           guard-second-answer-cut-at-the-limit|1|approve|0.95|clean|clean_ok|SECOND_CUT WANT_ISSUE|no|1|claude-opus-5-5
