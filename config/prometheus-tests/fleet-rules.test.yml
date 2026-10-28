@@ -632,3 +632,29 @@ tests:
             exp_annotations:
               summary: "Swap is over 80% used"
               description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
+
+  # RouterGroupJammed (fleet-ops#10694): senior fails every call, so it fires once the 10 minute hold ends;
+  # worker-capable fails half its calls and stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior"}'
+        values: '0+1x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior"}'
+        values: '0+1x30'
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="worker-capable"}'
+        values: '0+2x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              requested_model: senior
+            exp_annotations:
+              summary: "Router group senior fails nearly every call"
+              description: "90% or more of the calls to senior failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."

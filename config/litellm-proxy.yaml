@@ -283,16 +283,14 @@ model_list:
     - prepaid
     - senior
     order: 1
-    # The key's 8th slot. 12 parallel calls on this key gave 8x200 and 4x429 "Too many concurrent requests", so 8 one-slot rows sit at
-    # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
-    max_parallel_requests: 1
+    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     # 60 s, not the 900 s of the sibling Synthetic rows: the senior group has one or two rows, so a long park takes half or all of the tier
     # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked the row 900 s at 06:14 UTC, and
     # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
     # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
     cooldown_time: 60
     # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
-    # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
+    # on this row could never trip. No slot cap (note 12): the provider's 429 and this row's cooldown limit its share of the shared prepaid pool.
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -315,10 +313,10 @@ model_list:
     # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
     # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
     # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
+    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so the plan's own 429 is the cap and no row holds a slot count (note 12).
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
+    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     cooldown_time: 900
   model_info:
     mode: chat
@@ -338,9 +336,8 @@ model_list:
     weight: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8; the senior row (fleet-ops#9596) is the 8th slot. The 500 / 5 h pool is the real wall:
+    # and the one row got 16 calls in 24 h. No row holds a slot count (fleet-ops#10694, note 12): past 8 calls the provider answers 429 and the row cools. The 500 / 5 h pool is the real wall:
     # a pool 429 cools a row 15 min, and the rolling window refills by itself.
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -358,7 +355,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -376,7 +372,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -394,7 +389,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -412,7 +406,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -430,7 +423,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -448,7 +440,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -470,10 +461,9 @@ model_list:
     # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
     # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
     # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
+    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so the plan's own 429 is the cap and no row holds a slot count (note 12).
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -492,7 +482,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -511,7 +500,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -530,7 +518,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -549,7 +536,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -568,7 +554,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -587,7 +572,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -606,7 +590,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -625,7 +608,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -644,7 +626,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat

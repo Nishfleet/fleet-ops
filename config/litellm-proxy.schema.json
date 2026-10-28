@@ -187,13 +187,13 @@
           "maxContains": 2
         },
         {
-          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so its rows hold one slot each and at most 8 rows exist: 7 worker rows and the senior row sit at the measured working concurrency. A new Synthetic row has to take a slot from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
+          "$comment": "fleet-ops#9596: 12 parallel calls on the Synthetic key gave 8x200 and 4x429 \"Too many concurrent requests\", so at most 8 rows exist. fleet-ops#10694: no Synthetic row holds max_parallel_requests, because v1.105.0 never gives a stream's slot back when its client is gone before the first chunk; the provider's own 429 and the row's cooldown limit the key instead. A new Synthetic row has to take a share from an existing one, which removes a row and needs Nish's yes (config header, Nish 2026-10-02).",
           "contains": { "$ref": "#/$defs/syntheticRow" },
           "minContains": 0,
           "maxContains": 8,
           "items": {
             "if": { "$ref": "#/$defs/syntheticRow" },
-            "then": { "properties": { "litellm_params": { "required": ["max_parallel_requests"], "properties": { "max_parallel_requests": { "const": 1 } } } } }
+            "then": { "properties": { "litellm_params": { "not": { "required": ["max_parallel_requests"] } } } }
           }
         },
         {
