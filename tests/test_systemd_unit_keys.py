@@ -928,6 +928,14 @@ def test_alertmanager_reads_the_repo_installed_config() -> None:
     assert "dest: /etc/default/prometheus-alertmanager" in host
 
 
+def test_prometheus_config_installs_world_readable() -> None:
+    host = HOST_YML.read_text()
+    task = re.split(r"^ *- name: ", host.split("- name: Install prometheus and blackbox exporter config", 1)[1], maxsplit=1, flags=re.M)[0]
+    assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
+    assert re.search(r'^ +mode: "0644"$', task, re.M)
+    assert "mode: preserve" not in task
+
+
 def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
     cfg = (ROOT / "rootfs/etc/alertmanager/alertmanager.yml").read_text()
     assert "\n  routes:\n" in cfg, "the root route has no child routes"

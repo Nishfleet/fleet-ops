@@ -39,9 +39,7 @@ on:
   # run only for same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
   # The sweep below catches both; hourly stays well under the 24h expiry.
