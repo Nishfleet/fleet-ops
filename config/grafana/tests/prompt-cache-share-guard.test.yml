@@ -250,3 +250,42 @@ tests:
               severity: warning
               signal: prompt-cache-share-guard
               vendor: synthetic
+
+  # zai on the shape that filed #10692: the one-shot senior row at 0.06 (40% of
+  # the tokens) beside a worker-capable row at 0.93 is not judged, so zai reads
+  # 0.93 and stays silent. Left in, it would read 0.598 and fire.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+55800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The worker-capable row at 0.88 still fires beside the same senior row.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+52800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: zai
