@@ -147,13 +147,12 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
-  # main moved (a pull request merged into the default branch; ci.yml's
-  # pull_request and merge_group runs both finish before the merge lands): a claim PR it
-  # left CONFLICTING sends no event of its own, so its issue sat
-  # agent-in-progress with no run (fleet-ops#9063: drive #136 / PR #174).
-  # Requeue each one with a "merge main" note, the same way red CI is.
-  # Skipped while that issue's newest agent run is still live: the run in
-  # flight will see the conflict itself.
+  # main moved (a pull request merged into the default branch): a claim or orch PR it
+  # left CONFLICTING sends no event of its own (fleet-ops#9063, #10724). Requeue each
+  # with a "merge main" note: a claim ref to agent.yml, an orch ref to the orchestrator
+  # (re-label plus dispatch: a GITHUB_TOKEN label fires nothing). A BEHIND PR needs no
+  # update: the ruleset is not strict and the merge queue tests it on top of main.
+  # Skipped while that issue's newest agent run is live, or its hand-off is parked or tried.
   conflicts:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -162,7 +161,7 @@ jobs:
       github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
-      actions: read
+      actions: write
       issues: write
       pull-requests: read
     outputs:
@@ -173,11 +172,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           refs='[]'
-          # Only PRs the bulk list does not call MERGEABLE are re-read: the
-          # bulk list says UNKNOWN until GitHub recomputes a PR after a push
-          # to main, and a per-PR read triggers that (fleet-ops#8557).
+          # Only PRs the bulk list does not call MERGEABLE are re-read: it says UNKNOWN until
+          # GitHub recomputes a PR after a push to main, and a per-PR read triggers that (fleet-ops#8557).
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,mergeable \
-            --jq '.[] | select((.headRefName | test("^claim/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number')
+            --jq '.[] | select((.headRefName | test("^(claim|orch)/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number')
           for pr in $prs; do
             for _ in 1 2 3; do
               v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
@@ -185,19 +183,20 @@ jobs:
               sleep 10
             done
             [ "$(jq -r .mergeable <<<"$v")" = CONFLICTING ] || continue
-            ref=$(jq -r .headRefName <<<"$v"); i=${ref#claim/issue-}
+            ref=$(jq -r .headRefName <<<"$v"); i=${ref#*/issue-}
             # Same skips as the Gate: closed, blocked or parked work gets no note.
             gh api "repos/$GITHUB_REPOSITORY/issues/$i" --jq '.state == "open" and (.issue_dependencies_summary.blocked_by // 0) == 0 and
-              (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
+              (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","orchestrator-tried","needs-nish-decision","epic")) | not)' | grep -qx true || continue
             body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
             if [[ $body =~ actions/runs/([0-9]+) ]]; then
               # A failed read is not proof the run died: skip, never requeue a live worker.
               rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$i: run read failed, skip"; continue; }
               if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$i: run live, skip"; continue; fi
             fi
-            gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: claim PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
+            gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
             echo "requeue #$i: PR #$pr is CONFLICTING"
-            refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]')
+            case $ref in claim/*) refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]') ;; *) wf=${GITHUB_WORKFLOW_REF#*/.github/workflows/}
+              gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator && gh workflow run "${wf%@*}" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$i" || echo "::warning::#$i: hand-off re-fire refused" ;; esac
           done
           echo "refs=$refs" >> "$GITHUB_OUTPUT"
   remerge:
