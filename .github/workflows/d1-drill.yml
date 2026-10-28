@@ -53,6 +53,7 @@ jobs:
               && api "repos/Nishfleet/drive/actions/artifacts/$id/zip" > "$w/drive.zip" && unzip -oq "$w/drive.zip" -d "$w"; then
             sudo apt-get update -qq && sudo apt-get install -y -qq age > /dev/null
             for f in "$w"/*.sql.age; do
+              [ -e "$f" ] || { say "- drive: cannot read backup (no dump in the artifact)"; break; }
               n=$(basename "$f" .sql.age)
               if age -d -i <(printf '%s\n' "$AGE_KEY") -o "${f%.age}" "$f"; then restore "drive-${n%-*}" "${f%.age}"; else say "- drive-${n%-*}: cannot decrypt"; fi
             done
