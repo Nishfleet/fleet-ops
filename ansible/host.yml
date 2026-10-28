@@ -23,14 +23,11 @@
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Agent runners beyond the 22 that exist today (fleet-ops#10236). The
-    # runner's own `svc.sh install` writes this unit as root, and a worker
-    # shell has no sudo, so the repo writes it instead. A unit is enabled and
-    # started only when its directory holds a registration (`.runner` and
-    # `.credentials`): the one-time `config.sh` step needs an org admin token
-    # that the VPS key does not carry, so an unregistered runner must not
-    # restart-loop.
-    agent_runner_ids: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+    # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
+    # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
+    # runner's registration lives at GitHub and removing it needs an org admin
+    # token that the VPS key does not carry.
+    agent_runner_retired_ids: "{{ range(11, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -359,51 +356,21 @@
         label: "{{ item.stat.path }}"
       notify: Restart pilot runner
 
-    - name: Install agent runner units
-      ansible.builtin.template:
-        src: actions.runner.Nishfleet.netcup-agent.service.j2
-        dest: "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
-        owner: root
-        group: root
-        mode: '0644'
-      loop: "{{ agent_runner_ids }}"
-      notify: Reload systemd
-
-    # The runner's runsvc.sh exports `.path` as PATH. config.sh wrote it from a
-    # shell without the tool dirs, so jobs on these runners got exit 127 for pi,
-    # gh and claude. Same PATH as runners 1-22; a changed file restarts its runner.
-    - name: Give the agent runners the tool PATH
-      become: true
-      become_user: nish
-      ansible.builtin.copy:
-        dest: "{{ nish_home }}/.local/share/agent-runner/netcup-agent-{{ item }}/.path"
-        content: "{{ nish_home }}/.pi/agent/bin:{{ nish_home }}/.cargo/bin:{{ nish_home }}/.nvm/versions/node/v24.21.0/bin:{{ nish_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-        mode: '0644'
-      loop: "{{ agent_runner_ids }}"
-      when: (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
-      register: agent_runner_path
-
-    # `.runner` alone is not proof of a registration: a `config.sh` cut between
-    # its two writes leaves `.runner` without `.credentials`, and the unit would
-    # start and fail. The pair is the registration.
-    - name: Start the registered agent runners
+    # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
+    - name: Stop and disable the retired agent runners
       ansible.builtin.systemd_service:
         name: "actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
-        enabled: true
-        state: started
-        daemon_reload: true
-      loop: "{{ agent_runner_ids }}"
-      when:
-        - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
-        - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.credentials') is exists
+        enabled: false
+        state: stopped
+      loop: "{{ agent_runner_retired_ids }}"
+      when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
 
-    - name: Restart agent runners whose PATH changed
-      ansible.builtin.systemd_service:
-        name: "actions.runner.Nishfleet.netcup-agent-{{ item.item }}.service"
-        state: restarted
-      loop: "{{ agent_runner_path.results | selectattr('changed') | list }}"
-      loop_control:
-        label: "{{ item.item }}"
+    - name: Remove the retired agent runner units
+      ansible.builtin.file:
+        path: "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+        state: absent
+      loop: "{{ agent_runner_retired_ids }}"
+      notify: Reload systemd
 
     - name: Install systemd user-manager drop-ins
       ansible.builtin.copy:
