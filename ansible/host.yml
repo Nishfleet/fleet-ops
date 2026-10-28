@@ -2247,6 +2247,38 @@
       diff: false
       no_log: true
 
+    # A job named tmp-* is temporary by its name: it proves one thing for one issue, then has no
+    # owner, and two of them (fleet-ops#10545) were still enabled on a schedule that fires once a
+    # year. Delete every enabled tmp-* job and every disabled one-shot whose run_at is before
+    # today, which can never run again. A disabled recurring job cannot fire, so it stays as
+    # evidence for its issue. run_at is an ISO date, so it sorts before today exactly when its day
+    # has passed.
+    - name: Delete the temporary and expired one-shot jobs from Hermes' cron store
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - remove
+          - "{{ item }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ retired }}"
+      vars:
+        jobs: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) }}"
+        today: "{{ now(fmt='%Y-%m-%d') }}"
+        retired: >-
+          {{ (jobs | selectattr('enabled', 'equalto', true)
+                   | selectattr('name', 'defined')
+                   | selectattr('name', 'match', '^tmp-')
+                   | map(attribute='id') | list)
+             + (jobs | rejectattr('enabled', 'equalto', true)
+                     | selectattr('schedule.kind', 'defined')
+                     | selectattr('schedule.kind', 'equalto', 'once')
+                     | selectattr('schedule.run_at', 'defined')
+                     | selectattr('schedule.run_at', 'lt', today)
+                     | map(attribute='id') | list) }}
+
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
       become_user: nish
