@@ -52,8 +52,8 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
-      - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
+      # No glue (Nish 2026-09-29; 0509 reads no-glue.yml by URL), no host cua-driver plus its fixtures (#9297).
+      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
         if: github.event_name == 'pull_request'
@@ -139,7 +139,7 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon cursor-agent leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
@@ -263,7 +263,7 @@ jobs:
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py
+        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py tests/test_intake_repos.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -541,7 +541,7 @@ jobs:
       - name: Orchestrate cap and session args (fleet-ops#9351)
         # Runs the orchestrate job's own scripts, read out of the workflow with
         # yq, never a copy: the "Check the issue is still parked" step against
-        # a fake gh that serves each cap_cases entry's runs and jobs, and the
+        # a fake gh that serves each cap_cases entry's issue comments, and the
         # "Run the orchestrator session" step against a fake claude that
         # records its argv. Remove the daily cap, the model or turns pin, or
         # --settings disableAllHooks from the workflow and a case here fails.
@@ -552,30 +552,25 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           cfg="$PWD/config/orchestrate-events.json"
           chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
-          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
-          for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          for v in "$chk" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
           t=$(mktemp -d); mkdir "$t/bin"
           cat > "$t/bin/gh" <<'FAKE'
           #!/usr/bin/env bash
           # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
-          q=; ev=
+          # Any call it does not know exits 99, so a cap that reads this
+          # workflow's runs again fails every capped case (fleet-ops#10641).
+          q=
           flaky() { n=$(<"$FAKE_DIR/$1"); [ "$n" -eq 0 ] || { echo $((n - 1)) > "$FAKE_DIR/$1"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; }
           for ((i = 1; i <= $#; i++)); do
-            a=${!i}
-            case $a in
-              --jq) j=$((i + 1)); q=${!j} ;;
-              event=*) ev=${a#event=} ;;
-            esac
+            [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }
           done
           case "$*" in
+            *repos/o/r/issues/comments*) flaky fail
+              jq -c '[_nwise(100)][]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
+            "issue comment 5 -R o/r --body orchestrator hand-off started: "*) [ ! -f "$FAKE_DIR/failpost" ] || exit 1; echo "$*" >> "$FAKE_DIR/posted" ;;
             "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
             *git/ref/heads/*) exit 1 ;;
-            *actions/runs/*/jobs*) flaky failj; all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
-              if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
-            *actions/workflows/*/runs*) flaky fail
-              jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
-            *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
             *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
           esac
           FAKE
@@ -587,14 +582,12 @@ jobs:
             id=$(jq -r .id <<<"$c")
             d="$t/$id"
             mkdir "$d"
-            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
+            jq -c --arg t "$today" --arg o "$old" '[.handoffs[] | {created_at: (if .when == "YESTERDAY" then $o else $t end), author_association: (.assoc // "MEMBER"), body: (.body // "orchestrator hand-off started: https://github.com/o/r/actions/runs/1")}] + [range(0; (.noise // 0)) | {created_at: $t, author_association: "MEMBER", body: "agent: claimed"}]' <<<"$c" > "$d/comments.json"
             jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
-            while IFS= read -r r; do
-              jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
-            done < <(jq -c '.runs[]' <<<"$c")
-            : > "$d/out"; jq -r '.fail_runs // 0' <<<"$c" > "$d/fail"; jq -r '.fail_jobs // 0' <<<"$c" > "$d/failj"
+            : > "$d/out"; jq -r '.fail_comments // 0' <<<"$c" > "$d/fail"
+            [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
-            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
               DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
@@ -609,6 +602,8 @@ jobs:
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
               want_runner=$(jq -r '.want_runner // empty' <<<"$c")
               [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
+              [ -f "$d/failpost" ] || grep -qxF 'issue comment 5 -R o/r --body orchestrator hand-off started: https://github.com/o/r/actions/runs/1' "$d/posted" 2>/dev/null || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
+              [ "$(jq -r '.want_unreadable // false' <<<"$c")" = false ] || grep -q 'count unreadable' <<<"$log" || { echo "cap case $id: no unreadable warning: $log"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi

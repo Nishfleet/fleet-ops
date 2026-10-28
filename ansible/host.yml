@@ -144,6 +144,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # The Amp runners (#10662): removed from the repo and already gone from
+      # this host. Listed so a box that still has the links drops them instead of
+      # failing the link check in fleet-sync.service.
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
@@ -303,6 +310,7 @@
         owner: root
         group: root
         mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
     # Restic backup include and exclude lists and the retention policy
     # (config/restic/). The backup and maintenance units read them from
@@ -332,6 +340,45 @@
         group: root
         mode: preserve
       notify: Reload systemd
+
+    # fleet-update.service reads the healthchecks.io success-ping URL from a
+    # root-only curl config; the URL is not named in the repo (fleet-ops#9965).
+    - name: Make the directory for the update unit's root-only files
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # The update's own healthchecks ping URL lives with the box's other ping
+    # URLs in the keystone env file, so one paste covers it once the check
+    # exists (creating the check needs the healthchecks.io account; no API key
+    # is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+    # the update unit cannot ping the other checks. A missing line leaves the
+    # mirror absent, the unit pings SKIP, and its check simply goes stale,
+    # which is the alert.
+    - name: Read the healthchecks ping URLs nish keeps for the box
+      ansible.builtin.slurp:
+        src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+      register: hc_env_source
+      failed_when: false
+      no_log: true
+
+    # Written as a curl config (`url = <URL>`), so the unit pings with a
+    # plain `curl --config` and the URL stays out of argv.
+    - name: Hand the update unit its own healthchecks URL, root-only
+      vars:
+        hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-hc.curl
+        content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: hc_update_lines | length > 0
+      diff: false
+      no_log: true
 
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/
@@ -721,16 +768,27 @@
     # managed settings: here, the agents' auto-mode rules, the hook that
     # bounces routine asks to Nish, the Beacon telemetry env and the enabled
     # plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
-    # "Claude plugin drop-ins"). A drop-in
+    # "Claude plugin drop-ins"). The box-wide file those merge into,
+    # managed-settings.json, has its own task below (README, "Managed-settings
+    # defaults"). A drop-in
     # that does not parse stops Claude Code from starting on the whole box, so
     # validate refuses any file that is not a JSON object before it reaches
-    # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
-    # hand-installed. To switch this off, delete the file from rootfs/ and add
+    # /etc. /etc/claude-code is not in owned_dirs: the directory is installed
+    # file by file. To switch a file off, delete the file from rootfs/ and add
     # its /etc path to `retired`.
     - name: Install Claude Code managed-settings drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
         dest: /etc/claude-code/managed-settings.d/
+        owner: root
+        group: root
+        mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+    - name: Install the Claude Code managed-settings defaults file
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/claude-code/managed-settings.json"
+        dest: /etc/claude-code/managed-settings.json
         owner: root
         group: root
         mode: preserve

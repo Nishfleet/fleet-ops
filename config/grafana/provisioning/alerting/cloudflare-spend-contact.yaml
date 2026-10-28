@@ -43,7 +43,9 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "router dead row: %s" .Labels.model_id)
+              {{- $$row := .Labels.model_id -}}
+              {{- if not $$row -}}{{- if .Labels.requested_model -}}{{- $$row = printf "%s (proxy-level)" .Labels.requested_model -}}{{- else -}}{{- $$row = "unnamed proxy request" -}}{{- end -}}{{- end -}}
+              {{- coll.Dict "title" (printf "router dead row: %s" $$row)
                      "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
@@ -131,7 +133,7 @@ policies:
         object_matchers:
           - [signal, "=", router-dead-row]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
+        group_by: [alertname, model_id, requested_model]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
