@@ -181,7 +181,9 @@ script, or prompt lands unseen.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
   the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
-  times a day (measured 2026-10-11). The sweep's `stuck-prs` job is what moves
+  times a day (measured 2026-10-11). It runs on an Actions-only nishfleet-worker
+  App token minted per start and revoked on stop, never the owner's personal
+  login (fleet-ops#10601). The sweep's `stuck-prs` job is what moves
   any PR left waiting over 15 minutes: it arms a head a reviewer approved, asks
   the review job for a head with no verdict, sends a claim PR back to its worker, or files a `needs-orchestrator`
   issue for a PR no worker owns. One instance per repo with an agent-dispatch
