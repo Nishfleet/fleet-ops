@@ -405,8 +405,10 @@ def _cron(expr):
     return {"kind": "cron", "expr": expr, "display": expr}
 
 
-def _once(run_at):
-    return {"kind": "once", "run_at": run_at, "display": "once at " + run_at[:16].replace("T", " ")}
+def _once(offset_days):
+    at = datetime.datetime.now().astimezone().replace(hour=10, minute=0, second=0, microsecond=0)
+    at += datetime.timedelta(days=offset_days)
+    return {"kind": "once", "run_at": at.isoformat(timespec="seconds"), "display": at.strftime("once at %Y-%m-%d %H:%M")}
 
 
 def _job(job_id, name, enabled, **schedule):
@@ -421,7 +423,7 @@ CRON_LIVE = [
     _job("783b31b9d5e5", "audit-urgent", True, **_cron("50 8,20 * * *")),
     _job("6362250bf181", "audit-file", True, **_cron("10 9,21 * * *")),
     _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
-    _job("4231290e3e00", "sec-k3-key-renewal", True, **_once("2027-10-09T10:00:00+05:30")),
+    _job("4231290e3e00", "sec-k3-key-renewal", True, **_once(400)),
     _job("1145b749d731", "sec-daily-summary", True, **_cron("0 21 * * *")),
     _job("33199b7bfff5", "sec-coordinator-backstop", True, **_cron("41 */6 * * *")),
 ]
@@ -432,18 +434,18 @@ CRON_PROOF = [
 ]
 
 CRON_EXPIRED = [
-    _job("d4efa85f43c3", "sec-k1-limited-key", False, **_once("2026-10-23T11:00:00+05:30")),
-    _job("50229bbf6c4a", "sec-r2-deadline", False, **_once("2026-10-26T09:20:00+05:30")),
-    _job("0de3952d8ecb", "sec-r2-precheck", False, **_once("2026-10-25T20:30:00+05:30")),
-    _job("df6163647275", "sec-k2-cloudflare-key", False, **_once("2026-10-26T09:00:00+05:30")),
-    _job("bdc37cb70a4a", "sec-c5-before-monday", False, **_once("2026-10-25T21:30:00+05:30")),
-    _job("fc1c6a815b80", "sec-dnssec-cf-registrar", False, **_once("2026-10-23T21:30:00+05:30")),
-    _job("7eda90c8dd97", "sec-morning-yes-1023", False, **_once("2026-10-23T08:05:00+05:30")),
+    _job("d4efa85f43c3", "sec-k1-limited-key", False, **_once(-5)),
+    _job("50229bbf6c4a", "sec-r2-deadline", False, **_once(-2)),
+    _job("0de3952d8ecb", "sec-r2-precheck", False, **_once(-3)),
+    _job("df6163647275", "sec-k2-cloudflare-key", False, **_once(-2)),
+    _job("bdc37cb70a4a", "sec-c5-before-monday", False, **_once(-3)),
+    _job("fc1c6a815b80", "sec-dnssec-cf-registrar", False, **_once(-5)),
+    _job("7eda90c8dd97", "sec-morning-yes-1023", False, **_once(-5)),
 ]
 
 CRON_KEPT = [
     _job("eba16b1df90e", "tmp-9737-proof", False, **_cron("5 22 * * *")),
-    _job("111111111111", "sec-future-reminder", False, **_once("2027-01-05T10:00:00+05:30")),
+    _job("111111111111", "sec-future-reminder", False, **_once(3)),
     _job("222222222222", "atmp-proof", True, **_cron("0 7 4 4 *")),
 ]
 

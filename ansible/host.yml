@@ -2251,8 +2251,8 @@
     # owner, and two of them (fleet-ops#10545) were still enabled on a schedule that fires once a
     # year. Delete every enabled tmp-* job and every disabled one-shot whose run_at is before
     # today, which can never run again. A disabled recurring job cannot fire, so it stays as
-    # evidence for its issue. run_at is an ISO date, so it sorts before today exactly when its day
-    # has passed.
+    # evidence for its issue. run_at is an ISO date, so comparing it with today's date is a plain
+    # string compare: a job that falls due today is left for the next run.
     - name: Delete the temporary and expired one-shot jobs from Hermes' cron store
       become: true
       become_user: nish
@@ -2272,7 +2272,7 @@
                    | selectattr('name', 'defined')
                    | selectattr('name', 'match', '^tmp-')
                    | map(attribute='id') | list)
-             + (jobs | rejectattr('enabled', 'equalto', true)
+             + (jobs | selectattr('enabled', 'equalto', false)
                      | selectattr('schedule.kind', 'defined')
                      | selectattr('schedule.kind', 'equalto', 'once')
                      | selectattr('schedule.run_at', 'defined')
