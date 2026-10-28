@@ -394,15 +394,21 @@ the user running the manager, `/root` (`man systemd.unit`, Specifiers), not
 names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
 the shared one.
 
-Readers in this repo: none (re-audited for every unit, drop-in, quadlet,
-workflow, prompt and recipe that starts `claude`, `pi`, `devin`, `opencode`,
-`cursor-agent` or a fleet worker):
+Readers of the shared file in this repo: none (re-audited for every unit,
+drop-in, quadlet, workflow, prompt and recipe that starts `claude`, `pi`,
+`devin`, `opencode`, `cursor-agent` or a fleet worker). One unit reads a
+single-name file of its own instead (fleet-ops#10222):
 
 - `claude-remote-control.service` is a system unit. A system manager never saw
-  the user manager environment, so it never inherited these names. Its header
-  says why it must stay without them: "that directory also exports
+  the user manager environment, so it never inherited these names, and it must
+  never hold `CLAUDE_CODE_OAUTH_TOKEN`: "that directory also exports
   CLAUDE_CODE_OAUTH_TOKEN, and Remote Control needs the claude.ai login
-  instead."
+  instead." For the browser MCP entry in its user config (fleet-ops#10222) it
+  loads the one name it needs from its own file, the optional
+  `EnvironmentFile=-/home/nish/.config/claude/browser-use.env`
+  (`BROWSER_USE_API_KEY` only, mode 0600): a missing file costs the browser
+  tool, not the phone bridge. The file follows the `oauth.env` rules: never
+  tracked, never printed; check it with `test -s` and `stat -c %a`.
 - `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
   user manager either. The worker engines read their own credentials: devin and
@@ -442,6 +448,32 @@ this repo under `rootfs/etc/claude-code/roles/`, installed to
 | --- | --- | --- |
 | `tincan-listen-claude-vps.service` | `tincan-listener.json` | `--settings /etc/claude-code/roles/tincan-listener.json` on `claude -p` |
 | `claude-remote-control.service` | `remote-control.json` | spawned sessions read `~/.claude/settings.json` (`claude remote-control` refuses `--settings`) |
+
+### The browser MCP entry (fleet-ops#10222)
+
+#10136 made the browser MCP entry in the user configs expand
+`${BROWSER_USE_API_KEY}` from the session's environment. Interactive shells
+get the value from `~/.config/claude/oauth.env`; these two units did not, so
+the server warned at startup and its first browser call would have failed.
+One unit drops the entry, one gets the one name:
+
+- `tincan-listen-claude-vps.service`: the entry is gone from
+  `~/.claude-vps/.claude.json` (removed 2026-10-25 with `claude mcp remove
+  browser-use -s user` under that `CLAUDE_CONFIG_DIR`). The unit is locked to
+  no keys except Jev (Nish 2026-10-22) and runs `--strict-mcp-config
+  --mcp-config tincan-listener-mcp.json`, which never loaded the entry: it was
+  a warning and a false expectation, nothing else. Any new process reading
+  that config is clean from the moment of removal; a running server picks the
+  cleaned config up at its next restart.
+- `claude-remote-control.service` keeps the entry (its `~/.claude.json` is
+  shared with interactive sessions) and loads the one name from
+  `~/.config/claude/browser-use.env`, per the unit's `EnvironmentFile=` line.
+  Only Nish restarts that unit, so the line is staged like every other change
+  to it.
+
+Check the listener side any time:
+`jq '.mcpServers | has("browser-use")' ~/.claude-vps/.claude.json` must print
+`false`.
 
 `claude remote-control` refuses `--settings` (proved 2026-10-09: `Error:
 Unknown argument: --settings`). A `Bash` allow does not swallow the ask list:

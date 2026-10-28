@@ -137,7 +137,12 @@ script, or prompt lands unseen.
   `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
   OpenCode and the paid pi seat, each reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
-  `~/.local/state/tincan-listen-<agent>`. `cua-desk-daemon.service` is the Cua
+  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
+  router with a virtual key of its own, kept in the fleet's local seat directory
+  (worker-cheap only, capped per day), minted with `POST /key/generate` like
+  every other consumer credential, because a prompt-injected message in that
+  lane could make the run print its environment. The router's master key is not
+  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
   daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
   The six wake services were hand-placed regular files under
   `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
@@ -152,7 +157,12 @@ script, or prompt lands unseen.
   does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
   are enabled already (the wants link names the unit, and step 2j keeps the six
   wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. Off switch, one unit at a time:
+  restart. The OpenCode lane will not start without its own key file, so mint
+  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
+  limit) into the fleet's seat directory before its first start, the way the
+  Cursor lane's seat file is provisioned: a missing file fails the unit and
+  pages, which is the point, because the lane has no fallback to the admin key.
+  Off switch, one unit at a time:
   `systemctl --user disable --now tincan-listen-command-code.service`
   `systemctl --user disable --now tincan-listen-cursor-vps.service`
   `systemctl --user disable --now tincan-listen-devin-vps.service`
@@ -767,7 +777,7 @@ rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and
 ```
 
 The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
-the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+the on-merge and after-boot `fleet-host-config.service` run recreates the `tether`
 user and `/etc/tether`. While the marker exists that run creates nothing for
 tether, removes its firewall rule, and keeps the unit disabled and stopped.
 Remove the marker to allow it again. To delete tether for good, open a PR that
@@ -1128,7 +1138,7 @@ credential file does not hold them back.
 
 ## CI
 
-`.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
+`.github/workflows/ci.yml` runs one job, `ci`, on every PR and every merge-queue entry. Its
 checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
@@ -1511,9 +1521,11 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   `provider-watch: <name> listing unavailable (HTTP <code>), skipped; outages page through
   litellm_deployment_state` and does not fail the unit. Any other non-200 (404 from a wrong listing
   path or api_base, 400) fails it, so a provider cannot silently drop out of the check. HTTP 401 or
-  403 means a dead or expired key or login: the unit fails (`OnFailure=` pages) with one plain line
-  naming the provider and what Nish must do, and no issue is filed. A router row with a key but no
-  https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`, is refused.
+  403 means a dead or expired key or login: every run logs one plain line naming the provider and
+  what Nish must do and moves on (fleet-ops#9912: a standing state must not re-fail the unit on
+  every daily run and keep the failed-unit list never empty), and no issue is filed. A router row
+  with a key but no https api_base, or a key variable outside `^[A-Z][A-Z0-9_]*_API_KEY(_[0-9]+)?$`,
+  is refused.
 - `config/provider-watch.json` holds only generic per-provider settings: `watch` (an ERE; only ids
   matching it are compared; Cline lists a large catalogue that changes about weekly, so it watches
   only `:free`, `-free`, `deepseek/`, `z-ai/` and `cline` ids), `billing` (`flat`) and `listing`

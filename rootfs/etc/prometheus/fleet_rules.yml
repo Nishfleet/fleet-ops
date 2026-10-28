@@ -61,6 +61,16 @@ groups:
           summary: "Tasks are stalled waiting for memory"
           description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
 
+      # fleet-ops#10452: swap sat at ~90% with no alert. Visible, not paged.
+      - alert: SwapLow
+        expr: node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swap is over 80% used"
+          description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
+
       - alert: OOMKill
         expr: increase(node_vmstat_oom_kill[15m]) > 0
         labels:
@@ -122,6 +132,35 @@ groups:
         annotations:
           summary: "Alertmanager rejected its last config reload"
           description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
+
+  # The self-repair loop's own health (fleet-ops#10306): alert -> Grafana ->
+  # GitHub issue -> Claude-lane worker. Grafana files the issues, so when it is
+  # down or cannot deliver, no issue and no worker follows and nothing else
+  # reports it. These two go to Telegram at once (alertmanager.yml, own route
+  # with group_wait 0s), outside the 2 hour wait. The queue-stuck half is not
+  # a rule: see the comment on fleet-ops#10306.
+  - name: fleet_loop_health
+    rules:
+      # absent() covers the scrape job vanishing from prometheus.yml.
+      - alert: GrafanaDown
+        expr: up{job="grafana"} == 0 or absent(up{job="grafana"})
+        for: 5m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Grafana is down, so no alert can file a fleet issue"
+          description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
+
+      # Any integration, any reason: a webhook 401 from an expired GitHub App
+      # token is the case this was written for (fleet-grafana-github-token.timer).
+      # The series appears with the first failure, so a healthy Grafana is silent.
+      - alert: GrafanaNotificationsFailing
+        expr: sum(increase(grafana_alerting_notifications_failed_total[15m])) > 0
+        labels:
+          severity: nish
+        annotations:
+          summary: "Grafana failed to deliver alert notifications in the last 15 minutes"
+          description: "grafana_alerting_notifications_failed_total rose in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service."
 
   - name: fleet_backup
     rules:
