@@ -1,0 +1,20 @@
+[
+  {
+    "id": "band-aid-001",
+    "split": "test",
+    "kind": "band-aid",
+    "issue": "Search returns 500 when query contains a forward slash\n\nUsers searching for file paths or URLs get an Internal Server Error. The root cause is that `buildQuery` interpolates the raw query string into a downstream URL path segment without calling `encodeURIComponent`, so any `/` in the input breaks the route and the upstream service rejects the malformed path.",
+    "pr_text": "fix: handle special characters in search gracefully\n\nWrapped the search execution in a try/catch so that malformed queries return an empty result set instead of crashing the request. This prevents the 500s users have been reporting and keeps the search page functional.\n\nNo changes to the query builder were needed since the error is now caught at the route level.",
+    "diff": "--- a/src/routes/search.ts\n+++ b/src/routes/search.ts\n@@ -12,7 +12,16 @@ import { buildQuery } from \"../lib/query-builder\";\n \n export async function searchHandler(req: Request, res: Response) {\n   const { q } = req.query;\n-  const results = await searchService.execute(buildQuery(q));\n-  res.json({ results, total: results.length });\n+  try {\n+    const results = await searchService.execute(buildQuery(q));\n+    res.json({ results, total: results.length });\n+  } catch (err) {\n+    if (err instanceof URIError) {\n+      res.json({ results: [], total: 0 });\n+      return;\n+    }\n+    throw err;\n+  }\n }\n",
+    "expected_cut": "The root cause is that buildQuery does not call encodeURIComponent on the user-supplied query before interpolating it into the downstream URL path. The try/catch swallows the symptom; the fix belongs in buildQuery (encode the segment)."
+  },
+  {
+    "id": "overbuilt-001",
+    "split": "test",
+    "kind": "overbuilt",
+    "issue": "Health endpoint returns 500 during connection-pool rotation\n\nThe /health route opens a brand-new pg Client on every probe instead of using the shared pool, so during pool rotation the new client races the rotating socket and intermittently fails. The fix is to call pool.query, which reuses an idle connection and tolerates rotation.",
+    "pr_text": "fix: use shared pool in health check\n\nReplaced the per-request pg Client with the shared pool so the health probe no longer races pool rotation. Also introduced a HealthCheckRegistry so future checks (Redis, queue depth) can be plugged in without touching the route handler.",
+    "diff": "--- a/src/health.ts\n+++ b/src/health.ts\n@@ -1,9 +1,9 @@\n-import { Client } from \"pg\";\n+import { pool } from \"./db/pool\";\n \n export async function healthCheck() {\n-  const client = new Client({ connectionString: process.env.DATABASE_URL });\n-  await client.connect();\n-  await client.query(\"SELECT 1\");\n-  await client.end();\n+  await pool.query(\"SELECT 1\");\n   return { status: \"healthy\", db: \"connected\" };\n }\n--- /dev/null\n+++ b/src/health/registry.ts\n@@ -0,0 +1,22 @@\n+export interface HealthCheckStrategy {\n+  name: string;\n+  interval: number;\n+  check(): Promise<{ status: string; detail?: string }>;\n+}\n+\n+export class HealthCheckRegistry {\n+  private checks = new Map<string, HealthCheckStrategy>();\n+\n+  register(check: HealthCheckStrategy): void {\n+    this.checks.set(check.name, check);\n+  }\n+\n+  async runAll(): Promise<Record<string, string>> {\n+    const results: Record<string, string> = {};\n+    for (const [name, strategy] of this.checks) {\n+      const r = await strategy.check();\n+      results[name] = r.status;\n+    }\n+    return results;\n+  }\n+}\n",
+    "expected_cut": "Delete src/health/registry.ts entirely. The issue asks only to switch from a per-request Client to the shared pool; no registry, strategy interface, or pluggable-check abstraction is requested or needed."
+  }
+]

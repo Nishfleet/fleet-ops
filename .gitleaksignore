@@ -12,3 +12,7 @@
 # underlying content is ever rewritten.
 .fleet/bench7371/b-labels.jsonl:stripe-access-token:218
 .fleet/bench7371/b-corpus.json:stripe-access-token:1
+# fleet-ops#10144: two early commits of this PR read the pin file by a literal home path; the head reads it through HOME. A PR scan reads every commit and history cannot be rewritten on an open PR. Sha-keyed so they cover only these commits.
+5409e49ae27c7ca822938a780d3b45a1488a02d9:ansible/update.yml:private-home-path:967
+e001fda6d51822792498c7fb81d3e0320430eb7a:tests/test_fleet_update_false_failures.py:private-home-path:28
+e001fda6d51822792498c7fb81d3e0320430eb7a:ansible/update.yml:private-home-path:973

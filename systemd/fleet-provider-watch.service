@@ -81,7 +81,6 @@ Environment=YQ=%h/.local/bin/yq
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
-EnvironmentFile=-%E/fleet-ops/seats/opencode-2.env
 EnvironmentFile=-%E/fleet-ops/seats/pareto.env
 EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%E/fleet-ops/seats/zai.env
