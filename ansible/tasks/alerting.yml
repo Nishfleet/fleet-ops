@@ -250,6 +250,10 @@
   ansible.builtin.uri:
     url: http://127.0.0.1:9093/-/ready
     status_code: 401
+  retries: 10
+  delay: 2
+  until: alertmanager_unauth.status == 401
+  register: alertmanager_unauth
   when: alertmanager_auth_ready | default(false) | bool
 
 - name: Check that alertmanager answers the credential Prometheus sends
