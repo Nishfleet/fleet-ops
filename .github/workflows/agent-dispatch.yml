@@ -1167,7 +1167,7 @@ jobs:
     permissions: {}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      # agent.yml's two steps: the key stays on the runner and is masked; the token is issues: write.
+      # The key stays on the runner and is masked; the token is issues: write.
       # No owner and no repositories: scoped to the calling repo, as in agent.yml.
       - name: App token
         id: app-token

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/actions/app-token/action.yml"
 PILOT = ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf"
@@ -29,6 +31,24 @@ def test_app_token_fails_loud_with_no_permission():
 
 
 def test_no_workflow_keeps_its_own_key_or_mint_step():
-    for f in (ROOT / ".github/workflows").glob("agent*.yml"):
+    for f in (ROOT / ".github/workflows").glob("*.yml"):
+        if f.name == "ci.yml":  # holds the guard's test fixtures, not a key read
+            continue
         text = f.read_text()
         assert KEY not in text and "create-github-app-token" not in text, f"{f.name} bypasses the app-token action"
+
+
+def _steps():
+    return yaml.safe_load(WORKFLOW.read_text())["runs"]["steps"]
+
+
+def test_every_inner_step_runs_under_failure_and_cancelled():
+    # A caller with `if: failure() || cancelled()` skips inner steps that default to success().
+    for step in _steps():
+        assert str(step.get("if")).replace(" ", "") == "always()", f"inner step without if: always(): {step}"
+
+
+def test_app_token_fails_loud_on_an_empty_token():
+    last = _steps()[-1]
+    assert "steps.mint.outputs.token" in last["env"]["TOKEN"]
+    assert '[ -n "$TOKEN" ] ||' in last["run"] and "exit 1" in last["run"]

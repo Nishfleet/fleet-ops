@@ -26,11 +26,13 @@ outputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    - if: always()
+      shell: bash
       env:
         PERMS: ${{ inputs.permission-contents }}${{ inputs.permission-issues }}${{ inputs.permission-pull-requests }}
       run: '[ -n "$PERMS" ] || { echo "::error::app-token needs at least one permission-* input"; exit 1; }'
     - id: key
+      if: always()
       shell: bash
       run: |
         keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
@@ -40,6 +42,7 @@ runs:
         done < "$keyfile"
         { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
     - id: mint
+      if: always()
       uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
         app-id: "4728578"
@@ -49,3 +52,8 @@ runs:
         permission-contents: ${{ inputs.permission-contents }}
         permission-issues: ${{ inputs.permission-issues }}
         permission-pull-requests: ${{ inputs.permission-pull-requests }}
+    - if: always()
+      shell: bash
+      env:
+        TOKEN: ${{ steps.mint.outputs.token }}
+      run: '[ -n "$TOKEN" ] || { echo "::error::app-token minted no token"; exit 1; }'
