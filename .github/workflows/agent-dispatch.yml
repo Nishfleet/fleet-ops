@@ -195,8 +195,8 @@ jobs:
             fi
             gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
             echo "requeue #$i: PR #$pr is CONFLICTING"
-            case $ref in claim/*) refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]') ;; *) wf=${GITHUB_WORKFLOW_REF#*/.github/workflows/}
-              gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator && gh workflow run "${wf%@*}" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$i" || echo "::warning::#$i: hand-off re-fire refused" ;; esac
+            case $ref in claim/*) refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]') ;; *) wf=${GITHUB_WORKFLOW_REF#*/.github/workflows/}; gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || continue
+              gh workflow run "${wf%@*}" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$i" || { echo "::warning::#$i: hand-off re-fire refused"; gh issue edit "$i" -R "$GITHUB_REPOSITORY" --remove-label needs-orchestrator; } ;; esac
           done
           echo "refs=$refs" >> "$GITHUB_OUTPUT"
   remerge:
