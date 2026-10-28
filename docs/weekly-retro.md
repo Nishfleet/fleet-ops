@@ -20,6 +20,18 @@ It is built so a fooled model cannot do harm, not so it is asked not to.
   by `systemd-socket-proxyd` to `api.anthropic.com:443` and nothing else.
 - Follow-up issues carry only the label `retro` (`needs-orchestrator` would start
   a paid orchestrator run per issue), one open issue per class.
+- Every filed issue is echoed on one final `retro-filed:` line naming its repo,
+  its number and its labels, so a run that filed nothing says so on that line.
+  No model call happens in the filing step. Issue #9323 asked for a judge to
+  decide `agent-ready` per finding, and the measurement below is why that is not
+  built: `tests/evals/results/retro_queue.json` scores 20 held-out fixed-form
+  findings on the live `/jev` seat and no answer reaches the 0.9 band the rest of
+  the fleet uses, with a 0.029 gap between the two labelled halves. The five
+  fixed values carry no evidence, so a judge reading them has nothing to decide
+  from, and an `agent-ready` issue would hand a worker a five-field body and no
+  detail to fix. Adding the label by any other rule would queue work no one can
+  act on. A retro finding that needs engineering judgment is the weekly report's
+  job, not the issue body's.
 - The call is Claude Code to the Anthropic API with the model pinned in the unit.
   The `ollama` seat is a cloud service (`api_base` is `https://ollama.com`), so
   it is not used. The pin check fails the unit if the call was anything else

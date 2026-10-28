@@ -1,0 +1,222 @@
+[
+  {
+    "id": "rq-1",
+    "split": "test",
+    "label": "queue",
+    "why": "Adding a CI check to catch unverified claims is mechanical, needs no human, and protects users from false outputs.",
+    "class": "false-claims",
+    "count": 7,
+    "rung": "static-gate",
+    "repo": "fleet-ops",
+    "fix": "ci-check"
+  },
+  {
+    "id": "rq-2",
+    "split": "test",
+    "label": "queue",
+    "why": "Changing a config value that broke the default branch is mechanical, needs no permission, and restores the build users depend on.",
+    "class": "main-red",
+    "count": 3,
+    "rung": "static-gate",
+    "repo": "drive",
+    "fix": "config-change"
+  },
+  {
+    "id": "rq-3",
+    "split": "test",
+    "label": "queue",
+    "why": "Adding a stop hook for a repeatedly failing command is mechanical, needs no person's call, and protects the workflow users rely on.",
+    "class": "repeated-failures",
+    "count": 12,
+    "rung": "rule",
+    "repo": "0509",
+    "fix": "stop-hook"
+  },
+  {
+    "id": "rq-4",
+    "split": "test",
+    "label": "queue",
+    "why": "Removing dead code that wastes tool calls is mechanical, needs no decision, and protects product performance users experience.",
+    "class": "tool-economy",
+    "count": 5,
+    "rung": "structure",
+    "repo": "tinystudio-in",
+    "fix": "delete-dead-code"
+  },
+  {
+    "id": "rq-5",
+    "split": "test",
+    "label": "queue",
+    "why": "Editing a rule line to reflect a known correction is mechanical, needs no permission, and protects correct behavior users see.",
+    "class": "corrections",
+    "count": 2,
+    "rung": "rule",
+    "repo": "inish-site",
+    "fix": "rule-edit"
+  },
+  {
+    "id": "rq-6",
+    "split": "test",
+    "label": "queue",
+    "why": "Editing a skill prompt to stop re-reading loops is mechanical, needs no human, and protects the product by enabling action.",
+    "class": "steering-no-ops",
+    "count": 19,
+    "rung": "skill",
+    "repo": "fleet-ops",
+    "fix": "prompt-edit"
+  },
+  {
+    "id": "rq-7",
+    "split": "test",
+    "label": "queue",
+    "why": "Adding a test to verify a claim the agent made falsely is mechanical, needs no person, and protects users from incorrect outputs.",
+    "class": "false-claims",
+    "count": 4,
+    "rung": "static-gate",
+    "repo": "0509",
+    "fix": "test"
+  },
+  {
+    "id": "rq-8",
+    "split": "test",
+    "label": "queue",
+    "why": "Adding a CI check for a single red build is mechanical, needs no judgment, and protects the product build users depend on.",
+    "class": "main-red",
+    "count": 1,
+    "rung": "static-gate",
+    "repo": "tinystudio-in",
+    "fix": "ci-check"
+  },
+  {
+    "id": "rq-9",
+    "split": "test",
+    "label": "queue",
+    "why": "Changing a config value that causes repeated failures is mechanical, needs no permission, and protects the product workflow.",
+    "class": "repeated-failures",
+    "count": 31,
+    "rung": "structure",
+    "repo": "drive",
+    "fix": "config-change"
+  },
+  {
+    "id": "rq-10",
+    "split": "test",
+    "label": "queue",
+    "why": "Editing a rule to prevent wasted tool calls is mechanical, needs no person's call, and protects product efficiency users notice.",
+    "class": "tool-economy",
+    "count": 8,
+    "rung": "rule",
+    "repo": "inish-site",
+    "fix": "rule-edit"
+  },
+  {
+    "id": "rq-11",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Prose rung changes wording only, so the fix protects no product outcome a user can see (part 3 fails).",
+    "class": "tool-economy",
+    "count": 3,
+    "rung": "prose",
+    "repo": "tinystudio-in",
+    "fix": "prompt-edit"
+  },
+  {
+    "id": "rq-12",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Restructuring a module requires a person's architectural decision that a cheap model cannot make alone (part 2 fails).",
+    "class": "repeated-failures",
+    "count": 47,
+    "rung": "structure",
+    "repo": "drive",
+    "fix": "other"
+  },
+  {
+    "id": "rq-13",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Choosing which standing rule to edit demands judgment about intent that a cheap, fast model cannot reliably supply (part 1 fails).",
+    "class": "corrections",
+    "count": 12,
+    "rung": "rule",
+    "repo": "0509",
+    "fix": "rule-edit"
+  },
+  {
+    "id": "rq-14",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Deciding what the agent should do instead of re-reading requires a person's call on desired behaviour (part 2 fails).",
+    "class": "steering-no-ops",
+    "count": 88,
+    "rung": "skill",
+    "repo": "inish-site",
+    "fix": "prompt-edit"
+  },
+  {
+    "id": "rq-15",
+    "split": "test",
+    "label": "retro-only",
+    "why": "A prose-level fix to a false-claim pattern changes no observable behaviour, so it protects no product outcome (part 3 fails).",
+    "class": "false-claims",
+    "count": 2,
+    "rung": "prose",
+    "repo": "fleet-ops",
+    "fix": "prompt-edit"
+  },
+  {
+    "id": "rq-16",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Picking the correct config value for a structural change needs a human decision on trade-offs (part 2 fails).",
+    "class": "main-red",
+    "count": 156,
+    "rung": "structure",
+    "repo": "drive",
+    "fix": "config-change"
+  },
+  {
+    "id": "rq-17",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Setting the right cost threshold for a new CI gate requires judgment a cheap model cannot exercise reliably (part 1 fails).",
+    "class": "tool-economy",
+    "count": 23,
+    "rung": "static-gate",
+    "repo": "0509",
+    "fix": "ci-check"
+  },
+  {
+    "id": "rq-18",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Deleting dead code at the prose rung changes no runtime behaviour, so no product outcome is protected (part 3 fails).",
+    "class": "repeated-failures",
+    "count": 5,
+    "rung": "prose",
+    "repo": "tinystudio-in",
+    "fix": "delete-dead-code"
+  },
+  {
+    "id": "rq-19",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Adding a stop hook for a structural correction requires a person's permission on blast radius (part 2 fails).",
+    "class": "corrections",
+    "count": 310,
+    "rung": "structure",
+    "repo": "fleet-ops",
+    "fix": "stop-hook"
+  },
+  {
+    "id": "rq-20",
+    "split": "test",
+    "label": "retro-only",
+    "why": "Writing the right test for a steering-no-ops pattern demands judgment about which failure mode matters most (part 1 fails).",
+    "class": "steering-no-ops",
+    "count": 19,
+    "rung": "static-gate",
+    "repo": "inish-site",
+    "fix": "test"
+  }
+]
