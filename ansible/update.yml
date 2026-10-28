@@ -964,7 +964,7 @@
           ansible.builtin.shell:
             executable: /bin/bash
             cmd: |
-              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' /home/nish/.pi/agent/settings.json) || {
+              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' "${HOME}/.pi/agent/settings.json") || {
                 echo "could not read the git pins from settings.json"; exit 1; }
               bad=0
               while IFS= read -r spec; do
