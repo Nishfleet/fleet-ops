@@ -50,7 +50,10 @@ jobs:
           done
       - run: pipx install semgrep==1.170.0
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
-      - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
+      # cua-driver never on the host (fleet-ops#9297); its fixtures are not a scan target.
+      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error --exclude .semgrep/no-host-cua-driver.txt
+      # The cua-driver rule's own ruleid:/ok: fixtures, so a loosened rule goes red.
+      - run: semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
         # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
