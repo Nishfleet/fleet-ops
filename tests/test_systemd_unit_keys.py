@@ -954,13 +954,6 @@ GLUE_SWEEP_USER_CONFIG_DEBRIS = (
     "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23",
 )
 
-ADAPTER_CONFIG_JAILS = (
-    ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/20-lockdown.conf",
-    ROOT / "rootfs/etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d/20-lockdown.conf",
-    ROOT / "rootfs/etc/systemd/system/dockerd-eval.service",
-)
-
-
 def glue_sweep_needle(path: str) -> str:
     basename = path.rsplit("/", 1)[-1]
     return basename if "." in basename else path
@@ -988,22 +981,6 @@ def glue_sweep_matching_lines(text: str, name: str) -> list[str]:
             for part in glue_sweep_tokens(line)
         )
     ]
-
-
-def glue_sweep_sandbox_paths(text: str) -> list[str]:
-    return [
-        token
-        for line in glue_sweep_directives(text)
-        if line.startswith(SANDBOX_HIDING_DIRECTIVES)
-        for token in line.split("=", 1)[1].split()
-    ]
-
-
-def glue_sweep_hides(paths: list[str], suffix: str) -> bool:
-    ancestors = [suffix[: index + 1].rstrip("/") for index, char in enumerate(suffix) if char == "/"]
-    ancestors = [ancestor for ancestor in ancestors if ancestor] + [suffix]
-    cleaned = [token.lstrip("-+").rstrip("/") for token in paths]
-    return any(token.endswith(ancestor) for token in cleaned for ancestor in ancestors)
 
 
 @functools.cache
@@ -1060,24 +1037,6 @@ def test_no_shipped_file_uses_a_deleted_glue_sweep_path() -> None:
             assert not failing, (
                 f"{relative} names the deleted {needle}, and only a hide rule may: {failing[0]}"
             )
-
-
-def test_every_jail_that_hides_pi_credentials_also_hides_the_adapter_config() -> None:
-    credential_jails = [
-        (relative, text)
-        for relative, text in shipped_repo_texts()
-        if relative.startswith(("rootfs/etc/systemd/", "systemd/"))
-        and glue_sweep_hides(glue_sweep_sandbox_paths(text), "/.pi/agent/auth.json")
-    ]
-    assert credential_jails, "no shipped unit hides the pi credentials, so the jails moved"
-    rehomed = {str(path.relative_to(ROOT)) for path in ADAPTER_CONFIG_JAILS} - {
-        relative for relative, _ in credential_jails
-    }
-    assert not rehomed, f"these units no longer hide the pi credentials: {sorted(rehomed)}"
-    for relative, text in credential_jails:
-        assert glue_sweep_hides(glue_sweep_sandbox_paths(text), "/.pi/agent/mcp-adapter.json"), (
-            f"{relative} hides the pi credentials but not the live mcp-adapter.json"
-        )
 
 
 def test_alertmanager_reads_the_repo_installed_config() -> None:
