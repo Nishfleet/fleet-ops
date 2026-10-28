@@ -1163,6 +1163,7 @@ credential file does not hold them back.
 | Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
 | Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
 
+- Claude Code server chats no longer load the Playwright plugin (fleet-ops#10529, no-glue rule: Chrome DevTools covers browser checks). `rootfs/etc/claude-code/managed-settings.d/65-no-playwright.json` sets `playwright@claude-plugins-official` to `false`; managed settings win over the user's `enabledPlugins`. Switch it back on: delete that file (and `sudo rm /etc/claude-code/managed-settings.d/65-no-playwright.json`, because `copy` never deletes).
 - The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
 - Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
 - Switch off for one agent: remove its task (for Claude Code set
