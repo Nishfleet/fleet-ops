@@ -1,0 +1,245 @@
+# Engine scorecard: weekly per-engine quality numbers for this repo, from
+# GitHub data only (fleet-ops#10515). Every Monday it comments the
+# trailing-7-day numbers on the tracking issue (#10521) and files one alert
+# issue per engine whose weekly merged-PR count fell below its 4-week median;
+# an alert issue closes itself the week the count recovers or the engine goes
+# quiet for five weeks.
+#
+# Definitions (same wording as the tracking issue body):
+# - an engine's PRs are merged PRs carrying a `builder-engine: <engine>`
+#   comment by the worker App; a comma-list credits every engine listed
+# - follow-up fix: a PR or issue created within 7 days after merge whose title
+#   or body references the merged PR number
+# - median hours: first review (any state) to merge, over the week's PRs with
+#   at least one review; PRs without a review are footnoted, not scored
+# - PRs without a builder-engine comment are footnoted, never engine rows
+#
+# Data walk: one GraphQL page walk per type (PRs and issues), both bounded by
+# creation date - the 7-day window plus a 10-day buffer for late merges, so a
+# PR created more than 10 days before the window and merged inside it is out
+# of scope. GitHub reports the worker App login as "nishfleet-worker" over
+# GraphQL ("nishfleet-worker[bot]" is the REST spelling). A manual dispatch
+# recomputes the same trailing window and updates the same day's comment, so a
+# change to this file is provable on demand.
+
+name: engine scorecard
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC; the window is the trailing 7 days
+  workflow_dispatch:
+
+concurrency:
+  group: engine-scorecard
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  scorecard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      issues: write
+      pull-requests: read
+    env:
+      REPO: Nishfleet/fleet-ops
+      TRACKING_ISSUE: '10521'
+    steps:
+      - name: post the weekly scorecard and raise or recover median alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Weekly per-engine quality numbers for this repo, GitHub data only.
+          # One walk of merged PRs + one walk of issues via GraphQL (both bounded by
+          # creation date: window + a 10-day buffer for late merges), then all math
+          # locally in jq. Posts one dated comment on the tracking issue, and files one
+          # open alert issue per engine whose weekly merged count dropped below its
+          # 4-week median; the alert issue closes itself the week the condition clears.
+          # GitHub reports the worker App login as "nishfleet-worker" over GraphQL and
+          # "nishfleet-worker[bot]" over REST; attribution here is the GraphQL spelling.
+
+          REPO="${REPO:?REPO must be set to owner/name}"
+          TRACKING_ISSUE="${TRACKING_ISSUE:?TRACKING_ISSUE must be set}"
+          DRYRUN="${DRYRUN:-0}"
+
+          now=$(date -u +%s)
+          w0=$((now - 35 * 86400))
+          page_cutoff=$((now - 45 * 86400))
+          week_label=$(date -u -d "@$now" +%F)
+          owner=${REPO%%/*}
+          name=${REPO#*/}
+
+          tmp=${RUNNER_TEMP:-$(mktemp -d)}
+          mkdir -p "$tmp/prs" "$tmp/iss"
+
+          # shellcheck disable=SC2016
+          Q_PRS='query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){pullRequests(first:30,after:$cursor,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor}nodes{number state createdAt mergedAt body comments(first:20){nodes{author{login} body}} reviews(first:1){nodes{submittedAt}}}}}}'
+          # shellcheck disable=SC2016
+          X_PRS='.data.repository.pullRequests as $c | {hasNextPage:$c.pageInfo.hasNextPage,endCursor:$c.pageInfo.endCursor,nodes:[$c.nodes[] | {number,state,createdAt,mergedAt,body,eng:[.comments.nodes[] | select((.author.login // "") == "nishfleet-worker" and (.body | startswith("builder-engine: "))) | (.body | split("\n")[0] | ltrimstr("builder-engine: ") | .[0:200])],rev:[.reviews.nodes[] | .submittedAt]}]}'
+          # shellcheck disable=SC2016
+          Q_ISS='query($owner:String!,$name:String!,$cursor:String){repository(owner:$owner,name:$name){issues(first:50,after:$cursor,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor}nodes{number title body createdAt}}}}'
+          # shellcheck disable=SC2016
+          X_ISS='.data.repository.issues as $c | {hasNextPage:$c.pageInfo.hasNextPage,endCursor:$c.pageInfo.endCursor,nodes:[$c.nodes[] | {number,title,body,createdAt}]}'
+
+          walk() {
+            local q=$1 x=$2 dir=$3 cutoff=$4 cursor="" i=0 f oldest more
+            rm -f "$dir"/*.json
+            while :; do
+              i=$((i + 1))
+              if [ "$i" -gt 200 ]; then echo "walk for $dir hit the 200-page cap" >&2; exit 1; fi
+              f="$dir/$(printf '%03d' "$i").json"
+              if [ -n "$cursor" ]; then
+                gh api graphql -f query="$q" -f owner="$owner" -f name="$name" -f cursor="$cursor" --jq "$x" >"$f"
+              else
+                gh api graphql -f query="$q" -f owner="$owner" -f name="$name" --jq "$x" >"$f"
+              fi
+              oldest=$(jq -r '[.nodes[].createdAt] | min // empty' "$f")
+              if [ -n "$oldest" ] && [ "$(date -u -d "$oldest" +%s)" -lt "$cutoff" ]; then break; fi
+              more=$(jq -r '.hasNextPage' "$f")
+              cursor=$(jq -r '.endCursor // ""' "$f")
+              [ "$more" = "true" ] || break
+            done
+          }
+
+          walk "$Q_PRS" "$X_PRS" "$tmp/prs" "$page_cutoff"
+          walk "$Q_ISS" "$X_ISS" "$tmp/iss" "$w0"
+
+          jq -s '[.[].nodes[]]' "$tmp"/prs/*.json >"$tmp/prs.json"
+          jq -s '[.[].nodes[]]' "$tmp"/iss/*.json >"$tmp/iss.json"
+
+          # shellcheck disable=SC2016
+          PROG=$(cat <<'JQ'
+          def ts: sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime;
+          def med: sort | if (length % 2) == 1 then .[(length - 1) / 2] else (.[length / 2 - 1] + .[length / 2]) / 2 end;
+          def disp: if . == floor then (floor | tostring) else ((. * 10 | round) / 10 | tostring) end;
+          ($now | tonumber) as $nown
+          | ($w0 | tonumber) as $w0n
+          | ($P[0] | map(select(.state == "MERGED" and .mergedAt != null and (.mergedAt | ts) >= $w0n))) as $merged
+          | ([$P[0][], $I[0][] | { c: (.createdAt | ts), t: ((.title // "") + "\n" + (.body // "")) }]
+             | map(select(.number != ($tracking | tonumber)))
+             | map(. as $x | [$x.t | match("(^|[^0-9])#(?<num>[0-9]+)"; "g").captures[] | select(.name == "num") | .string | tonumber]
+                 | unique[] | { k: (tostring), c: $x.c })
+             | group_by(.k) | map({ key: .[0].k, value: [.[].c] }) | from_entries) as $refs
+          | [$merged[]
+             | . as $p
+             | ($p.mergedAt | ts) as $pm
+             | { n: $p.number,
+                 m: $pm,
+                 e: ([$p.eng[] | split(",")[] | gsub("^\\s+|\\s+$"; "") | select(length > 0)] | unique),
+                 h: (if ($p.rev | length) > 0 and $p.rev[0] != null then (($pm - ($p.rev[0] | ts)) / 3600) else null end),
+                 fu: ((($refs[($p.number | tostring)] // []) | any(. >= $pm and . <= ([($pm + 604800), $nown] | min)))) }]
+            as $rows
+          | ([$rows[] | . as $r | $r.e[] | { e: ., r: $r }]) as $pairs
+          | [ $pairs | group_by(.e)[] | .[0].e ] as $enames
+          | [ $enames[] as $e
+              | ([$pairs[] | select(.e == $e) | .r]) as $xs
+              | ([$xs[] | select(.m >= $w0n + 4 * 604800)]) as $wk
+              | { engine: $e,
+                  counts: ([range(0; 5) as $i | [$xs[] | select(.m >= ($w0n + $i * 604800) and .m < ($w0n + ($i + 1) * 604800))] | length]),
+                  nofollow: ([$wk[] | select(.fu | not)] | length),
+                  hours: ([ $wk[] | select(.h != null) | .h ] | if length > 0 then med else null end) }
+              | .cur = .counts[4]
+              | .priormed = (.counts[0:4] | med)
+              | .below = ((.priormed > 0) and (.cur < .priormed)) ]
+          | sort_by(-.cur, .engine) as $table
+          | { when: ($nown | strftime("%Y-%m-%dT%H:%M:%SZ")),
+              table: $table,
+              currows: ([$rows[] | select(.m >= $w0n + 4 * 604800)] | length),
+              unattr: ([ $rows[] | select(.m >= $w0n + 4 * 604800 and .e == []) ] | length),
+              noreview: ([ $rows[] | select(.m >= $w0n + 4 * 604800 and .h == null) ] | length) }
+          | . as $o
+          | .body = (["<!-- engine-scorecard: \(($o.when)[0:10]) -->",
+              "",
+              "## Engine scorecard — trailing 7 days to \(($o.when)[0:10])",
+              "",
+              (if ($o.table | length) == 0 then
+                 "No `builder-engine:` PRs merged in this window; no engine numbers to report."
+               else
+                 "| engine | merged PRs | no follow-up fix within 7d | median h, first review → merge |"
+                 + "\n|---|---:|---:|---:|"
+                 + "\n" + ([$o.table[] | "| \(.engine) | \(.cur) | \(.nofollow) | \(if .hours == null then "—" else (.hours | disp) end) |"] | join("\n"))
+               end),
+              "",
+              ([$o.table[] | select(.below) | "⚠️ **\(.engine)** merged \(.cur) this week, below its 4-week median \(.priormed | disp)."]
+               | if length > 0 then join("  \n") else "Alerts: none." end),
+              "",
+              "<sub>\($o.currows) PRs merged in the window; \($o.unattr) without a `builder-engine:` comment (not scored); \($o.noreview) without a review (excluded from medians). A follow-up fix is a PR or issue created within 7 days after merge whose title or body references the merged PR number. Numbers are GitHub data only, recomputed from scratch each run.</sub>"]
+            | join("\n"))
+          JQ
+          )
+
+          jq -n --slurpfile P "$tmp/prs.json" --slurpfile I "$tmp/iss.json" \
+            --argjson now "$now" --argjson w0 "$w0" --argjson tracking "$TRACKING_ISSUE" \
+            "$PROG" >"$tmp/score.json"
+
+          jq -r '.body' "$tmp/score.json" >"$tmp/body.md"
+          jq -r '.table[] | [.engine, (.cur | tostring), (.priormed | if . == floor then (floor | tostring) else ((. * 10 | round) / 10 | tostring) end), (if .below then "yes" else "no" end)] | @tsv' "$tmp/score.json" >"$tmp/engines.tsv"
+
+          echo "--- weekly comment ---"
+          cat "$tmp/body.md"
+
+          marker="<!-- engine-scorecard: $week_label -->"
+          run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-0}"
+
+          gh api --paginate "repos/$REPO/issues/$TRACKING_ISSUE/comments?per_page=100" >"$tmp/tc.json"
+          cid=$(jq -r --arg m "$marker" '[.[] | select(.body | startswith($m)) | .id] | max // 0' "$tmp/tc.json")
+
+          if [ "$DRYRUN" = 1 ]; then
+            if [ "$cid" != "0" ]; then echo "[dry-run] would update comment $cid on #$TRACKING_ISSUE"; else echo "[dry-run] would post a new comment on #$TRACKING_ISSUE"; fi
+          else
+            if [ "$cid" != "0" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@"$tmp/body.md" >/dev/null
+              echo "updated the weekly comment (id $cid) on #$TRACKING_ISSUE"
+            else
+              gh api -X POST "repos/$REPO/issues/$TRACKING_ISSUE/comments" -F body=@"$tmp/body.md" >/dev/null
+              echo "posted the weekly comment on #$TRACKING_ISSUE"
+            fi
+          fi
+
+          gh api -X GET search/issues -f q="repo:$REPO is:issue is:open in:body \"engine-quality-alert:\"" --paginate \
+            | jq -s --argjson t "$TRACKING_ISSUE" '[.[].items[] | select(.number != $t) | {number, body}]' >"$tmp/alerts.json"
+
+          while IFS=$'\t' read -r eng cur med below; do
+            if [ "$below" = "yes" ]; then
+              if jq -e --arg e "$eng" '[.[] | select(.body | test("engine-quality-alert: " + $e + "([^0-9a-z-]|$)"))] | length > 0' "$tmp/alerts.json" >/dev/null; then
+                echo "alert for $eng stays open"
+              elif [ "$DRYRUN" = 1 ]; then
+                echo "[dry-run] would file an alert issue for $eng ($cur this week vs 4-week median $med)"
+              else
+                abody=$(cat <<EOF
+          engine-quality-alert: $eng
+
+          $eng merged $cur PR(s) in the trailing 7 days, below its 4-week median of $med merged PRs per week.
+
+          Raised by the engine scorecard workflow (run $run_url). This week's table lives on the tracking issue #$TRACKING_ISSUE. This issue closes itself the week the engine is back at or above its median.
+          EOF
+                )
+                gh issue create -R "$REPO" --title "Engine quality alert: $eng below its 4-week median" --body "$abody" >/dev/null
+                echo "filed an alert issue for $eng ($cur this week vs 4-week median $med)"
+              fi
+            else
+              for num in $(jq -r --arg e "$eng" '.[] | select(.body | test("engine-quality-alert: " + $e + "([^0-9a-z-]|$)")) | .number' "$tmp/alerts.json"); do
+                if [ "$DRYRUN" = 1 ]; then
+                  echo "[dry-run] would close alert #$num ($eng recovered: $cur this week, median $med)"
+                else
+                  gh issue close "$num" -R "$REPO" -c "engine-quality-alert: recovered — $eng merged $cur this week, at or above its 4-week median ($med). See #$TRACKING_ISSUE." >/dev/null
+                  echo "closed alert #$num ($eng recovered: $cur this week, median $med)"
+                fi
+              done
+            fi
+          done <"$tmp/engines.tsv"
+
+          for num in $(jq -r '.[] | .number' "$tmp/alerts.json"); do
+            aeng=$(jq -r --argjson n "$num" '[.[] | select(.number == $n)][0].body | capture("engine-quality-alert: (?<e>[0-9a-z-]+)").e' "$tmp/alerts.json")
+            if ! grep -q "^$aeng	" "$tmp/engines.tsv"; then
+              if [ "$DRYRUN" = 1 ]; then
+                echo "[dry-run] would close stale alert #$num ($aeng has no merged PRs in the trailing 5 weeks)"
+              else
+                gh issue close "$num" -R "$REPO" -c "engine-quality-alert: closed — $aeng has no merged PRs in the trailing 5 weeks, so there is no median left to compare. See #$TRACKING_ISSUE." >/dev/null
+                echo "closed stale alert #$num ($aeng has no merged PRs in the trailing 5 weeks)"
+              fi
+            fi
+          done
