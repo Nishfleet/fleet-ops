@@ -1086,7 +1086,7 @@ jobs:
           esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
-            for d in 0 ${REVIEW_BACKOFF:-30 60 120}; do
+            for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
               sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
               if [ "$rc" != 0 ] || ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the call failed or its answer was not JSON (curl exit $rc)"
               else
