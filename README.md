@@ -777,7 +777,7 @@ rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and
 ```
 
 The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
-the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+the on-merge and after-boot `fleet-host-config.service` run recreates the `tether`
 user and `/etc/tether`. While the marker exists that run creates nothing for
 tether, removes its firewall rule, and keeps the unit disabled and stopped.
 Remove the marker to allow it again. To delete tether for good, open a PR that
