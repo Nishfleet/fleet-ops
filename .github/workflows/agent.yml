@@ -610,7 +610,8 @@ jobs:
           permission-pull-requests: write
       - name: Router wall
         id: wall
-        # Infra, not a bad packet (fleet-ops#8543): no strike, back to agent-ready. GITHUB_TOKEN fires no workflow (0509#6133).
+        # Infra, not a bad packet (fleet-ops#8543): no strike, back to agent-ready. Devin fails before it writes, so it skips the ahead_by proof.
+        # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133, ~50 runs an issue).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
@@ -621,7 +622,7 @@ jobs:
             # Cursor's stall (fleet-ops#9275) and a 402/400 dead seat (fleet-ops#9007, #9011) are the
             # provider, not the packet: the router cools only 401/404/408/429 of the 4xx, so a row that
             # answers only these keeps its share. Bare 400 stays out: pi's own BadRequestError must strike.
-            { grep -qiE "no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b" "$RUNNER_TEMP/worker.err" 2>/dev/null ||
+            { grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null ||
               { [ "$ENGINE" = cursor ] && grep -qi 'RetriableError: Connection stalled' "$RUNNER_TEMP/worker.err" 2>/dev/null; }; } || exit 0
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
