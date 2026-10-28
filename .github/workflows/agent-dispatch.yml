@@ -1418,12 +1418,6 @@ jobs:
           # rather than in the always() step, so nothing is built.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
-          branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435): continue it. The per-issue concurrency group means no other run for #N is live. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
-          if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            open=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=open" --jq length) || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
-            if [ "$open" = 0 ]; then echo "orchestrate: $branch exists on origin with no open PR; another hand-off owns #$ISSUE; skip"; exit 0; fi
-          fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
           # used ~31% of Nish's weekly Claude limit. It counts today's (IST)
           # "orchestrator hand-off started:" comments, which this step posts on
@@ -1524,7 +1518,7 @@ jobs:
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
-          # A branch on origin here has an open PR (step "issue"): continue from its head.
+          # A branch on origin here is a blocked review sent back (fleet-ops#10435) or a hand-off cut short (its run died, so no PR): continue from its head. The per-issue concurrency group means no other run for #N is live.
           start=refs/remotes/origin/orch/issue-$ISSUE
           git -C "$mirror" show-ref --verify --quiet "$start" || start=
           if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
