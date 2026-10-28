@@ -434,3 +434,30 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     (src / "runsvc.sh").write_text("changed upstream")
     assert "changed=0" in _run_tasks(tmp_path, names, subs)
     assert (dest / "runsvc.sh").read_text() == "live state"
+
+
+MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
+JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
+
+
+def test_every_claude_managed_settings_file_ships_and_is_installed():
+    copies = [t["ansible.builtin.copy"] for t in PLAY["tasks"] if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
+    assert copies, "no host.yml copy task installs anything under /etc/claude-code/"
+
+    def installed(path):
+        src = "{{ rootfs }}/" + path.relative_to(ROOT / "rootfs").as_posix()
+        return any(copy.get("src") == src or (copy.get("src", "").endswith("/") and src.startswith(copy["src"])) for copy in copies)
+
+    files = sorted(p for p in MANAGED_TREE.rglob("*") if p.is_file())
+    assert files, f"no files under {MANAGED_TREE}"
+    for path in files:
+        if path.suffix == ".json":
+            assert isinstance(json.loads(path.read_text()), dict), f"{path.relative_to(ROOT)} is not a JSON object"
+        assert installed(path), f"{path.relative_to(ROOT)} is installed by no /etc/claude-code copy task"
+
+
+def test_the_managed_settings_defaults_file_validates_a_json_object():
+    copy = TASKS["Install the Claude Code managed-settings defaults file"]["ansible.builtin.copy"]
+    assert copy["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
+    assert copy["dest"] == "/etc/claude-code/managed-settings.json"
+    assert JSON_OBJECT_GATE in copy["validate"]

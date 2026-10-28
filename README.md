@@ -1075,13 +1075,30 @@ Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
 `rm ~/.claude-max/agents`. The live agent files stay as plain files.
 
+## Managed-settings defaults
+
+`rootfs/etc/claude-code/managed-settings.json` is the box-wide Claude Code
+managed settings file itself, not a drop-in. `ansible/host.yml` installs it with
+the same `validate:` as the drop-ins, so a file that is not a JSON object never
+reaches `/etc` and cannot stop Claude Code from starting. It carries the
+subagent model, the per-model settings, the hand-picked `model-lanes` plugin and
+the box-wide permission `deny` and `ask` lists. `/etc/claude-code` is not in
+`owned_dirs`; every file in it is installed by its own task.
+
+- Verify: `claude -p hi --output-format stream-json --verbose` starts, and its
+  init line shows `claude-haiku-5-5` as the subagent model.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
+- The check is `tests/test_chrome_devtools_mcp.py`: every file under
+  `rootfs/etc/claude-code/` is a JSON object where it is JSON, and the playbook
+  installs it under `/etc/claude-code/` with the JSON-object `validate:`.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
 Code managed-settings drop-in; Claude Code merges every
-`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
-hand-installed `/etc/claude-code/managed-settings.json` is not touched and
-`/etc/claude-code` is not in `owned_dirs`. It does four things:
+`/etc/claude-code/managed-settings.d/*.json` into the managed settings. It does
+four things:
 
 - Tells the auto-mode safety checker which orgs and repos are ours.
 - Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the

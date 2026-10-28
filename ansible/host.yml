@@ -670,18 +670,28 @@
         group: root
         mode: preserve
 
-    # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-    # managed settings: here, the agents' auto-mode rules and the hook that
-    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
-    # that does not parse stops Claude Code from starting on the whole box, so
-    # validate refuses any file that is not a JSON object before it reaches
-    # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
-    # hand-installed. To switch this off, delete the file from rootfs/ and add
-    # its /etc path to `retired`.
+    # Claude Code reads /etc/claude-code/managed-settings.json and merges
+    # /etc/claude-code/managed-settings.d/*.json into it: here, the box-wide
+    # model and permission rules, and the drop-ins' auto-mode rules and hook
+    # that bounce routine asks to Nish (README, "Agent autonomy drop-in" and
+    # "Managed-settings defaults"). A file that does not parse stops Claude
+    # Code from starting on the whole box, so validate refuses any file that is
+    # not a JSON object before it reaches /etc. /etc/claude-code is not in
+    # owned_dirs because this directory is installed file by file. To switch a
+    # file off, delete it from rootfs/ and add its /etc path to `retired`.
     - name: Install Claude Code managed-settings drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
         dest: /etc/claude-code/managed-settings.d/
+        owner: root
+        group: root
+        mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+    - name: Install the Claude Code managed-settings defaults file
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/claude-code/managed-settings.json"
+        dest: /etc/claude-code/managed-settings.json
         owner: root
         group: root
         mode: preserve

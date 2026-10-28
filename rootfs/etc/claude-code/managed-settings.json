@@ -1,0 +1,74 @@
+{
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-5-5"
+  },
+  "advisorModel": "opus",
+  "modelSettings": {
+    "claude-haiku-5-5": {
+      "autoCompactWindow": 100000,
+      "effortLevel": "medium"
+    }
+  },
+  "enabledPlugins": {
+    "model-lanes@nish-mods": true
+  },
+  "permissions": {
+    "deny": [
+      "Agent(general-purpose)",
+      "Agent(Explore)",
+      "Agent(Plan)",
+      "Read(//home/nish/.config/tincan/*.secret)",
+      "Read(//home/nish/.config/fleet-ops/seats/**)",
+      "Bash(cat *secret*)",
+      "Bash(cat */.config/fleet-ops/seats/*)",
+      "Bash(cat */.config/tincan/*)",
+      "Edit(**/bin/**)",
+      "Edit(**/scripts/**)",
+      "Edit(**/libexec/**)",
+      "Edit(**/ops/**)",
+      "Edit(**/hooks/**)",
+      "Edit(**/.github/scripts/**)",
+      "Edit(**/*.sh)",
+      "Edit(**/*.mjs)",
+      "Edit(**/.fleet/**)",
+      "Edit(//home/nish/workspaces/tooling/fleet-ops-deploy-clone/**)",
+      "Bash(wrangler:*)",
+      "Bash(npx wrangler:*)",
+      "Bash(npm exec wrangler:*)",
+      "Bash(pnpm wrangler:*)",
+      "Bash(pnpm exec wrangler:*)",
+      "Bash(bunx wrangler:*)",
+      "Bash(yarn wrangler:*)",
+      "Bash(npm i -g wrangler:*)",
+      "Bash(npm install -g wrangler:*)",
+      "Bash(sed -i:*)",
+      "Bash(sed --in-place:*)",
+      "Bash(perl -i:*)",
+      "Bash(perl -pi:*)",
+      "Bash(git add -A)",
+      "Bash(git add --all)",
+      "Bash(git add .)",
+      "Task(general-purpose)"
+    ],
+    "ask": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh release delete *)",
+      "Bash(wrangler delete*)",
+      "Bash(wrangler d1 delete *)",
+      "Bash(wrangler r2 bucket delete *)",
+      "Bash(restic forget *)",
+      "Bash(reboot*)",
+      "Bash(sudo reboot*)",
+      "Bash(shutdown*)",
+      "Bash(git stash)",
+      "Bash(git stash pop*)"
+    ]
+  }
+}

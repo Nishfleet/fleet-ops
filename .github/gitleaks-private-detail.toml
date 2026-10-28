@@ -153,3 +153,15 @@ targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
 regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
 condition = "AND"
+
+[[allowlists]]
+description = "The machine-wide Claude Code managed-settings file denies Read on the seat and tincan secret paths and Edit on the deploy clone, so it must name them; a JSON file has no comment line to carry gitleaks:allow. Only those three home paths and the one relative seats path are allowed, so a new one still fails the scan; fleet-ops#10543"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
+regexes = [
+  '''^home/nish/\.config/fleet-ops/seats/$''',
+  '''^home/nish/\.config/tincan/$''',
+  '''^home/nish/workspaces/tooling/fleet-ops-deploy-clone/$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
