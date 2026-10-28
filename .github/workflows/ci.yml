@@ -1291,9 +1291,7 @@ jobs:
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/second-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the second reviewer in a file"
-            [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"
-            # Each extra reviewer and seat gets its own router session that names the PR: a shared one pinned the fallback to the row that already reviewed (fleet-ops#10419).
-            [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
+            [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'

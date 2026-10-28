@@ -1074,7 +1074,6 @@ jobs:
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # Both extra reviewers are called directly, not through pi, because the answering row is only in the response headers
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
-          # The session id names the PR, the reviewer and the seat: the router's session affinity pins a session to the row that answered it first, so a shared id sent the fallback to the Qwen row that already reviewed (fleet-ops#10419).
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
