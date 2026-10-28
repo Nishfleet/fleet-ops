@@ -934,9 +934,7 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
-    # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
-    # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
-    # same bot, so one that edits the guard list or a workflow needs three independent reviews. Arming is the arm job's.
+    # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the same bot, so one that edits the guard list or a workflow needs three independent reviews. Arming is the arm job's.
     permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
@@ -957,8 +955,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
-          # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10);
-          # Fable is never a reviewer (44% of a seat's weekly limit in ~2 days). The verdict is always Jev's.
+          # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10); Fable is never a reviewer (44% of a seat's weekly limit in ~2 days). The verdict is always Jev's.
           FIRST_MODEL_OTHER: claude-opus-5-5
           FIRST_MODEL_CLAUDE_BUILT: claude-opus-5-5
           JUDGE_FAMILY: Jev
@@ -977,10 +974,7 @@ jobs:
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
             exit 1
           }
-          # Blocker lines: a line starting with blocker(s), with or without markup (not the echoed header "blocker/risk/nit"),
-          # unless only a none-variant follows (none, no blockers, n/a, a dash, then markup or a sentence). blk_re and none_re
-          # are the only copies (grep here, jq in the already-reviewed check); none_re is anchored at both ends, so
-          # "blocker: none of the callers check the token" still blocks.
+          # Blocker lines: a line starting with blocker(s), with or without markup (not the echoed header "blocker/risk/nit"), unless only a none-variant follows (none, no blockers, n/a, a dash, then markup or a sentence). blk_re and none_re are the only copies (grep here, jq in the already-reviewed check); none_re is anchored at both ends, so "blocker: none of the callers check the token" still blocks.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
@@ -992,8 +986,7 @@ jobs:
             printf '%s' "$t"; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review
-          # per head. Each phrase must START a line of a github-actions[bot] comment: the hold comment quotes the approval line.
+          # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review per head. Each phrase must START a line of a github-actions[bot] comment: the hold comment quotes the approval line.
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
@@ -1015,36 +1008,18 @@ jobs:
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
-          # An approval follows the change, not the commit (#10681): the newest head this bot approved is fetched, and the PR's
-          # own diff (merge-base to head, no context lines, so a line main added next to a hunk does not count) is compared
-          # by patch-id. The same patch-id carries the approval; a changed one is reviewed as the interdiff only. Any error
-          # here means a full review, as before. The combined result is still tested by CI and the merge queue.
-          prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at)
-            | .body | split("\n")[] | capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s | select(. != $sha)] | last // empty') || prior=
-          own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" | git -C "$bt" patch-id --stable | cut -d' ' -f1; }
-          # The interdiff is a diff of the two own diffs, as range-diff shows it; blob ids and hunk line numbers are dropped, so main moving under the PR is not shown.
-          own_text() { git -C "$bt" diff --no-color --binary "$1" "$2" | sed -E '/^index /d; s/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/'; }
-          carry() { local omb nmb a b rc=0
-            git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$prior:refs/prior" || return 1
-            omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) || return 1
-            a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] || return 1
-            [ "$a" != "$b" ] || { echo carry; return 0; }
+          # An approval follows the change, not the commit (#10681): the PR's own diff (merge-base to head, -U0, so a line main adds next to a hunk does not count) is compared by patch-id with the newest head this bot approved; the same patch-id carries the approval. A changed one gets only the interdiff reviewed: a diff of the two own diffs, as range-diff shows it, without blob ids and hunk line numbers. Any error means a full review. CI and the merge queue still test the combined result.
+          prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at) | .body | split("\n")[] | capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s | select(. != $sha)] | last // empty') || prior=
+          own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" | git -C "$bt" patch-id --stable | cut -d' ' -f1; }; own_text() { git -C "$bt" diff --no-color --binary "$1" "$2" | sed -E '/^index /d; s/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/'; }
+          carry() { local omb nmb a b rc=0; git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$prior:refs/prior" && omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) \
+            && a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] || return 1; [ "$a" != "$b" ] || { echo carry; return 0; }
             own_text "$omb" refs/prior > "$RUNNER_TEMP/approved.diff" && own_text "$nmb" refs/head > "$RUNNER_TEMP/head.diff" || return 1
-            diff -u --label "approved $prior" --label "head $SHA" "$RUNNER_TEMP/approved.diff" "$RUNNER_TEMP/head.diff" > "$RUNNER_TEMP/interdiff.txt" || rc=$?
-            [ "$rc" = 1 ] || return 1; echo interdiff; }
-          scope=full; [ -z "$prior" ] || scope=$(carry) || scope=full
-          case $scope in carry|interdiff) ;; *) scope=full ;; esac
-          echo "review scope: $scope${prior:+ (approved head $prior)}"
-          note=
-          if [ "$scope" = carry ]; then
-            [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved; the newer event reviews it"; exit 0; }
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. Carried over from approved head %s: the change this PR makes is the same (same patch-id of its own diff after a rebase or a merge of main), so it was not reviewed again. CI still has to pass before it merges.' "$SHA" "$SHA" "$prior")"
-            echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
-            exit 0
-          elif [ "$scope" = interdiff ]; then
-            { printf '=== INTERDIFF: head %s of this PR was approved. Below is only what changed in the PR own diff since then, as a diff of the approved diff and the head diff (a line starting -+ or -- left the change, ++ or +- joined it); review this change. ===\n' "$prior"; cat "$RUNNER_TEMP/interdiff.txt"; } > "$RUNNER_TEMP/diff.txt"
-            printf -v note '\n\nOnly the interdiff against approved head %s was reviewed; the rest of the PR is unchanged since that approval.' "$prior"
-          fi
+            diff -u --label "approved $prior" --label "head $SHA" "$RUNNER_TEMP/approved.diff" "$RUNNER_TEMP/head.diff" > "$RUNNER_TEMP/interdiff.txt" || rc=$?; [ "$rc" = 1 ] && echo interdiff; }
+          scope=full note=; [ -z "$prior" ] || scope=$(carry) || scope=full; case $scope in carry|interdiff) ;; *) scope=full ;; esac; echo "review scope: $scope${prior:+ (approved head $prior)}"
+          if [ "$scope" = carry ]; then [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved; the newer event reviews it"; exit 0; }
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. Carried over from approved head %s: the change this PR makes is the same (same patch-id of its own diff after a rebase or a merge of main), so it was not reviewed again. CI still has to pass before it merges.' "$SHA" "$SHA" "$prior")"; echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$scope" = interdiff ]; then printf -v note '\n\nOnly the interdiff against approved head %s was reviewed; the rest of the PR is unchanged since that approval.' "$prior"
+            { printf '=== INTERDIFF: head %s of this PR was approved. Below is only what changed in the PR own diff since then, as a diff of the approved diff and the head diff (a line starting -+ or -- left the change, ++ or +- joined it); review this change. ===\n' "$prior"; cat "$RUNNER_TEMP/interdiff.txt"; } > "$RUNNER_TEMP/diff.txt"; fi
           [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
           git -C "$bt" ls-tree -r --name-only refs/base > "$RUNNER_TEMP/tree.txt"
@@ -1063,10 +1038,7 @@ jobs:
           first_model=$FIRST_MODEL_CLAUDE_BUILT
           if [ -n "$built" ] && ! grep -qw claude <<<"${built//,/ }"; then first_model=$FIRST_MODEL_OTHER; fi
           echo "first review: built by '${built:-unknown}', model $first_model"
-          # The model gets the diff as text and no tools (--tools ""): a tool could open the
-          # runner's key files and the review is posted publicly (claude honors an empty --tools,
-          # checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did
-          # not finish: retry. No fallback to another family, no approval without this review.
+          # The model gets the diff as text and no tools (--tools ""): a tool could open the runner's key files and the review is posted publicly (claude honors an empty --tools, checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did not finish: retry. No fallback to another family, no approval without this review.
           review=
           review=$(timeout 600 claude -p --model "$first_model" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' \
@@ -1098,8 +1070,7 @@ jobs:
           # A guard or workflow head also needs two reviewers of other families (GLM, then Qwen), each ending on APPROVE with no blocker line.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change edits the merge guard or a workflow. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # Both extra reviewers are called directly, not through pi, because the answering row is only in the response headers
-          # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
+          # Both extra reviewers are called directly, not through pi, because the answering row is only in the response headers (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
@@ -1156,9 +1127,7 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.%s\n\nJudge (%s): %s\n%s%s' "$SHA" "$note" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
-      # and a PR from a fork never reaches here at all.
+      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label, and a PR from a fork never reaches here at all.
       - name: Send a blocked orch PR back to the orchestrator
         run: |
           set -euo pipefail
