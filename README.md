@@ -114,9 +114,9 @@ script, or prompt lands unseen.
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
   "Provider watch" has the run, off and delete steps.
 - `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
-  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+  `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
-  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  binaries (Amp, Syncthing, TigerVNC) run under systemd, and the
   env line that picks the Tincan listener's own Claude login. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
@@ -221,30 +221,10 @@ script, or prompt lands unseen.
   Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
   `systemctl --user disable --now fleet-hermes-xai-login-check.timer
   fleet-hermes-xai-login-check.path` and delete the files.
-- `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
-  the Leviathan session-log search index, refreshed every 15 minutes per
-  instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
-  answers "what did an old session say about X" in milliseconds (fleet-ops#9313).
-  Config and index live in `~/.local/share/leviathan/` (0700), installed from
-  `config/leviathan/` by `fleet-sync.service`; the binary is installed by
-  `ansible/host.yml` from a pinned release. Off switch, under 2 minutes and
-  nothing re-enables it: `systemctl --user disable --now leviathan-index@claude.timer leviathan-index@pi.timer`,
-  then `rm ~/.local/bin/leviathan && rm -rf ~/.local/share/leviathan` —
-  `host.yml`/`update.yml` only install and version the binary and
-  `fleet-sync.service` only refreshes unit and config bytes, so no fleet unit
-  ever re-enables a timer. Wire new instances only after `fleet-sync.service`
-  has run once with the configs merged (the 15-minute tick pages on a missing
-  config). Each run rebuilds the index from the files on disk, so it mirrors
-  the logs and keeps the same retention; the index never holds more than the
-  logs do. The drop-in `systemd/leviathan-index@.service.d/20-umask.conf` sets
-  `UMask=0077` so `pi.db` and `claude.db` are owner-only (the user-manager
-  default is 0002). Link it once after the merge with the drop-in `ln -sfn`
-  idiom under "Install" (before the merge it would dangle), then
-  `systemctl --user daemon-reload`; it applies at the next index run.
-  The same `UMask=0077` drop-in sits in
-  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
-  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
-  so the drop-in now applies on every deploy. Applies at the next restart.
+- `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` sets `UMask=0077` on
+  the Devin Tincan listener (unit file moved into `systemd/` with fleet-ops#10133),
+  so its session-text output files are owner-only and the drop-in applies on every
+  deploy. Applies at the next restart.
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](#triage-admission-needs-triage) decides whether a worker starts)
@@ -312,8 +292,6 @@ script, or prompt lands unseen.
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  and the leviathan index units, their configs and the tmpfiles rule to
-  `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead
@@ -406,7 +384,6 @@ the next sync overwrites it. The rest are refreshed by hand.
 | `~/.local/state/pi-packet/model-candidates.json`                                                                            | `none (live-only)`      | live state the git working tree must not rewrite on every checkout (fleet-ops#2910/#3722/#3322).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `~/.pi/agent/settings.json`                                                                                                 | `none (live-only)`      | pi writes this file itself at runtime (provider/model switches and its own bookkeeping keys), so a repo copy would be overwritten and a symlink would fight pi. Every fleet caller passes `--provider litellm --model <group>`, so its `defaultProvider`/`defaultModel` affect only bare interactive `pi` runs (fleet-ops#8568). Its `compaction.reserveTokens: 40000` pairs with the worker `contextWindow: 140000` in `config/pi-models.json`: pi compacts at window − reserve = 100k (fleet-ops#9081: spend-log worker prompts averaged 71k and p90 was 141k, so a 256k compact point never fired). Reply budget is window − context − 4096, so a turn at the compact point still gets the full 32k `maxTokens` (140000 − 100000 − 4096 = 35904). The 96000/8192 pairing cut replies to ~4.8k (fleet-ops#8634) and is not used. The real model windows are ~1M; 140000 is a budget, not a limit. |
 | `/etc/**` (system units and drop-ins, `sysctl.d`, `audit/rules.d`, `polkit-1/rules.d`, `prometheus/*.yml`, `nftables.conf`) | `rootfs/etc/**`         | cross a privilege boundary. **Handled automatically** by `fleet-host-config.service`: Ansible (`ansible/host.yml`) checks the prometheus and nftables files, installs every file under `rootfs/` as root, and reloads only the daemon whose file changed. A new root file is a new file under `rootfs/`; nothing is installed by hand.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `~/.local/share/leviathan/` (`leviathan-index@.service`, `leviathan-index@.timer`, `claude.toml`, `pi.toml`) and `~/.config/user-tmpfiles.d/leviathan.conf` | `systemd/leviathan-index@.timer`, `config/leviathan/*.toml`, `config/user-tmpfiles.d/leviathan.conf` | **Handled automatically** by `fleet-sync.service` (install -C before the daemon-reload, fleet-ops#9313). The timer fires every 15 minutes, so the unit and config bytes must exist on the box before the PR that ships them merges — a git merge refuses a clone with untracked files in the way, so nothing may read these from the deploy clone. The live unit links are hand-set once (`systemctl --user link ~/.local/share/leviathan/...`); a `user-tmpfiles.d` symlink would dangle pre-merge and be read dead by `systemd-tmpfiles --create` on every sync. Each run rebuilds the index from the files on disk, so the index mirrors the logs and never holds more than the logs do. |
 
 ```
 # a changed /etc file: merge it under rootfs/etc/. deploy-box.yml then runs
@@ -1000,7 +977,7 @@ history) started from one Remote Control session grew to 15.4G RSS on the 32G
 host. Nothing capped `claude.slice`, and everything under Remote Control
 inherited `OOMScoreAdjust=-900`, which scores a 15G scan the same as an idle
 session. The kernel killed the unprotected services instead (hermes, the
-router, the executor) and stalled the link for about two minutes with all 8G
+router) and stalled the link for about two minutes with all 8G
 of swap full. Nothing alerted anyone.
 
 | Piece | File | Takes effect |

@@ -76,7 +76,7 @@
   `~/.pi/agent/skills` mirror, which logs it instead because the synced
   skill source deletes those targets routinely (fleet-ops#9967) — wiring set
   this way is caught on the next deploy push or boot.
-- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with leviathan first — `leviathan search --index ~/.local/share/leviathan/pi.db "<words>"` (claude logs: `.../claude.db`; `leviathan get <id>` prints the full message) — before re-deriving; `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` is the fallback when no card answers.
+- Memory = vault `_system/agent-memory/` plain files (one fact per file, true now, edit in place); search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving (the Leviathan index was removed, fleet-ops#10625).
 
 ## Live state
 

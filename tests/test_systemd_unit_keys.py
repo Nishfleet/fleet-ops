@@ -1237,7 +1237,7 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
 
 # Units whose output files hold agent session text. The user manager default is
 # UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d", "systemd/tincan-listen-devin-vps.service.d")
+PRIVATE_FILE_WRITER_DROPINS = ("systemd/tincan-listen-devin-vps.service.d",)
 
 
 @pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
