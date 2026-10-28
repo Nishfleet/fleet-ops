@@ -425,6 +425,18 @@ def _tether_task_names() -> list[str]:
     return names
 
 
+def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
+    """A find that catches a -journal/-wal/-shm file fails the chmod loop when SQLite removes it (fleet-ops#10390)."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
+    assert not scan.get("use_regex")
+    assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
+    assert {"sessions.db*", "pi.db*", "claude.db*", "opencode.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert "failed_when" not in tasks["Keep the agent session databases private"]
+    kept_private = tasks["Look for the agent state directories"]["loop"]
+    assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
+
+
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
 def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"

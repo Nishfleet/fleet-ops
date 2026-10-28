@@ -955,6 +955,12 @@
         # Pi worker session logs live under here (directory mode only; the
         # files inside are nish's and stay as the tool writes them).
         - "{{ nish_home }}/.pi"
+        # The directories the session-database scan below reads: their own 0700
+        # mode is what keeps a SQLite -journal/-wal/-shm file private, since the
+        # scan skips those files (fleet-ops#10390).
+        - "{{ agent_share }}/leviathan"
+        - "{{ agent_share }}/opencode"
+        - "{{ agent_share }}/fleet-grafana"
       register: agent_state_dirs
 
     - name: Keep the agent state directories private
@@ -984,6 +990,16 @@
           - claude.db*
           - opencode.db*
           - grafana.db*
+        # SQLite creates and removes its own -journal, -wal and -shm files while
+        # it writes, so a listing can catch one and the chmod below then fail
+        # with 'is absent' (fleet-ops#10390). Skip them: SQLite gives a new one
+        # the mode of the main database, and the directories the scan reads are
+        # kept 0700, so the main file's 0600 plus the directory cover them
+        # (https://sqlite.org/tempfiles.html).
+        excludes:
+          - "*-journal"
+          - "*-wal"
+          - "*-shm"
         file_type: file
       register: agent_state_dbs
 
@@ -997,11 +1013,6 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
-      register: agent_state_db_chmod
-      # SQLite deletes its -journal, -wal and -shm files on its own, so one
-      # found a moment ago can be gone by now (fleet-ops#10388). Only that
-      # error is ignored; any other failure still fails the run.
-      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
