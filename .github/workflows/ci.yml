@@ -230,40 +230,27 @@ jobs:
         # a parse error would stop every root config change at deploy time.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
+      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
-      - name: Chrome DevTools wiring, hand-off cleanup, Claude lanes and managed settings
-        # Runs the real cleanup step from agent-dispatch.yml against a real git
-        # worktree with a stub systemctl: busy tree survives, idle tree goes.
-        # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
-        # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
-        # Cursor or pi. The same file runs the real bwrap and proves the claude lane
-        # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
-        # or a backup.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync, gh login check, needs-triage and Mac topgrade tests (fleet-ops#9967, #9706, #9308, #9932, #10508)
-        # Runs fleet-sync.service's own agent installs and its link check against a temp home.
-        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
-        # and the jail step below with plain bash in a temp home, with no
-        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
-        # touching a file.
-        # Runs the admit job's own exclusion program, band program and run block,
-        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
+      - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
+        # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py tests/test_intake_repos.py
+        run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+      - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
+        if: always()
+        run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -664,8 +651,6 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
-      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
         # The headless claude in systemd/tincan-listen-claude-vps.service loads only
         # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
@@ -738,7 +723,6 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
