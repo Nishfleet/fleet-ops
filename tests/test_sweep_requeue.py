@@ -62,7 +62,7 @@ def live_run(title, status="in_progress"):
 
 def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_runs=()):
     (tmp_path / "issues.json").write_text(json.dumps(issues))
-    runs = [live_run(f"orchestrate #{900 + i}") for i in range(queued)]
+    runs = [live_run(f"orchestrate {900 + i}") for i in range(queued)]
     (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [*other_runs, *runs]}))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
     gh = tmp_path / "gh"
@@ -95,9 +95,9 @@ def test_batch_is_five(tmp_path):
 
 
 def test_live_runs_use_up_the_batch(tmp_path):
-    """Only runs titled orchestrate #N and not completed count: label-event runs, finished
+    """Only runs titled "orchestrate N" and not completed count: label-event runs, finished
     orchestrate runs and sweeps ahead of them in the list must not hide them (fleet-ops#10475)."""
-    noise = [live_run("agent-dispatch", "queued") for _ in range(8)] + [live_run("orchestrate #5", "completed")]
+    noise = [live_run("agent-dispatch", "queued") for _ in range(8)] + [live_run("orchestrate 5", "completed")]
     w = run(tmp_path, [issue(n) for n in range(1, 5)], queued=3, other_runs=noise)
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
@@ -204,3 +204,8 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
     w = run(tmp_path, [i])
     assert edits(w, "--add-label needs-nish-decision") == []
     assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_run_name_and_run_counter_share_one_title():
+    assert "format('orchestrate {0}'" in _y('."run-name"')
+    assert 'startswith("orchestrate ")' in _y(f"{STEP} | .run")

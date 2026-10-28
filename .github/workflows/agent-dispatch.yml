@@ -1,5 +1,5 @@
 name: agent-dispatch
-run-name: ${{ ((github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') || inputs.task == 'orchestrate') && format('orchestrate #{0}', github.event.issue.number || inputs.issue) || github.event.pull_request.title || github.workflow }}
+run-name: ${{ ((github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') || inputs.task == 'orchestrate') && format('orchestrate {0}', github.event.issue.number || inputs.issue) || github.event.pull_request.title || github.workflow }}
 on:
   issues:
     types: [labeled, closed, reopened]
@@ -718,7 +718,7 @@ jobs:
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
-          queued=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed" and (.display_title | startswith("orchestrate #")))] | length') || fail "run count"
+          queued=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?per_page=100" --jq '[.workflow_runs[] | select(.status != "completed" and (.display_title | startswith("orchestrate ")))] | length') || fail "run count"
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
