@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import yaml
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAY = yaml.safe_load((ROOT / "ansible/host.yml").read_text())[0]
+PLAY = ansible_host.play()
 UNIT = (ROOT / "rootfs/etc/systemd/system/fleet-host-config.service").read_text()
 
 
