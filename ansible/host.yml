@@ -144,6 +144,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # The Amp runners (#10662): removed from the repo and already gone from
+      # this host. Listed so a box that still has the links drops them instead of
+      # failing the link check in fleet-sync.service.
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
