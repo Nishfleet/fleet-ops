@@ -777,7 +777,7 @@ rm -rf /var/lib/tether /etc/tether # removes its memory and its credentials, and
 ```
 
 The marker `/etc/fleet-ops/tether-off` is what makes the off last. Without it
-the daily and on-merge `fleet-host-config.service` run recreates the `tether`
+the on-merge and after-boot `fleet-host-config.service` run recreates the `tether`
 user and `/etc/tether`. While the marker exists that run creates nothing for
 tether, removes its firewall rule, and keeps the unit disabled and stopped.
 Remove the marker to allow it again. To delete tether for good, open a PR that
@@ -1138,7 +1138,7 @@ credential file does not hold them back.
 
 ## CI
 
-`.github/workflows/ci.yml` runs one job, `ci`, on every PR and push to main. Its
+`.github/workflows/ci.yml` splits its test work into four jobs by concern (`lint`, `systemd-verify`, `unit`, `simulations`), each with its own timeout, on every PR and every merge-queue entry. The one required check `ci` runs no tests and needs every other job. Its
 checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
@@ -1394,8 +1394,8 @@ config/stuck-pr-cases.json runs this program in CI.
 
 ## Worker capacity
 
-The concurrency bound is the runner count (#8429): 22 `agent` runners
-(`actions.runner.Nishfleet.netcup-agent-1..22` in org runner group 3, shared
+The concurrency bound is the runner count (#8429): 10 `agent` runners
+(`actions.runner.Nishfleet.netcup-agent-1..10` in org runner group 3, shared
 by every enrolled repo including drive since 2026-10-06; live count:
 `gh api orgs/Nishfleet/actions/runner-groups/3/runners --jq .total_count`;
 sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`rootfs/etc/systemd/system/agent.slice`,
@@ -1403,12 +1403,10 @@ sized from measured memory pressure, fleet-ops#8860), all in `agent.slice` (`roo
 systemd-oomd, not an admission charge. Live RAM is
 `systemctl --user show -p MemoryPeak <unit>` and `systemd-cgtop`.
 
-A new runner unit needs no root step: `ansible/host.yml` renders
-`actions.runner.Nishfleet.netcup-agent-<N>.service` for the ids in
-`agent_runner_ids` from one template, and enables and starts a unit only when
-its directory holds both halves of a registration (`.runner` and
-`.credentials`). Registration is the one hand step left, because `config.sh`
-needs an org admin token the VPS key does not hold (#10236).
+Runners 11-36 are retired (#10480): `ansible/host.yml` stops, disables and
+deletes their units from `agent_runner_retired_ids`. Their registrations at
+GitHub stay until an org admin removes them, because that needs a token the VPS
+key does not hold.
 
 ## Private detail scan
 

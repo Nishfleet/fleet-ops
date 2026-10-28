@@ -142,10 +142,10 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Look for the agent state directories",
                 "Look for a plaintext git credential file in nish's home",
                 "Fail the run when a plaintext git credential file is in the way",
-                "Start the registered agent runners",
-                "Give the agent runners the tool PATH",
+                "Copy runner 1 to the pilot user once",
+                "Point the pilot runner links at the copy",
             ), task["name"]
-    for name in ("Look for the agent state directories", "Keep the agent state directories private", "Give the agent runners the tool PATH"):
+    for name in ("Look for the agent state directories", "Keep the agent state directories private"):
         task = TASKS[name]
         assert task.get("become") is True and task.get("become_user") == "nish", name
         for module in task.values():
@@ -186,6 +186,7 @@ def _run_tasks(tmp_path, names, subs=None):
         task = json.loads(text)
         task.pop("become", None)
         task.pop("become_user", None)
+        task.pop("notify", None)
         for key in ("owner", "group"):
             for module in task.values():
                 if isinstance(module, dict):
@@ -409,3 +410,27 @@ def test_devin_and_cmd_entries_converge_in_any_output_format_and_missing_cli_is_
     assert state.read_text().strip() == want
     assert calls.read_text().split("\n")[:-1][3:] == ["mcp get", "mcp remove", "mcp add"]
     assert not (tmp_path / ".local/bin/cmd").exists()
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_copy(tmp_path):
+    src = tmp_path / ".local/share/agent-runner/1"
+    (src / "bin.2.338.0").mkdir(parents=True)
+    (src / "bin.2.338.0/Runner.Listener").write_text("listener")
+    (src / "externals.2.338.0").mkdir()
+    (src / "runsvc.sh").write_text("run")
+    (src / "bin").symlink_to(src / "bin.2.338.0")
+    (src / "externals").symlink_to(src / "externals.2.338.0")
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    names = ["Copy runner 1 to the pilot user once", "Read the pilot runner links", "Point the pilot runner links at the copy"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert (dest / "runsvc.sh").read_text() == "run"
+    assert (dest / "bin").readlink().as_posix() == "bin.2.338.0"
+    assert (dest / "externals").readlink().as_posix() == "externals.2.338.0"
+    assert (dest / "bin/Runner.Listener").read_text() == "listener"
+    (dest / "runsvc.sh").write_text("live state")
+    (src / "runsvc.sh").write_text("changed upstream")
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)
+    assert (dest / "runsvc.sh").read_text() == "live state"
