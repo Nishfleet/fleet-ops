@@ -58,5 +58,5 @@ def test_report_reads_stay_safe_when_a_command_prints_nothing():
 
 def test_every_new_step_is_checked_in_the_final_assert():
     that = " ".join(ASSERT["ansible.builtin.assert"]["that"])
-    for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners", "app_versions_after"):
+    for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners", "app_versions_after", "off_branch_pins"):
         assert var in that
