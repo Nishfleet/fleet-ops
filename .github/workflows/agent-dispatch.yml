@@ -475,8 +475,8 @@ jobs:
     permissions:
       issues: write
       pull-requests: read
-      # actions: `gh run view` liveness (fleet-ops#8777); write only for the sweep-only re-fire `gh workflow run` (no step checks out PR code).
-      actions: write
+      # actions: `gh run view` liveness (fleet-ops#8777). Read, not write: every caller stub grants read, and write startup-failed their sweeps (fleet-ops#10638).
+      actions: read
       checks: read
       statuses: read
     outputs:
