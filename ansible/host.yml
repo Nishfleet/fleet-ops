@@ -360,6 +360,28 @@
         label: "{{ item.stat.path }}"
       notify: Restart pilot runner
 
+    # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+    # paths, and the runner loads it over the unit's own HOME, so every job's gh read
+    # nish's .config/gh/config.yml and died with permission denied (fleet-ops#10510).
+    # HOME goes to the pilot's own; the other two point at nish's runtime and Claude seat,
+    # so they are dropped.
+    - name: Give the pilot runner its own HOME in the runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^HOME='
+        line: HOME=/var/lib/fleet-runner
+        insertbefore: BOF
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    - name: Drop nish's runtime paths from the pilot runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+        state: absent
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
     # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
     - name: Stop and disable the retired agent runners
       ansible.builtin.systemd_service:
