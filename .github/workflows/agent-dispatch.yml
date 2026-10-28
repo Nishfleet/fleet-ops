@@ -479,6 +479,14 @@ jobs:
     permissions:
       issues: write
       pull-requests: read
+      # contents: `statusCheckRollup` on a private repository needs it as well
+      # as checks: read. Without it GitHub answers "Resource not accessible by
+      # integration (repository.pullRequest.statusCheckRollup.nodes.0)" and the
+      # sweep dies on the first claim PR it reads (tether#56, red on every run
+      # from 2026-10-24). A public repo never asks for it, so 0509 and drive
+      # stayed green. Every caller stub grants contents, so this widens the
+      # request to nothing new.
+      contents: read
       # actions: `gh run view` liveness (fleet-ops#8777). Read, not write: every caller stub grants read, and write startup-failed their sweeps (fleet-ops#10638).
       actions: read
       checks: read
@@ -768,9 +776,13 @@ jobs:
     # write posts the stuck-review marker. checks and statuses read each
     # head's state; actions: read is `gh run view`
     # for a claim issue's live run. All within what every caller stub grants.
+    # contents: read is here for the same reason as the list job's: `gh pr
+    # checks --required` reads the head's checks, and on a private repository
+    # GitHub refuses that for a token without contents read (tether#56).
     permissions:
       issues: write
       pull-requests: write
+      contents: read
       checks: read
       statuses: read
       actions: read
