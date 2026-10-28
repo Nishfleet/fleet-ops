@@ -33,7 +33,8 @@ case "$1 $2" in
     id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
-  "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit") [ -z "$FAIL_EDIT" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -64,7 +65,7 @@ def job(name, status="in_progress"):
     return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=()):
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), ok=True):
     """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
     jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
@@ -81,7 +82,9 @@ def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=())
            "WORKFLOW_REF": "o/r/.github/workflows/stub.yml@refs/heads/main", "GITHUB_SERVER_URL": "https://example.invalid", "GITHUB_RUN_ID": "7", **(fail or {}), "REQUEUE": _y(f"{STEP} | .env.REQUEUE")}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{STEP} | .run")],
                        env=env, capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert (r.returncode == 0) == ok, r.stdout + r.stderr
+    if not ok:
+        return r.stdout + r.stderr
     if out:
         return r.stdout
     log = tmp_path / "writes.log"
@@ -95,6 +98,21 @@ def edits(lines, label):
 def test_idle_six_hours_requeues_and_fresh_waits(tmp_path):
     w = run(tmp_path, [issue(1, 7), issue(2, 5)])
     assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_tried_requeue_dispatches_and_needs_no_runner_login(tmp_path):
+    """The job runs hosted: no gh login to unset, and a job-token label edit starts no run, so the
+    sweep dispatches the orchestrate run itself (fleet-ops#10640)."""
+    w = run(tmp_path, [issue(1)])
+    assert "env -u GH_TOKEN" not in _y(f"{STEP} | .run")
+    assert w == ["issue edit 1 -R o/r --remove-label orchestrator-tried --add-label needs-orchestrator",
+                 "workflow run stub.yml -R o/r -f task=orchestrate -f issue=1"]
+
+
+def test_refused_requeue_fails_the_step_loud_and_dispatches_nothing(tmp_path):
+    out = run(tmp_path, [issue(1)], fail={"FAIL_EDIT": "1"}, ok=False)
+    assert "::error::#1: re-queue refused" in out
+    assert not (tmp_path / "writes.log").exists()
 
 
 def test_batch_is_five(tmp_path):
