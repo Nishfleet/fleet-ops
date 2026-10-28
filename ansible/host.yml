@@ -171,6 +171,11 @@
       # lines that created this directory and link. tmpfiles is applied with
       # --create only, so the link outlived the file it pointed at.
       - "{{ nish_home }}/.config/prometheus-am-executor/config.yml"
+      # The chrome-devtools plugin left the nish-mods marketplace (2026-10-23
+      # glue audit), so the drop-in that enabled it enabled nothing and the
+      # repo stopped shipping it. `copy` never deletes, so the live file is
+      # retired here or it keeps loading a plugin id no marketplace lists.
+      - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -358,6 +363,28 @@
       loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
       loop_control:
         label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
+
+    # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+    # paths, and the runner loads it over the unit's own HOME, so every job's gh read
+    # nish's .config/gh/config.yml and died with permission denied (fleet-ops#10510).
+    # HOME goes to the pilot's own; the other two point at nish's runtime and Claude seat,
+    # so they are dropped.
+    - name: Give the pilot runner its own HOME in the runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^HOME='
+        line: HOME=/var/lib/fleet-runner
+        insertbefore: BOF
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    - name: Drop nish's runtime paths from the pilot runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+        state: absent
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
       notify: Restart pilot runner
 
     # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
@@ -671,8 +698,10 @@
         mode: preserve
 
     # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-    # managed settings: here, the agents' auto-mode rules and the hook that
-    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
+    # managed settings: here, the agents' auto-mode rules, the hook that
+    # bounces routine asks to Nish, the Beacon telemetry env and the enabled
+    # plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+    # "Claude plugin drop-ins"). A drop-in
     # that does not parse stops Claude Code from starting on the whole box, so
     # validate refuses any file that is not a JSON object before it reaches
     # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is

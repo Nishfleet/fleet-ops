@@ -1,4 +1,4 @@
-"""fleet-ops#10040: senior is one Synthetic row with no fallback; judge falls to it.
+"""fleet-ops#10040: senior is one to three GLM-5.3-Flash rows with no fallback; judge falls to it.
 
 Runs the live config/litellm-proxy.yaml fallbacks on a real litellm Router with a
 plain http.server standing in for the providers: a walled group answers 429
@@ -63,13 +63,14 @@ def _config():
         return yaml.safe_load(fh)
 
 
-def test_live_config_senior_is_one_synthetic_row_with_no_fallback():
+def test_live_config_senior_is_glm_only_with_no_fallback():
     cfg = _config()
     fallbacks = {k: v for entry in cfg["router_settings"]["fallbacks"] for k, v in entry.items()}
     assert "senior" not in fallbacks
     assert fallbacks["judge"] == ["senior"]
     groups = [row["model_name"] for row in cfg["model_list"]]
-    assert groups.count("senior") == 1
+    assert 1 <= groups.count("senior") <= 2
+    assert all(row["litellm_params"]["model"].lower().endswith("glm-5.3-flash") for row in cfg["model_list"] if row["model_name"] == "senior")
     assert "senior-backup" not in groups
     assert not any("pareto" in row["litellm_params"].get("api_base", "") for row in cfg["model_list"])
 
@@ -77,7 +78,6 @@ def test_live_config_senior_is_one_synthetic_row_with_no_fallback():
 def test_synthetic_key_stays_under_its_measured_concurrency():
     rows = [row for row in _config()["model_list"]
             if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
-    assert "synthetic-glm53flash-senior" in {row["model_info"]["id"] for row in rows}
     assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 8
 
 

@@ -77,11 +77,6 @@ def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
     assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
 
 
-def test_claude_drop_in_enables_the_plugin():
-    drop_in = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json").read_text())
-    assert drop_in == {"enabledPlugins": {"chrome-devtools@nish-mods": True}}
-
-
 def test_every_install_step_is_in_the_play():
     for name in (
         "Install the pinned Chrome DevTools MCP server from the lockfile",
@@ -434,3 +429,16 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     (src / "runsvc.sh").write_text("changed upstream")
     assert "changed=0" in _run_tasks(tmp_path, names, subs)
     assert (dest / "runsvc.sh").read_text() == "live state"
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    env = dest / ".env"
+    env.write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\nLANG=C.UTF-8\nCLAUDE_CONFIG_DIR=/home/nish/.claude-a\n")
+    names = ["Give the pilot runner its own HOME in the runner environment", "Drop nish's runtime paths from the pilot runner environment"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)
