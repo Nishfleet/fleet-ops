@@ -17,8 +17,8 @@ always at `origin/main` (a failure fails the unit).
   Its content is the file that was hand-written on the box, carried over as-is.
 
 Every `enabledPlugins` key merges with `/etc/claude-code/managed-settings.json`,
-which now ships from `rootfs/etc/claude-code/managed-settings.json` (README,
-"Managed-settings defaults") and keeps its own `model-lanes` line: two files
+which now ships from `rootfs/etc/claude-code/managed-settings.json` ([Managed-settings
+defaults](managed-settings-defaults.md)) and keeps its own `model-lanes` line: two files
 naming the same id with the same value is a no-op merge.
 
 - Verify: `claude -p hi --output-format stream-json --verbose` prints an init

@@ -52,7 +52,7 @@ Repo variable ADMIT_TRIAGE:
   and ADMIT_BUDGET_SEC a run (default 780). Runs only while AGENT_MODE=live,
   so a shadow-mode repo gets no agent-ready it did not ask for.
   To delete it: remove the admit job, tests/test_triage_admit.py, its ci.yml
-  step and the README section.
+  step and [docs/triage-admission.md](triage-admission.md).
 The orchestrate and admit jobs are the self-hosted jobs here: org runner group
 `agent` (id 3) must list this file @refs/heads/main in selected_workflows,
 or the job queues forever next to idle runners. Delete that entry with them.

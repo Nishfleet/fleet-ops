@@ -64,7 +64,7 @@
   `containers/quadlet/fleet-grafana.container` mounts all four read-only, so
   the UI cannot save edits.
 - `config/claude-agents/` — the `helper` and `scout` subagent files
-  `fleet-sync.service` copies into `~/.claude/agents` (README "Subagents on
+  `fleet-sync.service` copies into `~/.claude/agents` ([remote-control.md](remote-control.md) "Subagents on
   the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
@@ -95,7 +95,7 @@
   no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
   is the job; `config/retro-public-deny.txt` is the check every follow-up issue
   must pass before it is filed; `config/retro-weekly-claude.json` is the tool
-  list. README "Weekly retro" has the run, off and delete steps.
+  list. [weekly-retro.md](weekly-retro.md) has the run, off and delete steps.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
@@ -105,8 +105,8 @@
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
-  the host snapshot, and a change files one fleet-ops issue with no model id in it. README
-  "Provider watch" has the run, off and delete steps.
+  the host snapshot, and a change files one fleet-ops issue with no model id in it.
+  [provider-watch.md](provider-watch.md) has the run, off and delete steps.
 - `systemd/executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
   binaries (Executor, Syncthing, TigerVNC) run under systemd, and the
