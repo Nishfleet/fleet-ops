@@ -1591,13 +1591,14 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   ids back as a `needs-nish-decision` line (the unit decides, not the model; MiniMax is marked flat
   on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly
   limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for
-  one DeepSeek flash model only, so they are not marked; the Alibaba Token Plan is left unmarked on
-  purpose, so its added ids get no call at all: it is a paid plan whose 45,000 credits for a 30-day
-  month are shared and do not roll over (router config header, fleet-ops#9220), its only row is the
-  judge row (Nish 2026-09-08, #4445: "this token plan isn't for use with other models"), so a probe
-  of another id spends the judge lane's own allowance on a model that can carry no row, and Nish's
-  2026-10-28 answer kept the plan and sent the billing question back to the agents, which is this
-  unmarked state and not `flat`, fleet-ops#9914). Then an eval-score before any router weight
+  one DeepSeek flash model only, so they are not marked; the Alibaba Token Plan stays unmarked on
+  purpose, so its added ids get no call at all: its billing, credit ceiling and judge-only row are
+  recorded in the router config header (fleet-ops#9220) and in Nish's ruling on that seat
+  (fleet-ops#4445, "this token plan isn't for use with other models"), so a probe of another ID
+  spends the judge lane's own allowance on a model that can carry no row. Nish kept the plan on
+  2026-10-28 and left the classification to the agents (fleet-ops#9914): the agents implement that
+  kept plan here, and any future spend, renewal or plan change stays a `needs-nish-decision` line.
+  Then an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), and a plain
   `needs-nish-decision` line for anything that costs money or needs his login.
