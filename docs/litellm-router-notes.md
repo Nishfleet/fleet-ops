@@ -54,9 +54,7 @@ Selection share (weighted; the Command Code rows removed 2026-10-15 are listed i
 
 ## Note 5
 
-Was in `config/litellm-proxy.yaml` at line 290, before `synthetic-glm53flash-senior`.
-
-W10c (Nish 2026-10-22 22:15 IST, "yes, also remove pareto", recorded in fleet-ops#10040): the Pareto rows are gone, and this row, GLM-5.3-Flash on Synthetic's own prepaid key, is the one senior row. It was senior-backup (fleet-ops#9596). While Synthetic stays a plan (config/paid-plans.json: cancelled 2026-10-01, rows leave when it lapses, fleet-ops#9048) this row is the senior seat; if the plan lapses the senior tier needs a new provider first. senior has no fallback of its own: judge falls to senior and it ends there, so judge -> senior cannot cycle.
+Retired 2026-10-28 (fleet-ops#10608). This note sat on `synthetic-glm53flash-senior`. Nish 2026-10-28: "z.ai only for glm 5.3 flash and glm 5.3 flash is a worker model ONLY", so the senior group and the `judge: [senior]` fallback are gone. Its two GLM-5.3-Flash rows serve `worker-capable` as `synthetic-glm53flashe-worker-capable` and `zai-glm53flashi-worker-capable`, with the same key and one slot each. The schema refuses a GLM-5.3-Flash row outside a worker group and a Qwen row inside one.
 
 ## Note 6
 

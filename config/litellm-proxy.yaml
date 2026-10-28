@@ -36,7 +36,7 @@
 # Background health checks stay off: they spend the same free quota (Nish 2026-09-28) and
 # would probe every paid row.
 # Long note 3: docs/litellm-router-notes.md
-# Pareto removed 2026-10-22 (Nish, "yes, also remove pareto", fleet-ops#10040): both rows (worker-capable and senior) are gone; the senior row is the Synthetic GLM-5.3-Flash row below. PARETO_API_KEY stays in place.
+# Pareto removed 2026-10-22 (Nish, "yes, also remove pareto", fleet-ops#10040): both rows (worker-capable and senior) are gone. PARETO_API_KEY stays in place.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Long note 4: docs/litellm-router-notes.md
 model_list:
@@ -273,39 +273,31 @@ model_list:
     id: straitly-ds41flashb-worker-public
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Long note 5: docs/litellm-router-notes.md
+- model_name: worker-capable
+  # Former senior row (fleet-ops#10608): GLM-5.3-Flash is a worker model only, so the senior group is gone and its two paid slots serve workers.
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
-    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
-    # 60 s, not the 900 s of the sibling Synthetic rows: the senior group has one or two rows, so a long park takes half or all of the tier
-    # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked the row 900 s at 06:14 UTC, and
-    # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
-    # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
-    cooldown_time: 60
-    # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
-    # on this row could never trip. No slot cap (note 12): the provider's 429 and this row's cooldown limit its share of the shared prepaid pool.
+    weight: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap)."
-    id: synthetic-glm53flash-senior
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
+    id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Second GLM reviewer row (2026-10-28): the senior tier had one Synthetic row at one slot, so every workflow-edit review queued behind it, and Synthetic ends 2026-11-12 (fleet-ops#10530).
+- model_name: worker-capable
+  # Former senior row (fleet-ops#10608), the z.ai Coding Plan slot added for reviews in #10566.
   litellm_params:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
     tags:
-    - senior
     - prepaid
     - zai
     order: 1
@@ -316,13 +308,13 @@ model_list:
     # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so the plan's own 429 is the cap and no row holds a slot count (note 12).
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
+    # No max_parallel_requests (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
     cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flash-senior
+    id: zai-glm53flashi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
@@ -336,7 +328,7 @@ model_list:
     weight: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. No row holds a slot count (fleet-ops#10694, note 12): past 8 calls the provider answers 429 and the row cools. The 500 / 5 h pool is the real wall:
+    # and the one row got 16 calls in 24 h. No row holds a slot count (fleet-ops#10694, note 12): past 8 calls the provider answers 429 and the row cools. synthetic-glm53flashe-worker-capable is the former senior row (fleet-ops#10608). The 500 / 5 h pool is the real wall:
     # a pool 429 cools a row 15 min, and the rolling window refills by itself.
     cooldown_time: 900
   model_info:
@@ -1150,8 +1142,7 @@ router_settings:
   # #9710 took every space-bunny row out by 10-13; zero injection rows since 2026-10-05 11:59 UTC (checked
   # 10-24). A future stealth-preview row from any reseller walks back into the failure mode described above.
   # A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
-  # strike adds strong-only). senior has one row (GLM-5.3-Flash on Synthetic, fleet-ops#10040) and no fallback of its own, so a judge call that
-  # falls to senior ends there and cannot cycle.
+  # strike adds strong-only). judge has no fallback: GLM-5.3-Flash is a worker model only (fleet-ops#10608).
   # W10c: worker-capable never falls to worker-cheap. Before the dead Ollama rows left (fleet-ops#10033), about 26% of worker-capable
   # calls were answered from the worker-cheap group (router:capable_answered_by_cheap:ratio_1d). A strong group with no healthy row now fails
   # the call, and the RouterStrongGroupNoHealthyRow rule in rootfs/etc/prometheus/fleet_rules.yml says so. Only same-tier or upward
@@ -1159,7 +1150,6 @@ router_settings:
   # Accepted trade (W10c plan, fleet-ops#10040): a call whose picked row fails and has no peer left reaches the caller
   # (Pi retries), including a row answering 402/403, which the router never cools (a 404 does park on its first failure).
   fallbacks:
-    - judge: [senior]
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
     - assistant: [worker-capable]
