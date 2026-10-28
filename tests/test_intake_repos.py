@@ -42,3 +42,12 @@ def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
         assert entry["product"] is True, name
         assert set(ENROLLED["0509"]) <= set(entry), name
         assert "siterep-public#173" in entry["enrolled_by"], name
+
+
+def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
+    sweep_only = {r["name"] for r in CFG["sweep_only"]}
+    assert sweep_only == {"fleet-ops", "drive"}
+    assert not sweep_only & set(ENROLLED)
+    assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
+    agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
+    assert ".sweep_only[]?.name" in agent
