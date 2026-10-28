@@ -1,13 +1,4 @@
-"""The Mac's daily topgrade job runs from this repo's copy (fleet-ops#10508).
-
-The job was hand-written, lived in no repo and had no test, so a schedule
-change, a dropped argument or an absolute home path reaching launchd (which
-does not expand `~`) went unseen. This file pins what mac/ must say: one run a
-day at 04:30 local time at low priority, the four arguments, the same enabled
-and disabled topgrade steps and custom commands, and no home path in either
-file.
-"""
-
+"""The Mac's daily topgrade job runs from mac/, one run a day, unchanged, with no home path."""
 import plistlib
 import tomllib
 from pathlib import Path
@@ -43,14 +34,24 @@ def config() -> dict:
 
 
 def test_runs_topgrade_once_a_day_at_0430_with_no_prompts():
-    assert plist()["Label"] == "com.nish.topgrade"
-    assert plist()["ProgramArguments"] == [
+    job = plist()
+    assert job["Label"] == "com.nish.topgrade"
+    assert job["ProgramArguments"] == [
         "/opt/homebrew/bin/topgrade",
         "--yes",
         "--no-ask-retry",
         "--no-self-update",
     ]
-    assert plist()["StartCalendarInterval"] == {"Hour": 4, "Minute": 30}
+    assert job["StartCalendarInterval"] == {"Hour": 4, "Minute": 30}
+    assert set(job) == {
+        "Label",
+        "ProgramArguments",
+        "StartCalendarInterval",
+        "EnvironmentVariables",
+        "ProcessType",
+        "LowPriorityIO",
+        "Nice",
+    }, "another key could add a second trigger (RunAtLoad, StartInterval) or a log file"
 
 
 def test_runs_at_low_priority():
@@ -59,7 +60,7 @@ def test_runs_at_low_priority():
     assert plist()["Nice"] == 10
 
 
-def test_path_lists_only_directories_launchd_can_reach():
+def test_path_holds_only_absolute_directories():
     environment = plist()["EnvironmentVariables"]
     assert environment == {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
     for directory in environment["PATH"].split(":"):
@@ -78,28 +79,29 @@ def test_plist_has_no_home_path():
 
 
 def test_config_runs_the_same_steps():
-    assert config()["misc"] == {
+    misc = config()["misc"]
+    assert set(misc.pop("disable")) == {
+        "brew_formula",
+        "brew_cask",
+        "mas",
+        "system",
+        "gem",
+        "ruby_gems",
+        "hermes_agent",
+        "self_update",
+        "remotes",
+        "restarts",
+        "cursor_agent",
+        "node",
+        "skills",
+        "github_cli_skills",
+        "claude_code_plugins",
+    }
+    assert misc == {
         "assume_yes": True,
         "no_retry": True,
         "notify_end": "never",
         "no_self_update": True,
-        "disable": [
-            "brew_formula",
-            "brew_cask",
-            "mas",
-            "system",
-            "gem",
-            "ruby_gems",
-            "hermes_agent",
-            "self_update",
-            "remotes",
-            "restarts",
-            "cursor_agent",
-            "node",
-            "skills",
-            "github_cli_skills",
-            "claude_code_plugins",
-        ],
     }
 
 
@@ -119,16 +121,11 @@ def test_config_has_no_absolute_home_path():
 
 
 def test_config_expands_tilde_only_where_topgrade_expands_it():
-    table = ""
-    offenders = []
-    for line in CONFIG.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            table = stripped
-        elif "~" in stripped and not stripped.startswith("#") and table != "[commands]":
-            offenders.append(line)
-    assert offenders == [], f"{offenders} use `~` outside [commands], which topgrade does not expand"
+    data = config()
+    assert set(data) == {"misc", "commands"}
+    for key, value in data["misc"].items():
+        assert "~" not in str(value), f"misc.{key} holds `~`, which topgrade does not expand there"
 
 
 def test_ci_runs_this_file():
-    assert "tests/test_mac_topgrade.py" in CI.read_text()
+    assert "pytest -q -p no:cacheprovider tests/test_mac_topgrade.py" in CI.read_text()
