@@ -486,6 +486,13 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
 HOST_YML = ROOT / "ansible/host.yml"
 
 
+@pytest.mark.skipif(shutil.which("yq") is None, reason="yq is not installed")
+def retired_paths() -> list[str]:
+    """The one reader of host.yml's retired: list, parsed by yq so every check sees the same paths."""
+    out = subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
 def _tether_blocks() -> list[str]:
     blocks = re.split(r"\n    - name: ", ansible_host.text())
     return [block for block in blocks if "tags: [tether" in block]
@@ -978,89 +985,68 @@ GLUE_SWEEP_USER_CONFIG_DEBRIS = (
     "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23",
 )
 
+GLUE_SWEEP_HIDE_PREFIXES = ("InaccessiblePaths=", "TemporaryFileSystem=")
+
+
 def glue_sweep_needle(path: str) -> str:
+    """The shortest name that is still unique inside the repo: a dotted basename,
+    or the whole path for a directory such as /tmp/nish-root."""
     basename = path.rsplit("/", 1)[-1]
     return basename if "." in basename else path
 
 
-SANDBOX_HIDING_DIRECTIVES = ("InaccessiblePaths=", "TemporaryFileSystem=")
-
-
-def glue_sweep_directives(text: str) -> list[str]:
-    return text.replace("\\\n", " ").splitlines()
-
-
-def glue_sweep_tokens(line: str) -> list[str]:
-    return [
-        part.strip("\"'`,;()[]").lstrip("-+") for part in re.split(r"[\s=]+", line) if part
-    ]
-
-
-def glue_sweep_matching_lines(text: str, name: str) -> list[str]:
-    return [
-        line
-        for line in glue_sweep_directives(text)
-        if any(
-            part == name or part.endswith(f"/{name}") or part.startswith(f"{name}/")
-            for part in glue_sweep_tokens(line)
-        )
-    ]
-
-
 @functools.cache
 def shipped_repo_texts() -> tuple[tuple[str, str], ...]:
-    skip_dirs = {
-        ".git",
-        ".venv",
-        ".pytest_cache",
-        ".ruff_cache",
-        "__pycache__",
-        "build",
-        "dist",
-        "node_modules",
-    }
-    skip_files = {"ansible/host.yml", str(Path(__file__).resolve().relative_to(ROOT))}
+    """Every path git tracks in this checkout, read once. Untracked and ignored
+    files are left out on purpose: they are not shipped, so a reference in one
+    cannot break a deploy. host.yml and this file name the debris on purpose --
+    the first deletes it, the second checks it -- so neither is evidence."""
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    excluded = {str(HOST_YML.relative_to(ROOT)), str(Path(__file__).resolve().relative_to(ROOT))}
     found = []
-    for parent, dirnames, filenames in os.walk(ROOT):
-        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
-        for name in filenames:
-            path = Path(parent) / name
-            relative = str(path.relative_to(ROOT))
-            if relative in skip_files or path.is_symlink() or not path.is_file():
-                continue
-            found.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+    for name in listed.split("\0"):
+        if not name or name in excluded:
+            continue
+        path = ROOT / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        found.append((name, path.read_text(encoding="utf-8", errors="replace")))
     assert found, "the scan found no files, so it proves nothing"
     return tuple(found)
 
 
-@functools.cache
-def retired_entries() -> list[str]:
-    block = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", HOST_YML.read_text())
-    assert block, "host.yml retired nothing, so the list moved"
-    entries = [line.strip()[2:].strip("\"") for line in block.group(1).splitlines() if line.strip()]
-    return list(entries)
-
-
 def test_glue_sweep_user_config_debris_is_retired() -> None:
-    entries = retired_entries()
+    entries = retired_paths()
     missing = [path for path in GLUE_SWEEP_USER_CONFIG_DEBRIS if path not in entries]
     assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
 
 
+def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
+    """A user unit deleted while the user manager holds it stays listed by
+    list-unit-files until that manager reloads, which is half of #10544's check."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    removal = tasks["Remove retired host files"]
+    handlers = removal.get("notify") or []
+    assert "Reload nish's user manager" in handlers, handlers
+
+
 def test_no_shipped_file_uses_a_deleted_glue_sweep_path() -> None:
+    """A shipped file that still names a deleted path is a live reference to a
+    file that no longer exists, so the sweep would break it on the next run.
+    A hide rule is the one allowed exception: a runner jail may still hide a path
+    this sweep deletes, the hide rule is harmless once the file is gone, and
+    dropping it would weaken the jail on the day the file comes back."""
     for relative, text in shipped_repo_texts():
         for path in GLUE_SWEEP_USER_CONFIG_DEBRIS:
             needle = glue_sweep_needle(path)
             if needle not in text:
                 continue
-            failing = [
+            offenders = [
                 line
-                for line in glue_sweep_matching_lines(text, needle)
-                if not line.startswith(SANDBOX_HIDING_DIRECTIVES)
+                for line in text.splitlines()
+                if needle in line and not line.startswith(GLUE_SWEEP_HIDE_PREFIXES)
             ]
-            assert not failing, (
-                f"{relative} names the deleted {needle}, and only a hide rule may: {failing[0]}"
-            )
+            assert not offenders, f"{relative} names the deleted {needle}, and only a hide rule may: {offenders[0]}"
 
 
 def test_alertmanager_reads_the_repo_installed_config() -> None:
@@ -1415,9 +1401,7 @@ def test_tincan_relay_ships_dist_and_the_temporary_dropin_is_retired() -> None:
     assert "--release-url https://github.com/mvanhorn/agent-tincan/releases/download" in exec_start[0], (
         "relay-upgrade --from-github needs the release URL"
     )
-    retired = json.loads(
-        subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
-    )
+    retired = retired_paths()
     assert TINCAN_RELAY_DIST_DROPIN in retired, "the hand-placed --dist drop-in restates the shipped unit and must be deleted"
     assert TINCAN_RELAY_DIST_DROPIN_DIR not in retired, "retire the file, not the directory: a later drop-in there must survive"
     for base in (ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"):
@@ -1956,7 +1940,7 @@ def test_host_config_runs_once_after_every_boot() -> None:
 def test_daily_host_config_timer_is_retired() -> None:
     """fleet-ops#10457: only a merge or a boot runs the host playbook; no daily timer."""
     assert not (INSTALLED / "fleet-host-config.timer").exists()
-    retired = json.loads(subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout)
+    retired = retired_paths()
     assert "/etc/systemd/system/fleet-host-config.timer" in retired
     stop = _host_task("Stop and disable the retired daily host config timer")["ansible.builtin.systemd_service"]
     assert stop["name"] == "fleet-host-config.timer" and stop["enabled"] is False and stop["state"] == "stopped"
