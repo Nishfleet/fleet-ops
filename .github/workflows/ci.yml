@@ -1117,10 +1117,9 @@ jobs:
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
         # Runs the review job's and the arm job's own run blocks from agent.yml against a fake gh, curl and git.
-        # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two more reviewers
-        # of other families approve. An infrastructure failure retries, and a real block, a low judge or an
-        # unreadable guard list leaves it unapproved. None of them asks a person. The review never arms itself:
-        # the arm job does, on the exact head, and refuses a stale one.
+        # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two reviewers of other
+        # families approve; an infrastructure failure retries, and a real block, a low judge or an unreadable guard list
+        # leaves it unapproved; none asks a person. The review never arms; the arm job does on the exact head.
         if: always()
         run: |
           set -euo pipefail
@@ -1158,8 +1157,7 @@ jobs:
           #!/usr/bin/env bash
           case "$*" in
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
-            "pr edit "*) while [ $# -gt 0 ]; do if [ "$1" = --add-label ]; then printf '%s\n' "$2" >> "$STATE/labels"; fi; shift; done ;;
-            "label create "*) printf 'label-create:%s\n' "$3" >> "$STATE/labels" ;;
+            "pr edit "*|"label create "*) while [ $# -gt 0 ]; do case $1 in --add-label) printf '%s\n' "$2" >> "$STATE/labels";; label) printf 'label-create:%s\n' "$3" >> "$STATE/labels";; esac; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
             *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
