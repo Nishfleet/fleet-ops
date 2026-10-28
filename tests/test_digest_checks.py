@@ -16,7 +16,10 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
-- ansible/host.yml applies the prompts to the live jobs.
+- ansible/host.yml applies the prompts to the live jobs,
+- and it deletes the named retired jobs from the same cron store, so a proof job
+  whose issue has closed stops existing, while a fresh one is left alone
+  (fleet-ops#10545).
 """
 import datetime
 import fnmatch
@@ -378,3 +381,170 @@ def test_site_check_with_a_failing_page_is_unknown(tmp_path):
     lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
     assert lines == ["ROW site UNKNOWN"]
     assert saved is None
+
+
+PRUNE = "Delete the retired jobs from Hermes' cron store"
+READ = "Read Hermes' scheduled jobs"
+
+FAKE_CRON_STUB = """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:2] != ["cron", "remove"] or len(args) != 3:
+    sys.exit("unexpected call: %r" % (args,))
+store = os.environ["FAKE_STORE"]
+jobs = json.load(open(store))["jobs"]
+left = [j for j in jobs if j["id"] != args[2]]
+if len(left) == len(jobs):
+    sys.exit("no such job: " + args[2])
+json.dump({"jobs": left}, open(store, "w"))
+open(os.environ["FAKE_LOG"], "a").write(args[2] + chr(10))
+"""
+
+
+def _cron(expr):
+    return {"kind": "cron", "expr": expr, "display": expr}
+
+
+def _once(offset_days):
+    at = datetime.datetime.now().astimezone().replace(hour=10, minute=0, second=0, microsecond=0)
+    at += datetime.timedelta(days=offset_days)
+    return {"kind": "once", "run_at": at.isoformat(timespec="seconds"), "display": at.strftime("once at %Y-%m-%d %H:%M")}
+
+
+def _job(job_id, name, enabled, **schedule):
+    return {"id": job_id, "name": name, "enabled": enabled, "schedule": schedule}
+
+
+CRON_LIVE = [
+    _job("3acce3a945cb", "digest-morning", True, **_cron("0 8 * * *")),
+    _job("682de9846caa", "digest-evening", True, **_cron("0 20 * * *")),
+    _job("9fdc0c9fff6c", "scorecard-weekly", True, **_cron("0 9 * * 1")),
+    _job("b30761322118", "audit-claims", True, **_cron("30 8,20 * * *")),
+    _job("783b31b9d5e5", "audit-urgent", True, **_cron("50 8,20 * * *")),
+    _job("6362250bf181", "audit-file", True, **_cron("10 9,21 * * *")),
+    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
+    _job("4231290e3e00", "sec-k3-key-renewal", True, **_once(400)),
+    _job("1145b749d731", "sec-daily-summary", True, **_cron("0 21 * * *")),
+    _job("33199b7bfff5", "sec-coordinator-backstop", True, **_cron("41 */6 * * *")),
+]
+
+CRON_PROOF = [
+    _job("13d3db49b9c5", "tmp-9579-proof", True, **_cron("0 20 1 1 *")),
+    _job("f16c57bb6885", "tmp-9717-proof", True, **_cron("0 0 1 1 *")),
+]
+
+CRON_EXPIRED = [
+    _job("d4efa85f43c3", "sec-k1-limited-key", False, **_once(-5)),
+    _job("50229bbf6c4a", "sec-r2-deadline", False, **_once(-2)),
+    _job("0de3952d8ecb", "sec-r2-precheck", False, **_once(-3)),
+    _job("df6163647275", "sec-k2-cloudflare-key", False, **_once(-2)),
+    _job("bdc37cb70a4a", "sec-c5-before-monday", False, **_once(-3)),
+    _job("fc1c6a815b80", "sec-dnssec-cf-registrar", False, **_once(-5)),
+    _job("7eda90c8dd97", "sec-morning-yes-1023", False, **_once(-5)),
+]
+
+CRON_KEPT = [
+    _job("eba16b1df90e", "tmp-9737-proof", False, **_cron("5 22 * * *")),
+    _job("111111111111", "sec-future-reminder", False, **_once(3)),
+    _job("222222222222", "atmp-proof", True, **_cron("0 7 4 4 *")),
+    _job("333333333333", "tmp-10600-proof", True, **_once(2)),
+]
+
+
+def _retired_ids():
+    lines = HOST.read_text().splitlines()
+    out = []
+    for line in lines[lines.index("    hermes_retired_jobs:") + 1 :]:
+        if line.startswith("      #"):
+            continue
+        if not line.startswith("      - "):
+            break
+        out.append(line.split("- ", 1)[1].strip())
+    return out
+
+
+def _task_text(name):
+    lines = HOST.read_text().splitlines()
+    start = lines.index(f"    - name: {name}")
+    end = start + 1
+    while end < len(lines) and not lines[end].startswith("    - "):
+        end += 1
+    block = [line for line in lines[start:end] if line.strip() not in ("become: true", "become_user: nish")]
+    while block and not block[-1].strip():
+        block.pop()
+    return block
+
+
+def _prune(tmp_path, jobs):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    stub = tmp_path / ".local/bin/hermes"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(FAKE_CRON_STUB)
+    stub.chmod(0o755)
+    store = tmp_path / ".hermes/cron/jobs.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    if jobs is not None:
+        store.write_text(json.dumps({"jobs": jobs}))
+    log = tmp_path / "calls.log"
+    log.write_text("")
+    playbook = tmp_path / "prune.yml"
+    playbook.write_text(
+        "\n".join(
+            [
+                "- hosts: localhost",
+                "  connection: local",
+                "  gather_facts: false",
+                "  vars:",
+                f"    nish_home: {tmp_path}",
+                f"    hermes_retired_jobs: {json.dumps(_retired_ids())}",
+                "    nish_env:",
+                f"      HOME: {tmp_path}",
+                f"      PATH: {stub.parent}:/usr/local/bin:/usr/bin:/bin",
+                f"      FAKE_STORE: {store}",
+                f"      FAKE_LOG: {log}",
+                "  tasks:",
+                *_task_text(READ),
+                *_task_text(PRUNE),
+                "",
+            ]
+        )
+    )
+    run = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(playbook)],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": "/usr/local/bin:/usr/bin:/bin", "ANSIBLE_LOCALHOST_WARNING": "false"},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    left = json.loads(store.read_text())["jobs"] if store.exists() else None
+    return left, log.read_text().split()
+
+
+def test_the_host_jobs_remove_the_proof_jobs_and_the_expired_one_shots(tmp_path):
+    assert _retired_ids() == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
+    jobs, calls = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    assert sorted(calls) == sorted(job["id"] for job in CRON_PROOF + CRON_EXPIRED)
+    assert jobs == CRON_LIVE + CRON_KEPT
+
+
+def test_the_host_jobs_leave_a_fresh_proof_job_alone(tmp_path):
+    fresh = _job("444444444444", "tmp-10600-proof", True, **_once(0))
+    jobs, calls = _prune(tmp_path, CRON_LIVE + [fresh])
+    assert calls == []
+    assert jobs == CRON_LIVE + [fresh]
+
+
+def test_the_host_jobs_remove_nothing_on_a_second_run(tmp_path):
+    jobs, _ = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    again, calls = _prune(tmp_path, jobs)
+    assert calls == []
+    assert again == jobs
+
+
+def test_the_host_jobs_remove_nothing_without_a_store(tmp_path):
+    jobs, calls = _prune(tmp_path, None)
+    assert calls == []
+    assert jobs is None
