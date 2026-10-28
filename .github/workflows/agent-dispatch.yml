@@ -1310,12 +1310,12 @@ jobs:
             actor=$(gh api "repos/$REPO/issues/$n/events" --paginate \
               --jq '.[] | select(.event == "labeled" and .label.name == "needs-triage") | [.created_at, (.actor.login // "")] | @tsv' \
               | sort | tail -n1 | cut -f2)
-            printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$actor" || {
+            { [ -n "$actor" ] && printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$actor"; } || {
               echo "::notice::admit: #$n needs-triage was not applied by a trusted login; skipped"; continue; }
             # fleet-ops#8313: only the owner's issues are admitted, so a trusted
             # labeller cannot pull a stranger's issue into the queue.
             author=$(jq -r '.user.login // ""' <<<"$issue")
-            printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$author" || {
+            { [ -n "$author" ] && printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$author"; } || {
               echo "::notice::admit: #$n was filed by an untrusted login; skipped"; continue; }
             reason=$(jq -r "$EXCLUDE" <<<"$issue")
             if [ -n "$reason" ]; then
