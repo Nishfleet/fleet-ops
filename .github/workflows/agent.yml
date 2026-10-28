@@ -354,14 +354,15 @@ jobs:
           [ "$MISS" = true ] && id=$id-miss
           # The worker runs in its own PID namespace: when it exits (or this step is cancelled), the kernel kills every process it started, including ones that setsid/daemonize past the runner's snapshot-based orphan cleanup (actions/runner#4601). Before this, a headless Chrome outlived its job by 13h and a worker's gh-checks poller held node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820). Same cgroup, so agent.slice memory limits still apply.
           # The empty tmpfs mounts hide Nish's own gh login (admin:org, delete_repo, workflow; backups included) and every Cloudflare token from the worker, which reads outsider comments: a fooled model cannot read what the jail does not show (fleet-ops#9274). The worker's gh and git push use GH_TOKEN, the App token. ci.yml runs this exact line and fails if either path can be read.
-          # The Claude seats' logins are hidden the same way, from every engine but claude: seat a is the runner's CLAUDE_CONFIG_DIR (unset means one default login, and the already-hidden gh directory stands in so the line never names a path that is not there), seat b is the default login's credentials file and ~/.claude.json, which an empty bind replaces. The claude lane sees only the seat it runs on: claude_jail_a hides the default login, claude_jail_b hides seat a. ci.yml runs these three lines and fails if a hidden file can be read. A runner with no default login is fine: bwrap creates a missing bind target (checked 2026-10-10), so the line never refuses to start.
-          seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
+          # The Claude seats' logins are hidden the same way, from every engine but claude. Both seat dirs are named here, never read from a runner's own CLAUDE_CONFIG_DIR (fleet-ops#10741: the runner .env files pinned seat a on the even-numbered runners, so an odd runner never ran seat a and every job on it shared seat b). Seat b's credentials file and ~/.claude.json, which an empty bind replaces, are hidden from every engine but the claude lane running on seat b. The claude lane sees only the seat it runs on: claude_jail_a hides seat b, claude_jail_b hides seat a. ci.yml runs these three lines and fails if a hidden file can be read. A runner with no default login is fine: bwrap creates a missing bind target (checked 2026-10-10), so the line never refuses to start.
+          seat_a=$HOME/.claude-vps
+          seat_b=$HOME/.claude
           # Credential backups, every other Claude config dir and the seats' one-year token files (seats/claude-seat-*.env, ~/.local/share/claude-seat-backup) sit beside the seats (a glob resolved now, not a list): a directory goes under an empty tmpfs, a plain file is bound to /dev/null, a symlink is resolved and its target hidden (bwrap follows a link in a mount path), a link that points nowhere is skipped. The one exception is the seat dir the claude lane runs on ($1); the lane reads its token file before the jail starts and hands the token to claude through the environment only.
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
           hide_but_a=$(claude_hides "$seat_a")
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a --ro-bind /dev/null $seat_b/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --ro-bind /dev/null $seat_b/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
           claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
@@ -386,38 +387,49 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the issue number's parity (the same input the Cursor lane
-            # keys on, fleet-ops#9696): an even $id unsets CLAUDE_CONFIG_DIR (seat b, the default login), an odd $id
-            # keeps it (seat a), a non-numeric id keeps seat a. The seat follows the issue, not the runner, so a retry
-            # lands on the same seat on any runner and a continued run finds the earlier session (a session
-            # lives in one seat's config dir). The seat never changes inside a job, except to the other seat when its
-            # own login is missing (below). A run that dies on a rate limit or
-            # a usage limit sends the same packet to the Cursor lane for senior
+            # Claude Code on one of the two seats, chosen by the job number's parity (the same input the Cursor lane
+            # keys on, fleet-ops#9696): an even $id runs seat b, an odd $id seat a, a non-numeric id seat a. Both
+            # seat dirs are named above, so the runner's own CLAUDE_CONFIG_DIR never picks the seat (fleet-ops#10741):
+            # it used to, which pinned seat a on the even-numbered runners and left every job on an odd runner on
+            # seat b. The seat follows the job, not the runner, so a retry lands on the same seat on any runner and
+            # a continued run finds the earlier session (a session lives in one seat's config dir). The seat changes
+            # inside a job only to the other seat: when its own login is missing (below), or when that seat answers
+            # with a usage limit and the other one takes the same packet (below, fleet-ops#10741). A run that dies
+            # with both seats at their limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
             # holds (worker.md step 2b). Other engines never see these seats'
             # logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
-            seat_a_dir=${CLAUDE_CONFIG_DIR:-}
-            case ${id##*-} in ''|*[!0-9]*) ;; *) [ $(( 10#${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;; esac
-            if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
-            # A seat whose login file is missing or empty fails every job on it, so a missing login costs one seat, never both. Only the file's presence and size are tested, never its content. The other seat takes the job if it has a login; with neither, the lane is skipped and the job falls through as a refused seat does (below).
-            seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
-            claude_other=a; [ "$claude_seat" = a ] && claude_other=b
+            seat_a_dir=$seat_a
+            seat_b_dir=$seat_b
+            case ${id##*-} in ''|*[!0-9]*) claude_seat=a ;; *) [ $(( 10#${id##*-} % 2 )) -eq 0 ] && claude_seat=b || claude_seat=a ;; esac
+            # A seat whose login file is missing or empty fails every job on it, so a missing login costs one seat, never both. Only the file's presence and size are tested, never its content. The other seat takes the job if it can log in; with neither, the lane is skipped and the job falls through as a refused seat does (below).
+            seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$seat_b_dir/.credentials.json" ]; fi; }
             # A seat with a one-year token file (`claude setup-token`, non-rotating) logs in with that token alone: claude gets it in its own environment and a fresh empty config dir under the job's temp dir (deleted when the lane ends), in the jail that hides every login, and no rotating login is read or written. The file is parsed, never sourced, and the token is masked and never exported in this shell, so a fallthrough engine does not inherit it. No file (or no token in it) keeps the login path below.
             unset CLAUDE_CODE_OAUTH_TOKEN
             claude_seats=$HOME/.config/fleet-ops/seats # gitleaks:allow
             claude_tok_of() { sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "$claude_seats/claude-seat-$1.env" 2>/dev/null | head -n 1 | tr -d "\r \"'" || true; }
-            claude_auth=login
-            claude_tok=$(claude_tok_of "$claude_seat")
-            if [ -n "$claude_tok" ]; then echo "::add-mask::$claude_tok"; claude_auth=token
-            elif [ -s "$claude_seats/claude-seat-$claude_seat.env" ]; then echo "::warning::claude lane: seat=$claude_seat token file has no token, using the login"; fi
+            # Point the lane at one seat: $1 is a or b. Everything the seat needs is set here, so the other seat can take the same job with one call.
+            claude_use() {
+              claude_seat=$1
+              claude_other=a; [ "$claude_seat" = a ] && claude_other=b
+              unset CLAUDE_CODE_OAUTH_TOKEN
+              claude_auth=login
+              claude_tok=$(claude_tok_of "$claude_seat")
+              if [ -n "$claude_tok" ]; then echo "::add-mask::$claude_tok"; claude_auth=token
+              elif [ -s "$claude_seats/claude-seat-$claude_seat.env" ]; then echo "::warning::claude lane: seat=$claude_seat token file has no token, using the login"; fi
+              if [ "$claude_seat" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; else export CLAUDE_CONFIG_DIR="$seat_b_dir"; fi
+              if [ "$claude_auth" = token ]; then claude_jail="$jail_base"; elif [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
+            }
+            # A seat the lane can actually run on: a one-year token, or a login file.
+            claude_use_ok() { [ -n "$(claude_tok_of "$1")" ] || seat_login "$1"; }
+            claude_use "$claude_seat"
             if [ "$claude_auth" = login ] && ! seat_login "$claude_seat"; then
-              if seat_login "$claude_other"; then
+              if claude_use_ok "$claude_other"; then
                 echo "::warning::claude lane: seat=$claude_seat missing login, using seat=$claude_other"
-                claude_seat=$claude_other
-                if [ "$claude_seat" = a ]; then export CLAUDE_CONFIG_DIR="$seat_a_dir"; else unset CLAUDE_CONFIG_DIR; fi
+                claude_use "$claude_other"
               else
                 echo "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane"
                 if [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; then
@@ -429,8 +441,6 @@ jobs:
                 fi
               fi
             fi
-            if [ "$claude_seat" = a ]; then claude_jail="$claude_jail_a"; else claude_jail="$claude_jail_b"; fi
-            [ "$claude_auth" != token ] || claude_jail="$jail_base"
           fi
           if [ "$ENGINE" = claude ]; then
             echo "claude lane: seat=$claude_seat auth=$claude_auth issue=${id##*-} runner=${RUNNER_NAME:-unknown}"
@@ -469,16 +479,58 @@ jobs:
                 claude_try "$claude_tok"
               fi
             fi
+            # A seat at its usage limit is a wall, not a bad packet (fleet-ops#10741): while nothing is pushed, the same
+            # packet is retried once on the other seat, before anything falls through. The CLI names the limit and when
+            # it resets in its last lines, and the reported reset time is what the requeue holds the job for when the
+            # other seat is at its limit too.
+            # The CLI's own reset words, read to the end of the sentence so the parenthesised timezone and a comma'd date survive ("usage limit resets at 11pm (Asia/Kolkata)", "resets Nov 3, 9:30am", "resets at UTC midnight"), or the last line it printed when the wording is new.
+            claude_reset_text() { tail -q -n 6 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -iom1 -E 'resets[^.]*' || tail -q -n 1 "$RUNNER_TEMP/try.err"; }
+            # That reset time as an epoch. The CLI prints a local time with its timezone ("resets at 11pm (Asia/Kolkata)"),
+            # a date when the reset is over a day out ("resets Nov 3, 9am (Asia/Kolkata)") or an ISO stamp; a time that has
+            # already passed means tomorrow; nothing readable means six hours out, the sweep's own idle floor.
+            claude_reset_epoch() {
+              local t=$1 tz d e now cand
+              t=$(printf '%s' "$t" | tr -d '\r')
+              tz=$(printf '%s' "$t" | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_+\/-]*\)).*/\1/p')
+              now=$(date -u +%s)
+              if d=$(printf '%s' "$t" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?' | head -n1) && [ -n "$d" ]; then
+                e=$(TZ=UTC date -u -d "$d" +%s 2>/dev/null) && { echo "$e"; return 0; }
+              fi
+              if d=$(printf '%s' "$t" | grep -oiE '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* [0-9]{1,2},? ?[0-9]{1,2}(:[0-9]{2})? ?[ap]m' | head -n1) && [ -n "$d" ]; then
+                for cand in "$d" "$(date -u +%Y) $d"; do
+                  e=$(TZ="${tz:-UTC}" date -d "$cand" +%s 2>/dev/null) || continue
+                  [ "$e" -gt "$now" ] && { echo "$e"; return 0; }
+                done
+                echo $(( now + 6*3600 )); return 0
+              fi
+              if d=$(printf '%s' "$t" | grep -oiE '[0-9]{1,2}(:[0-9]{2})? ?[ap]m' | head -n1) && [ -n "$d" ]; then
+                for cand in "today $d" "tomorrow $d"; do
+                  e=$(TZ="${tz:-UTC}" date -d "$cand" +%s 2>/dev/null) || continue
+                  [ "$e" -gt "$now" ] && { echo "$e"; return 0; }
+                done
+              fi
+              echo $(( now + 6*3600 ))
+            }
+            if [ "$rc" != 0 ] && refused && claude_use_ok "$claude_other" && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
+              echo "claude lane: seat=$claude_seat at its usage limit, retrying on seat=$claude_other"
+              claude_use "$claude_other"
+              echo "claude lane: seat=$claude_seat auth=$claude_auth retry=after-usage-limit runner=${RUNNER_NAME:-unknown}"
+              claude_try "$claude_tok"
+            fi
             unset claude_tok
             [ -z "$claude_cfg_root" ] || rm -rf "$claude_cfg_root"; [ ! -f "$RUNNER_TEMP/try.out" ] || { claude_final="${RUNNER_TEMP%/*}/claude-final/$FLEET_TASK_ID.txt"; { mkdir -p "${claude_final%/*}" && cp "$RUNNER_TEMP/try.out" "$claude_final" && echo "claude lane: final answer kept on the VPS at $claude_final ($(wc -c <"$claude_final") bytes)"; } || echo "::warning::claude lane: could not keep the final answer"; } # print mode's final answer stays off the public log (fleet-ops#10309)
+            # Both seats at their usage limit is a wall, not a failed packet: say so where the Router wall step reads,
+            # with the reset time the CLI reported, so a branch with nothing pushed is requeued and held until then
+            # instead of struck, and the sweep can tell a quota wall from a dead run.
+            if [ "$rc" != 0 ] && refused; then
+              claude_reset=$(claude_reset_text)
+              echo "claude: 429 rate limit, both seats at their usage limit: $claude_reset (epoch $(claude_reset_epoch "$claude_reset"))" >&2
+            fi
             if [ "$rc" != 0 ] && refused && { [ "$SENIOR" != true ] || [ "$(live cursor-agent)" -lt 1 ]; }; then
               ENGINE=$fallback
               echo "fallthrough: $ENGINE (claude rate limit)"
             else
               cat "$RUNNER_TEMP/try.err" >&2
-              # A refused seat is not a failed packet: say so where the Router
-              # wall step reads, so a branch with nothing pushed is requeued.
-              if [ "$rc" != 0 ] && refused; then echo "claude: 429 rate limit, cursor lane full" >&2; fi
               [ "$rc" = 0 ] || exit 1
             fi
           fi
