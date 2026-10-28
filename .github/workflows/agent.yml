@@ -650,8 +650,7 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            # Every PR is armed: config/risky-paths.json is the one gate list, and hold-risky plus the
-            # coordinator-approval required check hold a risky head until it is approved (fleet-ops#10621).
+            # Every PR is armed; config/risky-paths.json + hold-risky gate it (fleet-ops#10621).
             # A head whose required checks are red is not armed, the test Deliverable fails
             # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
             # the strike step requeues the issue and the next run arms the fixed head. Pending
