@@ -18,10 +18,10 @@ SCOPE = [] if IN_CI else ["--user"]
 RUN_DIR = pathlib.Path("/run" if IN_CI else os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))
 UNIT_DIR = pathlib.Path("/etc/systemd/system" if IN_CI else pathlib.Path.home() / ".config/systemd/user")
 ENV_DIR = RUN_DIR / "fleet-worker-github-token"
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.systemd, pytest.mark.skipif(
     shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists()),
     reason="needs a systemd manager",
-)
+)]
 
 
 def sh(cmd, **kw):

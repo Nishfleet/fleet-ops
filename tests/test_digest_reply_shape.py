@@ -22,8 +22,7 @@ holds the machine side:
 - the reply shapes that shipped on 2026-10-19 (execution 682de9846caa run
   "All facts gathered" plus bold sections and duplicated lines) and on
   2026-10-20 (execution 59de77f7: "are both live", "nothing new to wait on")
-  must flag, so the classes that came back after the first fix cannot return,
-- ci.yml must run this file, so a rewired CI cannot drop the gate silently.
+  must flag, so the classes that came back after the first fix cannot return.
 
 Fleet-ops#9925 adds the second question, with its own labels (labeller_9925, a
 non-Claude model, both calls before the prompt edit): no routine background-job
@@ -38,7 +37,6 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROMPTS = [ROOT / "config/hermes/digest-morning.md", ROOT / "config/hermes/digest-evening.md"]
 CASES = ROOT / "tests/evals/cases/digest_reply_shape.json"
-CI = ROOT / ".github/workflows/ci.yml"
 
 POST_FIX_REPLY = """Merged count could not be read
 Production deploy failed https://example.com/alpha/actions/runs/1
@@ -308,7 +306,3 @@ def test_morning_files_no_edition_line():
     text = PROMPTS[0].read_text()
     assert "site line" not in text
     assert "A scheduled job's own success is a routine confirmation, never one of the changes that matter" in text
-
-
-def test_ci_runs_this_file():
-    assert "tests/test_digest_reply_shape.py" in CI.read_text()

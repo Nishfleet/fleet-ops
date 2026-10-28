@@ -14,7 +14,7 @@ AGENT = (ROOT / ".github/workflows/agent.yml").read_text()
 
 
 def test_fable_is_named_once_as_the_guard_second_reviewer():
-    hits = [(w.name, line.strip()) for w in WORKFLOWS if w.name != "ci.yml" for line in w.read_text().splitlines() if re.search(r"claude-fable", line, re.I)]
+    hits = [(w.name, line.strip()) for w in WORKFLOWS if not w.name.startswith("ci") for line in w.read_text().splitlines() if re.search(r"claude-fable", line, re.I)]
     assert hits == [("agent.yml", "SECOND_MODEL: claude-fable-5-1")]
 
 

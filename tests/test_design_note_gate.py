@@ -1,4 +1,4 @@
-"""The `A new component links a design note` step in ci.yml (#10556), run from the
+"""The `A new component links a design note` step in ci-lint.yml (#10556), run from the
 workflow's own text (read out with yq, never a copy) against throwaway git repos.
 
 A PR that adds a unit, quadlet or Pi extension needs a `design-note:` line; a plain
@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-CI = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
+CI = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/ci-lint.yml"
 STEP = "A new component links a design note"
 
 

@@ -15,7 +15,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/fleet-gh-login-check.service"
-CI = ROOT / ".github/workflows/ci.yml"
+CI = ROOT / ".github/workflows/ci-unit.yml"
 
 
 def _exec_start():

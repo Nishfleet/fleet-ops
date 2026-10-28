@@ -7,7 +7,6 @@ from typing import Iterator
 ROOT = Path(__file__).resolve().parents[1]
 PLIST = ROOT / "mac/com.nish.topgrade.plist"
 CONFIG = ROOT / "mac/topgrade.toml"
-CI = ROOT / ".github/workflows/ci.yml"
 
 HOME_PREFIXES = ("/Users/",)
 
@@ -125,9 +124,3 @@ def test_config_expands_tilde_only_where_topgrade_expands_it():
     assert set(data) == {"misc", "commands"}
     for key, value in data["misc"].items():
         assert "~" not in str(value), f"misc.{key} holds `~`, which topgrade does not expand there"
-
-
-def test_ci_runs_this_file():
-    lines = [line for line in CI.read_text().splitlines() if "tests/test_mac_topgrade.py" in line]
-    assert lines, "ci.yml runs no step naming this file"
-    assert any("pipx run --spec pytest" in line for line in lines), lines

@@ -1,0 +1,706 @@
+on: workflow_call
+permissions: {contents: read}
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core
+      - name: ansible/host.yml parses (ansible-playbook --syntax-check)
+        # fleet-host-config.service runs this playbook as root on every merge;
+        # a parse error would stop every root config change at deploy time.
+        if: always()
+        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
+      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
+        if: always()
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
+      - name: The report survives a skipped registration (fleet-ops#9340)
+        # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
+        # pattern has no 'results' key to render and killed the run's last task.
+        if: always()
+        run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
+      - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
+        if: always()
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: pytest over tests/ (discovered; markers in pytest.ini pick the tests that run in another job)
+        # litellm is the proxy image's pin (containers/quadlet/fleet-litellm-proxy.container); the router tests import it.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 --pip-args=litellm==1.105.0 pytest -q -p no:cacheprovider -m 'not systemd and not grafana'
+      - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
+        # nft refuses the whole file when a rule names a cgroup path that does
+        # not exist yet, as at boot before user@1000 starts: the 2026-09-22
+        # container-slice rule would have dropped every table on the next
+        # reboot. This runner has no such cgroups, so the same rule fails here.
+        if: always()
+        run: sudo apt-get install -y --no-install-recommends nftables && sudo nft -c -f rootfs/etc/nftables.conf
+      - name: Worker jail hides the gh login, Cloudflare tokens and Claude seat logins (fleet-ops#9274)
+        # Runs agent.yml's own jail_base line, so a change there is what is
+        # tested. Workers read outsider comments; only the filesystem view
+        # keeps Nish's admin login and the deploy token out of their reach.
+        # Every bwrap line must be a jail_base=, claude_jail_a= or claude_jail_b=
+        # assignment, so each is tested here. jail_base is every engine but claude
+        # and must hide both Claude seat logins; claude_jail_a (seat a, the runner's
+        # CLAUDE_CONFIG_DIR) hides the default login only, claude_jail_b the other way round.
+        # Ubuntu 24.04 blocks unprivileged user namespaces by default; the
+        # VPS allows them, so the runner is set to match.
+        if: always()
+        run: |
+          # This step plants fake logins over $HOME's real login files and its
+          # EXIT trap deletes them. On 2026-10-11 a session replayed it on the
+          # fleet box with plain `bash` (no -e, so the `test ! -e` guards below
+          # did not stop it) and wiped the gh, Cloudflare and Claude Team seat
+          # logins. Refuse anywhere but a throwaway GitHub-hosted runner, and
+          # stop at the first failed guard however the step is run.
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+            echo "refusing: this step overwrites and deletes login files under \$HOME; it runs only on a GitHub-hosted runner"
+            exit 1
+          fi
+          # Every jail line (the worker's and the inish-daily job's) is tested; a
+          # bwrap line that is not a jail_base= assignment would skip the mounts.
+          test "$(grep -c 'bwrap --dev-bind' .github/workflows/agent.yml)" -eq "$(grep -cE '^ *(jail_base|claude_jail_[ab])="bwrap --dev-bind' .github/workflows/agent.yml)"
+          mapfile -t lines < <(sed -n 's/^ *jail_base="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          test "${#lines[@]}" -ge 2
+          mapfile -t la < <(sed -n 's/^ *claude_jail_a="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          line_a=${la[0]:-}
+          mapfile -t lb < <(sed -n 's/^ *claude_jail_b="\(.*\)"$/\1/p' .github/workflows/agent.yml)
+          line_b=${lb[0]:-}
+          test -n "$line_a" && test -n "$line_b"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Everything below plants and removes files under $HOME, so $HOME is a
+          # throwaway directory for this step. On a self-hosted runner the real
+          # home holds live logins; the guard fails the step if the swap did not
+          # happen.
+          real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+          test -n "$real_home"
+          tmp_home=$(mktemp -d)
+          export HOME="$tmp_home"
+          if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # Plant only where nothing exists, so a login is never overwritten.
+          test ! -e "$HOME/.config/gh/hosts.yml"
+          test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+          # The Claude seats' logins: seat a is a config dir ($seat_a in the jail
+          # lines), seat b is the default login's two files.
+          # Credential backup dirs sit beside them; the jail hides every ~/.claude-*
+          # and ~/backups-claude-* by glob, except the running seat's dir.
+          seat_a=$HOME/.claude-ci-seat
+          bk1=$HOME/.claude-ci-backup
+          bk2=$HOME/backups-claude-ci
+          test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          echo planted > "$bk1/creds"
+          echo planted > "$bk2/creds"
+          # The jail lines' hide lists come from agent.yml's own claude_hides function.
+          hide_fn=$(sed -n 's/^ *\(claude_hides() {.*}\)\( # gitleaks:allow\)\{0,1\}$/\1/p' .github/workflows/agent.yml | head -n 1)
+          test -n "$hide_fn"
+          hide_all=$(bash -c "$hide_fn"'; claude_hides ""')
+          hide_but_a=$(bash -c "$hide_fn"'; claude_hides "$1"' x "$seat_a")
+          case "$hide_all" in *"$bk1"*"$bk2"*|*"$bk2"*"$bk1"*) ;; *) echo "hide list misses a backup dir: $hide_all"; exit 1 ;; esac
+          case "$hide_but_a" in *"$seat_a"*) echo "hide list hides the running seat"; exit 1 ;; esac
+          echo planted > "$seat_a/.credentials.json"
+          echo planted > "$HOME/.claude/.credentials.json"
+          echo planted > "$HOME/.claude.json"
+          echo 'oauth_token: planted' > "$HOME/.config/gh/hosts.yml"
+          echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
+          echo visible > "$HOME/.config/control"
+          test ! -e "$HOME/.config/fleet-ops/planted-seat"
+          test ! -e "$HOME/.config/fleet-worker/planted-key"
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          echo planted > "$HOME/.config/fleet-ops/planted-seat"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          sealed=0
+          for line in "${lines[@]}"; do
+            test -n "$line"
+            # $HOME is the line's only expansion; no eval of file text.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
+            read -ra jail <<< "$exp --"
+            "${jail[@]}" test -r "$HOME/.config/control"
+            # No engine but claude can read either Claude seat's login: the bound
+            # files are empty and the seat directory is an empty tmpfs.
+            test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null)" != planted
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            # A jail that hides the seat files must hide the App key too, and the
+            # inish-daily line (the one that does) must keep doing both.
+            # shellcheck disable=SC2016 # the line's literal text names $HOME, unexpanded
+            case "$line" in
+              *'--tmpfs $HOME/.config/fleet-ops'*)
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
+                sealed=$((sealed + 1)) ;;
+            esac
+          done
+          test "$sealed" -ge 1
+          # The claude lane sees its own seat and only that one.
+          for v in a b; do
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
+            read -ra jail <<< "$l --"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
+            got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
+            got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
+            got_j=$("${jail[@]}" cat "$HOME/.claude.json" 2>/dev/null || true)
+            test "$("${jail[@]}" cat "$bk1/creds" 2>/dev/null || true)" != planted
+            test "$("${jail[@]}" cat "$bk2/creds" 2>/dev/null || true)" != planted
+            if [ "$v" = a ]; then test "$got_a" = planted && test "$got_b" != planted && test "$got_j" != planted
+            else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
+          done
+          test -r "$HOME/.config/gh/hosts.yml"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
+          rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
+      - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
+        # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
+        # `${` + digit/#/%, and a bare %s, %u or %h in a `sh -c` string. rc 1 passes; 0 and 2 fail.
+        # Scope is #8382's: Exec*= lines only, continuation lines are #8393.
+        if: always()
+        run: |
+          rc=0
+          grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
+            systemd rootfs || rc=$?
+          test "$rc" -eq 1
+      - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
+        if: always()
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+      # Native provider only (#9253): openai/ on ollama.com/v1 reply ids collide in LiteLLM_SpendLogs.
+      - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
+        if: always()
+        run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | select(.litellm_params.model != "ollama_chat/deepseek-v4.1-flash" or .litellm_params.api_base != "https://ollama.com") | (.litellm_params.model + " @ " + (.litellm_params.api_base // ""))]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
+      # A drop-in that does not parse stops Claude Code on the whole box; an autoMode array
+      # without "$defaults" replaces the built-in safety rules. To switch off, delete this step.
+      - name: Claude Code managed-settings drop-ins parse and keep the autoMode defaults
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # "$defaults" is the literal rule name, not a shell variable
+          shopt -s nullglob
+          rc=0
+          for f in rootfs/etc/claude-code/managed-settings.d/*.json; do
+            jq -e 'type == "object"' "$f" >/dev/null || { echo "not a JSON object: $f"; rc=1; continue; }
+            jq -e --arg d '$defaults' '
+              (.autoMode // {}) | to_entries
+              | map(select((.key | IN("environment", "allow", "soft_deny", "hard_deny")) or (.value | type) == "array"))
+              | all(.value | type == "array" and index($d) != null)' "$f" >/dev/null \
+              || { echo "autoMode array without \"\$defaults\" (or not an array): $f"; rc=1; }
+          done
+          exit "$rc"
+      # Dynamic text before static text breaks the shared prompt-cache prefix, so
+      # the first call of every run pays full price (fleet-ops#9363). Static
+      # first, then the marker line, then everything dynamic. To switch this
+      # gate off, delete this step (the next line down to the one before
+      # "Miss-review event filter").
+      - name: Static prompt prefix before the dynamic marker (fleet-ops#9363)
+        if: always()
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          marker='=== FLEET-DYNAMIC-BELOW ==='
+          rc=0
+          for f in prompts/worker.md prompts/miss-review.md; do
+            n=$(grep -c -x -F -- "$marker" "$f" || true)
+            echo "marker count in $f: $n"
+            [ "$n" = 1 ] || rc=1
+            # No argument or runner/worktree path before the marker.
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+            if sed -n "1,/^$marker\$/p" "$f" | grep -nE '\$[0-9@]|\$ARGUMENTS|/_work/|agent-runner/[0-9]|agent-worktrees/[A-Za-z-]*[0-9]'; then
+              echo "FAIL dynamic text before the marker in $f"; rc=1
+            fi
+          done
+          # Render AGENTS.md + the worker packet for two real issues in two
+          # different worktree paths; the bytes before the marker must match.
+          t="$RUNNER_TEMP/prefix"; rm -rf "$t"
+          for pair in fleet-ops-9361:wt-1 drive-503:wt-2; do
+            id=${pair%%:*}; wt="$t/${pair##*:}/issue-$id"
+            mkdir -p "$wt"; cp AGENTS.md "$wt/AGENTS.md"
+            { cat "$wt/AGENTS.md"; sed "s/\$1/$id/g" prompts/worker.md; } | sed -n "1,/^$marker\$/p" > "$t/pre-$id.txt"
+          done
+          cmp "$t/pre-fleet-ops-9361.txt" "$t/pre-drive-503.txt" || rc=1
+          # Same rule at the source: the pi command lines (continuations joined).
+          pi=$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ba}' .github/workflows/agent.yml | grep -F 'pi --print')
+          echo "pi --print lines without --no-context-files:"
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL /'; rc=1; }
+          # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/(AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone/[^$"]*)"$' || true)
+          [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
+          # --no-context-files also drops Nish's ~/AGENTS.md (the writing rules); it comes back, once,
+          # as content with no path header, so it adds no per-run text to the prefix.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          missing=$(printf '%s\n' "$pi" | grep -vF -- '--append-system-prompt "$HOME/AGENTS.md"' | cut -c1-80 || true)
+          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL no ~\/AGENTS.md append: /'; rc=1; }
+          # Tool flags are literal and, where a list, sorted: a stable tool order.
+          printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
+            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+            case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
+            printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
+          done || rc=1
+          # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
+          if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
+            echo "FAIL \$id before the marker in a packet string"; rc=1
+          fi
+          exit "$rc"
+      - name: Miss-review event filter
+        if: always()
+        run: |
+          jq -e '
+            def fire:
+              (.miss_review == "live") and (
+                (.event_name == "issues" and .action == "labeled" and .label == "agent-failed")
+                or (.event_name == "issues" and .action == "reopened")
+                or (.event_name == "issue_comment" and .action == "created" and ((.body // "") | startswith("park:") or startswith("opus-vet:")) and ((.author_association // "") | IN("OWNER","MEMBER","COLLABORATOR")))
+                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == false) and ((.head_ref // "") | startswith("claim/issue-")) and .head_repo == .repository)
+                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == true) and ((.title // "") | startswith("Revert")) and .head_repo == .repository)
+                or (.event_name == "workflow_dispatch" and .task == "miss-review" and ((.issue // "") | length) > 0)
+                or (.event_name == "schedule" and .requeued == true)
+              );
+            (.cases | map(select(.want != fire)) | if length == 0 then true else error("filter mismatch: \(map(.id)|join(","))") end)
+          ' config/miss-review-events.json
+          jq -r '.needles[]' config/miss-review-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing needle: $n"; exit 1; }
+          done
+      - name: Orchestrate event filter
+        if: always()
+        run: |
+          # The orchestrate job's if:, in the order the workflow writes it.
+          jq -e '
+            def fire:
+              ((.orchestrate // "") != "off") and (
+                (.event_name == "issues" and .action == "labeled" and .label == "needs-orchestrator" and
+                  ((.sender // "") == "nish3451" or
+                   (((.sender // "") | endswith("[bot]")) and ((.sender // "") == "nishfleet-worker[bot]" or (.sender // "") == "github-actions[bot]"))))
+                or (.event_name == "workflow_dispatch" and .task == "orchestrate" and ((.issue // "") | length) > 0)
+              );
+            (.orchestrate_cases | map(select(.want != fire)) | if length == 0 then true else error("orchestrate filter mismatch: \(map(.id)|join(","))") end)
+          ' config/orchestrate-events.json
+          # The Gate detector, taken out of agent.yml itself (not a copy): an
+          # issue whose title or body names a workflow file is parked for the
+          # orchestrator, because no worker App can push one. On fleet-ops the
+          # bare file names of its own workflows count too (fleet-ops#9275).
+          line=$(grep -m1 -E '^ *if jq -e --arg p .\.github/workflows/. --argjson fo' .github/workflows/agent.yml)
+          [ -n "$line" ] || { echo "Gate detector line not found in agent.yml"; exit 1; }
+          detector=${line#*if }; detector=${detector% <<<*}
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c"); want=$(jq -r .want_park <<<"$c"); repo=$(jq -r '.repo // "Nishfleet/0509"' <<<"$c")
+            fleet_ops=false; case $repo in */fleet-ops) fleet_ops=true ;; esac
+            export fleet_ops  # read by the eval'd detector
+            got=false
+            if jq -c '{title, body}' <<<"$c" | eval "$detector" >/dev/null; then got=true; fi
+            [ "$got" = "$want" ] || { echo "gate detector mismatch: $id parks=$got want=$want"; bad=1; }
+          done < <(jq -c '.gate_cases[]' config/orchestrate-events.json)
+          test "$bad" -eq 0
+          jq -r '.needles["agent-dispatch.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing dispatch needle: $n"; exit 1; }
+          done
+          jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
+          done
+      - name: Orchestrate cap and session args (fleet-ops#9351)
+        # Runs the orchestrate job's own scripts, read out of the workflow with
+        # yq, never a copy: the "Check the issue is still parked" step against
+        # a fake gh that serves each cap_cases entry's issue comments, and the
+        # "Run the orchestrator session" step against a fake claude that
+        # records its argv. Remove the daily cap, the model or turns pin, or
+        # --settings disableAllHooks from the workflow and a case here fails.
+        # The fakes live in a temp dir and are not repo files.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          cfg="$PWD/config/orchestrate-events.json"
+          chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
+          ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
+          for v in "$chk" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          t=$(mktemp -d); mkdir "$t/bin"
+          cat > "$t/bin/gh" <<'FAKE'
+          #!/usr/bin/env bash
+          # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
+          # Any call it does not know exits 99, so a cap that reads this
+          # workflow's runs again fails every capped case (fleet-ops#10641).
+          q=
+          flaky() { n=$(<"$FAKE_DIR/$1"); [ "$n" -eq 0 ] || { echo $((n - 1)) > "$FAKE_DIR/$1"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; }
+          for ((i = 1; i <= $#; i++)); do
+            [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }
+          done
+          case "$*" in
+            *repos/o/r/issues/comments*) flaky fail
+              jq -c '[_nwise(100)][]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
+            "issue comment 5 -R o/r --body orchestrator hand-off started: "*) [ ! -f "$FAKE_DIR/failpost" ] || exit 1; echo "$*" >> "$FAKE_DIR/posted" ;;
+            "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
+            *git/ref/heads/*) exit 1 ;;
+            *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
+          esac
+          FAKE
+          printf '#!/bin/sh\n' > "$t/bin/sleep"; chmod +x "$t/bin/gh" "$t/bin/sleep"
+          today=$(date -u -d '+10 minutes' +%FT%TZ)
+          old=$(date -u -d '2 days ago' +%FT%TZ)
+          bad=0
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            d="$t/$id"
+            mkdir "$d"
+            jq -c --arg t "$today" --arg o "$old" '[.handoffs[] | {created_at: (if .when == "YESTERDAY" then $o else $t end), author_association: (.assoc // "MEMBER"), body: (.body // "orchestrator hand-off started: https://github.com/o/r/actions/runs/1")}] + [range(0; (.noise // 0)) | {created_at: $t, author_association: "MEMBER", body: "agent: claimed"}]' <<<"$c" > "$d/comments.json"
+            jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
+            : > "$d/out"; jq -r '.fail_comments // 0' <<<"$c" > "$d/fail"
+            [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
+            rc=0
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
+              bash -c "$chk" 2>&1) || rc=$?
+            if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
+              [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
+              continue
+            fi
+            [ "$rc" -eq 0 ] || { echo "cap case $id: rc $rc: $log"; bad=1; continue; }
+            go=false; if grep -qx 'go=true' "$d/out"; then go=true; fi
+            [ "$go" = "$(jq -r .want_go <<<"$c")" ] || { echo "cap case $id: go=$go: $log"; bad=1; continue; }
+            if [ "$go" = true ]; then
+              [ "$(sed -n 's/^model=//p' "$d/out")" = "$(jq -r .want_model <<<"$c")" ] || { echo "cap case $id: model $(sed -n 's/^model=//p' "$d/out")"; bad=1; }
+              [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
+              want_runner=$(jq -r '.want_runner // empty' <<<"$c")
+              [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
+              [ -f "$d/failpost" ] || grep -qxF 'issue comment 5 -R o/r --body orchestrator hand-off started: https://github.com/o/r/actions/runs/1' "$d/posted" 2>/dev/null || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
+              [ "$(jq -r '.want_unreadable // false' <<<"$c")" = false ] || grep -q 'count unreadable' <<<"$log" || { echo "cap case $id: no unreadable warning: $log"; bad=1; }
+            else
+              grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
+            fi
+          done < <(jq -c '.cap_cases[]' "$cfg")
+          # The session step: the real run block, with the claude path swapped
+          # for a fake that records argv, one argument per line. The settings
+          # JSON must reach claude as one argument that parses.
+          mkdir -p "$t/home/.local/bin"
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/home/.local/bin/claude"
+          chmod +x "$t/home/.local/bin/claude"
+          # shellcheck disable=SC2016 # the fake's body is literal script text
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$FLEET_TASK_ID" "$@" > "$FAKE_ARGV"\ncat > /dev/null\n' > "$t/home/.local/bin/pi"
+          chmod +x "$t/home/.local/bin/pi"
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          { grep -qF '"$HOME/.local/bin/claude"' <<<"$ses"; grep -qF '"$HOME/.local/bin/pi"' <<<"$ses"; }
+          mkdir -p "$t/wt/prompts"
+          echo '---' > "$t/wt/prompts/orchestrator-handoff.md"
+          while IFS= read -r c; do
+            id=$(jq -r .id <<<"$c")
+            : > "$t/argv"
+            env HOME="$t/home" FAKE_ARGV="$t/argv" ORCH_RUNNER="$(jq -r .runner <<<"$c")" SEAT="$(jq -r '.seat // ""' <<<"$c")" WORKTREE="$t/wt" RUNNER_TEMP="$t" REPO_NAME=o/r ISSUE_N=5 \
+              MODEL="$(jq -r .model <<<"$c")" TURNS="$(jq -r .turns <<<"$c")" HOOKS="$(jq -r .hooks <<<"$c")" \
+              bash -c "$ses" > /dev/null 2>&1 || { echo "session case $id: step failed"; bad=1; continue; }
+            mapfile -t argv < "$t/argv"
+            if [ "$(jq -r .want_runner <<<"$c")" = pi ]; then
+              [ "${argv[0]}" = "orch-r-5" ] || { echo "session case $id: FLEET_TASK_ID '${argv[0]}'"; bad=1; }
+              got_seat=; got_prov=
+              for ((i = 1; i < ${#argv[@]}; i++)); do
+                case ${argv[i]} in --model) got_seat=${argv[i+1]} ;; --provider) got_prov=${argv[i+1]} ;; esac
+              done
+              [ "$got_prov" = litellm ] || { echo "session case $id: provider '$got_prov'"; bad=1; }
+              [ "$got_seat" = "$(jq -r .want_seat <<<"$c")" ] || { echo "session case $id: seat '$got_seat'"; bad=1; }
+              continue
+            fi
+            got_model=; got_turns=; got_settings=; got_sources=; got_strict=; got_noslash=
+            for ((i = 0; i < ${#argv[@]}; i++)); do
+              case ${argv[i]} in
+                --model) got_model=${argv[i+1]} ;;
+                --max-turns) got_turns=${argv[i+1]} ;;
+                --settings) got_settings=${argv[i+1]} ;;
+                --setting-sources) got_sources=${argv[i+1]} ;;
+                --strict-mcp-config) got_strict=1 ;;
+                --disable-slash-commands) got_noslash=1 ;;
+              esac
+            done
+            # Start-up trim flags: deleting any of them fails CI.
+            [ "$got_strict" = 1 ] || { echo "session case $id: --strict-mcp-config missing"; bad=1; }
+            [ "$got_noslash" = 1 ] || { echo "session case $id: --disable-slash-commands missing"; bad=1; }
+            [ "$got_sources" = project,local ] || { echo "session case $id: --setting-sources '$got_sources'"; bad=1; }
+            [ "$got_model" = "$(jq -r .want_model <<<"$c")" ] || { echo "session case $id: model '$got_model'"; bad=1; }
+            [ "$got_turns" = "$(jq -r .want_turns <<<"$c")" ] || { echo "session case $id: turns '$got_turns'"; bad=1; }
+            if [ "$(jq -r .want_settings <<<"$c")" = true ]; then
+              jq -e '.disableAllHooks == true' <<<"$got_settings" > /dev/null || { echo "session case $id: --settings is '$got_settings'"; bad=1; }
+            else
+              [ -z "$got_settings" ] || { echo "session case $id: unexpected --settings"; bad=1; }
+            fi
+          done < <(jq -c '.session_cases[]' "$cfg")
+          rm -rf "$t"
+          test "$bad" -eq 0
+      - name: Tincan listener keeps its start-up trim flags
+        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
+        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # file it names, and this fails. --mcp-config must come before
+        # --strict-mcp-config: its value list is variadic and would eat the prompt.
+        if: always()
+        run: |
+          set -euo pipefail
+          u=systemd/tincan-listen-claude-vps.service
+          exec_line=$(grep '^ExecStart=' "$u")
+          for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
+            grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
+          done
+          jq -e '.mcpServers | keys == ["agent-tincan"]' config/tincan-listener-mcp.json > /dev/null
+          # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
+          # settings source is ~/.claude/settings.json (the user file) and
+          # --setting-sources project,local still loads the user Stop hook and plugins.
+          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
+          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
+      - name: Sweep re-sends red claim PRs (RED_REWORK)
+        # Runs the list job's own RED_REWORK program, read out of the workflow
+        # with the CHECK_DEFS it shares with the missing-checks case, against
+        # every case in config/sweep-rework-cases.json. The grep lines pin the
+        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # live newest run is still skipped.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          run=$(yq '.jobs.list.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
+          done
+          bad=0
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, issue, comments}' config/sweep-rework-cases.json)
+            got=$(jq -r "$defs $prog | .reason" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/sweep-rework-cases.json)
+          test "$bad" -eq 0
+      - name: Sweep moves PRs waiting over 15 minutes (STUCK)
+        # Runs the stuck-prs job's own STUCK program, read out of the workflow,
+        # against every case in config/stuck-pr-cases.json. The grep lines pin
+        # the wiring: the verdict feeds the four lists, each list starts its
+        # agent.yml job, and a deleted claim issue is filed, not fatal.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
+          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+            grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
+          done
+          bad=0
+          for j in stuck-review:review_pr stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr; do
+            [ "$(yq ".jobs.\"${j%%:*}\".needs" "$f")" = stuck-prs ] && [ "$(yq ".jobs.\"${j%%:*}\".with.${j#*:}" "$f")" != null ] || { echo "${j%%:*} is not wired to stuck-prs"; bad=1; }
+          done
+          [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
+          while IFS= read -r c; do
+            in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
+            got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
+            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
+          done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          test "$bad" -eq 0
+      - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
+        # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
+        # issue #9502, the shape that stopped every sweep: gh api answers 410 and gh issue view
+        # cannot resolve the number, so the empty comments went into --argjson, jq died, and the
+        # job exited 1 with no refs written, skipping every dispatch job downstream. The sweep
+        # must now exit 0, name the issue it skipped, and still pick the red PR (its issue carries
+        # 180 KB of comments, over the 131072-byte argument limit) and both queued issues.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          t=$RUNNER_TEMP/sweep-deleted-issue
+          mkdir -p "$t/bin" "$t/data"
+          yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f" > "$t/list.sh"
+          [ -s "$t/list.sh" ] && ! grep -qx null "$t/list.sh"
+          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
+          cat > "$t/bin/gh" <<'MOCK'
+          #!/usr/bin/env bash
+          # Mock gh for the sweep: #7001 and #7002 are queued, #7003 has a red
+          # claim PR with no run since, and #9502 is deleted.
+          q=
+          for ((i = 1; i <= $#; i++)); do if [ "${!i}" = --jq ]; then j=$((i + 1)); q=${!j}; fi; done
+          cmd=$1; args=${*:2}; d=$FAKE_DIR
+          emit() { # stdin is the json gh would return; gh prints raw scalars
+            in=$(cat)
+            if [ -z "$q" ]; then printf '%s\n' "$in"; return; fi
+            out=$(jq -c "$q" <<<"$in")
+            case ${out:0:1} in '[' | '{') printf '%s\n' "$out" ;; *) jq -r "$q" <<<"$in" ;; esac
+          }
+          serve() { [ -f "$1" ] || { echo "mock gh: no fixture for $1" >&2; exit 1; }; emit < "$1"; }
+          case "$cmd $args" in
+            "issue list "*agent-in-progress*) echo '[{"number":11}]' | emit ;;
+            "issue list"*) echo '[{"number":7001},{"number":7002}]' | emit ;;
+            "issue view 9502"*)
+              echo "GraphQL: Could not resolve to an issue or pull request with the number of 9502. (repository.issue)" >&2
+              exit 1 ;;
+            "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
+            "pr list "*--head*) echo '0' | emit ;;
+            "pr list"*) serve "$d/prs.json" ;;
+            "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
+            "run view"*) echo '"completed"' | emit ;;
+            "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
+            "api "*"/issues/9502")
+              # Real gh 2.93.0 (measured 2026-10-12 on this issue): body on
+              # stdout, "(HTTP 410)" on stderr, exit 1. BODY_ON_STDOUT=0 drops
+              # the body, so the stderr path is proven on its own too.
+              echo 'gh: This issue was deleted (HTTP 410)' >&2
+              [ "${BODY_ON_STDOUT:-1}" = 0 ] || echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
+              exit 1 ;;
+            "api "*"/issues/"*) serve "$d/issue-${args##*/}.json" ;;
+            *) echo "mock gh: unexpected call: $cmd $args" >&2; exit 1 ;;
+          esac
+          MOCK
+          chmod +x "$t/bin/gh"
+          jq -n '{number:7001,created_at:"2026-10-01T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7001.json"
+          jq -n '{number:7002,created_at:"2026-10-02T00:00:00Z",state:"open",issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-ready"}]}' > "$t/data/issue-7002.json"
+          jq -n '{number:7003,created_at:"2026-10-03T00:00:00Z",state:"open",body:("y" * 140000),issue_dependencies_summary:{blocked_by:0},labels:[{name:"agent-in-progress"}]}' > "$t/data/issue-7003.json"
+          jq -n '[{number:7001,headRefName:"claim/issue-7001",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
+                  {number:8001,headRefName:"claim/issue-7003",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[]},
+                  {number:8002,headRefName:"claim/issue-9502",isDraft:false,isCrossRepository:false,mergeable:"MERGEABLE",autoMergeRequest:{},labels:[{name:"needs-coordinator"}]}]' > "$t/data/prs.json"
+          red='[{"name":"ci","status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-10-09T00:00:00Z","startedAt":"2026-10-09T00:00:00Z"}]'
+          jq -c 'map(select(.number==7001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:[]}' "$t/data/prs.json" > "$t/data/pr-7001.json"
+          jq -c --argjson r "$red" 'map(select(.number==8001))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8001.json"
+          jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
+          for body in 1 0; do
+            : > "$t/out"
+            rc=0
+            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
+              ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/list.sh" > "$t/err" 2>&1 || rc=$?
+            cat "$t/err"
+            [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+            want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
+            got=$(sed -n 's/^refs=//p' "$t/out")
+            [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
+            grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
+          done
+      - name: Dispatch pause flag skips dispatch, never the guards
+        # A paused queue must still hold risky PRs: the weekly update once
+        # disabled agent-dispatch, and hold-risky could not run in that window
+        # (2026-10-05). Every job is classed here, so a new job forces the
+        # choice. A dispatch job carries the flag as a top-level conjunct of its
+        # if:, so no || branch can start a worker while paused; a guard job
+        # never reads the flag. update.yml must pause through the variable,
+        # clear it in always:, and never disable the workflow.
+        if: always()
+        run: |
+          set -euo pipefail
+          f=.github/workflows/agent-dispatch.yml
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
+          guards="hold-risky close-claim rework-note"
+          bad=0
+          for j in $(yq '.jobs | keys | .[]' "$f"); do
+            cond=$(yq ".jobs.\"$j\".if // \"\"" "$f" | tr -s ' \n' '  ' | sed 's/ $//')
+            case " $gated " in
+              *" $j "*)
+                [[ $cond =~ ^(!cancelled\(\)\ \&\&\ )?vars\.FLEET_DISPATCH_PAUSED\ !=\ \'true\'\ \&\&\  ]] ||
+                  { echo "dispatch job $j does not skip on FLEET_DISPATCH_PAUSED: $cond"; bad=1; }
+                continue ;;
+            esac
+            case " $guards " in
+              *" $j "*)
+                ! yq ".jobs.\"$j\"" "$f" | grep -q FLEET_DISPATCH_PAUSED ||
+                  { echo "guard job $j reads FLEET_DISPATCH_PAUSED; it must run while paused"; bad=1; }
+                ! yq ".jobs.\"$j\" | has(\"uses\")" "$f" | grep -qx true ||
+                  { echo "guard job $j starts a worker"; bad=1; }
+                continue ;;
+            esac
+            if [ "$j" = paused ]; then
+              [[ $cond == "vars.FLEET_DISPATCH_PAUSED == 'true' && "* ]] || { echo "paused job runs unpaused: $cond"; bad=1; }
+              [ "$(yq '.jobs.paused.permissions | length' "$f")" = 0 ] || { echo "paused job has permissions"; bad=1; }
+              continue
+            fi
+            echo "job $j is not classed as dispatch or guard in this check"; bad=1
+          done
+          u=ansible/update.yml
+          ! grep -nE 'gh, *workflow, *(disable|enable)' "$u" || { echo "$u disables or enables a workflow"; bad=1; }
+          [ "$(yq '.[0].vars.pause_variable' "$u")" = FLEET_DISPATCH_PAUSED ] || { echo "$u pause_variable is not FLEET_DISPATCH_PAUSED"; bad=1; }
+          set_true=$(yq '[.. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "true")] | length' "$u")
+          clear=$(yq '[.[0].tasks[] | select(has("always")) | .always[] | .. | select(tag == "!!map" and has("ansible.builtin.command")) | .["ansible.builtin.command"].argv | select(.[1] == "variable" and .[2] == "set" and .[5] == "false")] | length' "$u")
+          [ "$set_true" = 1 ] && [ "$clear" = 1 ] || { echo "$u: want one set to true and one clear in always:, got $set_true and $clear"; bad=1; }
+          # A run killed before always: (TimeoutStartSec, SIGKILL) must not
+          # leave dispatch paused for good, and a failed clear must page
+          # instead of waiting for next Sunday. Structural, by task name: each
+          # named task must exist exactly once, in this order, in the right
+          # block, with the right command or file state. A renamed or moved
+          # task fails here instead of passing a string match by luck.
+          [ "$(yq '.[0].vars.pause_marker' "$u")" = /var/lib/fleet-ops/dispatch-paused-by-update ] || { echo "$u pause_marker moved"; bad=1; }
+          cat > "$RUNNER_TEMP/pause.jq" <<'JQ'
+          . as $doc
+          # Every task and block in the play, in file order, as paths.
+          | [paths(objects and has("name") and (has("block") or (keys | any(startswith("ansible.builtin."))))) | select(.[0] == 0 and .[1] == "tasks")] as $ps
+          | def at($n): [range(0; $ps | length) | . as $i | select(($doc | getpath($ps[$i])).name == $n)];
+            def task($n): $doc | getpath($ps[at($n)[0]]);
+            # argv[1:6] is the gh call without the binary: "variable set <var> --body <value>".
+            def argv($n): (task($n)["ansible.builtin.command"].argv // []) as $a | if ($a | type) == "array" then $a[1:6] | join(" ") else "" end;
+            def top($n): $ps[at($n)[0]][2];
+            def part($n): $ps[at($n)[0]][3];
+            def idx($n): at($n)[0];
+            "Pause, prune and update" as $main
+          | "Clear the pause flag on each of them" as $sc
+          | "Drop the stale marker" as $sd
+          | "Record which repos this run pauses, before pausing them" as $w
+          | "Pause agent dispatch where it is not paused (no new agent jobs)" as $p
+          | "Clear the dispatch pause flag where this run set it" as $c
+          | "Read the pause flag back on each repo this run paused" as $r
+          | "Name every repo whose dispatch is still paused" as $n
+          | "Drop the pause marker once every flag it lists is clear" as $d
+          | "Fail loudly if any step or check went wrong" as $fa
+          | [$main, $sc, $sd, $w, $p, $c, $r, $n, $d, $fa] as $all
+          | [ ($all[] | select(at(.) | length != 1) | "want exactly one task named \"\(.)\""),
+              (if any($all[]; at(.) | length != 1) then empty else
+                (if [idx($sc), idx($sd), idx($w), idx($p), idx($c), idx($r), idx($n), idx($d)] | . != sort
+                 then "pause tasks out of order: want stale clear, stale drop, write, set, clear, read back, name, drop" else empty end),
+                (if top($sc) == top($sd) and top($sc) < top($main) and (($doc[0].tasks[top($sc)].when // "") | tostring) == "stale_pause.stat.exists"
+                 then empty else "stale clear and drop: want one top-level block gated on stale_pause.stat.exists, before the main block" end),
+                (if argv($sc) == "variable set {{ pause_variable }} --body false" and ((task($sc).loop // "") | tostring | test("stale_pause_repos"))
+                 then empty else "stale clear: want a set to false over the marker file's repos" end),
+                (if task($sd)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"}
+                 then empty else "stale drop: want a delete of the marker" end),
+                (if top($w) == top($main) and top($p) == top($main) and part($w) == "block" and part($p) == "block"
+                 then empty else "write and set: want both inside the main block" end),
+                # Root-owned and 0600: a job running as nish must not be able to
+                # list a repo for the next run to unpause.
+                (task($w) as $t
+                 | if $t["ansible.builtin.copy"].dest == "{{ pause_marker }}" and $t["ansible.builtin.copy"].mode == "0600"
+                      and $t["ansible.builtin.copy"].owner == "root" and $t.become == false and ($t | has("become_user") | not)
+                   then empty else "marker write: want dest pause_marker, mode \"0600\", owner root, become: false, no become_user (so it runs as root)" end),
+                (if argv($p) == "variable set {{ pause_variable }} --body true" then empty else "pause: want a set to true" end),
+                ([$c, $r, $n, $d][] | select(top(.) != top($main) or part(.) != "always") | "\(.): want it in the main block's always:"),
+                (if argv($c) == "variable set {{ pause_variable }} --body false" then empty else "always clear: want a set to false" end),
+                # The clear retries before it gives up: one API blip must not
+                # leave a queue paused.
+                (task($c) as $t
+                 | if (($t.until // "") | tostring | test("^\\s*" + ($t.register // "-") + " is succeeded\\s*$")) and $t.retries == 3
+                   then empty else "always clear: want until: <its register> is succeeded and retries: 3" end),
+                # The read-back reads the flag itself, by name, and only a 404
+                # (unset) is allowed to pass as not paused.
+                (task($r) as $t | ($t["ansible.builtin.command"].argv // []) as $a
+                 | if $a == ["gh", "api", "repos/{{ item }}/actions/variables/{{ pause_variable }}", "--jq", ".value"]
+                      and $doc[0].vars.pause_variable == "FLEET_DISPATCH_PAUSED"
+                   then empty else "read back: want gh api repos/{{ item }}/actions/variables/{{ pause_variable }} --jq .value, with pause_variable FLEET_DISPATCH_PAUSED" end),
+                (task($r) as $t
+                 | if ($t.register // "") != "" and (($t.failed_when // "") | tostring) == "\($t.register).rc != 0 and 'HTTP 404' not in \($t.register).stderr"
+                   then empty else "read back: want failed_when: <register>.rc != 0 and 'HTTP 404' not in <register>.stderr" end),
+                (if task($d)["ansible.builtin.file"] == {"path": "{{ pause_marker }}", "state": "absent"} and ((task($d).when // "") | tostring | test("dispatch_still_paused"))
+                 then empty else "always drop: want a marker delete gated on dispatch_still_paused" end),
+                # The point of the read-back: a repo left paused pages, instead
+                # of sitting paused until the next weekly run.
+                (task($fa)["ansible.builtin.assert"] as $as
+                 | (if [($as.that // [])[] | tostring | select(test("dispatch_still_paused"))] | length > 0
+                    then empty else "the final assert does not fail on dispatch_still_paused" end),
+                   (if ($as.fail_msg // "") | tostring | test("DISPATCH STILL PAUSED")
+                    then empty else "the final assert's fail_msg does not name a still-paused queue (DISPATCH STILL PAUSED)" end))
+              end)
+            ] | .[]
+          JQ
+          yq -o=json "$u" | jq -r -f "$RUNNER_TEMP/pause.jq" > "$RUNNER_TEMP/pause-problems.txt"
+          if [ -s "$RUNNER_TEMP/pause-problems.txt" ]; then sed "s|^|$u: |" "$RUNNER_TEMP/pause-problems.txt"; bad=1; fi
+          test "$bad" -eq 0

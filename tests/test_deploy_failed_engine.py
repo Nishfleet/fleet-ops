@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+pytestmark = pytest.mark.grafana
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/deploy-failed.yaml"
 QUADLET = ROOT / "containers/quadlet/fleet-grafana.container"

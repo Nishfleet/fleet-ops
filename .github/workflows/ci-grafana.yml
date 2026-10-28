@@ -1,0 +1,259 @@
+on: workflow_call
+permissions: {contents: read}
+jobs:
+  # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
+  # config/grafana/provisioning/alerting as alert provisioning, so a promtool
+  # fixture dropped there crash-looped fleet-grafana ("failure to map file ...
+  # rule group has no folder set"). This job starts the image tag and plugin
+  # versions pinned in containers/quadlet/fleet-grafana.container with the
+  # provisioning dirs mounted exactly as the quadlet mounts them (dummy values
+  # for the secrets and tokens), waits for /api/health, and fails when Grafana
+  # exits or logs a provisioning error. Pull requests run it only when a path
+  # under config/grafana/, the quadlet or this workflow changed; merge_group runs
+  # always run it.
+  grafana-boot:
+    name: grafana-boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Path gate (pull requests only)
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|\.github/workflows/ci(-grafana)?\.yml$)'; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "grafana-boot run=$run"
+      - name: Start the quadlet's Grafana with the quadlet's mounts and wait for /api/health
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          q=containers/quadlet/fleet-grafana.container
+          image=$(sed -n 's/^Image=docker\.io\///p' "$q")
+          test -n "$image"
+          # Dummy secrets, readable by the image's grafana uid 472.
+          mkdir -p "$RUNNER_TEMP/secrets"
+          openssl genrsa -out "$RUNNER_TEMP/secrets/github-app.pem" 2048
+          echo dummy-admin-password > "$RUNNER_TEMP/secrets/grafana-admin-password"
+          # The contact points read $__file{/run/secrets/github-token/token}; the
+          # host mounts the runtime dir fleet-grafana-github-token.service fills.
+          mkdir -p "$RUNNER_TEMP/secrets/github-token"
+          echo dummy-github-token > "$RUNNER_TEMP/secrets/github-token/token"
+          chmod 0644 "$RUNNER_TEMP/secrets/"*.pem "$RUNNER_TEMP/secrets/grafana-admin-password" "$RUNNER_TEMP/secrets/github-token/token"
+          chmod 0755 "$RUNNER_TEMP/secrets/github-token"
+          # Every Environment=GF_* line and every Volume= under config/grafana,
+          # taken from the quadlet itself so the two cannot drift.
+          args=()
+          while IFS= read -r l; do args+=(--env "$l"); done < <(sed -n 's/^Environment=//p' "$q")
+          while IFS= read -r l; do
+            l=${l//%h\/workspaces\/tooling\/fleet-ops-deploy-clone/$PWD}
+            args+=(-v "$l")
+          done < <(sed -n 's/^Volume=//p' "$q" | grep 'config/grafana')
+          while IFS= read -r n; do echo dummy > "$RUNNER_TEMP/secrets/$n"; chmod 0644 "$RUNNER_TEMP/secrets/$n"; args+=(-v "$RUNNER_TEMP/secrets/$n:/run/secrets/$n:ro"); done < <(sed -n 's/^Secret=\([^,]*\),.*/\1/p' "$q")
+          docker run -d --name grafana --network host \
+            "${args[@]}" \
+            -v "$RUNNER_TEMP/secrets/github-app.pem:/run/secrets/github-app.pem:ro" \
+            -v "$RUNNER_TEMP/secrets/grafana-admin-password:/run/secrets/grafana-admin-password:ro" \
+            -v "$RUNNER_TEMP/secrets/github-token:/run/secrets/github-token:ro" \
+            "docker.io/$image"
+          port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
+          for _ in $(seq 1 90); do
+            if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
+              echo "::error::Grafana exited before /api/health answered"
+              docker logs grafana 2>&1 | grep -E 'level=(error|crit)|^Error' | cut -c1-400 | head -n 8
+              exit 1
+            fi
+            if curl -fsS "http://127.0.0.1:$port/api/health"; then
+              echo
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          # Stay up past provisioning, then require no provisioning error.
+          sleep 10
+          if [ "$(docker inspect -f '{{.State.Running}}' grafana)" != true ]; then
+            echo "::error::Grafana exited after /api/health"
+            docker logs grafana 2>&1 | grep -E 'level=(error|crit)|^Error' | cut -c1-400 | head -n 8
+            exit 1
+          fi
+          if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file|Failed to start grafana)|Failed to start grafana' > "$RUNNER_TEMP/perr.txt"; then
+            cut -c1-400 "$RUNNER_TEMP/perr.txt" | head -n 8
+            echo "::error::Grafana logged a provisioning error"
+            exit 1
+          fi
+          echo "grafana-boot: $image healthy, no provisioning error"
+      - name: Provisioning reload path unit covers every mounted dir and its reload call works
+        # fleet-ops#9449 follow-up: Grafana reads provisioning only at start, so
+        # a merged rule change sat unloaded for 31 hours and paged a false
+        # alarm. systemd/fleet-grafana-provisioning.path watches the clone's
+        # provisioning dirs and the .service POSTs the stock admin reload API.
+        # (1) every config/grafana/provisioning/<dir> the quadlet mounts must be
+        # a PathChanged= in the .path unit, so a new mount cannot ship unwatched
+        # (dashboards is skipped: its provider polls every 60 s);
+        # (2) the .service's reload URLs, called with the dummy admin password
+        # against the booted pinned image, must answer 2xx and leave Grafana
+        # healthy with no provisioning error.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          q=containers/quadlet/fleet-grafana.container
+          p=systemd/fleet-grafana-provisioning.path
+          u=systemd/fleet-grafana-provisioning.service
+          pw="$RUNNER_TEMP/secrets/grafana-admin-password"
+          # The dummy password is written by the "Start the quadlet's Grafana" step above.
+          test -s "$pw" || { echo "::error::dummy admin password file missing or empty; the boot step must write it"; exit 1; }
+          n=0
+          while IFS= read -r d; do
+            grep -qE "^PathChanged=.*/config/grafana/provisioning/$d\$" "$p" || { echo "::error::$p does not watch the provisioning dir $d that $q mounts"; exit 1; }
+            n=$((n+1))
+          done < <(sed -n 's|^Volume=.*/config/grafana/provisioning/\([a-z]*\):.*|\1|p' "$q" | grep -vx dashboards)
+          test "$n" -ge 2
+          port=$(sed -n 's/^Environment=GF_SERVER_HTTP_PORT=//p' "$q")
+          [[ $port =~ ^[0-9]+$ ]] || { echo "::error::$q has no numeric GF_SERVER_HTTP_PORT (got '$port')"; exit 1; }
+          # The .service loops `for e in <endpoints>` over one URL base; take both from it.
+          base=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/api/admin/provisioning/' "$u" | head -n 1)
+          eps=$(sed -n 's/.*for e in \([a-z ]*\); do.*/\1/p' "$u")
+          [ -n "$base" ] && [ -n "$eps" ] || { echo "::error::$u: could not read the reload URL base and endpoint list"; exit 1; }
+          m=0
+          for e in $eps; do
+            url=${base/:3001\//:$port/}${e}/reload
+            # Password as a quoted, escaped config fd, same as the .service: never in argv.
+            curl -fsS --connect-timeout 5 --max-time 30 -X POST --config <(sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$pw") "$url"
+            echo
+            m=$((m+1))
+          done
+          [ "$m" -ge 2 ] || { echo "::error::$u reloads $m endpoints, want at least 2"; exit 1; }
+          curl -fsS --connect-timeout 5 --max-time 30 "http://127.0.0.1:$port/api/health" | jq -e '.database == "ok"'
+          sleep 5
+          if docker logs grafana 2>&1 | grep -E 'logger=provisioning[^ ]* .*level=(error|crit)|level=(error|crit) .*(rovisioning|failure to map file)' > "$RUNNER_TEMP/rerr.txt"; then
+            cut -c1-400 "$RUNNER_TEMP/rerr.txt" | head -n 8
+            echo "::error::Grafana logged a provisioning error after the reload"
+            exit 1
+          fi
+          echo "grafana-boot: $n provisioning dirs watched, reload answered 2xx"
+      - name: A provisioning reload re-reads the token file the contact points name (fleet-ops#9445)
+        # The refresh design rests on one Grafana behaviour: $__file{} is
+        # expanded again on every provisioning load, so the 20 min re-mint reaches
+        # the webhook through the stock admin reload without a restart. Proven
+        # here against the pinned image, with the REAL contact point file (only
+        # its URL and timers rewritten): a firing rule routed to the dead-row
+        # webhook delivers the first token, the file is replaced by rename, the
+        # reload API is called, and the next delivery must carry the second.
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          d=$RUNNER_TEMP/reload-drill
+          mkdir -p "$d/prov" "$d/tok" "$d/data"
+          chmod 0777 "$d/data"
+          printf 'tokenA' > "$d/tok/token"
+          # The host layout: 0700 dir, 0600 files, readable only by the owner. The
+          # container runs as that owner (on the host UserNS=keep-id maps the file
+          # owner to the image's grafana uid), so a mode the reader cannot use fails here.
+          chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
+          sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
+              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' -e 's|repeat_interval: 24h|repeat_interval: 1m|' \
+              config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
+          cat > "$d/prov/fixture.yaml" <<'YAML'
+          apiVersion: 1
+          contactPoints:
+            - orgId: 1
+              name: hermes-urgent
+              receivers:
+                - uid: drill-urgent
+                  type: webhook
+                  disableResolveMessage: true
+                  settings: {url: "http://127.0.0.1:18796/urgent", httpMethod: POST}
+          groups:
+            - orgId: 1
+              name: drill
+              folder: drill
+              interval: 10s
+              rules:
+                - uid: drill-dead-row
+                  title: drill dead row
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: router-dead-row, model_id: drill}
+                - uid: drill-generic
+                  title: drill generic
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {signal: drill-generic}
+          YAML
+          echo drill-admin-pw > "$d/admin-pw"
+          : > "$d/sink.log"
+          python3 tests/webhook_sink.py 18796 "$d/sink.log" &
+          sink=$!
+          trap 'kill $sink 2>/dev/null || true; docker rm -f grafana-drill >/dev/null 2>&1 || true' EXIT
+          image=$(sed -n 's/^Image=docker\.io\///p' containers/quadlet/fleet-grafana.container)
+          docker run -d --name grafana-drill --network host --user "$(id -u):$(id -g)" \
+            --env GF_SERVER_HTTP_ADDR=127.0.0.1 --env GF_SERVER_HTTP_PORT=3998 --env GF_SECURITY_ADMIN_PASSWORD="$(cat "$d/admin-pw")" \
+            --env TELEGRAM_BOT_TOKEN=dummy --env TELEGRAM_HOME_CHANNEL=dummy \
+            -v "$d/prov:/etc/grafana/provisioning/alerting:ro" \
+            -v "$d/tok:/run/secrets/github-token:ro" \
+            -v "$d/data:/var/lib/grafana" \
+            "docker.io/$image" >/dev/null
+          for _ in $(seq 1 90); do curl -fsS http://127.0.0.1:3998/api/health >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:3998/api/health | jq -e '.database == "ok"' >/dev/null
+          for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenA$' "$d/sink.log" && break; sleep 3; done
+          grep -q '^AUTH Bearer tokenA$' "$d/sink.log" || { echo "::error::the dead-row webhook never delivered the first token"; docker logs grafana-drill 2>&1 | grep -E 'level=(error|warn)' | cut -c1-300 | tail -n 10; exit 1; }
+          printf 'tokenB' > "$d/tok/token.new"; chmod 0600 "$d/tok/token.new"; mv -f "$d/tok/token.new" "$d/tok/token"
+          pwcfg() { sed 's/["\\]/\\&/g; s/^/user = "admin:/; s/$/"/' "$d/admin-pw"; }
+          curl -fsS -X POST --config <(pwcfg) http://127.0.0.1:3998/api/admin/provisioning/alerting/reload; echo
+          # A firing alert is re-sent only on Grafana's own schedule, so make the
+          # next delivery deterministic: a second always-firing rule with another
+          # model_id is a new notification group and is sent at once through the
+          # contact point as it stands after the reload.
+          folder=$(curl -fsS --config <(pwcfg) http://127.0.0.1:3998/api/folders | jq -er '.[]|select(.title=="drill")|.uid')
+          jq -n --arg f "$folder" '{title: "drill dead row 2", ruleGroup: "drill-api", folderUID: $f, orgID: 1, condition: "B", for: "0s", noDataState: "OK", execErrState: "Error",
+            labels: {signal: "router-dead-row", model_id: "drill2"}, annotations: {summary: "drill", value: "1", threshold: "0", description: "drill"},
+            data: [{refId: "A", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "math", expression: "1", refId: "A"}},
+                   {refId: "B", datasourceUid: "__expr__", relativeTimeRange: {from: 0, to: 0}, model: {datasource: {type: "__expr__", uid: "__expr__"}, type: "threshold", expression: "A", refId: "B", conditions: [{evaluator: {params: [0], type: "gt"}, operator: {type: "and"}, query: {params: ["B"]}, reducer: {params: [], type: "last"}, type: "query"}]}}]}' > "$d/rule2.json"
+          curl -fsS -X POST --config <(pwcfg) -H 'content-type: application/json' --data @"$d/rule2.json" http://127.0.0.1:3998/api/v1/provisioning/alert-rules >/dev/null
+          for _ in $(seq 1 60); do grep -q '^AUTH Bearer tokenB$' "$d/sink.log" && break; sleep 3; done
+          grep -q '^AUTH Bearer tokenB$' "$d/sink.log" || { echo "::error::a provisioning reload did not make the webhook send the replaced token"; sort "$d/sink.log" | uniq -c; exit 1; }
+          sort "$d/sink.log" | uniq -c
+          # A rule with no route of its own lands on the policy root,
+          # fleet-alert-dispatch: its payload must be a labelled fleet issue.
+          for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill generic"' "$d/sink.log" && break; sleep 3; done
+          g=$(grep '"title":"grafana alert: drill generic"' "$d/sink.log" | head -n 1 || true)
+          [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
+          jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
+            || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
+        if: steps.gate.outputs.run == 'true'
+        timeout-minutes: 20
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider -m grafana
+      - name: Grafana log on failure
+        if: failure()
+        run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

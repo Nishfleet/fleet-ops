@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+pytestmark = pytest.mark.grafana
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/deploy-failed.yaml"
 POLICY = ROOT / "config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml"

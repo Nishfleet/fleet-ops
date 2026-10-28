@@ -1238,7 +1238,7 @@ credential file does not hold them back.
 
 ## CI
 
-`.github/workflows/ci.yml` splits its test work into four jobs by concern (`lint`, `systemd-verify`, `unit`, `simulations`), each with its own timeout, on every PR and every merge-queue entry. The one required check `ci` runs no tests and needs every other job. Its
+`.github/workflows/ci.yml` calls one workflow file per area (`ci-lint.yml`, `ci-systemd.yml`, `ci-unit.yml`, `ci-simulations.yml`, `ci-grafana.yml`, `ci-tofu.yml`), each one job with its own timeout, on every PR and every merge-queue entry. The one required check `ci` runs no tests and needs every other job. pytest finds every `tests/test_*.py` itself (`pytest.ini`); a test that needs another job's setup carries a marker named there, so a new test never edits a workflow. Its
 checks are stock: the secret-expansion grep,
 `jq` config sanity, actionlint, zizmor, shellcheck, and systemd-analyze verify
 over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue

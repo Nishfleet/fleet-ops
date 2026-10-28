@@ -35,7 +35,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MORNING = ROOT / "config/hermes/digest-morning.md"
 EVENING = ROOT / "config/hermes/digest-evening.md"
 HOST = ROOT / "ansible/host.yml"
-CI = ROOT / ".github/workflows/ci.yml"
 
 _DENY = ["*curl*|*bash*", "*curl*|*sh*", "*wget*|*sh*", "*<<*", "*>*.sh*", "*>*.py*", "*>*.js*"]
 _BRACKET = re.compile(r"(^|[;&|(]\s*|\b(if|then|elif|while|until|do)\s+)\[ ")
@@ -75,10 +74,6 @@ def test_host_yml_applies_the_prompts_to_the_live_jobs():
     assert "config/hermes/" in text
     assert "digest-morning" in text and "digest-evening" in text
     assert "- cron" in text and "- edit" in text and "- --prompt" in text
-
-
-def test_ci_runs_this_file():
-    assert "tests/test_digest_checks.py" in CI.read_text()
 
 
 FAKE_GH = """#!/usr/bin/env python3
