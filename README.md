@@ -113,10 +113,9 @@ script, or prompt lands unseen.
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
   "Provider watch" has the run, off and delete steps.
-- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
-  `executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
+- `systemd/executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
   `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
-  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd, and the
+  binaries (Executor, Syncthing, TigerVNC) run under systemd, and the
   env line that picks the Tincan listener's own Claude login. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
@@ -124,11 +123,10 @@ script, or prompt lands unseen.
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
   `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
   `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
-  and `enable --now`. The files match what ran before (only the two Amp
-  `Description=` lines lost their account names), so adopting them restarted
-  nothing: a unit edit applies at the unit's next restart (never restart
+  and `enable --now`. The files match what ran before, so adopting them
+  restarted nothing: a unit edit applies at the unit's next restart (never restart
   `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the five units; the drop-in is not a unit file,
+  `systemd-analyze verify` on the three units; the drop-in is not a unit file,
   so only its parent unit is verified. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
@@ -625,7 +623,7 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone, amp, syncthing). Stale npm
+   plugins, cursor-agent, devin, uv, bun, rclone, syncthing). Stale npm
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.
