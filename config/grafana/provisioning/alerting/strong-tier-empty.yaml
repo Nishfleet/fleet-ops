@@ -8,9 +8,9 @@
 # rootfs/etc/prometheus/fleet_rules.yml (fleet-ops#10054) is the traffic-gated half:
 # it fires only while the group is being called (more than 5 chat calls in 15
 # minutes), only for worker-capable, and only when a row that reads state 0 also
-# answered a call. This rule is the state-only complement: fire when a strong group
-# (worker-capable, senior) has 0 raw rows at litellm_deployment_state 0 for 5
-# minutes, called or not, so an idle night and the one-row senior tier are seen too.
+# answered a call. This rule is the state-only complement: fire when the strong group
+# worker-capable has 0 raw rows at litellm_deployment_state 0 for 5 minutes, called
+# or not, so an idle night is seen too.
 #
 # Boundary (recorded by fleet-ops#10054): state 0 does not guarantee answers,
 # because v1.98.0's cooldown logic ignores some errors (an Ollama connection error
@@ -19,15 +19,13 @@
 # while traffic flows. Neither covers the other's half.
 #
 # model_id carries the group as its suffix (there is no group label on the state
-# series): every worker-capable row id ends in -worker-capable, and the schema pins
-# senior to exactly one row (synthetic-glm53flash-senior). The group-name state
+# series): every worker-capable row id ends in -worker-capable. The group-name state
 # series (litellm_model_name equal to the group) is excluded the same way
 # RouterStrongGroupNoHealthyRow excludes it. max by (model_id) folds the per-pid
 # exporter copies of each row: a row counts healthy when any exporter process
 # reports it at 0. noDataState OK: a failed scrape or a stopped router is
 # unobserved, not a row at state 1 or 2 (the same stance as the Prometheus rule's
-# up{job="litellm"} gate); a vanished senior row is a config change the schema
-# refuses.
+# up{job="litellm"} gate).
 #
 # Route: severity warning, so it does not page. The policy tree in
 # cloudflare-spend-contact.yaml has no strong-tier route and that file is held by
@@ -52,7 +50,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
-              expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
+              expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!="worker-capable"} == bool 0)) == bool 0'
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -72,39 +70,6 @@ groups:
         annotations:
           summary: 'Strong group worker-capable has no row at litellm_deployment_state 0'
           description: 'No worker-capable row is at litellm_deployment_state 0 for 5 minutes. The group has no fallback since #10065, so strong calls fail at the caller until a row recovers. Every row id ends in -worker-capable: check the rows in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy). Removing a row or a provider is Nish''s call: open a needs-nish-decision issue with the evidence. Companion to the traffic-gated RouterStrongGroupNoHealthyRow in rootfs/etc/prometheus/fleet_rules.yml.'
-          threshold: 'no row at state 0 for 5 minutes'
-        labels: {severity: warning, signal: strong-tier-empty}
-        isPaused: false
-      - uid: strong-tier-empty-senior
-        title: Strong group senior has no healthy row
-        condition: C
-        data:
-          - refId: A
-            relativeTimeRange: {from: 600, to: 0}
-            datasourceUid: fleet-prometheus
-            model:
-              datasource: {type: prometheus, uid: fleet-prometheus}
-              editorMode: code
-              expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-senior$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
-              instant: true
-              intervalMs: 1000
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: C
-            datasourceUid: __expr__
-            model:
-              datasource: {type: __expr__, uid: __expr__}
-              type: threshold
-              refId: C
-              expression: A
-              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
-        noDataState: OK
-        execErrState: Error
-        for: 5m
-        annotations:
-          summary: 'Strong group senior has no row at litellm_deployment_state 0'
-          description: 'The senior tier is one row (the schema pins synthetic-glm53flash-senior, config/litellm-proxy.schema.json) and it has no fallback, so when it leaves state 0 every judge and senior call fails at the caller. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy). Removing or weakening the row is Nish''s call: open a needs-nish-decision issue with the evidence. Companion to the traffic-gated RouterStrongGroupNoHealthyRow in rootfs/etc/prometheus/fleet_rules.yml, which covers worker-capable only.'
           threshold: 'no row at state 0 for 5 minutes'
         labels: {severity: warning, signal: strong-tier-empty}
         isPaused: false
