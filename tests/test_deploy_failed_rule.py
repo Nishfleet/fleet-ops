@@ -24,6 +24,10 @@ def _groups():
     return {g["name"]: g["rules"] for g in _yq(".groups", RULES)}
 
 
+def _deleted_uids():
+    return {r["uid"] for r in _yq(".deleteRules", RULES) or []}
+
+
 def _all_rules():
     return [r for rules in _groups().values() for r in rules]
 
@@ -64,6 +68,16 @@ def _query(rule):
     return next(d for d in rule["data"] if d["refId"] == "A")
 
 
+def test_a_uid_in_delete_rules_is_not_also_a_live_rule():
+    # A rule that comes back to the file must take its uid out of deleteRules, or
+    # the next provisioning load deletes the rule that just returned. The reverse
+    # pairing, the uid gone from the file and from deleteRules, is what lets a
+    # removed rule stay live (fleet-ops#10198, #10206).
+    deleted = _deleted_uids()
+    live = {r["uid"] for r in _all_rules()}
+    assert not (deleted & live), f"uids in both the file and deleteRules: {sorted(deleted & live)}"
+
+
 def test_each_rule_reads_one_main_workflow_through_the_org_app_installation():
     rules = _all_rules()
     assert len({r["uid"] for r in rules}) == len(rules)
@@ -86,7 +100,7 @@ def test_the_issue_group_covers_every_repo_and_the_24h_group_holds_the_same_quer
     groups = _groups()
     issue = {r["labels"]["repo"]: r for r in groups["deploy-failed"]}
     page = {r["labels"]["repo"]: r for r in groups["deploy-failed-24h"]}
-    assert set(page) == set(issue) - {"Nishfleet/inish-site", "Nishfleet/fleet-console-worker", "Nishfleet/inish-mail-filter"}
+    assert set(page) == set(issue) - {"Nishfleet/inish-site", "Nishfleet/fleet-console-worker"}
     for repo, r in issue.items():
         assert (r["labels"]["signal"], r["for"], r["execErrState"], r["noDataState"]) == ("deploy-failed", "30m", "Error", "OK")
         assert "cannot read GitHub runs" in r["annotations"]["summary"]

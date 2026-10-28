@@ -22,6 +22,7 @@ import stat
 import subprocess
 
 import pytest
+import ansible_host
 
 TOOLS = bool(shutil.which("yq") and shutil.which("ansible-playbook"))
 
@@ -69,7 +70,7 @@ def _unhide(task):
 
 
 def _play():
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]
 
 

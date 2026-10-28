@@ -1,0 +1,29 @@
+# Fixtures for no-host-cua-driver; ci.yml runs them with `semgrep --test`.
+# ruleid: no-host-cua-driver
+cua agents setup --agents pi --mcp-only --cua-driver -y
+# ruleid: no-host-cua-driver
+cua agents setup --select cua-driver
+# ruleid: no-host-cua-driver
+"command": "cua-driver", "args": ["mcp"]
+# ruleid: no-host-cua-driver
+ExecStart=/usr/local/bin/cua-driver mcp
+# ruleid: no-host-cua-driver
+curl -fsSL https://github.com/trycua/cua/releases/latest/download/cua-driver-linux-x86_64.tar.gz -o /tmp/cd.tgz
+# ruleid: no-host-cua-driver
+gh release download -R trycua/cua --pattern 'cua-driver-*'
+# ruleid: no-host-cua-driver
+uvx cua-driver mcp-config
+# ruleid: no-host-cua-driver
+python3 -m pip install cua-driver
+# ruleid: no-host-cua-driver
+sudo apt-get install -y cua-driver
+# ok: no-host-cua-driver
+cua agents setup --agents pi --mcp-only -y
+# ok: no-host-cua-driver
+call_tool(space="job-1", tool="cua-driver")
+# ok: no-host-cua-driver
+hermes_banned_tool_glob: "cua-driver-*"
+# ok: no-host-cua-driver
+"command": "cua", "args": ["mcp"]
+# ok: no-host-cua-driver
+call_tool(space="job-1", tool="cua-driver", args=["--version"])
