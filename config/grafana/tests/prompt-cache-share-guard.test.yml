@@ -1,0 +1,291 @@
+# Fixtures for prompt-cache-share-guard.yaml (fleet-ops#9385 point 3).
+#
+# Each case is a fleet shape, not an arithmetic exercise, and carries its reason
+# so a later edit that breaks one reads as a decision, not a nuisance:
+#
+# 1. every vendor at or above its floor: silent, which is the state the guard
+#    must hold at 2026-10-30 for the fleet to count as unchanged.
+# 2. one vendor 2 points down beside a healthy one and a vendor whose 7d window
+#    still holds pre-bump days: only the first fires. That straddle is the real
+#    zai/cline/opencodego2 shape on 2026-10-25 (7d 0.613/0.248/0.682, 48h
+#    0.926/0.777/0.944), and judging the 7d share alone would file an issue for
+#    it every day until the pre-bump days age out. It is modelled as zai's own
+#    two lanes: a cheap lane that reported 2% and stopped growing at 4d (the
+#    pre-bump days, where LiteLLM returned no cached count), and a capable lane
+#    at 0.93 that runs to now. zai then reads 0.216 over 7d and 0.930 over 48h,
+#    both under and above its 0.9056 floor.
+# 3. a vendor below its floor on too little traffic to judge: silent. anthropic
+#    read 8.5k input tokens in the 48h after the bump, and 1M is the floor.
+# 4. a vendor that reports no cached count at all: silent. ollama cannot report
+#    one (berriai/litellm#45021); the `and on (model_id)` filters on both ratio
+#    sides must drop it rather than read its share as 0.
+# 5. the values A returns for case 2's inputs: the breaching vendor at its own
+#    share, the other two absent rather than 0.
+# 6. a vendor that keeps reporting a cached count that stopped growing, so its
+#    share is exactly 0: it fires, beside a healthy vendor that does not. This
+#    is the shape that needs the deployed threshold to be `gte 0`; promtool has
+#    no threshold step and fires on any sample, so the rule file carries that
+#    half and this case pins that A returns the row at all.
+#
+# 7. opencodego on the shape that filed #10506, #10588 and #10630: a big
+#    worker-capable row at 0.956 plus a small row at 0.6 reads 0.9097, silent
+#    under its 0.9021 floor (it fired under the old 0.9221). The same mix with
+#    the big row at 0.92 reads 0.8784 and fires. Case 1 carries the silent
+#    half, the last case the firing half.
+#
+# The alert name, `for` and labels here are the deployed ones, so a case that
+# fires here is a case Grafana calls Alerting.
+evaluation_interval: 12h
+rule_files:
+  - prompt-cache-share-guard.test.rules.yml
+tests:
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+96875000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego2-ds41flash-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego2-ds41flash-worker-capable"}'
+        values: '0+96875000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53-worker-capable"}'
+        values: '0+93750000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashe-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashe-worker-capable"}'
+        values: '0+90625000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="cline-ling30-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="cline-ling30-worker-capable"}'
+        values: '0+81250000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+87000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+83172000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+13000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+7800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+90625000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+      # zai: the straddle case. The cheap lane carries the pre-bump days
+      # (2% reported) and stops at 4d; the capable lane runs the full window.
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53-worker-capable"}'
+        values: '0+10000000x13'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53-worker-capable"}'
+        values: '0+9300000x13'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-worker-cheap"}'
+        values: '0+60000000x8'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-worker-cheap"}'
+        values: '0+1200000x8'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: minimax
+    promql_expr_test:
+      - expr: |-
+          (
+            max by (vendor) (
+              label_replace((
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                /
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+              ), "span", "7d", "", "")
+              or label_replace((
+                sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+                /
+                sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+              ), "span", "48h", "", "")
+            )
+            < on (vendor)
+            (
+              label_replace(vector(0.9396), "vendor", "stepfun", "", "")
+              or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
+              or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+              or label_replace(vector(0.9259), "vendor", "minimax", "", "")
+              or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+              or label_replace(vector(0.9056), "vendor", "zai", "", "")
+              or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
+              or label_replace(vector(0.8231), "vendor", "straitly", "", "")
+              or label_replace(vector(0.7566), "vendor", "cline", "", "")
+              or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
+            )
+          )
+          and on (vendor)
+          sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+        eval_time: 7d
+        exp_samples:
+          - labels: '{vendor="minimax"}'
+            value: 0.90625
+
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="anthropic-claude-opus-55-senior"}'
+        values: '0+10000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="anthropic-claude-opus-55-senior"}'
+        values: '0+4000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  - interval: 12h
+    input_series:
+      # minimax keeps serving input and its cached counter stops moving, so the
+      # share is 0 rather than undefined: every input token was a miss.
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: minimax
+
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="ollama-ds41flashh-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+87000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+80040000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+13000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+7800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: opencodego
+
+  # synthetic on the shape that filed #10654: a senior row at 0.69 (37% of the
+  # tokens) beside a worker-capable row at 0.87 reads 0.803, silent under 0.7700.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+37000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+25530000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+63000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+54810000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The same mix with the senior row's cache gone reads 0.548 and fires.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+37000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+63000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+54810000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: synthetic
+
+  # zai on the shape that filed #10692: the one-shot senior row at 0.06 (40% of
+  # the tokens) beside a worker-capable row at 0.93 is not judged, so zai reads
+  # 0.93 and stays silent. Left in, it would read 0.598 and fire.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+55800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The worker-capable row at 0.88 still fires beside the same senior row.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+52800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: zai

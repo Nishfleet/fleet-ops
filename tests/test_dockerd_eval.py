@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
@@ -250,7 +251,7 @@ def test_the_unit_comment_explains_why_there_is_no_vendor_launcher() -> None:
 
 
 def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     task = re.search(r"- name: Install the eval engine's egress rule\n(.*?)\n\n", host, re.S)
     assert task, "no install task"
     assert "dest: /etc/nftables.d/evalnet.nft" in task.group(1)
@@ -260,7 +261,7 @@ def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
 
 def test_podman_eval_is_retired() -> None:
     assert not (SYSTEM / "podman-eval.service").exists()
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert "- /etc/systemd/system/podman-eval.service" in host
     off = re.search(r"- name: Stop and disable the retired rootless podman socket\n(.*?)\n\n", host, re.S)
     assert off, "no stop-and-disable task"
@@ -272,7 +273,7 @@ def test_podman_eval_is_retired() -> None:
 
 
 def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert host.count("alertmanager_credentials is defined and (") == 4
     watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.S)
     assert watcher, "no deploy request watcher task"
@@ -282,7 +283,7 @@ def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
 
 
 def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.S)
     assert task, "no engine enable task"
     assert "register: dockerd_eval_up" in task.group(1)
