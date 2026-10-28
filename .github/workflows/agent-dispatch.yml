@@ -45,6 +45,16 @@ on:
   # The sweep below catches both; hourly stays well under the 24h expiry.
   schedule:
     - cron: '17 * * * *'
+  # Parked hand-off restart (fleet-ops#9354, #10420, #10475): the list job's requeue step, on the
+  # hourly sweep and on a manual dispatch only, takes the parked hand-offs oldest first through GitHub's
+  # own search sort (sort:created-asc), not a sort added in the step. An orchestrator-tried issue idle
+  # over 6 h goes back to needs-orchestrator; one that carries needs-orchestrator with no
+  # orchestrator-tried and no orch/issue-N branch (the class the daily cap parks, #9351) is re-fired
+  # with a task=orchestrate dispatch. The 6 h idle floor is the day-1 guard: the sweep's own marker
+  # comment moves updatedAt, so a hand-off the cap parked is re-fired at most once per 6 h and waits
+  # for the next IST day instead of looping. Three ended or re-fired hand-offs give needs-nish-decision.
+  # The off-switch is FLEET_DISPATCH_PAUSED=true, which gates the whole list job and stops these
+  # writes with it.
 permissions: {}
 # One sweep running and one waiting per repo (15 queued behind busy runners on 2026-09-28);
 # every per-issue event gets its own group.
@@ -720,17 +730,20 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator sort:created-asc" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
               elif [ "$(jq -r .tried <<<"$r")" = true ]; then
-                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
+                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused; this runner carries no gh login (fleet-ops#10510) and the sweep token fires no label event"
               else
-                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
+                # The marker is the sweep's strike: three of them escalate to needs-nish-decision, so it is posted
+                # only for a dispatch that really started. A refused dispatch writes no marker and counts no
+                # strike, so a hand-off the sweep cannot start is never escalated as three dead ones (#10773).
+                if gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n"; then gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
+                else echo "::error::#$n: re-fire refused; this job holds actions: read and every caller stub caps it there (fleet-ops#10657)"; fi
               fi
             done
   unblocked:

@@ -330,6 +330,23 @@
       "want_turns": "40"
     },
     {
+      "id": "capped-issue-goes-on-the-next-ist-day",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "handoffs": [
+        {
+          "when": "YESTERDAY"
+        },
+        {
+          "when": "YESTERDAY"
+        }
+      ],
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
       "id": "ended-comment-not-counted",
       "daily_max": "1",
       "model_var": null,

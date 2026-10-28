@@ -3,8 +3,14 @@
 
 An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
 no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 5 minus the live orchestrate runs a sweep. Three ended or
-re-fired hand-offs give needs-nish-decision.
+marker comment and no label write. At most 5 minus the live orchestrate runs a sweep, oldest
+created first: gh issue list answers newest created first by default, so the step asks GitHub's own
+search sort for sort:created-asc and the bounded batch takes the hand-off that has waited longest.
+Three ended or re-fired hand-offs give needs-nish-decision. A refused dispatch posts no marker, so it
+counts no strike.
+
+The fake gh answers `issue list` from a file and so proves the request (it fails without
+sort:created-asc), not the order GitHub answers in; the order is GitHub's own search sort.
 """
 import datetime
 import json
@@ -23,7 +29,9 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
-  "issue list") cat "$FAKE_DIR/issues.json" ;;
+  "issue list")
+    case "$*" in *"sort:created-asc"*) ;; *) echo "fake gh: issue list without sort:created-asc" >&2; exit 1 ;; esac
+    cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -117,6 +125,10 @@ def test_labelled_issues_are_not_queued_runs(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [1, 2]
 
 
+def dispatched(lines):
+    return [l.split()[-1] for l in lines if l.startswith("workflow run")]
+
+
 def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
     labelled = ("needs-orchestrator",)
     w = run(tmp_path, [issue(1, ended=0, labels=labelled),
@@ -131,14 +143,61 @@ def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
     assert marker in _y(f"{STEP} | .env.REQUEUE"), "the counter and the posted marker must share one prefix"
 
 
-def test_failed_dispatch_fails_loud_and_counts_a_strike(tmp_path):
-    """A stub without the task and issue inputs refuses every dispatch: the marker still posts, so
-    the third sweep escalates instead of retrying forever."""
+def test_capped_issues_are_dispatched_oldest_created_first(tmp_path):
+    """The daily cap parks a hand-off with needs-orchestrator and no orchestrator-tried (#9351), so
+    this is the class #9354 re-dispatches. The step asks GitHub's own search sort for
+    sort:created-asc, which answers oldest created first, so the bounded batch takes the parked
+    hand-offs from the front and the newest one waits for the next sweep instead of starving the
+    one that has waited longest. The list below is in the order that sort answers, so the newest
+    entry, which is also the most idle, must be the one left behind."""
+    labelled = ("needs-orchestrator",)
+    w = run(tmp_path, [issue(n, ended=0, labels=labelled, hours_idle=20 + n) for n in range(1, 8)])
+    assert dispatched(w) == [f"issue={n}" for n in (1, 2, 3, 4, 5)]
+
+
+def test_the_issue_list_asks_github_for_the_oldest_first_sort(tmp_path):
+    """The ordering is GitHub's own search sort, not a sort added in the step (fleet-ops#9614):
+    without the qualifier the API answers newest created first and the bound takes the newest
+    parked hand-off every hour."""
+    assert "sort:created-asc" in _y(f"{STEP} | .run")
+    step = _y(f"{STEP} | .run") + _y(f"{STEP} | .env.REQUEUE")
+    assert "sort_by" not in step, "the stock search sort carries the order, not a sort in the step"
+
+
+def test_live_orchestrate_runs_bound_the_dispatch_batch(tmp_path):
+    labelled = ("needs-orchestrator",)
+    w = run(tmp_path, [issue(n, ended=0, labels=labelled, hours_idle=20 + n) for n in range(1, 5)], queued=4)
+    assert dispatched(w) == ["issue=1"]
+
+
+def test_a_capped_issue_the_sweep_just_fired_waits_six_hours(tmp_path):
+    """The day-1 guard (#9354): the sweep's own marker comment moves updatedAt, so a hand-off the cap
+    parked is not re-fired again until it has been idle 6 h. Without the floor the hourly sweep
+    re-fires it all day, the cap parks it again, and the issue loops."""
+    w = run(tmp_path, [issue(1, ended=0, labels=("needs-orchestrator",), hours_idle=5)])
+    assert w == []
+
+
+def test_a_refused_dispatch_writes_no_marker_and_no_strike(tmp_path):
+    """The marker is the sweep's strike, and three of them escalate a hand-off to needs-nish-decision, so a
+    dispatch that never started may not be counted as one: it writes the error and no marker (#10773)."""
     i = [issue(1, ended=0, labels=("needs-orchestrator",))]
     out = run(tmp_path, i, fail={"FAIL_DISPATCH": "1"}, out=True)
     assert "::error::#1: re-fire refused" in out
-    w = (tmp_path / "writes.log").read_text().splitlines()
-    assert [l for l in w if l.startswith("issue comment 1 ") and REFIRED.split("https")[0] in l]
+    log = tmp_path / "writes.log"
+    w = log.read_text().splitlines() if log.exists() else []
+    assert not [l for l in w if l.startswith("issue comment")], "no marker for a dispatch that never started"
+    assert not [l for l in w if l.startswith("issue edit")]
+
+
+def test_three_refused_dispatches_do_not_escalate(tmp_path):
+    """The escalation counts markers, so a sweep that cannot dispatch at all never parks a hand-off it
+    could not start as three dead ones (#10773)."""
+    i = [issue(1, ended=0, labels=("needs-orchestrator",))]
+    for _ in range(3):
+        run(tmp_path, i, fail={"FAIL_DISPATCH": "1"})
+    log = tmp_path / "writes.log"
+    w = log.read_text().splitlines() if log.exists() else []
     assert not [l for l in w if l.startswith("issue edit")]
 
 
