@@ -1,5 +1,5 @@
-"""fleet-ops#10218: the full sweep (list job) puts needs-triage on unlabelled, human-filed issues in
-fleet-ops, 5 a run. Runs the real `run:` block against a fake gh. Product repos are left to admit."""
+"""fleet-ops#10218: the full sweep (list job) puts needs-triage on unlabelled issues, 5 a run, in every repo
+that runs it. Admit never takes them without a trusted labeller. Runs the real `run:` block against a fake gh."""
 import json
 import os
 import pathlib
@@ -12,7 +12,7 @@ LIST_STEP = '.jobs.list.steps[] | select(.id == "list")'
 FAKE_GH = r"""#!/usr/bin/env bash
 q=.; for ((i = 1; i <= $#; i++)); do [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }; done
 case "$*" in
-  "label create"*|"issue edit"*) echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit"*) echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "issue list"*" -S "*) echo "$*" >> "$FAKE_DIR/searches.log"; jq -r "$q" "$FAKE_DIR/search.json" ;;
   "issue list"*) echo '[]' | jq -r "$q" ;;
   "pr list"*) echo '[]' | jq -r "$q" ;;
@@ -44,10 +44,9 @@ def sweep(tmp_path, repo, found):
 
 def test_fleet_ops_unlabelled_issues_get_needs_triage(tmp_path):
     writes, searches = sweep(tmp_path, "Nishfleet/fleet-ops", [11, 12])
-    assert "-S no:label -author:app/nishfleet-worker -L 5" in searches
+    assert "-S no:label -L 5" in searches
     assert "issue edit 11 -R Nishfleet/fleet-ops --add-label needs-triage" in writes
     assert "issue edit 12 -R Nishfleet/fleet-ops --add-label needs-triage" in writes
-    assert writes[0].startswith("label create needs-triage")
 
 
 def test_nothing_unlabelled_makes_no_edit(tmp_path):
@@ -55,6 +54,6 @@ def test_nothing_unlabelled_makes_no_edit(tmp_path):
     assert not [w for w in writes if w.startswith("issue edit")]
 
 
-def test_a_product_repo_is_left_to_admit(tmp_path):
-    writes, searches = sweep(tmp_path, "Nishfleet/0509", [11])
-    assert writes == [] and searches == ""
+def test_a_product_repo_is_labelled_too(tmp_path):
+    writes, _ = sweep(tmp_path, "Nishfleet/0509", [11])
+    assert writes == ["issue edit 11 -R Nishfleet/0509 --add-label needs-triage"]
