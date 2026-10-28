@@ -1406,6 +1406,9 @@ def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
     assert dedicated, "no host.yml task installs the ssh.socket drop-in on its own, so its change signal is lost"
     copy = dedicated[0]["ansible.builtin.copy"]
     assert copy["src"] == "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+    assert tasks.index(dedicated[0]) < tasks.index(
+        next(t for t in tasks if t.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/")
+    ), "the dedicated copy must run before the tree copy, or the tree copy changes the file and this task reports ok"
     notify = dedicated[0].get("notify") or []
     notified = [notify] if isinstance(notify, str) else notify
     assert "Restart ssh.socket" in notified, (
