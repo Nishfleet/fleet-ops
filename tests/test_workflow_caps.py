@@ -140,6 +140,13 @@ def test_hand_summons_reaches_the_review_job():
     assert "inputs.review_pr" in review["if"] and "inputs.review_sha" in review["if"], (
         "the review job's if: does not read the dispatch inputs, so a hand summons reaches nothing"
     )
+    main_only = "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+    for job in ("review", "arm"):
+        cond = cfg["jobs"][job]["if"].replace("${{", "").replace("}}", "").strip()
+        assert f"&& {main_only}" in cond, (
+            f"the {job} job can be dispatched from any branch: a pushed branch with an edited {job} job "
+            "would approve or arm under the bot identity the merge gate trusts"
+        )
     assert review["env"]["PR"] == "${{ inputs.review_pr }}"
     assert review["env"]["SHA"] == "${{ inputs.review_sha }}"
     assert "!inputs.review_pr" in cfg["jobs"]["inish-daily"]["if"], (

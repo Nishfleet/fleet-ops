@@ -937,7 +937,7 @@ jobs:
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
   review:
-    if: inputs.review_pr != '' && inputs.review_sha != ''
+    if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, agent]
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
@@ -1138,7 +1138,7 @@ jobs:
   # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
-    if: ${{ !cancelled() && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
     permissions:
