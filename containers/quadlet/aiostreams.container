@@ -2,7 +2,8 @@
 Description=aiostreams (media streaming aggregator)
 
 [Container]
-Image=ghcr.io/viren070/aiostreams:latest
+# Pinned by digest; the tag is only a label. Bump the digest in its own PR.
+Image=ghcr.io/viren070/aiostreams:latest@sha256:83893d1c37eaaaf9ad1e9286bd857220a6b8f042a4f1eac3fa7356017aa2b184
 ContainerName=aiostreams
 PublishPort=127.0.0.1:3000:3000
 Volume=/srv/aiostreams/data:/app/data

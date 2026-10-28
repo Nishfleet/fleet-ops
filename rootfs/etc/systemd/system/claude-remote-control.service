@@ -19,6 +19,12 @@ WorkingDirectory=/home/nish/workspaces
 Environment=HOME=/home/nish SHELL=/usr/bin/zsh LANG=en_US.UTF-8
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+# The browser MCP entry in ~/.claude.json expands ${BROWSER_USE_API_KEY} from this
+# process's environment (fleet-ops#10222), so the one name comes from its own 0600
+# file, never the shared oauth.env: the claude.ai login stays out (fleet-ops#9020).
+# Optional (-) on purpose: a missing file costs the browser tool, not the phone
+# bridge. docs/RUNBOOK.md, "Claude session credentials", owns the convention.
+EnvironmentFile=-/home/nish/.config/claude/browser-use.env
 # The TUI redraws the status line to stdout (~2k journal lines an hour); errors go
 # to stderr and still reach the journal.
 StandardOutput=null
@@ -35,12 +41,16 @@ StandardOutput=null
 # work is fresh-per-task instead of piling into one standing session that only
 # grows. The measurements, the cost and the session-file consequence are in the
 # README, under the weekly-update heading, which is the source.
+# Fleet decision 2026-10-28 (#9438): --capacity 1. In same-dir mode every session
+# edits /home/nish/workspaces, so two at once can overwrite each other's work (bursts
+# reached 10 on 2026-10-09). A second request is refused or queued, not run. Roll back:
+# drop the flag. Claude Code prunes old transcripts itself (30-day cleanupPeriodDays).
 # Staged, not live: ansible/host.yml installs and enables this unit and never
 # restarts it, so a merge leaves the old server and its old session running.
 # Only Nish restarts it, because that cuts his phone link. The restart starts
 # with `systemctl daemon-reload`, without which systemd keeps the ExecStart line
 # it already loaded and the flag never takes effect.
-ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode dontAsk --no-create-session-in-dir
+ExecStart=/home/nish/.local/bin/claude remote-control --name vps-rc --spawn=same-dir --permission-mode dontAsk --no-create-session-in-dir --capacity 1
 Slice=claude.slice
 # -900 -> -500 (OOM storm 2026-10-09). Every session, tool and child of this
 # server inherits the value. At -900 a 15G secret scan in one session scored

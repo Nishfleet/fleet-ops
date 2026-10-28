@@ -7,7 +7,9 @@
 Description=Fleet LiteLLM Postgres (Quadlet, fleet-ops#8435)
 
 [Container]
-Image=docker.io/library/postgres:16
+# Pinned by digest (the image running when this was pinned); the tag is only a label.
+# Bump the digest in its own PR: postgres holds the keys and spend.
+Image=docker.io/library/postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
 Network=host
 # The host user maps to the image's postgres uid/gid 999, so the nish-owned
 # data dir is owned by postgres inside the container.
@@ -34,6 +36,10 @@ Exec=postgres -c hba_file=/etc/fleet-postgres/pg_hba.conf
 Slice=app-litellm-postgres.slice
 ManagedOOMPreference=avoid
 MemoryMin=256M
+# Matches app-litellm-postgres.slice. Podman 4.9.3 has no Memory= key for [Container], so the
+# cap is the unit's cgroup limit. Measured: the unit's cgroup peaked at 1.0G (page cache included,
+# reclaimable) while the processes held about 20 MB, so no tighter cap is safe.
+MemoryMax=1G
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=30

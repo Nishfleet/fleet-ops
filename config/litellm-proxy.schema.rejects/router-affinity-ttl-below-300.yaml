@@ -7,7 +7,9 @@ model_list:
     cache_proof: "fixture row: only the rule named in this file is under test (fleet-ops#9361)."
 router_settings:
   cooldown_time: 60
-  redis_url: redis://127.0.0.1:6379
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
   # fleet-ops#9365/#9361: session_affinity is present, so this file fails on the
   # TTL floor it names.
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
