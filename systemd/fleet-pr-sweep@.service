@@ -30,7 +30,8 @@ After=fleet-worker-github-token@actions:%i.service
 [Service]
 Type=oneshot
 EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env
-ExecStartPre=/bin/sh -c 'test -n "$GH_TOKEN"'
+# $$ keeps systemd from expanding the token into the shell's argv.
+ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN"'
 ExecStart=/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i
 ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq 'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'
 TimeoutStartSec=120
