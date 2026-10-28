@@ -19,6 +19,7 @@ import pytest
 pytest.importorskip("litellm")
 
 import litellm  # noqa: E402
+from litellm.types.router import RouterRateLimitError  # noqa: E402
 import yaml  # noqa: E402
 from litellm import Router  # noqa: E402
 
@@ -119,6 +120,9 @@ def test_a_walled_judge_call_is_answered_by_senior():
 
 
 def test_a_429_on_senior_reaches_the_caller_with_no_other_group_hit():
-    with pytest.raises(litellm.RateLimitError):
+    # fleet-ops#10178: the second RateLimit retry finds the one senior row parked,
+    # so the caller sees the router's cooldown 429 (RouterRateLimitError) instead of
+    # the upstream one. Still a 429, and still no other group is hit.
+    with pytest.raises((litellm.RateLimitError, RouterRateLimitError)):
         _route("senior", {"senior"})
     assert set(h.split("/")[1] for h in HITS) == {"senior"}
