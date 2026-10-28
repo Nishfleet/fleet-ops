@@ -633,31 +633,28 @@ tests:
               summary: "Swap is over 80% used"
               description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
 
-  # RouterGroupOnly429 (fleet-ops#10694): senior answers only RateLimitError and its rows record no
-  # success, so it fires once the 10 minute hold ends; a second group that keeps succeeding while it
-  # also sees 429s (a busy row, a peer answers) stays quiet.
+  # RouterGroupJammed (fleet-ops#10694): senior fails every call, so it fires once the 10 minute hold ends;
+  # worker-capable fails half its calls and stays quiet.
   - interval: 1m
     input_series:
-      - series: 'litellm_deployment_failure_responses_total{model_group="senior",model_id="synthetic-glm53flash-senior",exception_class="RateLimitError",exception_status="429"}'
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior"}'
         values: '0+1x30'
-      - series: 'litellm_deployment_success_responses_total{model_group="senior",model_id="synthetic-glm53flash-senior"}'
-        values: '5x30'
-      - series: 'litellm_deployment_failure_responses_total{model_group="worker-capable",model_id="a-worker-capable",exception_class="RateLimitError",exception_status="429"}'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior"}'
         values: '0+1x30'
-      - series: 'litellm_deployment_success_responses_total{model_group="worker-capable",model_id="b-worker-capable"}'
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="worker-capable"}'
+        values: '0+2x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
         values: '0+1x30'
-      - series: 'up{job="litellm"}'
-        values: '1x30'
     alert_rule_test:
       - eval_time: 8m
-        alertname: RouterGroupOnly429
+        alertname: RouterGroupJammed
         exp_alerts: []
       - eval_time: 25m
-        alertname: RouterGroupOnly429
+        alertname: RouterGroupJammed
         exp_alerts:
           - exp_labels:
               severity: nish
-              model_group: senior
+              requested_model: senior
             exp_annotations:
-              summary: "Router group senior answers only 429"
-              description: "Every call to senior failed as a rate limit for 10 minutes and no row succeeded. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+              summary: "Router group senior fails nearly every call"
+              description: "90% or more of the calls to senior failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."

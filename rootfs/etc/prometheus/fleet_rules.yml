@@ -311,22 +311,22 @@ groups:
           summary: "More than 5% of worker-capable calls are failing"
           description: "worker-capable chat calls are reaching the caller as errors. Compare litellm_deployment_failure_responses_total by model_id for the row that keeps failing."
 
-      # A group whose every answer is a 429 for 10 minutes while none of its rows succeeded (fleet-ops#10694): the
-      # signature of leaked max_parallel_requests slots ("all slots in use" is a RateLimitError that never reaches
-      # the provider), which jammed both senior rows from 11:05Z to 13:57Z on 2026-10-28 until a router restart. A
-      # provider wall reads the same, and that is a dead group too. Failures count per model_group, with or without a
-      # model_id (RouterRateLimitError carries none); the unless drops any group with one success in the window.
-      - alert: RouterGroupOnly429
+      # A model group whose requests nearly all fail for 10 minutes (fleet-ops#10694): the signature of leaked
+      # max_parallel_requests slots, which jammed the senior rows on 2026-10-28 until a router restart. The proxy-level
+      # counters are used because the router's own "all slots in use" rejection never reaches a deployment, so it has no
+      # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
+      # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
+      - alert: RouterGroupJammed
         expr: |
-          (sum by (model_group) (increase(litellm_deployment_failure_responses_total{exception_class=~".*RateLimitError"}[10m])) > 0
-            unless sum by (model_group) (increase(litellm_deployment_success_responses_total[10m])) > 0)
-          and on() (up{job="litellm"} == 1)
+          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total[10m]))
+            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 0.9)
+          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 3)
         for: 10m
         labels:
           severity: nish
         annotations:
-          summary: "Router group {{ $labels.model_group }} answers only 429"
-          description: "Every call to {{ $labels.model_group }} failed as a rate limit for 10 minutes and no row succeeded. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+          summary: "Router group {{ $labels.requested_model }} fails nearly every call"
+          description: "90% or more of the calls to {{ $labels.requested_model }} failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
 
   - name: fleet_router_downgrade
     interval: 5m

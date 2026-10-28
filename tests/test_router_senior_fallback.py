@@ -76,15 +76,11 @@ def test_live_config_senior_is_glm_only_with_no_fallback():
     assert not any("pareto" in row["litellm_params"].get("api_base", "") for row in cfg["model_list"])
 
 
-def test_synthetic_key_stays_under_its_measured_concurrency():
-    rows = [row for row in _config()["model_list"]
-            if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
-    assert sum(row["litellm_params"].get("max_parallel_requests", 0) for row in rows) <= 8
-
-
-def test_senior_rows_carry_no_slot_cap():
-    # fleet-ops#10694: v1.105.0 never releases a stream's slot when the client is gone before the first chunk
-    rows = [row for row in _config()["model_list"] if row["model_name"] == "senior"]
+def test_synthetic_and_zai_rows_carry_no_slot_cap():
+    # fleet-ops#10694: v1.105.0 never releases a stream's slot when the client is gone before the first chunk;
+    # these two providers answer their own 429, so no row of theirs holds a slot count
+    bases = ("https://api.synthetic.new/openai/v1", "https://api.z.ai/api/coding/paas/v4")
+    rows = [row for row in _config()["model_list"] if row["litellm_params"].get("api_base") in bases]
     assert rows and all("max_parallel_requests" not in row["litellm_params"] for row in rows)
 
 
@@ -160,15 +156,18 @@ class _StreamHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-@pytest.mark.parametrize("read_first_chunk", [False, True])
-def test_a_senior_row_answers_after_a_client_drops_its_stream(read_first_chunk):
-    # fleet-ops#10694: with the live senior litellm_params (no slot cap), a stream abandoned before
-    # its first chunk or after it leaves the row free for the next call.
+@pytest.mark.parametrize("cap, read_first_chunk", [(None, False), (None, True), (1, True)])
+def test_a_row_answers_after_a_client_drops_its_stream(cap, read_first_chunk):
+    # fleet-ops#10694: with the live senior litellm_params (no slot cap) a stream abandoned before or after
+    # its first chunk leaves the row free; a max_parallel_requests=1 row does too once the client read a chunk
+    # and closed. (cap 1, dropped unread) is the v1.105.0 leak and is not a test: it fails on that version.
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _StreamHandler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     live = next(r for r in _config()["model_list"] if r["model_name"] == "senior")["litellm_params"]
     params = {k: v for k, v in live.items() if k not in ("api_base", "api_key", "model", "tags")}
+    if cap:
+        params["max_parallel_requests"] = cap
     params.update({"model": "openai/glm", "api_base": f"http://127.0.0.1:{srv.server_address[1]}", "api_key": "k"})
     saved = litellm.callbacks
     litellm.callbacks = []
