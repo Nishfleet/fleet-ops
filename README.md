@@ -22,6 +22,10 @@ script, or prompt lands unseen.
 - `ansible/update.yml` — the daily safe full update of the box (see
   [Daily update](#daily-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
+- `mac/` — the Mac's daily `topgrade` job: `com.nish.topgrade.plist` (the
+  launchd agent) and `topgrade.toml` (the steps it runs, see
+  [Mac daily update](#mac-daily-update)). `tests/test_mac_topgrade.py` pins
+  both.
 - `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
   token per repo and writes it into that repo's GitHub Actions secret, replaced
   every 30 days. Its README says how to apply, rotate and delete it.
@@ -659,6 +663,11 @@ one standing session. Each request from the phone or a claude.ai/code project
 relay then gets its own session with a fresh context. The one standing session
 it replaces was measured at $52.0 over 21.0 h with a 69k average context; the
 number after the restart is the real test.
+The staged file as of 2026-10-28 (#9438) adds `--capacity 1`, so one session
+runs at a time: in `same-dir` mode every session edits `~/workspaces`, and bursts
+of up to 10 sessions could overwrite each other. A second request is refused or
+queued. Drop the flag to go back to the default of 32. `~/.claude/projects` needs
+no fleet pruning: Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`).
 
 - Apply a staged change to it. Nish does this, because it cuts the phone link
   for about a minute:
@@ -676,6 +685,44 @@ number after the restart is the real test.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
+## Mac daily update
+
+`mac/` is the Mac counterpart of [Daily update](#daily-update), owned by Nish.
+A launchd agent runs `topgrade` once a day at 04:30 local time, at low priority
+and with no prompts, and reads the config installed with it. Homebrew formulae
+and casks are left to `brew autoupdate`, so the steps the job does run are the
+`disable` and `commands` lists in `mac/topgrade.toml`. Neither file carries an
+absolute home path: launchd does not expand `~`, so the plist names only system
+paths, and `~` appears only in the custom commands, which topgrade runs through
+a shell. `tests/test_mac_topgrade.py` pins the schedule, the arguments, the
+steps and that rule; it reads the repo copy, so the diffs under "Check" below
+are what tie the Mac to it.
+
+It keeps the label the hand-written job used, so step 4's bootout is what
+removes that job.
+
+- Install it, or push a change to it:
+  1. `mkdir -p ~/.config ~/Library/LaunchAgents`
+  2. `install -m 0644 mac/topgrade.toml ~/.config/topgrade.toml`
+  3. `install -m 0644 mac/com.nish.topgrade.plist ~/Library/LaunchAgents/com.nish.topgrade.plist`
+  4. `launchctl bootout gui/$(id -u)/com.nish.topgrade 2>/dev/null` then
+     `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nish.topgrade.plist`
+     (bootout first: launchd reads a plist once, on load)
+- Check the Mac still runs the repo copy:
+  `diff mac/topgrade.toml ~/.config/topgrade.toml` and
+  `diff mac/com.nish.topgrade.plist ~/Library/LaunchAgents/com.nish.topgrade.plist`
+  both print nothing. `brew autoupdate status` shows the separate Homebrew job
+  is loaded, which is what covers formulae and casks.
+- Run it now: `launchctl kickstart -p gui/$(id -u)/com.nish.topgrade` prints the
+  pid and exits 0, and `launchctl print gui/$(id -u)/com.nish.topgrade` shows the
+  loaded job. The plist names no log file, because a log path is a home path, so
+  look for the run in the system log:
+  `log show --last 1d --predicate 'process == "topgrade"'`.
+- Switch it off: `launchctl bootout gui/$(id -u)/com.nish.topgrade` stops it and
+  leaves it unloaded until the next install.
+- Delete it: `launchctl bootout gui/$(id -u)/com.nish.topgrade`, then
+  `rm ~/Library/LaunchAgents/com.nish.topgrade.plist ~/.config/topgrade.toml`.
 
 ## Tether: our own always-on agent (fleet-ops#9980)
 
@@ -1086,6 +1133,38 @@ collector only writes `~/.beacon/endpoint/logs/runtime.jsonl` (mode 0600).
   a PR that deletes the file from `rootfs/` and adds its `/etc` path to `retired` in
   `ansible/host.yml`.
 
+## Claude plugin drop-ins
+
+`rootfs/etc/claude-code/managed-settings.d/60-nish-mods.json` and
+`80-inbox.json` are managed-settings drop-ins that carry only plugin state: an
+`extraKnownMarketplaces` entry that registers the marketplace the box reads the
+plugins from, and the `enabledPlugins` ids. A plugin id is `name@marketplace`, and
+a marketplace that no drop-in declares and the box has not registered leaves the
+id dead, so each drop-in names its own marketplace. `fleet-sync.service` fetches
+and fast-forwards the claude-mods clone, so the nish-mods directory marketplace is
+always at `origin/main` (a failure fails the unit).
+
+- `60-nish-mods.json` registers the nish-mods directory marketplace and enables
+  `model-lanes` (every subagent goes to the fleet workers) and `wake-check` (a
+  Stop hook blocks a turn that ends on a promise to continue later unless a
+  background wait is armed for the awaited condition).
+- `80-inbox.json` registers the inbox directory marketplace and enables `inbox`.
+  Its content is the file that was hand-written on the box, carried over as-is.
+
+Every `enabledPlugins` key merges with the hand-installed
+`/etc/claude-code/managed-settings.json`, which keeps its own `model-lanes` line:
+two files naming the same id with the same value is a no-op merge.
+
+- Verify: `claude -p hi --output-format stream-json --verbose` prints an init
+  line whose plugin list carries every enabled id.
+- Switch one plugin off: set its id to `false` in the drop-in and merge.
+- Switch a drop-in off: a PR that deletes the file from `rootfs/` and adds its
+  `/etc` path to `retired` in `ansible/host.yml`.
+- The check is the `unit` job's `tests/test_claude_managed_settings.py`: every
+  drop-in is a JSON object, every enabled id names a marketplace a drop-in
+  declares or the box has registered, and every id is listed in that
+  marketplace's own `marketplace.json` when the directory is on disk.
+
 ## Browser tool: Chrome DevTools MCP
 
 One free browser tool for every agent CLI on the box: the Chrome DevTools MCP
@@ -1113,7 +1192,7 @@ credential file does not hold them back.
 
 | Agent | How it gets the tool |
 |---|---|
-| Claude Code | `chrome-devtools` plugin in Nishfleet/claude-mods, enabled by `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`; `fleet-sync.service` fetches and fast-forwards the claude-mods clone (a failure fails the unit). Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
+| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
 | Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
 | OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
 | Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its output lacks the command or any argument; a CLI that is not installed is skipped. |
@@ -1123,13 +1202,13 @@ credential file does not hold them back.
 
 - The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
 - Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
-- Switch off for one agent: remove its task (for Claude Code set
-  `chrome-devtools@nish-mods` to `false` in `enabledPlugins`); `copy` never
+- Switch off for one agent: remove its task (Claude Code has no plugin left to
+  disable, so a worker lane that must lose the tool drops its `--mcp-config`
+  line); `copy` never
   deletes, so also add `/etc/opencode/opencode.json` to `retired` for OpenCode.
 - Delete it all: remove the OpenCode tasks and the tasks from "Create the Chrome
   DevTools MCP install directory" through "Add the chrome-devtools entry under
-  Hermes' mcp_servers" in `ansible/host.yml`, `config/chrome-devtools-mcp/`, the
-  `60-chrome-devtools.json` drop-in and
+  Hermes' mcp_servers" in `ansible/host.yml`, `config/chrome-devtools-mcp/` and
   `tests/test_chrome_devtools_mcp.py` with its `ci.yml` step, then
   `devin mcp remove` and `cmd mcp remove` the entry by hand.
 - The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
@@ -1149,7 +1228,9 @@ resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
 Ollama rungs serving only the permitted slug on the native provider
 (fleet-ops#8332, fleet-ops#9253), the Claude Code managed-settings drop-ins
 (each file under `rootfs/etc/claude-code/managed-settings.d/` is a JSON object
-and every `autoMode` array keeps `"$defaults"`), the litellm-proxy
+and every `autoMode` array keeps `"$defaults"`, and
+`tests/test_claude_managed_settings.py` adds that every enabled plugin id names a
+marketplace the box knows), the litellm-proxy
 schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.json`, and every
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
@@ -1209,8 +1290,9 @@ So a repair PR for a broken dispatcher cannot get the dispatcher's review. `agen
 only through `workflow_call`, and `agent-dispatch.yml` is its only caller, so while that caller fails
 at startup the `review` job never runs. What works is an approver's unedited
 `coordinator-approval: <head sha>` comment, the line the `coordinator-approval` check and
-`hold-risky` read, which is how #10194 landed. Giving `agent.yml` a `workflow_dispatch` route that
-takes `review_pr` and `review_sha` would remove the deadlock, and is tracked on #10199.
+`hold-risky` read, which is how #10194 landed. `agent.yml`'s `workflow_dispatch` now takes
+`review_pr` and `review_sha`, so the reviewer runs by hand from `main` (fleet-ops#10199;
+docs/ARCHITECTURE.md has the command), and the deadlock is gone.
 
 `.github/workflows/lighthouse.yml` is the fleet's one Lighthouse speed budget, stock LHCI
 assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
@@ -1339,7 +1421,9 @@ Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
-  newly stubbed repo cannot sit off by omission.
+  newly stubbed repo cannot sit off by omission. Start one by hand with
+  gh workflow run agent-dispatch.yml -f task=orchestrate -f issue=<N>
+  (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
   Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
@@ -1507,7 +1591,14 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   ids back as a `needs-nish-decision` line (the unit decides, not the model; MiniMax is marked flat
   on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly
   limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for
-  one DeepSeek flash model only, so they are not marked). Then an eval-score before any router weight
+  one DeepSeek flash model only, so they are not marked; the Alibaba Token Plan stays unmarked on
+  purpose, so its added ids get no call at all: its billing, credit ceiling and judge-only row are
+  recorded in the router config header (fleet-ops#9220) and in Nish's ruling on that seat
+  (fleet-ops#4445, "this token plan isn't for use with other models"), so a probe of another ID
+  spends the judge lane's own allowance on a model that can carry no row. Nish kept the plan on
+  2026-10-28 and left the classification to the agents (fleet-ops#9914): the agents implement that
+  kept plan here, and any future spend, renewal or plan change stays a `needs-nish-decision` line.
+  Then an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), and a plain
   `needs-nish-decision` line for anything that costs money or needs his login.

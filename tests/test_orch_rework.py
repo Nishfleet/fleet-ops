@@ -19,6 +19,7 @@ case "$*" in
   "api --paginate"*) printf '%b' "$GH_REVIEWS" ;;
   "issue view"*) echo "$GH_LABELS" ;;
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
+  "api repos/"*"/issues/"*) echo 0 ;;
   "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; echo "$GH_OPEN_PRS" ;;
 esac
 exit 0
