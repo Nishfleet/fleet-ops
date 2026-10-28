@@ -984,6 +984,14 @@
           - claude.db*
           - opencode.db*
           - grafana.db*
+        # SQLite creates and removes its own -journal, -wal and -shm files while
+        # it writes, so a listing can catch one and the chmod below then fail
+        # with 'is absent' (fleet-ops#10390). Skip them: SQLite gives a new one
+        # the mode of the main database, so the main file's 0600 covers it.
+        excludes:
+          - "*-journal"
+          - "*-wal"
+          - "*-shm"
         file_type: file
       register: agent_state_dbs
 
@@ -997,11 +1005,6 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
-      register: agent_state_db_chmod
-      # SQLite deletes its -journal, -wal and -shm files on its own, so one
-      # found a moment ago can be gone by now (fleet-ops#10388). Only that
-      # error is ignored; any other failure still fails the run.
-      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
