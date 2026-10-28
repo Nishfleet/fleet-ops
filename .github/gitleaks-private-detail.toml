@@ -127,6 +127,13 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
+description = "The router quadlet lists one EnvironmentFile= line per seat file it serves (a unit line cannot carry gitleaks:allow), and its test reads those lines back; fleet-ops#10451. Only the seats directory is allowed"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)(containers/quadlet/fleet-litellm-proxy\.container|tests/test_litellm_proxy_seat_keys\.py)$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
