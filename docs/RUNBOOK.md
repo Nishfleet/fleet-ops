@@ -51,11 +51,18 @@ inactive` and nothing unloads it. `reset-failed` is the only thing that clears
 it.
 
 What the launcher rule in AGENTS.md "Session-outliving work" changes is the
-detector, not the leftover. It launches a system unit as nish, and
-node_exporter reads only the system bus, so a failed system unit fires
-`SystemUnitFailed` and becomes a fix job, while a failed user unit has no
-detector at all. A leftover still needs a hand `reset-failed`; the difference
-is that somebody hears about it.
+detector, not the leftover. It launches a system unit as nish. node_exporter
+reads only the system bus, so a failed system unit fires `SystemUnitFailed`
+and becomes a fix job. A failed user unit is not scraped: of the 212 unit
+names node_exporter exposes, not one is a user-manager unit, and
+`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+are all absent from them. A user unit's one other route is
+`OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
+carries and which instantiates a system unit node_exporter does scrape. That
+route is dormant on this box, because the reconcile URL file it reads is mode
+000, root-owned and empty, so the unit SKIPs and exits 0. What hears about a
+failed user unit today is the daily update, and nothing else. A leftover still
+needs a hand `reset-failed`; the difference is that somebody hears about it.
 
 To read a leftover before clearing it, `show` is the one-line form (`status`
 prints the flag too, inside its `Loaded:` and `Transient:` lines, which is not
@@ -66,11 +73,13 @@ something a script can read):
 
 Then one line clears it: `systemctl --user reset-failed <unit>`.
 
-The failed-unit check itself is green on a real run: the last three daily
-updates all reported `failed units: []`. Two of them still ended red on other
-checks (runners resumed, one tool update failed), which is the check doing its
-job. A leftover that appears between runs is named by the next run, and only a
-hand `reset-failed` clears it.
+The failed-unit check itself has not been what turned a run red lately. The
+three most recent runs that reported it all read `failed units: []`, and all
+three ended red on other checks (an unpinned pi extension, runners resumed,
+one tool update failed), which is the check doing its job. A green run does not
+print the list at all, because the string only exists in the assert's failure
+message. A leftover that appears between runs is named by the next run, and
+only a hand `reset-failed` clears it.
 
 ## Deploy and wiring
 
@@ -117,7 +126,7 @@ manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
 a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
 `EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
-because a failed user unit has no detector: node_exporter reads only the system
+because a failed user unit is not scraped: node_exporter reads only the system
 bus, so a failed `--user` unit fires no alert and only the daily update sees it
 ("The failed-unit check and leftover ad-hoc units" above). Not from an
 interactive shell either (README, "systemd by default").
