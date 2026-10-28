@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes backend server for Desktop app (Tailscale-only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=nish
+EnvironmentFile=/home/nish/.hermes/secrets.env
+Environment="HOME=/home/nish"
+Environment="HERMES_HOME=/home/nish/.hermes"
+Environment="PATH=/home/nish/.hermes/tools/node-26.7.0-linux-x64/bin:/home/nish/.hermes/tools/npm-12.0.2-linux-x64/bin:/home/nish/.hermes/hermes-agent/node_modules/.bin:/home/nish/.hermes/node/bin:/home/nish/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+WorkingDirectory=/home/nish/.hermes
+ExecStart="/home/nish/.hermes/hermes-agent/.hermes/bin/hermes" "serve" "--host" "100.108.184.97" "--port" "9119"
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target
