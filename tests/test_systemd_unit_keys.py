@@ -1274,6 +1274,29 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
 
 
+TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
+TINCAN_RELAY_DIST_DROPIN = '"{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"'
+TINCAN_RELAY_DIST_DROPIN_DIR = '"{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"'
+
+
+def test_tincan_relay_ships_dist_and_the_temporary_dropin_is_retired() -> None:
+    exec_start = [line for line in TINCAN_RELAY_UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    assert exec_start, "tincan-relay.service has no ExecStart"
+    assert "--dist %S/tincan-relay/dist" in exec_start[-1], "relay-upgrade --from-github 404s without --dist"
+    assert "--release-url https://github.com/mvanhorn/agent-tincan/releases/download" in exec_start[-1], (
+        "relay-upgrade --from-github needs the release URL"
+    )
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    assert f"- {TINCAN_RELAY_DIST_DROPIN}\n" in retired.group(1), (
+        "the hand-placed --dist drop-in restates the shipped unit and must be deleted"
+    )
+    assert f"- {TINCAN_RELAY_DIST_DROPIN_DIR}\n" not in retired.group(1), (
+        "retire the file, not the directory: a later drop-in there must survive"
+    )
+
+
 def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
     for rel in BOX_ONLY_DROPINS:
         for base in (ROOT / "rootfs/etc/systemd/system", ROOT / "rootfs/etc/systemd/user", ROOT / "systemd"):

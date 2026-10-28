@@ -158,6 +158,13 @@
       # manager is reloaded below so it forgets the drop-in, and gpg-agent picks
       # the installed one up at its next start.
       - "{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
+      # tincan-relay's temporary --dist drop-in (#10255): it restated the --dist
+      # that #9961 added to the shipped unit, and that change landed as #10642
+      # (merge 77eb5719), so the drop-in is redundant. The file, not the
+      # directory: a retired path is deleted, and the directory stays for the
+      # next drop-in. The user manager is reloaded below so it drops the cached
+      # drop-in and reads the shipped unit's --dist.
+      - "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
       # The old hand-placed Alertmanager config (#10146): the running service
       # reads /etc/alertmanager/alertmanager.yml, which the repo ships, and the
       # only reader of this copy was the first-run chat-id seed, removed below.
