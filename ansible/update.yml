@@ -1,4 +1,4 @@
-# Weekly full update of the fleet box. fleet-update.service runs this as root
+# Daily full update of the fleet box. fleet-update.service runs this as root
 # through ansible-pull, the same way fleet-host-config.service runs host.yml.
 #
 # Order, and why:
@@ -7,16 +7,27 @@
 #              its hold-risky guard keeps running), stop the user timers that
 #              start work, wait until no runner has a job (agent jobs time out
 #              at 60 min), then stop the runner services so no CI job lands
-#              on a half-upgraded box.
-#   2. prune   apt's download cache, Docker containers stopped for a day,
-#              dangling images and old build cache, the npm and uv caches.
+#              on a half-upgraded box. With the box quiet, take one restic
+#              snapshot through restic-r2-backup.service (which dumps the
+#              LiteLLM database itself): no step below runs without a
+#              restorable state, and a missing or failed backup fails the
+#              run rather than being skipped quietly (fleet-ops#9965).
+#   2. prune   apt's download cache, stopped Docker containers created over a
+#              day ago (never a Cua-managed one), dangling images and old
+#              build cache, the npm and uv caches.
 #              Before the update, so the downloads have room. Volumes, repos,
 #              worktrees and backups are never touched.
 #   3. update  Every Ubuntu package (apt dist-upgrade), old kernels and unused
 #              packages after it, a service restart for what still runs old
 #              libraries (needrestart), then each user-level tool through its
-#              own official updater and the redis container through
-#              `podman auto-update`.
+#              own official updater (Hermes on its stable channel with its
+#              services restarted, tincan with its idle listeners restarted,
+#              the npm and uv tools (yt-dlp is a uv tool and must never
+#              self-update: that replaced its running binary and broke it,
+#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and the
+#              redis container through
+#              `podman auto-update`. Stale npm staging dirs go first, so
+#              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -40,10 +51,10 @@
 # aiostreams. Only fleet-litellm-redis (a cache) carries AutoUpdate=registry, so
 # `podman auto-update` below moves it inside this paused window. podman reads
 # that label from the running container, so redis needs one restart in this
-# window before the first weekly run does anything:
+# window before the first scheduled run does anything:
 # `systemctl --user restart fleet-litellm-redis.service` as nish. Skipped on
-# purpose: GitHub runners (they update themselves), syncthing (built-in
-# auto-upgrade), and the raw binaries in ~/.local/bin that have no updater.
+# purpose: GitHub runners (they update themselves) and the raw binaries in
+# ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -76,6 +87,9 @@
       HOME: /home/nish
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # tincan has no default relay: it reads one from a config file named by
+    # this variable. Any joined agent's config carries the same relay.
+    tincan_env_config: "{{ nish_env.HOME }}/.config/tincan/claude-vps.json"
     # Each runs as nish with its own stdin; a failure is reported at the end,
     # never skipped quietly. devin is updated by its official installer, the
     # same script that installed it (the version dir's `distribution` file
@@ -104,11 +118,30 @@
         stdin: ""
       - argv: [rclone, selfupdate]
         stdin: ""
+    cua_cli: /opt/Cua Spaces/resources/native/cua
+    cua_release_prefix: cua-spaces-v
+    # A Cua Spaces release is taken only once it is this many hours old.
+    cua_min_age_hours: 72
+    # Set to an exact release tag (for example with `-e cua_spaces_tag=...`) to
+    # install that one instead, skipping the age gate. For a release that
+    # passed a staged test after 24 h. Empty = take the newest aged release.
+    cua_spaces_tag: ""
+    cua_desk_space: local:desk
+    cua_desk_agent_dir: agents/desk
+    cua_package_dir: /var/lib/fleet-ops/cua-spaces
     # Versioned before and after the update, and the report pairs the two
     # lists by position. pi is not in this list on purpose: `pi --version`
     # passes even when every pi start dies on a broken extension
     # (fleet-ops#9262), so pi's check is the real call below.
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan]
+    # Apps with their own update tasks below, read before and after like
+    # version_checks (tincan has no --version flag).
+    app_version_checks:
+      - [hermes, --version]
+      - [tincan, version]
+    # Hermes's own install dir keeps a driver the owner declined; an update or
+    # an install must never bring it back.
+    hermes_banned_tool_glob: "cua-driver-*"
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -233,6 +266,36 @@
           loop: "{{ runner_units.stdout_lines | map('split') | map('first') | list }}"
           register: runners_stopped
 
+        # The safety net before the first update step: a restic snapshot of
+        # the box as it stands, so every change below has a restorable state
+        # to return to (fleet-ops#9965). The service's own ConditionPathExists
+        # would skip it silently, so the env file is checked first; a failed
+        # or unconfigured backup fails the run here (the always: block below
+        # still resumes the fleet). The service dumps the LiteLLM database in
+        # its own ExecStartPre; this run adds no separate dump.
+        - name: Back the box up before anything changes
+          block:
+            - name: Check the backup's configuration
+              ansible.builtin.stat:
+                path: /etc/restic/netcup-r2.env
+              register: backup_env
+
+            - name: Refuse to update a box that cannot be restored
+              ansible.builtin.assert:
+                quiet: true
+                that: backup_env.stat.exists
+                fail_msg: >-
+                  restic-r2-backup.service is not configured
+                  (/etc/restic/netcup-r2.env is missing), so no update step
+                  rolls forward.
+
+            - name: Run the backup and wait for it to finish
+              ansible.builtin.command:
+                argv: [systemctl, start, restic-r2-backup.service]
+              register: pre_update_backup
+              timeout: 3600
+              changed_when: true
+
         - name: Record tool versions before the update
           become: true
           become_user: nish
@@ -241,6 +304,17 @@
             argv: ["{{ item }}", --version]
           loop: "{{ version_checks }}"
           register: versions_before
+          changed_when: false
+          failed_when: false
+
+        - name: Record Hermes and tincan versions before the update
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: "{{ item }}"
+          loop: "{{ app_version_checks }}"
+          register: app_versions_before
           changed_when: false
           failed_when: false
 
@@ -256,9 +330,14 @@
           ansible.builtin.apt:
             autoclean: true
 
-        - name: Prune Docker containers stopped for over a day
+        # until=24h filters on a container's creation time, not on when it
+        # stopped, so a long-lived container stopped minutes ago still goes.
+        # Cua-managed containers are kept: a reboot leaves Cua's desk sandbox
+        # stopped (restart policy no), and this prune deleted it on 2026-10-18,
+        # so the daily walks failed until its Space was recreated on 10-21.
+        - name: Prune stopped Docker containers created over a day ago, except Cua's
           ansible.builtin.command:
-            argv: [docker, container, prune, --force, --filter, until=24h]
+            argv: [docker, container, prune, --force, --filter, until=24h, --filter, "label!=ai.cua.managed=true"]
           register: prune_containers
           changed_when: "'Total reclaimed space: 0B' not in prune_containers.stdout"
 
@@ -328,6 +407,55 @@
           register: needrestart_run
           changed_when: "'Restarting services' in needrestart_run.stdout"
 
+        - name: Find where npm keeps global packages
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [npm, root, --global]
+          register: npm_global_root
+          changed_when: false
+
+        # npm leaves two kinds of hidden dir behind: `.name-stage-*` while it
+        # installs and `.name-old-*` (the retired copy) when a self-update stops
+        # between the swap and the cleanup. The second failed the 2026-10-28 run.
+        # No age filter: a dir younger than a minute (command-code self-updates
+        # on start) failed the run on 2026-10-21. Instead, when staging dirs exist,
+        # fail loud if an npm install, update or ci runs as nish, so a live npm's
+        # dir is never removed. `npm exec` is not that activity: the long-lived MCP
+        # servers run as `npm exec @modelcontextprotocol/server-filesystem ...`, so
+        # matching every npm made this check fail the 2026-10-23 runs and aborted
+        # the rest of the block with it.
+        - name: Find stale npm staging dirs a stopped self-update left behind
+          ansible.builtin.find:
+            paths: "{{ npm_global_root.stdout }}"
+            patterns: [".*-stage-*", ".*-old-*"]
+            file_type: directory
+            hidden: true
+          register: npm_stage_dirs
+
+        - name: Check that no npm install or update runs as nish before its staging dirs go
+          become: true
+          become_user: nish
+          ansible.builtin.command:
+            argv: [pgrep, -u, nish, -f, '(^|/)npm (i|install|ci|update)( |$)|npm-cli\.js (i|install|ci|update)( |$)']
+          register: npm_running
+          failed_when: npm_running.rc not in [0, 1]
+          changed_when: false
+          when: npm_stage_dirs.matched > 0
+
+        # The run is recorded, not raised here: an assert in this block skipped
+        # every later step, so 2026-10-23 reported a pi smoke failure that never
+        # ran. The final assert still fails the run when this one did.
+        - name: Remove them, because npm reads each as an invalid package name
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ npm_stage_dirs.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+          when: "(npm_running | default({'rc': 1})).rc | default(1) == 1"
+
         - name: Update each user-level tool through its own updater
           become: true
           become_user: nish
@@ -341,6 +469,386 @@
           timeout: 600
           register: tool_results
           ignore_errors: true
+
+        # Hermes updates through its stock updater on the stable channel, with
+        # Hermes's own configured pre-update backup. The gateway and the desktop backend are system
+        # services that keep running the old code until restarted, so they are
+        # restarted below, only when the version moved. --no-gateway-restart
+        # leaves that to systemd instead of to Hermes.
+        - name: Update Hermes on the stable channel
+          become: true
+          become_user: nish
+          environment: "{{ nish_env | combine({'HERMES_HOME': nish_env.HOME ~ '/.hermes'}) }}"
+          ansible.builtin.command:
+            argv: [hermes, update, --channel, stable, --no-gateway-restart, --yes]
+            stdin: ""
+          register: hermes_update
+          timeout: 1800
+          ignore_errors: true
+
+        - name: Read the Hermes version after its update
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [hermes, --version]
+          register: hermes_version_after
+          changed_when: (hermes_version_after.stdout | default('') | trim) != (app_versions_before.results[0].stdout | default('') | trim)
+          failed_when: false
+
+        - name: Find the banned tools Hermes has installed
+          ansible.builtin.find:
+            paths: "{{ nish_env.HOME }}/.hermes/tools"
+            patterns: "{{ hermes_banned_tool_glob }}"
+            file_type: any
+          register: hermes_banned_tools
+
+        - name: Remove them, and list them in the report
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ hermes_banned_tools.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+          register: hermes_banned_removed
+          ignore_errors: true
+
+        - name: Restart the Hermes services on the new code
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: restarted
+          loop: [hermes-gateway.service, hermes-serve.service]
+          when: hermes_version_after is changed and not (hermes_update.failed | default(false))
+          register: hermes_restart
+          ignore_errors: true
+
+        # tincan upgrade replaces the binary next to the old one and renames it
+        # over, so a running listener keeps the old build until it restarts.
+        # A listener whose cgroup holds more than its own process is mid-job
+        # (a headless agent session drains the inbox in it), so it is left for
+        # the next run instead of being killed.
+        - name: Update tincan
+          become: true
+          become_user: nish
+          environment: "{{ nish_env | combine({'TINCAN_CONFIG': tincan_env_config}) }}"
+          ansible.builtin.command:
+            argv: [tincan, upgrade]
+            stdin: ""
+          register: tincan_upgrade
+          changed_when: false
+          timeout: 300
+          ignore_errors: true
+
+        - name: Read the tincan version after its upgrade
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [tincan, version]
+          register: tincan_version_after
+          changed_when: (tincan_version_after.stdout | default('') | trim) != (app_versions_before.results[1].stdout | default('') | trim)
+          failed_when: false
+
+        - name: List the tincan listener units
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: set -o pipefail; systemctl --user list-units 'tincan-listen-*.service' --plain --no-legend | awk '{print $1}'
+          register: tincan_units
+          changed_when: false
+          when: tincan_version_after is changed
+
+        - name: Read each listener's control group
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [systemctl, --user, show, -p, ControlGroup, --value, "{{ item }}"]
+          loop: "{{ (tincan_units | default({})).stdout_lines | default([]) }}"
+          register: tincan_cgroups
+          changed_when: false
+          ignore_errors: true
+
+        # A listener's cgroup lists its own process and, while it drains the
+        # inbox, the headless agent session too. One pid means idle. A failed
+        # listener has an empty group and is skipped; the failed-units check
+        # at the end reports it.
+        - name: Read the processes in each listener's control group
+          ansible.builtin.slurp:
+            src: "/sys/fs/cgroup{{ item.stdout | trim }}/cgroup.procs"
+          loop: "{{ (tincan_cgroups | default({})).results | default([]) | selectattr('stdout', 'defined') | rejectattr('stdout', 'equalto', '') | list }}"
+          loop_control:
+            label: "{{ item.item }}"
+          register: tincan_procs
+          ignore_errors: true
+
+        - name: Name the idle listeners
+          ansible.builtin.set_fact:
+            tincan_idle: >-
+              {% set ns = namespace(idle=[]) %}{% for r in tincan_procs.results | default([]) if r.content is defined %}{% if (r.content | b64decode).split() | length == 1 %}{% set ns.idle = ns.idle + [r.item.item] %}{% endif %}{% endfor %}{{ ns.idle }}
+
+        - name: Restart the idle tincan listeners on the new build
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [systemctl, --user, restart, "{{ item }}"]
+          loop: "{{ tincan_idle | default([]) }}"
+          register: tincan_listeners
+          ignore_errors: true
+
+        # syncthing upgrade exits 4 once it has replaced the binary and 2 when
+        # none is newer. The unit runs with --no-upgrade, so the new binary
+        # only runs after the restart below.
+        - name: Upgrade syncthing through its own upgrader
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [syncthing, upgrade, "--home={{ nish_env.HOME }}/.config/syncthing"]
+            stdin: ""
+          register: syncthing_upgrade
+          changed_when: syncthing_upgrade.rc == 4
+          failed_when: syncthing_upgrade.rc not in [0, 4] and 'no upgrade available' not in (syncthing_upgrade.stdout ~ syncthing_upgrade.stderr)
+          timeout: 600
+          ignore_errors: true
+
+        - name: Restart syncthing on its new binary
+          ansible.builtin.command:
+            argv: [systemctl, --user, --machine=nish@.host, restart, syncthing.service]
+          when: syncthing_upgrade is changed
+
+        # Cua Spaces has no apt repository, so its newest stable release that is
+        # at least cua_min_age_hours old (or the tag pinned in cua_spaces_tag)
+        # is fetched, checked against that release's checksums and installed. The
+        # daemon that hosts the persistent desk agent runs the old binary until
+        # it restarts, and its Space has no working Volume mount afterwards, so
+        # the Space is deleted and created again. The agent's files live in
+        # the Cua Volume on the host: they are read before the delete (the
+        # update stops when they are not there), archived once per upgrade, and
+        # read again after the create. A run in any state but idle holds the
+        # update back until the next day. Any failure is recorded and fails the
+        # run at the final assert.
+        - name: Update Cua Spaces and recreate the desk Space
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          block:
+            - name: Read the installed Cua Spaces version
+              ansible.builtin.command:
+                argv: [dpkg-query, --show, --showformat, "${Version}", cua-spaces]
+              register: cua_installed
+              changed_when: false
+              failed_when: cua_installed.rc not in [0, 1]
+
+            - name: Find the newest stable Cua Spaces release old enough to take
+              ansible.builtin.command:
+                argv:
+                  - gh
+                  - release
+                  - list
+                  - --repo
+                  - trycua/cua
+                  - --limit
+                  - "50"
+                  - --json
+                  - tagName,isPrerelease,publishedAt
+                  - --jq
+                  - '[.[] | select((.tagName | startswith("{{ cua_release_prefix }}")) and (.isPrerelease | not) and ((.publishedAt | fromdateiso8601) <= (now - {{ cua_min_age_hours }} * 3600)))][0].tagName // ""'
+              register: cua_release
+              changed_when: false
+              failed_when: cua_release.rc != 0 or (cua_release.stdout | trim | length) == 0
+              when: cua_spaces_tag | length == 0
+
+            - name: Name the release
+              ansible.builtin.set_fact:
+                cua_tag: "{{ cua_spaces_tag if cua_spaces_tag | length > 0 else cua_release.stdout | trim }}"
+                cua_target: "{{ (cua_spaces_tag if cua_spaces_tag | length > 0 else cua_release.stdout | trim) | regex_replace('^' ~ cua_release_prefix, '') }}"
+
+            # Strictly greater only, for the age-gated pick and for a pin alike,
+            # so the update never downgrades. An empty installed version (not
+            # installed) compares lower than any release.
+            - name: Compare it with the installed version the way dpkg does
+              ansible.builtin.command:
+                argv: [dpkg, --compare-versions, "{{ cua_target }}", gt, "{{ cua_installed.stdout }}"]
+              register: cua_compare
+              changed_when: false
+              failed_when: cua_compare.rc not in [0, 1]
+
+            - name: Say whether a newer release exists
+              ansible.builtin.set_fact:
+                cua_newer: "{{ cua_compare.rc == 0 }}"
+
+            - name: Create the download directory
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}"
+                state: directory
+                mode: "0755"
+              when: cua_newer
+
+            - name: Download the package, checked against the release checksums
+              become: false
+              ansible.builtin.get_url:
+                url: "https://github.com/trycua/cua/releases/download/{{ cua_tag }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                dest: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                checksum: "sha256:https://github.com/trycua/cua/releases/download/{{ cua_tag }}/checksums.txt"
+                mode: "0644"
+              when: cua_newer
+
+            - name: Read the desk agent's files from the Volume before touching the Space
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_before
+              changed_when: false
+              failed_when: cua_volume_before.rc != 0 or 'CLAUDE.md' not in cua_volume_before.stdout
+              when: cua_newer
+
+            - name: Archive the Volume once per upgrade
+              ansible.builtin.archive:
+                path: "{{ nish_env.HOME }}/.cua/volume"
+                dest: "{{ nish_env.HOME }}/backups/cua-volume-{{ cua_installed.stdout }}-before-{{ cua_target }}.tgz"
+                format: gz
+              when: cua_newer
+
+            - name: List the runs in the desk Space just before the install
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", agent, ls, "{{ cua_desk_space }}", --json]
+              register: cua_runs
+              changed_when: false
+              when: cua_newer
+
+            - name: Decide whether to upgrade now
+              ansible.builtin.set_fact:
+                cua_desk_busy: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length > 0) }}"
+                cua_upgrade: "{{ cua_newer and (cua_runs.stdout | from_json | rejectattr('status', 'equalto', 'idle') | list | length == 0) }}"
+
+            - name: Install the package
+              become: false
+              ansible.builtin.apt:
+                deb: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: present
+                lock_timeout: 300
+              # The block's environment is nish's PATH, which has no sbin
+              # directory: dpkg then cannot find ldconfig or start-stop-daemon
+              # and the install fails (the 2026-10-23 run exited 2 on this).
+              environment:
+                DEBIAN_FRONTEND: noninteractive
+                PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+              when: cua_upgrade
+
+            - name: Restart the daemon that hosts the desk agent
+              ansible.builtin.command:
+                argv: [systemctl, --user, restart, cua-desk-daemon.service]
+              when: cua_upgrade
+
+            - name: Wait until the daemon answers
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_daemon_up
+              until: cua_daemon_up.rc == 0
+              retries: 15
+              delay: 2
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Delete the desk Space, whose Volume mount died with the old daemon
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, delete, "{{ cua_desk_space }}", --force]
+              when: cua_upgrade
+
+            - name: Create the desk Space again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ cua_desk_space | regex_replace('^local:', '') }}", --on, local]
+              when: cua_upgrade
+
+            - name: Read the desk agent's files from the Volume again
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", volume, ls, "{{ cua_desk_agent_dir }}"]
+              register: cua_volume_after
+              changed_when: false
+              failed_when: cua_volume_after.rc != 0 or 'CLAUDE.md' not in cua_volume_after.stdout
+              when: cua_upgrade
+
+            - name: Check the new desk Space has the Volume mounted
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, exec, "{{ cua_desk_space }}", "grep -c ' /volume ' /proc/mounts"]
+              register: cua_volume_mount
+              until: cua_volume_mount.rc == 0 and cua_volume_mount.stdout | trim == '1'
+              retries: 10
+              delay: 3
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Smoke-test a Space on the new version
+              when: cua_upgrade
+              block:
+                - name: Create a throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, create, linux, --name, update-smoke, --on, local]
+
+                - name: Run a command in it
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", sandbox, exec, "local:update-smoke", "echo smoke-ok"]
+                  register: cua_smoke
+                  changed_when: false
+                  failed_when: cua_smoke.rc != 0 or cua_smoke.stdout | trim != 'smoke-ok'
+              always:
+                - name: Delete the throwaway Space
+                  ansible.builtin.command:
+                    argv: ["{{ cua_cli }}", spaces, delete, "local:update-smoke", --force]
+                  ignore_errors: true
+
+            - name: Read the desk Space status
+              ansible.builtin.command:
+                argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+              register: cua_sandboxes
+              changed_when: false
+              failed_when: "(cua_sandboxes.stdout | from_json | selectattr('id', 'equalto', cua_desk_space) | selectattr('status', 'equalto', 'ready') | list | length) != 1"
+              when: cua_upgrade
+
+            - name: Check the relay host service is still up
+              ansible.builtin.command:
+                argv: [systemctl, --user, is-active, cua-spacesd-host.service]
+              changed_when: false
+              when: cua_upgrade
+
+            - name: Drop the downloaded package
+              become: false
+              ansible.builtin.file:
+                path: "{{ cua_package_dir }}/cua-spaces_{{ cua_target }}_amd64.deb"
+                state: absent
+              when: cua_newer
+          rescue:
+            - name: Record that the Cua Spaces update failed
+              ansible.builtin.set_fact:
+                cua_update_failed: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stderr | default('') }}"
+
+        # podman talks to the user manager on /run/user/<uid>/systemd/private. On
+        # 2026-10-21 that socket file stayed with no listener (connect refused),
+        # and every podman auto-update failed. A daemon-reexec of the user manager
+        # restores the listener and restarts no unit. It runs only when the probe
+        # below meets that refusal, so a healthy box is not touched.
+        - name: Probe the user systemd socket podman needs
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_socket_probe
+          changed_when: false
+          failed_when: false
+
+        - name: Re-exec the user systemd manager when podman is refused its socket
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [systemctl, --user, daemon-reexec]
+          when: podman_socket_probe.stderr is search('connection refused')
+          changed_when: true
 
         # The redis quadlet carries AutoUpdate=registry, so this pulls its newer
         # image and restarts the unit; a unit that fails to start is rolled
@@ -407,6 +915,17 @@
           register: plugin_results
           ignore_errors: true
 
+        - name: Record Hermes and tincan versions after the update
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: "{{ item }}"
+          loop: "{{ app_version_checks }}"
+          register: app_versions_after
+          changed_when: false
+          ignore_errors: true
+
         - name: Check each tool still starts
           become: true
           become_user: nish
@@ -416,6 +935,21 @@
           loop: "{{ version_checks }}"
           register: versions_after
           changed_when: false
+          ignore_errors: true
+
+        # The smoke call cannot pass while the router is still starting: `podman
+        # auto-update` above restarts the redis cache the proxy's readiness reads,
+        # and a call in that window fails on the connection, not on pi. Wait for
+        # the router first, bounded so a genuinely dead router still fails the run
+        # (60 x (10 s + 5 s timeout) = about 15 min, then recorded as a failure).
+        - name: Wait for the model router to answer before the smoke call
+          ansible.builtin.uri:
+            url: http://127.0.0.1:4000/health/readiness
+            timeout: 5
+          register: router_before_smoke
+          until: router_before_smoke.status == 200
+          retries: 60
+          delay: 10
           ignore_errors: true
 
         # A real call, not a version read: `pi update --all` moved an unpinned
@@ -452,6 +986,39 @@
               - '[.packages[] | select((startswith("git:") and (test("@[0-9a-f]{40}$") | not)) or (startswith("npm:") and (test("@[0-9]+[.][0-9]+[.][0-9]+$") | not)))] | .[]'
               - /home/nish/.pi/agent/settings.json
           register: unpinned_extensions
+          changed_when: false
+          ignore_errors: true
+
+        # GitHub's compare status is `diverged`, `ahead`, `behind` or `identical`
+        # (https://docs.github.com/en/rest/commits/commits#compare-two-commits):
+        # `behind` and `identical` pass, `ahead` and `diverged` fail, and no
+        # answer at all (404, no network, no gh login) fails too, because a
+        # check that waves itself through when it cannot run is not a check
+        # (fleet-ops#10144).
+        - name: Check every git extension pin is on its repo's default branch
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' "${HOME}/.pi/agent/settings.json") || {
+                echo "could not read the git pins from settings.json"; exit 1; }
+              bad=0
+              while IFS= read -r spec; do
+                [ -n "${spec}" ] || continue
+                repo=${spec#git:github.com/}; repo=${repo%@*}; sha=${spec##*@}
+                if status=$(gh api "repos/${repo}/compare/HEAD...${sha}" --jq .status 2>&1); then
+                  case "${status}" in
+                    identical|behind) ;;
+                    *) echo "${spec} is not on the default branch (${status})"; bad=1 ;;
+                  esac
+                else
+                  echo "no answer from GitHub for ${spec}: ${status}"; bad=1
+                fi
+              done <<< "${specs}"
+              exit "${bad}"
+          register: off_branch_pins
           changed_when: false
           ignore_errors: true
 
@@ -552,13 +1119,13 @@
             - name: Count the netcup runners GitHub sees online
               ansible.builtin.command:
                 argv: [gh, api, "{{ item }}", --paginate, --jq,
-                       '[.runners[] | select(.status == "online" and (.name | startswith("netcup-")))] | length']
+                       '.runners[] | select(.status == "online" and (.name | startswith("netcup-"))) | .name']
               loop:
                 # drive's runners are org runners since it moved to Nishfleet
                 # (2026-10-06); its repo endpoint now lists 0 and would fail this.
                 - orgs/Nishfleet/actions/runners
               register: online
-              until: online.stdout | int > 0
+              until: online.stdout_lines | length > 0
               retries: 20
               delay: 15
               changed_when: false
@@ -655,8 +1222,18 @@
               when: reboot_issue.stdout | int == 0
 
         - name: Report the run
+          vars:
+            tincan_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
           ansible.builtin.debug:
             msg:
+              # One plain line per update this run checked but did not apply,
+              # with the reason, so nothing is held back silently (#9965).
+              checked_not_applied: >-
+                {{ (['Cua Spaces ' ~ cua_target ~ ' not installed, ' ~ ((cua_installed | default({})).stdout | default('unknown')) ~ ' kept: a desk agent run was busy. The next run tries again.']
+                    if cua_desk_busy | default(false) | bool else [])
+                   + (tincan_busy | map('regex_replace', '^(.*)$', 'tincan listener \1 not restarted on the new build: it was not idle. The next upgrade restarts it.') | list)
+                   + (['Reboot not done: ' ~ ((reboot_pkgs | default({})).stdout_lines | default([]) | join(', ') | default('unknown packages', true)) ~ ' need it. Only Nish starts a reboot, from the open reboot issue.']
+                      if reboot_flag.stat.exists else []) }}
               dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
               stale_pause_cleared: "{{ (stale_cleared | default({})).results | default([]) | map(attribute='item') | list }}"
               dispatch_paused: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
@@ -677,9 +1254,23 @@
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
               versions_before: "{{ (versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
               versions_after: "{{ (versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
+              app_versions_before: "{{ (app_versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | map('trim') | list }}"
+              app_versions_after: "{{ (app_versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | map('trim') | list }}"
+              hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
+              hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
+              pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
+              tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
+              tincan_listeners_busy: "{{ tincan_busy }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
-              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout') | list }}"
+              runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
+              cua_spaces:
+                installed: "{{ (cua_installed | default({})).stdout | default('unknown') }}"
+                newest: "{{ cua_target | default('unknown') }}"
+                upgraded: "{{ cua_upgrade | default(false) }}"
+                desk_busy: "{{ cua_desk_busy | default('unknown') }}"
+              npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
+              git_pins_off_default_branch: "{{ (off_branch_pins | default({})).stdout_lines | default([]) | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
         - name: Fail loudly if any step or check went wrong
@@ -689,10 +1280,25 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
+              - "not (syncthing_upgrade | default({})).failed | default(false)"
+              - "cua_update_failed is not defined"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not (hermes_update | default({})).failed | default(false)"
+              - "not (hermes_restart | default({})).failed | default(false)"
+              - "not (tincan_upgrade | default({})).failed | default(false)"
+              - "not (pre_update_backup | default({})).failed | default(false)"
+              - "(hermes_banned_removed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tincan_cgroups | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tincan_procs | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(tincan_listeners | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(app_versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "(npm_running | default({'rc': 1})).rc | default(1) == 1"
               - "(pi_smoke | default({})).stdout | default('') is search('OK')"
+              - "not (router_before_smoke | default({})).failed | default(false)"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
               - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
+              - "(off_branch_pins | default({})).rc | default(0) == 0"
+              - "(off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
               - "(dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
               - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
@@ -707,8 +1313,12 @@
                  ~ '. Clear it with gh variable set FLEET_DISPATCH_PAUSED --body false --repo <repo>. '
                  if (dispatch_still_paused | default(['unknown']) | length > 0) else '' }}fleet-update finished with problems (runners resumed). Failed tools:
               {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
-              pi smoke reply: {{ (pi_smoke | default({})).stdout | default('no result', true) }};
+              Hermes update: {{ (hermes_update | default({})).stderr | default('ok') | truncate(300) }};
+              tincan upgrade: {{ (tincan_upgrade | default({})).stderr | default('ok') | truncate(300) }};
+              pi smoke: {{ (('reply ' ~ (pi_smoke.stdout | default('', true) | trim)) if (pi_smoke.stdout | default('', true) | trim) else ('no reply, stderr: ' ~ (pi_smoke.stderr | default('', true) | trim | truncate(300)))) if pi_smoke is defined else 'not run, an earlier step in the block failed' }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) if off_branch_pins is defined else 'not run, an earlier step in the block failed' }};
+              Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};

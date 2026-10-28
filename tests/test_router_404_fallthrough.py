@@ -13,14 +13,14 @@ row needed a SECOND 404 to park and leaked one 404 to a caller on every other
 pick.
 
 This test pins the mechanism against the pinned proxy image
-(ghcr.io/berriai/litellm:v1.98.0, containers/quadlet/fleet-litellm-proxy.container),
+(ghcr.io/berriai/litellm:v1.105.0, containers/quadlet/fleet-litellm-proxy.container),
 not against a mock of it:
 
   * _should_cooldown_based_on_deployment_policy returns None when the policy
     covers neither the exception type nor the model, which makes
     _should_cooldown_deployment fall through to the router-level policy
     (types/router.py, Router.get_allowed_fails_from_policy). That fall-through is
-    what lets one router-level key reach all 63 rows, every one of which carries
+    what lets one router-level key reach every row, each of which carries
     its own deployment-level allowed_fails_policy.
   * The cooldown a 404 applies is the ROW's own cooldown_time
     (_first_present(model_info, litellm_params, key="cooldown_time")), not the
@@ -38,8 +38,10 @@ candidate list, the next row in the group takes the job" path the fleet gets.
 With two rows on the same order, simple-shuffle picks between them and the test
 would be a coin flip.
 
-No network beyond 127.0.0.1, no Redis, no API key. Run:
-    python tests/test_router_404_fallthrough.py
+No network beyond 127.0.0.1, no Redis, no API key. Run on the proxy image's
+litellm (see containers/quadlet/fleet-litellm-proxy.container):
+    uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
+        python tests/test_router_404_fallthrough.py
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 pytest.importorskip("litellm")
 
@@ -194,7 +199,7 @@ def _production_router_settings(policy: dict) -> dict:
         "num_retries": settings["num_retries"],
         "allowed_fails_policy": policy,
         # The shipped fallbacks, so the test runs the same fall-through the fleet
-        # gets: worker-capable -> worker-cheap -> worker-capable. They never fire
+        # gets: worker-cheap -> worker-capable. They never fire
         # here - the group's own order-2 row catches every call before the group
         # can be exhausted - and this router defines no worker-cheap group, so
         # they are carried for shape only and must stay unreachable.
@@ -205,7 +210,7 @@ def _production_router_settings(policy: dict) -> dict:
 def _production_row_policy() -> dict:
     """The deployment-level allowed_fails_policy a real row carries.
 
-    All 63 rows in config/litellm-proxy.yaml carry one. If a future row does
+    Every row in config/litellm-proxy.yaml carries one. If a future row does
     not, the test names that row instead of silently testing an empty policy.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -528,10 +533,10 @@ def test_production_config_keeps_the_fallthrough_shape():
     rows that share one key share one quota wall, so a wall on that key parks
     both and leaves no peer; order filtering is applied after the cooldown
     filter in v1.98.0 router.py, see tests/test_router_order2_overflow.py) and
-    router_settings.fallbacks must carry the worker net both ways so a parked
-    lane is left, not retried. No order-2 worker row remains: the order-2
+    router_settings.fallbacks must carry worker-cheap -> worker-capable so a parked
+    cheap lane is left, not retried (worker-capable has no fallback, W10c). No order-2 worker row remains: the order-2
     overflow rows this test used to require were the xkiro free rows, removed
-    in fleet-ops#9711; the peers on other keys and the two-way fallback now
+    in fleet-ops#9711; the peers on other keys and the upward fallback now
     carry the job.
     """
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -547,7 +552,7 @@ def test_production_config_keeps_the_fallthrough_shape():
         )
 
     fallbacks = config["router_settings"]["fallbacks"]
-    assert {"worker-capable": ["worker-cheap"]} in fallbacks
+    assert not any("worker-capable" in f for f in fallbacks)
     assert {"worker-cheap": ["worker-capable"]} in fallbacks
 
 

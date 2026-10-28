@@ -2,15 +2,20 @@ import json
 import pathlib
 import shutil
 import subprocess
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
 
 
-def _router_rows():
+def _model_list():
     assert YQ, "yq must be on PATH to read the router config"
     out = subprocess.run([YQ, "-o=json", ".model_list", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
-    return [row["litellm_params"] for row in json.loads(out)]
+    return json.loads(out)
+
+
+def _router_rows():
+    return [row["litellm_params"] for row in _model_list()]
 
 
 def _plans():
@@ -31,3 +36,56 @@ def test_every_prepaid_row_is_a_listed_plan():
     plans = [p["api_base"] for p in _plans()]
     unlisted = sorted({b for b in _bases(_router_rows(), prepaid_only=True) if not any(b.startswith(p) for p in plans)})
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
+
+
+SINGLE_ROW_TIERS = {"tether", "assistant"}
+
+
+def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
+    assert YQ, "yq must be on PATH to read the router config"
+    cfg_out = subprocess.run([YQ, "-o=json", ".router_settings.fallbacks", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
+    tiers = {}
+    for row in _model_list():
+        tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
+    thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
+    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether and assistant may hold one row (fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
+    groups = {row["model_name"] for row in _model_list()}
+    missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
+    assert not missing, f"fallbacks naming a group with no row: {missing}"
+
+
+REMOVED_PROVIDER_HOSTS = frozenset({"api.cline.bot", "ollama.com"})
+
+
+def _removed_provider_host(base):
+    return (urllib.parse.urlparse(base).hostname or "").rstrip(".")
+
+
+def _removed_provider_rows(bases):
+    return sorted({b for b in bases if _removed_provider_host(b) in REMOVED_PROVIDER_HOSTS})
+
+
+def test_no_row_serves_a_removed_provider_again():
+    back = _removed_provider_rows(_bases(_router_rows()))
+    assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
+
+
+def test_removed_provider_match_is_exact_on_hostname():
+    bases = [
+        "https://api.cline.bot/v1",
+        "https://ollama.com/v1",
+        "https://ollama.com./v1",
+        "https://api.cline.bot.evil.example/v1",
+        "https://ollama.com.evil.example/v1",
+        "https://api.openai.com/v1",
+    ]
+    back = _removed_provider_rows(bases)
+    assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
+
+
+def test_every_thinking_budget_row_drops_caller_reasoning_effort():
+    # DashScope answers 400 when a request carries reasoning_effort next to a row's thinking_budget (fleet-ops#10109).
+    rows = [r for r in _model_list() if "thinking_budget" in (r["litellm_params"].get("extra_body") or {})]
+    assert rows, "no row sets thinking_budget"
+    bad = [r["model_info"]["id"] for r in rows if "reasoning_effort" not in r["litellm_params"].get("additional_drop_params", [])]
+    assert not bad, f"rows with thinking_budget that keep a caller's reasoning_effort: {bad}"

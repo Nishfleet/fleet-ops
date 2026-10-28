@@ -10,6 +10,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/fleet-provider-watch.service"
 WATCH = ROOT / "config/provider-watch.json"
+ROUTER = ROOT / "config/litellm-proxy.yaml"
 YQ = shutil.which("yq")
 
 CONFIG = """model_list:
@@ -94,6 +95,39 @@ def _router_rows():
 
 def _provider_name(var):
     return re.sub(r"-api-key", "", var.lower().replace("_", "-"))
+
+
+def _header(text):
+    return text.split("\nmodel_list:", 1)[0]
+
+
+def _approved(text):
+    found = {}
+    for m in re.finditer(r"^# Approved ([a-z0-9-]+): (\S.*)$", _header(text), re.M):
+        found[m.group(1)] = {i.strip() for i in m.group(2).split(",")}
+    return found
+
+
+def _no_row_decisions(text):
+    return {m.group(1): m.group(2) for m in re.finditer(r"^# No row for ([a-z0-9-]+), (\d{4}-\d{2}-\d{2}):", _header(text), re.M)}
+
+
+def _router_drift(text, watch):
+    """Names every router row off the approved list, and every watched provider that no row serves."""
+    out = subprocess.run([YQ, "-o=json", ".model_list", "-"], input=text, capture_output=True, text=True, check=True).stdout
+    approved = _approved(text)
+    problems = []
+    served = set()
+    for row in json.loads(out):
+        params = row["litellm_params"]
+        provider = _provider_name(params["api_key"].split("/", 1)[1])
+        served.add(provider)
+        model = params["model"].split("/", 1)[1]
+        if model not in approved.get(provider, set()):
+            problems.append(f"{row['model_info']['id']}: {provider} {model} is not on the approved list")
+    decided = _no_row_decisions(text)
+    problems += [f"{name}: in provider-watch.json, no row and no dated no-row decision" for name in watch if name not in served and name not in decided]
+    return problems
 
 
 @pytest.fixture
@@ -349,10 +383,10 @@ def test_a_filing_failure_fails_the_unit_and_keeps_the_old_snapshot(box):
     assert box.saved()["alpha"] == ["a1", "a2"]
 
 
-def test_dead_key_fails_with_one_plain_line_and_files_nothing(box):
+def test_a_dead_key_is_logged_but_does_not_fail_the_unit(box):
     box.serve("alpha.test", "{}", codes="401")
     r = box.run()
-    assert r.returncode == 1
+    assert r.returncode == 0, r.stdout + r.stderr
     assert (
         "provider-watch: alpha key rejected (HTTP 401): Nish must renew the alpha key or log in to alpha again"
         in r.stdout
@@ -362,10 +396,10 @@ def test_dead_key_fails_with_one_plain_line_and_files_nothing(box):
     assert "issue create" not in box.log("gh.log")
 
 
-def test_403_is_a_dead_key_too(box):
+def test_a_403_key_is_logged_but_does_not_fail_the_unit(box):
     box.serve("beta.test", "{}", codes="403")
     r = box.run()
-    assert r.returncode == 1
+    assert r.returncode == 0, r.stdout + r.stderr
     assert "provider-watch: beta key rejected (HTTP 403)" in r.stdout
 
 
@@ -637,7 +671,7 @@ def test_the_watch_config_names_only_router_providers_and_holds_no_model_id():
     config = json.loads(WATCH.read_text())
     providers = {_provider_name(r["api_key"].split("/", 1)[1]) for r in _router_rows() if str(r.get("api_key", "")).startswith("os.environ/")}
     for name, entry in config.items():
-        assert name in providers, f"{name} is not a router provider"
+        assert name in providers or _no_row_decisions(ROUTER.read_text()).get(name), f"{name} is not a router provider and has no dated no-row decision in the router header"
         assert set(entry) <= {"watch", "billing", "listing"}, f"{name}: unknown key"
         if "watch" in entry:
             re.compile(entry["watch"])
@@ -656,3 +690,20 @@ def test_the_inline_script_passes_shellcheck():
     script = _exec_start()[2]
     r = subprocess.run([tool, "-s", "bash", "-"], input="#!/bin/bash\n" + script + "\n", capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout
+
+
+def test_every_router_row_is_on_the_approved_list_and_every_watched_provider_has_a_row_or_a_decision():
+    assert _router_drift(ROUTER.read_text(), json.loads(WATCH.read_text())) == []
+
+
+def test_a_row_off_the_approved_list_is_named():
+    text = ROUTER.read_text().replace("# Approved minimax: MiniMax-M3.1-Flash-Preview", "# Approved minimax: MiniMax-M3.1-Flash", 1)
+    problems = _router_drift(text, {})
+    assert problems and all("minimax MiniMax-M3.1-Flash-Preview is not on the approved list" in p for p in problems)
+
+
+def test_a_watched_provider_with_no_row_is_named_until_a_dated_decision_covers_it():
+    text = ROUTER.read_text()
+    assert _router_drift(text, {"newcomer": {}}) == ["newcomer: in provider-watch.json, no row and no dated no-row decision"]
+    decided = text.replace("\n# Approved opencode:", "\n# No row for newcomer, 2026-10-28: test\n# Approved opencode:", 1)
+    assert _router_drift(decided, {"newcomer": {}}) == []

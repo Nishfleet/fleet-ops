@@ -50,7 +50,7 @@ locals {
       vps_only    = false
     }
     "0509-support-inbox" = {
-      repo        = "0509-support-inbox"
+      repo        = "mailbox" # renamed from 0509-support-inbox; the key stays so the token is not replaced
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       account     = ["Workers Scripts Write", "Account Settings Read"]
@@ -89,12 +89,22 @@ locals {
       zone        = []
       vps_only    = false
     }
-    "tinystudio-in" = {
-      repo        = "tinystudio-in"
+    "seo-fix-kit" = {
+      repo        = "seo-fix-kit"
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
-      account     = ["Pages Write", "Account Settings Read"]
-      zone        = []
+      account     = ["Workers Scripts Write", "D1 Write", "Queues Write", "Account Settings Read"]
+      zone        = ["Zone Read", "Workers Routes Write"]
+      vps_only    = false
+    }
+    # Already applied by hand on 2026-10-20 under this key, so the key stays: a
+    # new key would destroy the live repo secret when the old state entry goes.
+    "fleet_console" = {
+      repo        = "fleet-console-worker"
+      environment = null
+      secret_name = "CLOUDFLARE_API_TOKEN"
+      account     = ["Workers Scripts Write", "Account Settings Read"]
+      zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
     }
   }
@@ -176,4 +186,12 @@ resource "github_actions_environment_secret" "env" {
   environment     = each.value.environment
   secret_name     = each.value.secret_name
   plaintext_value = cloudflare_api_token.token[each.key].value
+}
+
+# fleet-console-worker also holds its own copy of the account id (an identifier,
+# not a credential), written by hand-applied config on 2026-10-20 and adopted here.
+resource "github_actions_secret" "account_id_fleet_console" {
+  repository      = "fleet-console-worker"
+  secret_name     = "CLOUDFLARE_ACCOUNT_ID"
+  plaintext_value = var.account_id
 }

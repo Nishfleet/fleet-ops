@@ -6,7 +6,7 @@
 # the Cloudflare GraphQL analytics API (Infinity data source fleet-cloudflare,
 # datasources/cloudflare.yaml) every hour. A firing rule opens a fleet-ops
 # issue labelled agent-ready + priority-now through the contact point and
-# policy in cloudflare-spend-contact.yaml; hermes-urgent is the fallback.
+# policy in cloudflare-spend-contact.yaml; severity critical also pages hermes-urgent hourly.
 #
 # Thresholds (Nish, 2026-10-07):
 #   AI neurons, D1 rows read, email sends: the last hour is more
@@ -42,7 +42,7 @@
 #   2026-09-28 sign-in e2e (5,976 a day, about 250/h) still fires in its first
 #   hour. Accepted blind spot: a leak under 100/h stays silent; bounded at
 #   2,400/day.
-#   R2: total Standard storage over 20 GB, or a bucket up 2 GB within 24h
+#   R2: total Standard storage over 30 GB, or a bucket up 2 GB within 24h
 #   (last value minus the 24h low, so a prune followed by regrowth still counts).
 #
 # Floor on the median leg (fleet-ops, incident 2026-10-06): the rule is
@@ -183,7 +183,7 @@ groups:
           value: '{{ $values.D.Value | printf "%.0f" }} neurons in the last hour'
           threshold: 'over {{ $values.G.Value | humanize }} neurons/h (the 10,000 neurons/h floor, or 3 x the 7-day hourly median above the same floor)'
           top: '{{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: workers-ai}
+        labels: {severity: critical, signal: cloudflare-spend, product: workers-ai}
         isPaused: false
       - uid: cf-d1-rows-read
         title: Cloudflare D1 rows read
@@ -265,7 +265,7 @@ groups:
           value: '{{ $values.D.Value | printf "%.0f" }} rows read in the last hour'
           threshold: 'over {{ $values.G.Value | humanize }} rows/h (3 x allowance, or 3 x the 7-day hourly median above the 1x allowance floor of 34246575)'
           top: 'D1 database {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: d1-rows-read}
+        labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-read}
         isPaused: false
       - uid: cf-email-sends
         title: Cloudflare email sends
@@ -347,7 +347,7 @@ groups:
           value: '{{ $values.D.Value | printf "%.0f" }} emails in the last hour'
           threshold: 'over {{ $values.G.Value | humanize }} emails/h (100/h floor, or 3 x the 7-day hourly median above it)'
           top: 'sending domain {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: email-sends}
+        labels: {severity: critical, signal: cloudflare-spend, product: email-sends}
         isPaused: false
       - uid: cf-r2-standard-total
         title: Cloudflare R2 Standard storage total
@@ -390,7 +390,7 @@ groups:
           - {refId: D, datasourceUid: __expr__, model: {<<: *cf-last}}
           - refId: E
             datasourceUid: __expr__
-            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $D > 20000000000}
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $D > 30000000000}
           - refId: R
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
@@ -400,11 +400,11 @@ groups:
         for: 0s
         annotations:
           summary: 'R2 Standard storage is {{ $values.D.Value | humanize }}B'
-          description: 'Total R2 Standard storage is over 20 GB; 16.06 GB was the 2026-10-07 baseline at about $0.09/month. Between 2026-09-22 and 2026-10-07 0509-landing-page-artifacts grew about 36 GB.'
+          description: 'Total R2 Standard storage is over 30 GB (27.9 GiB). Measured 2026-10-21: the restic live repository and its 30-day-locked copy held about 10 GB each, because the retention policy grouped snapshots by path set and old groups never aged out. With restic forget --group-by host,tags the live repository settles near 3 GiB; the locked copy drains to about the same by 2026-11-21, when the last object under the 30-day lock expires and rclone sync --min-age 31d reclaims it. The 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950). The line sits above the total today (about 23 GB) plus the repack the first prune writes into the locked copy, so it does not page for the drain. Tighten it again once the locked copy has drained. cf-r2-bucket-growth stays the fast per-bucket detector at 2 GB in 24 hours, so a slow leak spread across buckets pages here.'
           value: '{{ $values.D.Value | humanize }}B Standard in total'
-          threshold: 'over 20 GB Standard in total'
+          threshold: 'over 30 GB (30000000000 bytes) Standard in total'
           top: 'bucket {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: r2-storage}
+        labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
       - uid: cf-r2-bucket-growth
         title: Cloudflare R2 bucket growth
@@ -466,7 +466,7 @@ groups:
           value: '{{ $values.E.Value | humanize }}B in 24 hours'
           threshold: 'over 2 GB growth in 24 hours'
           top: 'bucket {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: r2-storage}
+        labels: {severity: critical, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
 
   # D1 write spike (Nish, 2026-10-15). A flat line, not the 3x scheme above: on
@@ -545,5 +545,5 @@ groups:
           value: '{{ $values.D.Value | printf "%.0f" }} rows written in the last 60 minutes'
           threshold: 'over 50,000 rows in the last 60 minutes'
           top: 'D1 database {{ $labels.resource }}'
-        labels: {signal: cloudflare-spend, product: d1-rows-written}
+        labels: {severity: critical, signal: cloudflare-spend, product: d1-rows-written}
         isPaused: false

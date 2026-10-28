@@ -12,7 +12,10 @@ datasources:
     editable: false
 
   # nishfleet-worker App, installation on Nishfleet (all repos). The plugin
-  # only issues read queries; the key never reaches the browser.
+  # only issues read queries; the key never reaches the browser. The App has
+  # one installation only: GET /app/installations returns 156789042 on the
+  # Nishfleet organization, repository_selection all. Every repo the fleet
+  # dashboard and the deploy-failed rules read lives in that organization.
   - name: GitHub
     uid: fleet-github
     type: grafana-github-datasource
@@ -24,8 +27,3 @@ datasources:
       githubPlan: github-basic
     secureJsonData:
       privateKey: $__file{/run/secrets/github-app.pem}
-
-  # The App has one installation, 156789042 on the Nishfleet organization, all
-  # repos. The second installation this file used to carry, on the personal
-  # account, is gone from the App, so its data source was removed: every read
-  # through it failed and the panels on it read nothing (fleet-ops#9803).

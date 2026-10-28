@@ -103,10 +103,35 @@ scrape_configs:
           - https://api.0509.io/
           - https://seofixkit.com/
           - https://siterep.net/
-          - https://tinystudio.io/
-          - https://tinystudio.in/
+          # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
+          # put https://tinystudio.io/ and https://tinystudio.in/ back at relaunch.
           - https://aiconverter.app/
           - https://inish.in/
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # Launch push (2026-10-15 to 2026-10-29): the paths a Site Rep or SEO Fix
+  # Kit customer depends on, not just the homepage: each Worker's health
+  # route, Site Rep's embed script on customer sites, and SEO Fix Kit's free
+  # check page. Read-only GETs that write nothing (the deep-health endpoints
+  # write, so they are left out); four a minute keeps the Workers request
+  # count small. The job name matches site-.*, so SiteDown pages on these.
+  - job_name: site-launch-paths
+    scrape_interval: 60s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://siterep.net/api/health
+          - https://siterep.net/widget.js
+          - https://seofixkit.com/api/health
+          - https://seofixkit.com/check
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

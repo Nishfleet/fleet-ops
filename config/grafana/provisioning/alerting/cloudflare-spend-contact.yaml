@@ -1,38 +1,11 @@
-# Cloudflare cost alarm: contact point and notification policy (fleet-ops#9355).
-#
-# Nish (2026-10-07, "make it urgent for us to address urgently"): a firing
-# cost-alarm rule opens a fleet-ops issue labelled agent-ready + priority-now,
-# so the fleet picks it up first. Nish reads it in the normal Hermes digest.
-# hermes-urgent (paid-plan-idle.yaml) is the fallback, and it fires directly
-# when the alarm cannot do its job:
-#   - the rule cannot evaluate (alertname DatasourceError / DatasourceNoData
-#     skips the issue route and lands on the policy root, hermes-urgent);
-#   - the GitHub POST fails (the rule in cloudflare-spend-delivery.yaml reads
-#     Grafana's own webhook failure counter and routes to hermes-urgent).
-#
-# The webhook posts the GitHub issues API body from the payload template. The
+# Notification contact points and the one policy tree (fleet-ops#9355, #9445).
+# The webhooks post the GitHub issues API body from the payload template. The
 # token is a file reference, never a literal: $__file{} is Grafana's own
 # provisioning expansion and re-reads the file at every provisioning load. The
 # file holds a GitHub App installation token (issues:write on Nishfleet/fleet-ops
 # only) that expires after one hour, so fleet-grafana-github-token.timer
-# re-mints it every 20 min and reloads provisioning (fleet-ops#9445; before
-# that it was a static token in an env file and went stale in an hour). Rules
-# carry label signal=cloudflare-spend and the policy below picks them up, so
-# there is one place that decides the route.
-# Who gets interrupted (Nish's message contract: only a real outage, a money
-# problem, or something only he can act on pages him; everything else is an
-# issue for the fleet). hermes-urgent (Telegram) is therefore NOT the policy
-# root any more: the root is fleet-alert-dispatch, which files a fleet-ops issue.
-# Rules that page, and why:
-#   cloudflare-spend (6 rules)      money: a cost alarm is the fleet reporting a bill
-#   cloudflare-spend-delivery       the cost alarm could not file its issue
-#   paid-plan-idle (9 rules)        money: a paid plan unused, cancelling is Nish's call
-#   prompt-cache-hit                money: a route that stopped caching pays full price
-# Rules that file an issue instead: router-dead-row (fleet-owned router rows),
-# cpu-pressure (host load the fleet can shed; accepted: saturation with no failing
-# unit is an issue, not a page), and any new rule. A dead GitHub token is caught by
-# cloudflare-spend-delivery (counts every failed webhook, so fleet-alert-dispatch too). tests/alert_routes_check.py
-# (CI) fails when a rule outside that list can reach hermes-urgent.
+# re-mints it every 20 min and reloads provisioning. Every rule carries a
+# severity label (critical or warning) and the policy tree below routes on it.
 apiVersion: 1
 
 contactPoints:
@@ -70,7 +43,9 @@ contactPoints:
           payload:
             template: |-
               {{- with index .Alerts 0 -}}
-              {{- coll.Dict "title" (printf "router dead row: %s" .Labels.model_id)
+              {{- $$row := .Labels.model_id -}}
+              {{- if not $$row -}}{{- if .Labels.requested_model -}}{{- $$row = printf "%s (proxy-level)" .Labels.requested_model -}}{{- else -}}{{- $$row = "unnamed proxy request" -}}{{- end -}}{{- end -}}
+              {{- coll.Dict "title" (printf "router dead row: %s" $$row)
                      "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
@@ -91,32 +66,62 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, routed to the fleet because it is not one of the urgent classes (see the header of cloudflare-spend-contact.yaml). Find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
+    name: prometheus-alert-dispatch
+    receivers:
+      - uid: prometheus-alert-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- $$units := "" -}}
+              {{- range $$.Alerts -}}
+              {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance) (.StartsAt.Format "2006-01-02 15:04:05") -}}
+              {{- end -}}
+              {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nGrafana link: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units .GeneratorURL)
+                     "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
               {{- end -}}
 
 
 policies:
   - orgId: 1
-    # Root: the fleet, not Nish. One issue per alert instance (group_by '...').
     receiver: fleet-alert-dispatch
     group_by: ['...']
     group_wait: 0s
     group_interval: 5m
     repeat_interval: 24h
     routes:
-      - receiver: cloudflare-spend-dispatch
+      - receiver: hermes-urgent
         object_matchers:
-          - [signal, "=", cloudflare-spend]
+          - [severity, "=", critical]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, product, resource]
+        group_by: [alertname, repo, product, resource, model_id, plan, requested_model]
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 1h
+        continue: true
+      - receiver: hermes-urgent
+        object_matchers:
+          - [severity, "=", critical]
+          - [signal, "!=", deploy-failed-24h]
+          - [alertname, "=~", "DatasourceError|DatasourceNoData"]
+        group_by: [alertname, product, plan, requested_model]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
         continue: true
-      # Same matcher again: a spend alert also pages hermes-urgent, so a dead
-      # or expired GitHub token never silences it.
-      - receiver: hermes-urgent
+      - receiver: cloudflare-spend-dispatch
         object_matchers:
           - [signal, "=", cloudflare-spend]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
@@ -128,18 +133,55 @@ policies:
         object_matchers:
           - [signal, "=", router-dead-row]
           - [alertname, "!~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, model_id]
+        group_by: [alertname, model_id, requested_model]
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 12h
-      # A cost rule that cannot evaluate (alertname DatasourceError or
-      # DatasourceNoData skips the dispatch route above) is the fleet unable to
-      # see a bill: it pages, like the cost alarm itself.
-      - receiver: hermes-urgent
+      - receiver: prometheus-alert-dispatch
         object_matchers:
-          - [signal, "=", cloudflare-spend]
+          - [signal, "=", prometheus]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: [prom_alertname]
+        group_wait: 30s
+        group_interval: 5m
+        # 24h, not 168h: a worker that closes the issue without fixing the cause
+        # must not silence the alert for 7 days (fleet-ops#10321). Cost: at most
+        # one strong-seat run per still-firing alert per day.
+        repeat_interval: 24h
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [signal, "=", deploy-failed-24h]
           - [alertname, "=~", "DatasourceError|DatasourceNoData"]
-        group_by: [alertname, product]
+        mute_time_intervals: [deploy-failed-24h-errors]
+      # A plan out of credit keeps this rule firing until the balance is refilled,
+      # and the remedy (top up, cancel, bench the rows) is Nish's call, so its
+      # daily issue re-filed the same alert every 24h: fleet-ops#9845, #9857,
+      # #9876 and #9897 are one Pareto credit wall across four issues, and each
+      # new issue started a worker run against a decision already parked on Nish.
+      # The plan rule keeps paging on the critical routes above (1h, and 12h for a
+      # datasource error) and files its one issue weekly instead. This route is
+      # terminal, so a plan alert stops here and never reaches the catch-all below.
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [plan, "=~", ".+"]
+        group_by: ['...']
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 12h
+        repeat_interval: 7d
+      - receiver: fleet-alert-dispatch
+        object_matchers:
+          - [alertname, "=~", ".+"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
+
+# The deploy-failed-24h rules' read errors (route above): the deploy-failed rule
+# on the same query files that repo's one issue.
+muteTimes:
+  - orgId: 1
+    name: deploy-failed-24h-errors
+    time_intervals:
+      - times:
+          - start_time: "00:00"
+            end_time: "24:00"
