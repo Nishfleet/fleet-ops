@@ -46,16 +46,16 @@ ids + timestamps, and the fix rung):
    session.
 6. Steering no-ops: rules in the steering files that the week's sessions never
    acted on or that contradict each other.
-Repeat test: a class is a repeat when it has a count above 0 this week AND its
-`Retro: <class>` title is in known-issues.txt (it was already filed once). For each
-repeat class, add a "Covering check" line: the path of the CI step, semgrep rule,
-hook or deny rule in the repos that now catches it, found with rg or Grep, or the
-words `none yet`. For a repeat class with `none yet`, the rung is never prose or
-rule. Where a check exists and the class still recurred, say the check misses it.
-Where a check exists, name the `AGENTS.md` or steering line it replaces, so that
-line can be deleted. List all repeat classes in one "Repeat classes" table in the
-report (class, count, covering check, line to delete).
-
+7. Repeat classes: a class is a repeat when its count is above 0 this week AND a
+   line of known-issues.txt equals `Retro: <class>` exactly (an empty file means
+   no repeats). Put every repeat in one "Repeat classes" table in the report with
+   these columns: class, count, covering check, line it replaces. Covering check
+   is the path of an existing CI step, semgrep rule, hook or deny rule that you
+   confirmed with rg or Grep, or `none yet`. If a check exists and the class still
+   recurred, write `check misses it`. The line it replaces is the AGENTS.md or
+   steering line the check makes redundant; the retro only names it, a later PR
+   deletes it. A repeat with `none yet` gets an issue file (below) when one of the
+   three slots is free.
 Skip the "auto mode blocked" class: these sessions run with permissions bypassed.
 
 Report: write it to RUN_DIR/report.md. It is private (it goes to Nish's own vault
