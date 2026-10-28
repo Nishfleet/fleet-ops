@@ -13,7 +13,10 @@ means adding it to URGENT here, with its reason, and labelling it critical.
 It also fails when a rule or a dashboard panel reads a data source this repo does
 not provision, or an owner this repo's GitHub App has no installation for: that
 read is blind, and a rule that reads nothing turns into a DatasourceError alert
-nobody can act on (fleet-ops#9803).
+nobody can act on (fleet-ops#9803). It also fails when an annotation interpolates
+$values.X or $labels.Y outside a with/if that scopes it: a DatasourceError alert
+carries no values, so the bare form renders %!f(<nil>) and [no value] instead of a
+number (fleet-ops#9810, #9822).
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -155,6 +158,15 @@ def selftest():
     assert planted == ["f: data source fleet-github-personal was retired, read fleet-github instead",
                        "f: reads owner nish3451, which this repo's App has no installation for; read Nishfleet",
                        "f: data source gone is not provisioned in provisioning/datasources"], planted
+    guarded = 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}unknown row{{ end }} answered {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times'
+    assert unguarded_refs(guarded) == []
+    assert unguarded_refs('{{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }}') == []
+    assert unguarded_refs('{{ if $values }}live{{ else }}blind{{ end }}') == []
+    assert unguarded_refs('{{ $$labels.a }}') == []
+    assert unguarded_refs('{{ $values.D.Value | printf "%.0f" }}') == ["values.D"]
+    assert unguarded_refs('{{ $labels.resource }}') == ["labels.resource"]
+    assert unguarded_refs('{{ with $labels.a }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ $values.B.Value }} then {{ $labels.c }}') == ["values.B", "labels.c"]
 
 
 def dead_row_shape(rules, points, bad):
@@ -181,6 +193,73 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
     if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
         bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
+
+
+ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
+VALUE_FIELD = re.compile(r"\$values\.([A-Za-z_]\w*)")
+LABEL_FIELD = re.compile(r"\$labels\.([A-Za-z_]\w*)")
+VALUE_INDEX = re.compile(r'index\s+\$values\s+"([^"]+)"')
+BARE_VALUE = re.compile(r"\$values(?![.\w])")
+BARE_LABEL = re.compile(r"\$labels(?![.\w])")
+OPENERS = ("with", "if", "range")
+
+
+def _refs(body):
+    """The $values.X / $labels.Y references one template action interpolates."""
+    out = set()
+    for name in VALUE_FIELD.findall(body):
+        out.add(("values", name))
+    for name in LABEL_FIELD.findall(body):
+        out.add(("labels", name))
+    if BARE_VALUE.search(body):
+        out.add(("values", None))
+    if BARE_LABEL.search(body):
+        out.add(("labels", None))
+    return out
+
+
+def _guards(body):
+    """The references a with/if argument scopes: the whole map for a bare
+    $values, one field for index $values "A", $values.A or $labels.A."""
+    return _refs(body) | {("values", name) for name in VALUE_INDEX.findall(body)}
+
+
+def unguarded_refs(annotation):
+    """Every $values.X / $labels.Y interpolated outside a with/if that scopes it.
+    A DatasourceError alert carries no values, so the bare form formats a nil and
+    the annotation reads %!f(<nil>) or [no value] (fleet-ops#9810, #9822)."""
+    stack, bad = [], []
+    for action in ACTION.findall(re.sub(r"\$\$", "\x00", annotation)):
+        words = action.split()
+        if not words:
+            continue
+        if words[0] in OPENERS:
+            stack.append(_guards(action))
+            continue
+        if words[0] == "end":
+            if stack:
+                stack.pop()
+            continue
+        covered = set().union(*stack) if stack else set()
+        bad += [f"{kind}.{name}" if name else kind
+                for kind, name in sorted(_refs(action)) if (kind, name) not in covered]
+    return bad
+
+
+def annotation_guards(rules, bad):
+    """Fail any annotation that interpolates $values/$labels with no guard, so the
+    next unguarded rule cannot ship the %!f(<nil>) body #9810 fixed."""
+    checked, found = 0, 0
+    for r in rules:
+        for key, value in (r.get("annotations") or {}).items():
+            checked += 1
+            missing = sorted(set(unguarded_refs(str(value))))
+            if missing:
+                found += len(missing)
+                bad.append(f"{r.get('title')}: annotation {key} interpolates {', '.join(missing)} with no "
+                           f"with/if guard, so a DatasourceError renders %!f(<nil>) and [no value] (fleet-ops#9822)")
+    if not found:
+        print(f"annotations: {checked} checked, every $values/$labels interpolation sits inside a with/if guard")
 
 
 def provisioned_uids(provisioning):
@@ -317,6 +396,7 @@ def main(root):
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
     dead_row_shape(rules, points, bad)
+    annotation_guards(rules, bad)
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
