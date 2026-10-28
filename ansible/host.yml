@@ -308,10 +308,8 @@
         mode: preserve
       notify: Reload systemd
 
-    # The tree copy above has no per-file change signal, and a socket picks up
-    # new ListenStream addresses only on restart: without this task a rebuild
-    # installs the drop-in at the boot timer and leaves the running ssh.socket
-    # on the distro's 0.0.0.0:22 until the next reboot (fleet-ops#10541).
+    # A socket takes new ListenStream addresses only on restart, and the tree
+    # copy above has no per-file change signal (fleet-ops#10541).
     - name: Install the SSH socket bind and rebind the socket when it changes
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
@@ -2512,9 +2510,7 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
-    # Existing SSH sessions run in their own ssh@.service instances and survive
-    # the listening socket's restart; only new connections wait a moment
-    # (fleet-ops#10541).
+    # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
       ansible.builtin.systemd_service:
         name: ssh.socket

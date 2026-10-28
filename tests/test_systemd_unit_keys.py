@@ -398,11 +398,19 @@ TETHER_NEVER_RUN = {
 }
 
 
-def _play_tasks() -> list[dict]:
+def _play() -> dict:
     if shutil.which("yq") is None:
         pytest.skip("yq is not installed")
     out = subprocess.run(["yq", "-o=json", ".", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
-    return json.loads(out)[0]["tasks"]
+    return json.loads(out)[0]
+
+
+def _play_tasks() -> list[dict]:
+    return _play()["tasks"]
+
+
+def _play_handlers() -> list[dict]:
+    return _play().get("handlers") or []
 
 
 def _tether_task_names() -> list[str]:
@@ -1283,6 +1291,9 @@ def ssh_bind_offenders(text: str) -> list[str]:
         if value.startswith("["):
             end = value.find("]")
             address = value[1:end] if end > 0 else value
+        elif value.count(":") > 1:
+            offenders.append(value)
+            continue
         else:
             address = value.rsplit(":", 1)[0]
         try:
@@ -1307,7 +1318,12 @@ def test_ssh_socket_dropin_is_in_the_repo_and_binds_only_the_tailnet() -> None:
         "the first ListenStream line must be the empty reset: without it the distro's wildcard binds stay in the list"
     )
     assert ssh_bind_offenders(text) == [], "ssh.socket would listen on a non-tailnet address"
-    assert len([value for value in values if value]) == 2, "keep one tailnet address per family (IPv4 and IPv6)"
+    families = {
+        ipaddress.ip_address(value[1:value.index("]")] if value.startswith("[") else value.rsplit(":", 1)[0]).version
+        for value in values
+        if value
+    }
+    assert families == {4, 6}, "keep one Tailscale bind per address family, IPv4 and IPv6"
 
 
 @pytest.mark.parametrize(
@@ -1321,8 +1337,23 @@ def test_ssh_socket_dropin_is_in_the_repo_and_binds_only_the_tailnet() -> None:
         "ListenStream=localhost:22",
         "ListenStream=203.0.113.7:22",
         "ListenStream=[2001:db8::1]:22",
+        "ListenStream=0.0.0.0",
+        "ListenStream=fd7a:115c:a1e0::d23a:b862",
+        "ListenStream=[::1]",
     ),
-    ids=("all-v4", "all-v6", "no-address", "bare-port", "star", "hostname", "public-v4", "public-v6"),
+    ids=(
+        "all-v4",
+        "all-v6",
+        "no-address",
+        "bare-port",
+        "star",
+        "hostname",
+        "public-v4",
+        "public-v6",
+        "all-v4-no-port",
+        "bare-v6",
+        "loopback-v6",
+    ),
 )
 def test_ssh_bind_check_fails_when_a_wildcard_is_reintroduced(listen: str) -> None:
     text = "[Socket]\nListenStream=\n" + listen + "\n"
@@ -1339,7 +1370,6 @@ def test_ssh_bind_check_accepts_the_tailnet_binds() -> None:
     assert ssh_bind_offenders(text) == []
 
 
-@pytest.mark.skipif(shutil.which("yq") is None, reason="yq is not installed")
 def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
     tasks = _play_tasks()
     tree = [
@@ -1360,26 +1390,19 @@ def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
     assert dedicated, "no host.yml task installs the ssh.socket drop-in on its own, so its change signal is lost"
     copy = dedicated[0]["ansible.builtin.copy"]
     assert copy["src"] == "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
-    notify = dedicated[0].get("notify")
-    notified = [notify] if isinstance(notify, str) else (notify or [])
+    notify = dedicated[0].get("notify") or []
+    notified = [notify] if isinstance(notify, str) else notify
     assert "Restart ssh.socket" in notified, (
         "a socket picks up new ListenStream addresses only on restart, so a rebuild that installs this drop-in "
         "at the boot timer would leave SSH on the distro's wildcard binds"
     )
-    assert SSH_SOCKET_DROPIN.is_relative_to(ROOT / "rootfs/etc/systemd/system")
 
 
 def test_host_playbook_restarts_ssh_socket_when_its_dropin_changes() -> None:
-    text = HOST_YML.read_text()
-    handler = [
-        block
-        for block in re.split(r"\n    - name: ", text.split("\n  handlers:", 1)[1])
-        if block.startswith("Restart ssh.socket")
-    ]
-    assert len(handler) == 1, "the ssh.socket restart handler is missing"
-    assert "ansible.builtin.systemd_service:" in handler[0]
-    assert "name: ssh.socket" in handler[0]
-    assert "state: restarted" in handler[0]
+    handlers = [handler for handler in _play_handlers() if handler.get("name") == "Restart ssh.socket"]
+    assert len(handlers) == 1, "no host.yml handler restarts ssh.socket, so the installed bind waits for a reboot"
+    service = handlers[0].get("ansible.builtin.systemd_service")
+    assert service == {"name": "ssh.socket", "state": "restarted"}, service
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")

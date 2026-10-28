@@ -520,9 +520,9 @@ cost: the netcup provider VNC console.
   game-day). Panel login lives in Nish's password manager; never here.
 - The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
   is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
-  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and a test
-  fails if the file ever names a wildcard address (fleet-ops#10541). Edit it
-  there, never by hand.
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
+  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
+  address (fleet-ops#10541). Edit it there, never by hand.
 
 ## Rebuild the box from nothing
 
