@@ -3,6 +3,11 @@ Description=Agent Tincan wake for command-code (tincan listen -> headless comman
 Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
+# A crash loop must reach `failed` for the hook above to run: the default
+# 5 starts in 10 s is never spent at RestartSec=30 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/command-code.json
 Environment=FLEET_TASK_ID=tincan-command-code
