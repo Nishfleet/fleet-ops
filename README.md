@@ -1551,8 +1551,14 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   a real call to free or in-plan ids only; every other seat's body forbids all calls and sends the
   ids back as a `needs-nish-decision` line (the unit decides, not the model; MiniMax is marked flat
   on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly
-  limits, no per-token bill)", Nish 2026-10-09; Alibaba Token Plan is marked flat too: $18/mo prepaid, 45,000 credits, no per-token bill, router config header, fleet-ops#9220, kept per Nish 2026-10-28, fleet-ops#9914; the OpenCode keys are unlimited for
-  one DeepSeek flash model only, so they are not marked). Then an eval-score before any router weight
+  limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for
+  one DeepSeek flash model only, so they are not marked; the Alibaba Token Plan is left unmarked on
+  purpose, so its added ids get no call at all: it is a paid plan whose 45,000 credits for a 30-day
+  month are shared and do not roll over (router config header, fleet-ops#9220), its only row is the
+  judge row (Nish 2026-09-08, #4445: "this token plan isn't for use with other models"), so a probe
+  of another id spends the judge lane's own allowance on a model that can carry no row, and Nish's
+  2026-10-28 answer kept the plan and sent the billing question back to the agents, which is this
+  unmarked state and not `flat`, fleet-ops#9914). Then an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), and a plain
   `needs-nish-decision` line for anything that costs money or needs his login.

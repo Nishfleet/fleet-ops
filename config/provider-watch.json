@@ -1,6 +1,5 @@
 {
   "minimax": {"billing": "flat"},
-  "alibaba-coding": {"billing": "flat"},
   "straitly": {"listing": "none"},
   "anthropic": {"listing": "none"}
 }
