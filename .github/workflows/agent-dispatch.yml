@@ -707,7 +707,7 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart themselves (fleet-ops#10420): idle 6 h, then needs-orchestrator is (re-)added on the runner login, so the label event starts the hand-off (queued = live orchestrate jobs, not labels; an API error means no re-queues); after 3 ended runs, needs-nish-decision.
+      # Parked hand-offs restart themselves (fleet-ops#10420): idle 6 h, then needs-orchestrator is (re-)added on the runner login, so the label event starts the hand-off (queued = live orchestrate jobs, not labels; an API error means no re-queues; a failed add falls back to the workflow token so the label is never left off); after 3 ended runs, needs-nish-decision.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -730,7 +730,7 @@ jobs:
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR: $(jq -r '.runs | map(ltrimstr("orchestrator hand-off ended without a PR: ")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
               elif [ "$(jq -r .tried <<<"$r")" = true ]; then env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
               elif env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label needs-orchestrator; then
-                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::error::#$n lost needs-orchestrator, add it back by hand"
+                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::error::#$n lost needs-orchestrator, add it back by hand"
               else echo "::warning::#$n: re-fire refused"; fi
             done
   unblocked:

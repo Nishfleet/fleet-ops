@@ -55,7 +55,6 @@ def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",)):
 
 
 def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False):
-    """queued = live orchestrate runs; prs = open PR head branches."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
     (tmp_path / "runs").write_text("".join(f"{100 + i}\n" for i in range(queued)))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
@@ -118,7 +117,6 @@ def test_open_pr_blocks_requeue_of_a_tried_issue(tmp_path):
 
 @pytest.mark.parametrize("fail", ["FAIL_RUNS", "FAIL_JOBS", "FAIL_PRS"])
 def test_partial_api_error_requeues_nothing_but_escalates(tmp_path, fail):
-    """The run list, a run's jobs call or the PR list fails: no re-queues, escalation still runs."""
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=2, fail={fail: "1"})
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
@@ -129,7 +127,7 @@ def test_run_list_is_capped_at_five_jobs_calls(tmp_path):
     assert (tmp_path / "jobs.log").read_text().count("\n") == 5
 
 
-def test_refire_add_is_retried_once(tmp_path):
+def test_refire_add_falls_back_to_the_workflow_token(tmp_path):
     w = run(tmp_path, [issue(1, ended=0, labels=("needs-orchestrator",))], fail={"FAIL_ADDS": "1"})
     assert edits(w, "--add-label needs-orchestrator") == [1]
 
