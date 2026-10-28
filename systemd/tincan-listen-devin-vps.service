@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Tincan wake for devin-vps (tincan listen -> headless devin drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+[Service]
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/devin-vps.json
+Environment=FLEET_TASK_ID=tincan-devin-vps
+StateDirectory=tincan-listen-devin-vps
+WorkingDirectory=%S/tincan-listen-devin-vps
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/devin -p --permission-mode dangerous -- "$$(cat /home/nish/.config/tincan/prompts/devin-vps.txt)"'
+Restart=always
+RestartSec=30
+[Install]
+WantedBy=default.target

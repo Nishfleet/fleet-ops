@@ -90,44 +90,6 @@
         }
       ]
     },
-    "opencode-go-2": {
-      "name": "OpenCode Go (key 2)",
-      "baseUrl": "https://opencode.ai/zen/go/v1",
-      "api": "openai-completions",
-      "apiKey": "!sed -n 's/^OPENCODE_API_KEY_2=//p' /home/nish/.config/fleet-ops/seats/opencode-2.env",
-      "models": [
-        {
-          "id": "deepseek-v4.1-flash",
-          "name": "DeepSeek V4.1 Flash (Go key 2)",
-          "reasoning": true,
-          "input": [
-            "text"
-          ],
-          "contextWindow": 1000000,
-          "maxTokens": 384000,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "compat": {
-            "supportsStore": false,
-            "supportsDeveloperRole": false,
-            "maxTokensField": "max_tokens",
-            "requiresReasoningContentOnAssistantMessages": true,
-            "thinkingFormat": "deepseek"
-          },
-          "thinkingLevelMap": {
-            "minimal": null,
-            "low": "low",
-            "medium": null,
-            "high": "high",
-            "max": "max"
-          }
-        }
-      ]
-    },
     "stepfun": {
       "name": "StepFun Step Plan",
       "baseUrl": "https://api.stepfun.ai/step_plan/v1",

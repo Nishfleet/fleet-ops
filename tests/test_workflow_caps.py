@@ -9,6 +9,8 @@ AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
 SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework", "miss-stalled")
 AGENT_RUNNERS_MEASURED_2026_10_23 = 22
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+WORKFLOWS = ROOT / ".github/workflows"
 
 
 def yaml_json(path):
@@ -71,3 +73,92 @@ def test_review_concurrency_stays_inside_the_judge_seats():
 
 def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
+
+
+def test_one_plain_number_caps_the_opencode_and_devin_lanes():
+    text = AGENT.read_text()
+    for lane in ("opencode", "devin"):
+        caps = {m.group(1) for m in re.finditer(rf'live {lane}\)"\s+-lt\s+(\S+)', text)}
+        assert len(caps) == 1, f"the {lane} lane has {len(caps)} caps, so the Gate and the Worker fall-through can drift apart: {sorted(caps)}"
+        cap = caps.pop()
+        assert cap.isdigit(), f"the {lane} cap is a switch, not a fixed number: {cap}"
+
+
+def permissions_block(block, where):
+    assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
+    return block or {}
+
+
+def agent_yml_requests():
+    agent = yaml_json(AGENT)
+    default = permissions_block(agent.get("permissions"), "agent.yml")
+    asked = {}
+    for name, job in agent["jobs"].items():
+        block = permissions_block(job.get("permissions", default), f"agent.yml job {name}")
+        for scope, level in block.items():
+            assert level in PERMISSION_LEVELS, f"agent.yml job {name} asks {scope}: {level}; extend PERMISSION_LEVELS"
+            asked[scope] = max(asked.get(scope, "none"), level, key=PERMISSION_LEVELS.get)
+    return asked
+
+
+def agent_yml_callers():
+    found = []
+    for path in sorted(WORKFLOWS.rglob("*.y*ml")):
+        wf = yaml_json(path)
+        for name, job in (wf.get("jobs") or {}).items():
+            if str(job.get("uses") or "").split("@")[0].endswith("/agent.yml"):
+                found.append((path.relative_to(ROOT).as_posix(), name, job, wf))
+    return found
+
+
+def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
+    asked = agent_yml_requests()
+    assert asked, "agent.yml jobs request no permissions, so the caller grant check would pass vacuously"
+    callers = agent_yml_callers()
+    assert callers, "no workflow job calls agent.yml, so the caller grant check would pass vacuously"
+    shortfalls = []
+    for fname, jname, job, wf in callers:
+        granted = permissions_block(job.get("permissions", wf.get("permissions")), f"{fname} job {jname}")
+        for scope, level in sorted(asked.items()):
+            have = PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
+            if have < PERMISSION_LEVELS[level]:
+                gives = f"{scope}: {granted.get(scope, 'none')}" if granted else "no permissions at all"
+                shortfalls.append(f"{fname} job {jname} grants {gives}, agent.yml asks {scope}: {level}")
+    assert not shortfalls, (
+        "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
+        + "; ".join(shortfalls)
+    )
+
+
+def test_hand_summons_reaches_the_review_job():
+    cfg = yaml_json(AGENT)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("review_pr", "review_sha"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent.yml cannot be dispatched with {name}"
+        assert name in cfg["on"]["workflow_call"]["inputs"], f"{name} is not on the workflow_call surface"
+    review = cfg["jobs"]["review"]
+    assert "inputs.review_pr" in review["if"] and "inputs.review_sha" in review["if"], (
+        "the review job's if: does not read the dispatch inputs, so a hand summons reaches nothing"
+    )
+    main_only = "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+    for job in ("review", "arm"):
+        cond = cfg["jobs"][job]["if"].replace("${{", "").replace("}}", "").strip()
+        assert f"&& {main_only}" in cond, (
+            f"the {job} job can be dispatched from any branch: a pushed branch with an edited {job} job "
+            "would approve or arm under the bot identity the merge gate trusts"
+        )
+    assert review["env"]["PR"] == "${{ inputs.review_pr }}"
+    assert review["env"]["SHA"] == "${{ inputs.review_sha }}"
+    assert "!inputs.review_pr" in cfg["jobs"]["inish-daily"]["if"], (
+        "inish-daily's if: does not exclude review_pr, so a review summons would also publish an edition"
+    )
+
+
+def test_hand_summons_reaches_the_orchestrate_job():
+    cfg = yaml_json(DISPATCH)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("task", "issue"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent-dispatch cannot be dispatched with {name}"
+    orchestrate = cfg["jobs"]["orchestrate"]["if"]
+    assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
+    assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
