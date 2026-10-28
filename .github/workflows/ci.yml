@@ -44,9 +44,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 0}
-      # fleet-ops#8724: the router config's hard rules (no bench list, a per-row
-      # cooldown_time <=900 s, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
-      # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
+      # fleet-ops#8724: the router config's hard rules (no bench list, per-row cooldown_time <=900 s,
+      # router cooldown <=60 s) live in the schema; each rejects/ file breaks one and must fail.
       - run: |
           pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
           for f in config/litellm-proxy.schema.rejects/*.yaml; do
@@ -56,8 +55,7 @@ jobs:
       # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
       - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
       - name: No agent attribution in the PR's commits or body
-        # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
-        # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
+        # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -67,6 +65,16 @@ jobs:
         run: |
           log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
           ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
+      - name: A new component links a design note
+        # Design-it-twice (#10556): a PR that adds a unit, quadlet or Pi extension carries `design-note: docs/design/<file>.md` (or a URL).
+        if: github.event_name == 'pull_request'
+        env: {BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_BODY: "${{ github.event.pull_request.body }}"}
+        shell: bash
+        run: |
+          new=$(git diff --name-only --diff-filter=A --no-renames "$BASE_SHA...$HEAD_SHA")
+          grep -E '^(systemd/[^/]+\.(service|timer|socket)|containers/quadlet/[^/]+\.container|pi-extensions/[^/]+/package\.json)$' <<<"$new" >/dev/null || exit 0
+          n=$(sed -nE 's/\r?$//; s/^design-note: *//p' <<<"$PR_BODY"); n=${n%%$'\n'*}
+          [[ $n == https://* || ( $n == docs/design/*.md && -f $n ) ]] || { echo "::error::new component: add a line 'design-note: docs/design/<file>.md' (or a URL) to the PR body"; exit 1; }
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
@@ -80,15 +88,13 @@ jobs:
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
-      # the gates below are independent linters: `if: always()` so one red run
-      # lists every violated gate instead of fail-fast hiding the rest.
+      # the gates below are independent linters: `if: always()` lists every violated gate.
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
       - name: zizmor over .github/workflows/
-        # Stock security audit for workflows: dangerous triggers, template
-        # injection, persisted credentials, unpinned actions, over-broad
-        # permissions and App tokens. Offline, so it needs no token and cannot
+        # Stock security audit for workflows: dangerous triggers, template injection, persisted
+        # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
         # Policy and its kept exceptions: .github/zizmor.yml.
         if: always()
@@ -242,7 +248,7 @@ jobs:
         # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
         # or a backup.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_claude_lanes.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -257,7 +263,7 @@ jobs:
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py
+        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -385,12 +391,9 @@ jobs:
           rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
-        # systemd expands ${...} and % specifiers itself, before any interpreter
-        # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
-        # digit/#/% operator, and a bare %s, %u or %h in a `sh -c` string not
-        # written `%%`. `$VAR`, `${NAME}`, %i and `%h/` stay legal. rc: 0 is a
-        # match and 2 is a broken pattern — both fail; only rc 1 passes. Scope
-        # is #8382's: Exec*= lines only, continuation lines are #8393.
+        # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
+        # `${` + digit/#/%, and a bare %s, %u or %h in a `sh -c` string. rc 1 passes; 0 and 2 fail.
+        # Scope is #8382's: Exec*= lines only, continuation lines are #8393.
         if: always()
         run: |
           rc=0
@@ -400,15 +403,12 @@ jobs:
       - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
         if: always()
         run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
-      # Native provider only (fleet-ops#9253): openai/ on ollama.com/v1 returns reply ids
-      # chatcmpl-<0..999> that collide in LiteLLM_SpendLogs, so its calls never log.
+      # Native provider only (#9253): openai/ on ollama.com/v1 reply ids collide in LiteLLM_SpendLogs.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | select(.litellm_params.model != "ollama_chat/deepseek-v4.1-flash" or .litellm_params.api_base != "https://ollama.com") | (.litellm_params.model + " @ " + (.litellm_params.api_base // ""))]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
-      # A drop-in that does not parse stops Claude Code from starting on the
-      # whole box, and an autoMode array without "$defaults" replaces the
-      # built-in safety rules instead of adding to them. To switch this gate
-      # off, delete this step.
+      # A drop-in that does not parse stops Claude Code on the whole box; an autoMode array
+      # without "$defaults" replaces the built-in safety rules. To switch off, delete this step.
       - name: Claude Code managed-settings drop-ins parse and keep the autoMode defaults
         if: always()
         shell: bash

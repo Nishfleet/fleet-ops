@@ -246,10 +246,9 @@ jobs:
           # anything between, or a Jev call that fails, goes to the free lanes. The
           # free order is pi, then opencode, then Devin, and never Cursor
           # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the runner's number (netcup-agent-N):
-          # odd runs seat a, even runs the default login (seat b), so
-          # the jobs split across both seats and a job never changes seat (no
-          # clock, and the prompt cache holds). A seat at its usage limit shows up
+          # failed runs. The seat follows the issue number's parity (the same input the Cursor lane keys on, fleet-ops#9696):
+          # an odd issue runs seat a, an even issue the default login (seat b), so the jobs split across both seats and a job
+          # never changes seat (no clock, and the prompt cache holds). A seat at its usage limit shows up
           # as a rate limit in the Worker, which falls through (below). There is no
           # cap on live claude workers: nothing stock gives N slots, and
           # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
@@ -387,12 +386,12 @@ jobs:
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the runner's number
-            # (RUNNER_NAME is netcup-agent-N): odd keeps the runner's
-            # CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b, the default
-            # login). A name with no number keeps seat a. The seat never changes
-            # inside a job, except to the other seat when its own login is missing
-            # (below). A run that dies on a rate limit or
+            # Claude Code on one of the two seats, chosen by the issue number's parity (the same input the Cursor lane
+            # keys on, fleet-ops#9696): an even $id unsets CLAUDE_CONFIG_DIR (seat b, the default login), an odd $id
+            # keeps it (seat a), a non-numeric id keeps seat a. The seat follows the issue, not the runner, so a retry
+            # lands on the same seat on any runner and a continued run finds the earlier session (a session
+            # lives in one seat's config dir). The seat never changes inside a job, except to the other seat when its
+            # own login is missing (below). A run that dies on a rate limit or
             # a usage limit sends the same packet to the Cursor lane for senior
             # work, or to pi (the first of the ordinary lanes) for any other job,
             # which never uses Cursor; either continues from whatever the branch
@@ -400,9 +399,8 @@ jobs:
             # logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             [ "$SENIOR" != true ] || fallback=cursor
-            runner_n=${RUNNER_NAME:-}; runner_n=${runner_n##*[!0-9]}
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}
-            if [ -n "$runner_n" ] && [ $((10#$runner_n % 2)) -eq 0 ]; then unset CLAUDE_CONFIG_DIR; fi
+            case ${id##*-} in ''|*[!0-9]*) ;; *) [ $(( 10#${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;; esac
             if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
             # A seat whose login file is missing or empty fails every job on it, so a missing login costs one seat, never both. Only the file's presence and size are tested, never its content. The other seat takes the job if it has a login; with neither, the lane is skipped and the job falls through as a refused seat does (below).
             seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
@@ -435,7 +433,7 @@ jobs:
             [ "$claude_auth" != token ] || claude_jail="$jail_base"
           fi
           if [ "$ENGINE" = claude ]; then
-            echo "claude lane: seat=$claude_seat auth=$claude_auth runner=${RUNNER_NAME:-unknown}"
+            echo "claude lane: seat=$claude_seat auth=$claude_auth issue=${id##*-} runner=${RUNNER_NAME:-unknown}"
             mark claude
             rc=0
             # A refused seat shows in the last lines the CLI prints. Earlier lines are
@@ -938,7 +936,7 @@ jobs:
           fi
   review:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
-    runs-on: [self-hosted, agent]
+    runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
     # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
@@ -1078,7 +1076,7 @@ jobs:
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
-            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
+            { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID-pr$PR-$pre-$seat" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
@@ -1132,13 +1130,32 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
+      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
+      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
+      # and a PR from a fork never reaches here at all.
+      - name: Send a blocked orch PR back to the orchestrator
+        run: |
+          set -euo pipefail
+          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
+          [ "$n" != "$ref" ] || exit 0
+          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
+          grep -qx "$SHA" <<<"$rev" || exit 0
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          rounds=$(grep -c . <<<"$rev")
+          if [ "$rounds" -gt 3 ]; then
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+          else
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+          fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
   # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    runs-on: [self-hosted, agent]
+    runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
     timeout-minutes: 10
     permissions:
       pull-requests: write
