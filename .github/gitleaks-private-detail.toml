@@ -148,6 +148,16 @@ regexes = ['''^100\.64\.0\.0$''']
 condition = "AND"
 
 [[allowlists]]
+description = "The two Claude Code plugin drop-ins name the directory each marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only these two directories are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/(60-nish-mods|80-inbox)\.json$''']
+regexes = [
+  '''^home/nish/workspaces/tooling/claude-mods$''',
+  '''^home/nish/workspaces/tooling/claude-code-mods-petekp-inbox$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The seo-fix-kit D1 backup retirement names three user-unit paths the host deploy stops, disables and deletes (fleet-ops#10145). An earlier commit of that PR wrote them as literals; the play now renders them from nish_home and the test asserts that form, and a PR scan reads every commit while history cannot be rewritten on an open PR. Only these three paths, in the two files that carry the retirement"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
