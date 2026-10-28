@@ -224,6 +224,12 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -type l ( -lname *worktrees/* -o -lname */agent-state/* -o -lname */tmp/* ) -printf "[fleet-sync] LINK-GUARD live symlink -> throwaway target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -path %h/.pi/agent/skills -prune -o -xtype l -printf "[fleet-sync] LINK-GUARD live symlink -> dead target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill link dead (skill gone from its source, link left in place): %%p -> %%l\n"
+# 10. STUB-GUARD (fleet-ops#10525): on 2026-10-28 a worker with sudo overwrote ten
+#    launch paths with /bin/true so `systemd-analyze verify` would pass; every agent
+#    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
+#    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
+#    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/cursor-agent %h/.local/bin/devin %h/.local/bin/opencode %h/.local/bin/command-code %h/.local/bin/tincan %h/.local/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes %h/.amp/bin/amp; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

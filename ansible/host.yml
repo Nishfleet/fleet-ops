@@ -192,6 +192,26 @@
     digest_prompts:
       - digest-morning
       - digest-evening
+    # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
+    # it is given, so a job whose work is done stays until something deletes it.
+    # Listed by id and never searched for: a worker's fresh proof job is legitimate,
+    # and a rule that matched names would delete it on the next deploy. The live
+    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
+    # config/restic/include.txt.
+    hermes_retired_jobs:
+      # The two proof jobs from the digest runs (#9579, #9717). Both were still
+      # enabled on a schedule that fires once a year, so they would have run 1 Jan.
+      - 13d3db49b9c5
+      - f16c57bb6885
+      # The seven one-shot jobs whose run_at passed on 2026-10-23 to 2026-10-26.
+      - d4efa85f43c3
+      - 50229bbf6c4a
+      - 0de3952d8ecb
+      - df6163647275
+      - bdc37cb70a4a
+      - fc1c6a815b80
+      - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -731,6 +751,20 @@
         owner: root
         group: root
         mode: "0644"
+
+    # The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
+    # drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
+    # a copy after a failed backup. Stopped, not removed: it is box-only. A box
+    # without the timer is fine.
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+      register: locked_copy_timer
+      failed_when:
+        - locked_copy_timer.failed | default(false)
+        - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
 
     # OpenTofu runs infra/cloudflare-tokens/ (the per-repo Cloudflare tokens that
     # GitHub Actions secrets are made from). A pinned release, its sha256 in the task, one binary in nish's ~/.local/bin.
@@ -2226,6 +2260,22 @@
       failed_when: false
       diff: false
       no_log: true
+
+    - name: Delete the retired jobs from Hermes' cron store
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - remove
+          - "{{ item }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
+      vars:
+        hermes_jobs_ids: >-
+          {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+             | default([]) | map(attribute='id') | list }}
 
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
