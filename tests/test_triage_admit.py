@@ -17,7 +17,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
-STEP = '.jobs.admit.steps[] | select(.id == "admit")'
+STEP = '.jobs.admit.steps[] | select(.name == "Ask Jev and apply the verdict")'
 
 CFG = {"repos": [{"name": "0509", "product": True}, {"name": "tool", "product": False}]}
 
