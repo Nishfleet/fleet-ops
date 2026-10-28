@@ -558,7 +558,7 @@ jobs:
             done
           else
             gh issue list -R "$GITHUB_REPOSITORY" -S no:label -L 5 --json number --jq '.[].number' | xargs -rI{} gh issue edit {} -R "$GITHUB_REPOSITORY" --add-label needs-triage || echo "::warning::triage labelling failed"
-            # agent-in-progress left by a run that died with its runner and no claim PR goes back to agent-ready (fleet-ops#9063).
+            # agent-in-progress left by a run that died with its runner and no claim PR goes back to agent-ready (fleet-ops#9063). A draft claim PR counts as none: a dead run leaves one (fleet-ops#10367).
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
