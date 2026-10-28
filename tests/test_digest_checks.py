@@ -16,6 +16,8 @@ canonical prompts under config/hermes/ honest:
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
+- a stored wait item closed as not planned is never reported as FIXED, so a
+  decision Nish declined is not shipped to him as a fix (fleet-ops#10289),
 - ansible/host.yml applies the prompts to the live jobs,
 - and it deletes the named retired jobs from the same cron store, so a proof job
   whose issue has closed stops existing, while a fresh one is left alone
@@ -146,8 +148,8 @@ def _run_2a(prompt, tmp_path, gh, store):
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
 
 
-def _issue(state, *labels):
-    return {"state": state, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
+def _issue(state, *labels, state_reason="COMPLETED"):
+    return {"state": state, "stateReason": state_reason if state == "CLOSED" else None, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
 
 
 def _run_row(conclusion, name, days_ago=1):
@@ -226,6 +228,24 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "broken:alpha:Slow": "failure",
         "broken:beta:Build": "failure",
     }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_wait_item_closed_as_not_planned_is_not_reported_as_fixed(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {
+            "Nishfleet/alpha#7": _issue("CLOSED", "needs-nish-decision", state_reason="NOT_PLANNED"),
+            "Nishfleet/alpha#8": _issue("CLOSED", "needs-nish-decision", state_reason=None),
+        },
+        "runs": {"Nishfleet/alpha": []},
+    }
+    store = json.dumps({"wait:alpha#7": "open|needs-nish-decision", "wait:alpha#8": "open|needs-nish-decision"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store)
+    assert "ROW wait:alpha#7 NOT-PLANNED https://example.com/i" in lines
+    assert "ROW wait:alpha#8 NOT-PLANNED https://example.com/i" in lines
+    assert not any(" FIXED " in l for l in lines)
+    assert saved == {}
 
 
 _WINDOW_PUSHES = 30
