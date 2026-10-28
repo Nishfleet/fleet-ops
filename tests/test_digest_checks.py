@@ -17,8 +17,8 @@ canonical prompts under config/hermes/ honest:
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
 - ansible/host.yml applies the prompts to the live jobs,
-- and it deletes the temporary proof jobs and the expired one-shots from the same
-  cron store, so a job that proves one thing for one issue stops existing
+- and it deletes the named retired jobs from the same cron store, so a proof job
+  whose issue has closed stops existing, while a fresh one is left alone
   (fleet-ops#10545).
 """
 import datetime
@@ -383,7 +383,7 @@ def test_site_check_with_a_failing_page_is_unknown(tmp_path):
     assert saved is None
 
 
-PRUNE = "Delete the temporary and expired one-shot jobs from Hermes' cron store"
+PRUNE = "Delete the retired jobs from Hermes' cron store"
 READ = "Read Hermes' scheduled jobs"
 
 FAKE_CRON_STUB = """#!/usr/bin/env python3
@@ -447,7 +447,20 @@ CRON_KEPT = [
     _job("eba16b1df90e", "tmp-9737-proof", False, **_cron("5 22 * * *")),
     _job("111111111111", "sec-future-reminder", False, **_once(3)),
     _job("222222222222", "atmp-proof", True, **_cron("0 7 4 4 *")),
+    _job("333333333333", "tmp-10600-proof", True, **_once(2)),
 ]
+
+
+def _retired_ids():
+    lines = HOST.read_text().splitlines()
+    out = []
+    for line in lines[lines.index("    hermes_retired_jobs:") + 1 :]:
+        if line.startswith("      #"):
+            continue
+        if not line.startswith("      - "):
+            break
+        out.append(line.split("- ", 1)[1].strip())
+    return out
 
 
 def _task_text(name):
@@ -463,6 +476,8 @@ def _task_text(name):
 
 
 def _prune(tmp_path, jobs):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
     stub = tmp_path / ".local/bin/hermes"
     stub.parent.mkdir(parents=True, exist_ok=True)
     stub.write_text(FAKE_CRON_STUB)
@@ -482,6 +497,7 @@ def _prune(tmp_path, jobs):
                 "  gather_facts: false",
                 "  vars:",
                 f"    nish_home: {tmp_path}",
+                f"    hermes_retired_jobs: {json.dumps(_retired_ids())}",
                 "    nish_env:",
                 f"      HOME: {tmp_path}",
                 f"      PATH: {stub.parent}:/usr/local/bin:/usr/bin:/bin",
@@ -508,9 +524,17 @@ def _prune(tmp_path, jobs):
 
 
 def test_the_host_jobs_remove_the_proof_jobs_and_the_expired_one_shots(tmp_path):
+    assert _retired_ids() == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
     jobs, calls = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
-    assert calls == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
+    assert sorted(calls) == sorted(job["id"] for job in CRON_PROOF + CRON_EXPIRED)
     assert jobs == CRON_LIVE + CRON_KEPT
+
+
+def test_the_host_jobs_leave_a_fresh_proof_job_alone(tmp_path):
+    fresh = _job("444444444444", "tmp-10600-proof", True, **_once(0))
+    jobs, calls = _prune(tmp_path, CRON_LIVE + [fresh])
+    assert calls == []
+    assert jobs == CRON_LIVE + [fresh]
 
 
 def test_the_host_jobs_remove_nothing_on_a_second_run(tmp_path):

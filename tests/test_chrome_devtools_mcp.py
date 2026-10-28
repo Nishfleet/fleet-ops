@@ -115,6 +115,7 @@ USER_FILE_TASKS = [
     "Read Hermes' config",
     "Add the chrome-devtools entry under Hermes' mcp_servers",
     "Read Hermes' scheduled jobs",
+    "Delete the retired jobs from Hermes' cron store",
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
     "Link the packaged gh into nish's ~/.local/bin",

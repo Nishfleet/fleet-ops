@@ -187,6 +187,26 @@
     digest_prompts:
       - digest-morning
       - digest-evening
+    # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
+    # it is given, so a job whose work is done stays until something deletes it.
+    # Listed by id and never searched for: a worker's fresh proof job is legitimate,
+    # and a rule that matched names would delete it on the next deploy. The live
+    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
+    # config/restic/include.txt.
+    hermes_retired_jobs:
+      # The two proof jobs from the digest runs (#9579, #9717). Both were still
+      # enabled on a schedule that fires once a year, so they would have run 1 Jan.
+      - 13d3db49b9c5
+      - f16c57bb6885
+      # The seven one-shot jobs whose run_at passed on 2026-10-23 to 2026-10-26.
+      - d4efa85f43c3
+      - 50229bbf6c4a
+      - 0de3952d8ecb
+      - df6163647275
+      - bdc37cb70a4a
+      - fc1c6a815b80
+      - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -2247,13 +2267,7 @@
       diff: false
       no_log: true
 
-    # A job named tmp-* is temporary by its name: it proves one thing for one issue, then has no
-    # owner, and two of them (fleet-ops#10545) were still enabled on a schedule that fires once a
-    # year. Delete every enabled tmp-* job and every disabled one-shot whose run_at is before
-    # today, which can never run again. A disabled recurring job cannot fire, so it stays as
-    # evidence for its issue. run_at is an ISO date, so comparing it with today's date is a plain
-    # string compare: a job that falls due today is left for the next run.
-    - name: Delete the temporary and expired one-shot jobs from Hermes' cron store
+    - name: Delete the retired jobs from Hermes' cron store
       become: true
       become_user: nish
       ansible.builtin.command:
@@ -2263,21 +2277,11 @@
           - remove
           - "{{ item }}"
       environment: "{{ nish_env }}"
-      loop: "{{ retired }}"
+      loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
       vars:
-        jobs: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) }}"
-        today: "{{ now(fmt='%Y-%m-%d') }}"
-        retired: >-
-          {{ (jobs | selectattr('enabled', 'equalto', true)
-                   | selectattr('name', 'defined')
-                   | selectattr('name', 'match', '^tmp-')
-                   | map(attribute='id') | list)
-             + (jobs | selectattr('enabled', 'equalto', false)
-                     | selectattr('schedule.kind', 'defined')
-                     | selectattr('schedule.kind', 'equalto', 'once')
-                     | selectattr('schedule.run_at', 'defined')
-                     | selectattr('schedule.run_at', 'lt', today)
-                     | map(attribute='id') | list) }}
+        hermes_jobs_ids: >-
+          {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+             | default([]) | map(attribute='id') | list }}
 
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
