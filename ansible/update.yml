@@ -7,7 +7,11 @@
 #              its hold-risky guard keeps running), stop the user timers that
 #              start work, wait until no runner has a job (agent jobs time out
 #              at 60 min), then stop the runner services so no CI job lands
-#              on a half-upgraded box.
+#              on a half-upgraded box. With the box quiet, take one restic
+#              snapshot through restic-r2-backup.service (which dumps the
+#              LiteLLM database itself): no step below runs without a
+#              restorable state, and a missing or failed backup fails the
+#              run rather than being skipped quietly (fleet-ops#9965).
 #   2. prune   apt's download cache, stopped Docker containers created over a
 #              day ago (never a Cua-managed one), dangling images and old
 #              build cache, the npm and uv caches.
@@ -18,7 +22,10 @@
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater (Hermes on its stable channel with its
 #              services restarted, tincan with its idle listeners restarted,
-#              the npm and uv tools (yt-dlp is a uv tool)) and the redis container through
+#              the npm and uv tools (yt-dlp is a uv tool and must never
+#              self-update: that replaced its running binary and broke it,
+#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and the
+#              redis container through
 #              `podman auto-update`. Stale npm staging dirs go first, so
 #              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
@@ -258,6 +265,36 @@
             state: stopped
           loop: "{{ runner_units.stdout_lines | map('split') | map('first') | list }}"
           register: runners_stopped
+
+        # The safety net before the first update step: a restic snapshot of
+        # the box as it stands, so every change below has a restorable state
+        # to return to (fleet-ops#9965). The service's own ConditionPathExists
+        # would skip it silently, so the env file is checked first; a failed
+        # or unconfigured backup fails the run here (the always: block below
+        # still resumes the fleet). The service dumps the LiteLLM database in
+        # its own ExecStartPre; this run adds no separate dump.
+        - name: Back the box up before anything changes
+          block:
+            - name: Check the backup's configuration
+              ansible.builtin.stat:
+                path: /etc/restic/netcup-r2.env
+              register: backup_env
+
+            - name: Refuse to update a box that cannot be restored
+              ansible.builtin.assert:
+                quiet: true
+                that: backup_env.stat.exists
+                fail_msg: >-
+                  restic-r2-backup.service is not configured
+                  (/etc/restic/netcup-r2.env is missing), so no update step
+                  rolls forward.
+
+            - name: Run the backup and wait for it to finish
+              ansible.builtin.command:
+                argv: [systemctl, start, restic-r2-backup.service]
+              register: pre_update_backup
+              timeout: 3600
+              changed_when: true
 
         - name: Record tool versions before the update
           become: true
@@ -1221,6 +1258,7 @@
               app_versions_after: "{{ (app_versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | map('trim') | list }}"
               hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
               hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
+              pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_busy: "{{ tincan_busy }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
@@ -1248,6 +1286,7 @@
               - "not (hermes_update | default({})).failed | default(false)"
               - "not (hermes_restart | default({})).failed | default(false)"
               - "not (tincan_upgrade | default({})).failed | default(false)"
+              - "not (pre_update_backup | default({})).failed | default(false)"
               - "(hermes_banned_removed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_cgroups | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_procs | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"

@@ -425,6 +425,18 @@ def _tether_task_names() -> list[str]:
     return names
 
 
+def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
+    """A find that catches a -journal/-wal/-shm file fails the chmod loop when SQLite removes it (fleet-ops#10390)."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
+    assert not scan.get("use_regex")
+    assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
+    assert {"sessions.db*", "pi.db*", "claude.db*", "opencode.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert "failed_when" not in tasks["Keep the agent session databases private"]
+    kept_private = tasks["Look for the agent state directories"]["loop"]
+    assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
+
+
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
 def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
     marker = tmp_path / "tether-off"
@@ -1299,6 +1311,15 @@ def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_in
     files = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("EnvironmentFile=")]
     assert "-%h/.config/cloudflare/tofu-state-encryption.env" in files
     assert "TF_ENCRYPTION" not in text and "passphrase" not in text.lower(), "the key and method belong in the private file only"
+
+
+def test_cloudflare_tokens_unit_writes_secrets_as_the_secrets_app_not_a_personal_login() -> None:
+    text = CF_TOKENS_UNIT.read_text()
+    assert "gh auth token" not in text and "GITHUB_TOKEN" not in text, "a personal login must not write repo secrets (fleet-ops#10601)"
+    assert "TF_VAR_github_app_pem=" in text
+    # The App key can write every installed repo's secrets: it lives in the directory the worker jails hide.
+    assert "%h/.config/cloudflare/nishfleet-secrets.private-key.pem" in text
+    assert "pem_file        = var.github_app_pem" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
 
 
 def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:

@@ -144,6 +144,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # The Amp runners (#10662): removed from the repo and already gone from
+      # this host. Listed so a box that still has the links drops them instead of
+      # failing the link check in fleet-sync.service.
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
@@ -334,6 +341,45 @@
         mode: preserve
       notify: Reload systemd
 
+    # fleet-update.service reads the healthchecks.io success-ping URL from a
+    # root-only curl config; the URL is not named in the repo (fleet-ops#9965).
+    - name: Make the directory for the update unit's root-only files
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # The update's own healthchecks ping URL lives with the box's other ping
+    # URLs in the keystone env file, so one paste covers it once the check
+    # exists (creating the check needs the healthchecks.io account; no API key
+    # is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+    # the update unit cannot ping the other checks. A missing line leaves the
+    # mirror absent, the unit pings SKIP, and its check simply goes stale,
+    # which is the alert.
+    - name: Read the healthchecks ping URLs nish keeps for the box
+      ansible.builtin.slurp:
+        src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+      register: hc_env_source
+      failed_when: false
+      no_log: true
+
+    # Written as a curl config (`url = <URL>`), so the unit pings with a
+    # plain `curl --config` and the URL stays out of argv.
+    - name: Hand the update unit its own healthchecks URL, root-only
+      vars:
+        hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-hc.curl
+        content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: hc_update_lines | length > 0
+      diff: false
+      no_log: true
+
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/
     # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
@@ -362,7 +408,6 @@
         - "'/var/lib/fleet-runner/1/runsvc.sh' is not exists"
       notify:
         - Reload systemd
-        - Restart pilot runner
 
     # The copy keeps `bin` and `externals` as the absolute links they are under
     # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
@@ -384,7 +429,6 @@
       loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
       loop_control:
         label: "{{ item.stat.path }}"
-      notify: Restart pilot runner
 
     # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
     # paths, and the runner loads it over the unit's own HOME, so every job's gh read
@@ -398,7 +442,6 @@
         line: HOME=/var/lib/fleet-runner
         insertbefore: BOF
       when: "'/var/lib/fleet-runner/1/.env' is exists"
-      notify: Restart pilot runner
 
     - name: Drop nish's runtime paths from the pilot runner environment
       ansible.builtin.lineinfile:
@@ -406,7 +449,19 @@
         regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
         state: absent
       when: "'/var/lib/fleet-runner/1/.env' is exists"
-      notify: Restart pilot runner
+
+    # Runner 1 is still registered with the `agent` label, so a running unit takes production
+    # jobs it cannot run (42 failed on 2026-10-28, fleet-ops#10706). Until it is re-registered
+    # with a pilot-only label and passes its own test job, a deploy leaves it stopped and
+    # disabled, and a change to the pilot tasks never starts it. The stop waits up to
+    # TimeoutStopSec (5 min) for a running job. Switch off: delete this task, in the same PR
+    # that re-registers runner 1 with a pilot-only label, then start the unit.
+    - name: Leave the pilot runner stopped while it carries the agent label
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        enabled: false
+        state: stopped
+      when: "'/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-1.service' is exists"
 
     # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
     - name: Stop and disable the retired agent runners
@@ -900,6 +955,12 @@
         # Pi worker session logs live under here (directory mode only; the
         # files inside are nish's and stay as the tool writes them).
         - "{{ nish_home }}/.pi"
+        # The directories the session-database scan below reads: their own 0700
+        # mode is what keeps a SQLite -journal/-wal/-shm file private, since the
+        # scan skips those files (fleet-ops#10390).
+        - "{{ agent_share }}/leviathan"
+        - "{{ agent_share }}/opencode"
+        - "{{ agent_share }}/fleet-grafana"
       register: agent_state_dirs
 
     - name: Keep the agent state directories private
@@ -929,6 +990,16 @@
           - claude.db*
           - opencode.db*
           - grafana.db*
+        # SQLite creates and removes its own -journal, -wal and -shm files while
+        # it writes, so a listing can catch one and the chmod below then fail
+        # with 'is absent' (fleet-ops#10390). Skip them: SQLite gives a new one
+        # the mode of the main database, and the directories the scan reads are
+        # kept 0700, so the main file's 0600 plus the directory cover them
+        # (https://sqlite.org/tempfiles.html).
+        excludes:
+          - "*-journal"
+          - "*-wal"
+          - "*-shm"
         file_type: file
       register: agent_state_dbs
 
@@ -942,11 +1013,6 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
-      register: agent_state_db_chmod
-      # SQLite deletes its -journal, -wal and -shm files on its own, so one
-      # found a moment ago can be gone by now (fleet-ops#10388). Only that
-      # error is ignored; any other failure still fails the run.
-      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
@@ -2587,11 +2653,6 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
-
-    - name: Restart pilot runner
-      ansible.builtin.systemd_service:
-        name: actions.runner.Nishfleet.netcup-agent-1.service
-        state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
