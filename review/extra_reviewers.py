@@ -82,8 +82,10 @@ def judge_answer(pre, want, used):
         b = None
     if not isinstance(b, dict):
         return None, None, None, "the call failed or its answer was not JSON (curl exit 0)"
-    choice = (b.get("choices") or [{}])[0] or {}
-    content = (choice.get("message") or {}).get("content") or ""
+    ch = b.get("choices")
+    choice = ch[0] if isinstance(ch, list) and ch and isinstance(ch[0], dict) else {}
+    msg = choice.get("message")
+    content = (msg.get("content") if isinstance(msg, dict) else "") or ""
     content = content.rstrip("\n") if isinstance(content, str) else ""
     served = ""
     try:

@@ -108,6 +108,15 @@ def test_length_cut_is_retried(run, capsys):
     assert (t / "second-why").read_text() == "the answer was cut at its token limit or empty"
 
 
+def test_a_malformed_answer_is_retried_not_a_crash(run):
+    go, calls, _, t = run
+    assert go(senior=[(GLM, "APPROVE", "stop")], judge=[(QWEN, "APPROVE", "stop")]) == 0
+    for body in ('{"choices": ["x"]}', '{"choices": "x"}', '{"choices": [{"message": "x"}]}', '"x"'):
+        (t / "third-body.json").write_text(body)
+        assert er.judge_answer("third", "Qwen", [])[3] in {
+            "the answer was cut at its token limit or empty", "the call failed or its answer was not JSON (curl exit 0)"}
+
+
 def test_retries_run_out_files_one_loud_issue(run):
     go, calls, ghs, t = run
     assert go(senior=[7], judge=[(QWEN, "APPROVE", "stop")], assistant=[7]) == 1
