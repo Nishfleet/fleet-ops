@@ -59,14 +59,15 @@ def filler(size):
     return {"user": {"login": "someone"}, "body": "x" * size, "created_at": OLD, "updated_at": OLD}
 
 
-def _run(tmp_path, comments):
+def _run(tmp_path, comments, armed=()):
     fake = tmp_path / "fake"
     fake.mkdir()
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    (fake / "prs.json").write_text(json.dumps([pr(n) for n in comments]))
+    prs = [pr(n) | ({"autoMergeRequest": {"enabledAt": OLD}} if n in armed else {}) for n in comments]
+    (fake / "prs.json").write_text(json.dumps(prs))
     for n, c in comments.items():
         (fake / f"comments-{n}.json").write_text(json.dumps(c))
     gh = fake / "gh"
@@ -114,6 +115,13 @@ def test_one_failed_verdict_is_skipped_loudly_and_fails_the_job(tmp_path):
     assert "::warning::#102: verdict failed, skipped" in r.stdout
     assert "::error::1 of 3 waiting PRs errored and were skipped" in r.stdout
     assert _armed(outputs) == [101, 103]
+
+
+def test_a_refused_disarm_is_a_warning_and_the_pr_is_still_armed(tmp_path):
+    r, outputs = _run(tmp_path, {101: [approval(101)], 102: [approval(102)]}, armed={101})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "::warning::#101: disarm refused" in r.stdout
+    assert _armed(outputs) == [101, 102]
 
 
 @pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-rework", "stuck-file"])
