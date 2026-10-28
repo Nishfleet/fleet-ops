@@ -56,3 +56,14 @@ def test_judge_row_is_refused_once_qwen_reviewed(tmp_path):
     headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "alibaba-qwen38max-judge")
     out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev Qwen")
     assert "rc=1" in out and "a family that already reviewed this head" in out
+
+
+def test_reviewer_request_disables_router_fallbacks():
+    ask = next(l for l in WF.read_text().splitlines() if "{model: $m, stream: false" in l)
+    assert "disable_fallbacks: true" in ask
+
+
+def test_stepfun_row_from_assistant_fallback_is_refused(tmp_path):
+    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "stepfun-step5preview-worker-capable")
+    out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev GLM Qwen")
+    assert "rc=1" in out and "no known non-Claude family" in out
