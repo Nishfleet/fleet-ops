@@ -1,7 +1,9 @@
-"""Every Claude Code managed-settings drop-in parses, and every plugin it enables resolves.
+"""Every Claude Code managed-settings file parses, ships from the repo and is installed.
 
 A drop-in that does not parse stops Claude Code from starting on the whole box,
-so each file must be a JSON object. A plugin id is `name@marketplace`: the
+so each file must be a JSON object, and the same file must be installed by a
+host.yml task that runs that same check before the file reaches /etc. A plugin id
+is `name@marketplace`: the
 marketplace half must be one the box knows, either because a drop-in declares it
 in `extraKnownMarketplaces` or because the box already registered it. When the
 marketplace's directory is on disk (this box, or a runner with the checkout) the
@@ -10,11 +12,16 @@ marketplace lists fails here instead of at Claude Code start-up.
 """
 import json
 import pathlib
+import shutil
+import subprocess
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
 DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
+JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
+NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 HOST_MARKETPLACES = pathlib.Path.home() / ".claude/plugins/known_marketplaces.json"
 
 
@@ -79,3 +86,39 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
             continue
         listed = {p["name"] for p in json.loads(manifest.read_text())["plugins"]}
         assert name in listed, f"{plugin_id} is enabled but {manifest} lists {sorted(listed)}"
+
+
+def _managed_copies():
+    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
+    tasks = [task for play in json.loads(out) for task in play.get("tasks", [])]
+    copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
+    return tasks, copies
+
+
+@NEEDS_YQ
+def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
+    _, copies = _managed_copies()
+    assert copies, "no host.yml copy task installs anything under /etc/claude-code/"
+    for copy in copies:
+        assert JSON_OBJECT_GATE in copy["validate"], f"{copy['dest']} is installed without the JSON-object gate"
+        assert copy["owner"] == "root" and copy["group"] == "root", copy["dest"]
+        assert copy["mode"] == "preserve", copy["dest"]
+
+    def installed(path):
+        src = "{{ rootfs }}/" + path.relative_to(ROOT / "rootfs").as_posix()
+        return any(copy.get("src") == src or (copy.get("src", "").endswith("/") and src.startswith(copy["src"])) for copy in copies)
+
+    files = sorted(p for p in MANAGED_TREE.rglob("*") if p.is_file())
+    assert files, f"no files under {MANAGED_TREE}"
+    for path in files:
+        assert isinstance(json.loads(path.read_text()), dict), f"{path.relative_to(ROOT)} is not a JSON object"
+        assert installed(path), f"{path.relative_to(ROOT)} is installed by no /etc/claude-code copy task"
+
+
+@NEEDS_YQ
+def test_the_box_wide_defaults_file_is_installed_as_itself():
+    tasks, _ = _managed_copies()
+    task = next((t for t in tasks if t.get("name") == "Install the Claude Code managed-settings defaults file"), None)
+    assert task, "no task installs the box-wide managed-settings.json"
+    assert task["ansible.builtin.copy"]["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
+    assert task["ansible.builtin.copy"]["dest"] == "/etc/claude-code/managed-settings.json"
