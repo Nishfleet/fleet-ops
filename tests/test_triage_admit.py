@@ -39,7 +39,8 @@ case $1 in
     esac ;;
   issue)
     case $2 in
-      list) jq -r '.[].number' "$FAKE_DIR/list.json" ;;
+      list) echo "$*" >> "$FAKE_DIR/lists.log"
+        case "$*" in *" -S "*) jq -r '.[].number' "$FAKE_DIR/search.json" ;; *) jq -r '.[].number' "$FAKE_DIR/list.json" ;; esac ;;
       edit|comment) echo "$*" >> "$FAKE_DIR/writes.log" ;;
       *) exit 1 ;;
     esac ;;
@@ -140,7 +141,7 @@ def test_request_shape_fences_the_untrusted_text():
 
 
 def _run(tmp_path, *, repo="Nishfleet/0509", iss=None, actor="nish3451", resp=None, listed=(7,), issue_env="",
-         cfg=CFG, daily_max="10", budget_sec="780", comments=(), events=None):
+         cfg=CFG, daily_max="10", budget_sec="780", comments=(), events=None, found=()):
     fake = tmp_path / "fake"
     fake.mkdir(parents=True, exist_ok=True)
     home = tmp_path / "home"
@@ -148,6 +149,7 @@ def _run(tmp_path, *, repo="Nishfleet/0509", iss=None, actor="nish3451", resp=No
     (home / ".config/fleet-ops/seats/typesafe-jev.env").write_text("LITELLM_JEV_KEY=test-jev-key-abc\n")
     (fake / "cfg.json").write_text(json.dumps({"content": base64.b64encode(json.dumps(cfg).encode()).decode()}))
     (fake / "list.json").write_text(json.dumps([{"number": n} for n in listed]))
+    (fake / "search.json").write_text(json.dumps([{"number": n} for n in found]))
     (fake / "issue.json").write_text(json.dumps(iss or issue()))
     (fake / "events.json").write_text(json.dumps(events if events is not None else [
         {"event": "labeled", "label": {"name": "needs-triage"}, "actor": {"login": actor}, "created_at": "2026-10-10T10:00:00Z"}]))
@@ -171,6 +173,7 @@ def _run(tmp_path, *, repo="Nishfleet/0509", iss=None, actor="nish3451", resp=No
     )
     writes = (fake / "writes.log").read_text() if (fake / "writes.log").exists() else ""
     calls = (fake / "curl.log").read_text().count("called") if (fake / "curl.log").exists() else 0
+    _run.lists = (fake / "lists.log").read_text() if (fake / "lists.log").exists() else ""
     return r, writes, calls
 
 
@@ -304,3 +307,35 @@ def test_only_the_owner_login_is_trusted_and_the_cap_is_wired():
     assert _env_var("TRUSTED_LOGINS").split() == ["nish3451"]
     assert "nishfleet-worker[bot]" not in _env_var("TRUSTED_LOGINS")
     assert _y(f"{STEP} | .env.DAILY_MAX").strip() == "${{ vars.ADMIT_DAILY_MAX }}"
+
+
+def test_unlabelled_issue_is_listed_by_a_bounded_search_that_skips_the_worker_bot(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue(labels=()), listed=(), found=(7,), resp=_answer(0.96))
+    assert r.returncode == 0, r.stderr
+    assert "-S no:label -author:app/nishfleet-worker -L 20" in _run.lists
+    assert "-l needs-triage" in _run.lists
+    assert "--add-label agent-ready" in w and calls == 1
+
+
+def test_unlabelled_issue_below_threshold_goes_to_the_orchestrator(tmp_path):
+    r, w, _ = _run(tmp_path, iss=issue(labels=()), listed=(), found=(7,), resp=_answer(0.2))
+    assert r.returncode == 0, r.stderr
+    assert "--add-label needs-orchestrator" in w and "--add-label agent-ready" not in w
+
+
+def test_unlabelled_issue_filed_by_the_worker_bot_is_never_admitted(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue(labels=(), author="nishfleet-worker[bot]"), listed=(), found=(7,), resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+
+
+def test_unlabelled_issue_from_a_stranger_is_skipped(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue(labels=(), author="a-stranger"), listed=(), found=(7,), resp=_answer(0.99))
+    assert r.returncode == 0 and w == "" and calls == 0
+
+
+def test_unlabelled_issue_still_hits_the_exclusions_and_the_daily_cap(tmp_path):
+    r, w, calls = _run(tmp_path, iss=issue("Change the Stripe key", "x", labels=()), listed=(), found=(7,), resp=_answer(0.99))
+    assert calls == 0 and "--add-label agent-ready" not in w
+    comments = ["triage-admit: admitted. Jev p=0.96 (model x). Run: y" for _ in range(10)]
+    r2, w2, calls2 = _run(tmp_path / "cap", iss=issue(labels=()), listed=(), found=(7,), comments=comments, resp=_answer(0.99))
+    assert w2 == "" and calls2 == 0
