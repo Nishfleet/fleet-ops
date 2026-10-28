@@ -90,3 +90,21 @@ def test_file_changed_by_this_deploy_passes(fixture):
     _commit(fixture / "repo", "second")
     result = _run(fixture)
     assert result.returncode == 0, result.stdout
+
+
+def test_symlinked_rootfs_file_is_not_drift(fixture):
+    link = fixture / "repo/rootfs/etc/systemd/system/fleet-b@.service"
+    link.symlink_to("fleet-a.service")
+    _commit(fixture / "repo", "link")
+    live = fixture / "box/etc/systemd/system/fleet-b@.service"
+    shutil.copy(link, live)
+    assert _run(fixture).returncode == 0
+    result = _run(fixture)
+    assert result.returncode == 0, result.stdout
+
+
+def test_missing_old_commit_skips_the_check(fixture):
+    (fixture / "applied-sha").write_text("0" * 40 + "\n")
+    (fixture / "box" / UNIT).write_text("[Service]\nUMask=0022\n")
+    result = _run(fixture)
+    assert result.returncode == 0, result.stdout

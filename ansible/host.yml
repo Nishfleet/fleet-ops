@@ -291,6 +291,7 @@
         recurse: true
         file_type: any
         hidden: true
+        follow: true
         get_checksum: true
       register: shipped_sums
       check_mode: false  # read-only; runs under --check too
@@ -301,6 +302,7 @@
         recurse: true
         file_type: any
         hidden: true
+        follow: true
         get_checksum: true
       register: live_sums
       check_mode: false  # read-only; runs under --check too
@@ -315,20 +317,21 @@
       ansible.builtin.command: git -C {{ rootfs }}/.. diff --name-only {{ applied_sha }} {{ head_sha.stdout }} -- rootfs/etc
       register: deploy_changes
       changed_when: false
+      failed_when: false  # old commit gone (shallow clone, history rewrite): skip the drift check, never wedge the deploy
       check_mode: false  # read-only; runs under --check too
-      when: applied_sha != ''
+      when: applied_sha is match('^[0-9a-f]{40}$')
 
     - name: Work out which shipped files were edited by hand
       ansible.builtin.set_fact:
         hand_edited: >-
-          {{ (shipped_sums.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '')
-                | zip(shipped_sums.files | rejectattr('isdir') | map(attribute='checksum', default='')) | map('join', ':') | list)
+          {{ (shipped_sums.files | rejectattr('isdir') | rejectattr('islnk') | map(attribute='path') | map('replace', rootfs, '')
+                | zip(shipped_sums.files | rejectattr('isdir') | rejectattr('islnk') | map(attribute='checksum', default='')) | map('join', ':') | list)
              | difference(live_sums.files | map(attribute='path') | map('regex_replace', '^' ~ host_root, '')
                 | zip(live_sums.files | map(attribute='checksum', default='')) | map('join', ':') | list)
              | map('regex_replace', ':[0-9a-f]*$', '')
              | difference(deploy_changes.stdout_lines | default([]) | map('regex_replace', '^rootfs', '') | list)
              | sort }}
-      when: applied_sha != ''
+      when: applied_sha is match('^[0-9a-f]{40}$') and (deploy_changes.rc | default(1)) == 0
 
     # GitHub's public commit-signing keys (https://github.com/web-flow.gpg), so
     # root can run `git verify-commit` on what ansible-pull fetches. Two keys,
@@ -2037,7 +2040,7 @@
         fail_msg: "Hand-installed, not in fleet-ops rootfs/ (add it to the repo, delete it, or list it in /etc/fleet-ops/box-only): {{ unmanaged | join(', ') }}"
         quiet: true
       vars:
-        shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
+        shipped_paths: "{{ shipped.files | rejectattr('isdir') | rejectattr('islnk') | map(attribute='path') | map('replace', rootfs, '') | list }}"
         unmanaged: >-
           {{ live.files | map(attribute='path')
              | difference(shipped_paths) | difference(box_only)
