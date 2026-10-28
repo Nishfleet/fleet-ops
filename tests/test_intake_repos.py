@@ -6,6 +6,22 @@ CFG = json.loads((pathlib.Path(__file__).parent.parent / "config" / "intake-repo
 ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"] for r in CFG["deferred"]}
 NEW = ("TinyStudio.io-public", "aiconverter-app", "rera-report-card", "tether")
+UNHOOKED = ("mailbox", "claude-mods", "fleet-console-worker", "pi-runner-guard")
+STUB_PENDING = ("nish-vault", "owner-gate")
+
+
+def test_unhooked_repos_are_enrolled_like_0509_with_a_dated_enrolment():
+    for name in UNHOOKED:
+        entry = ENROLLED[name]
+        assert entry["product"] is True, name
+        assert set(ENROLLED["0509"]) <= set(entry), name
+        assert "2026-10-28" in entry["enrolled_by"], name
+
+
+def test_repos_whose_stub_is_not_on_main_stay_deferred():
+    for name in STUB_PENDING:
+        assert name in DEFERRED, name
+        assert name not in ENROLLED, name
 
 
 def test_new_product_repos_are_admitted():

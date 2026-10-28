@@ -44,6 +44,26 @@
       "name": "seo-fix-kit",
       "product": true,
       "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; decision ledger entry nish-vault#27; the end-date review is Nishfleet/siterep-public#173, due that day; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16)"
+    },
+    {
+      "name": "mailbox",
+      "product": true,
+      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; the stub PR, the six labels and the checkout land with this entry, AGENT_MODE=live is Nish's to set)"
+    },
+    {
+      "name": "claude-mods",
+      "product": true,
+      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; the stub PR, the six labels and the checkout land with this entry, AGENT_MODE=live is Nish's to set)"
+    },
+    {
+      "name": "fleet-console-worker",
+      "product": true,
+      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; the stub PR, the six labels and the checkout land with this entry, AGENT_MODE=live is Nish's to set)"
+    },
+    {
+      "name": "pi-runner-guard",
+      "product": true,
+      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; the stub PR, the six labels and the checkout land with this entry, AGENT_MODE=live is Nish's to set)"
     }
   ],
   "sweep_only": [
@@ -99,6 +119,16 @@
       "name": "inish-site",
       "product": true,
       "reason": "Retired product: no dispatch. Nish, 2026-10-12: the 0509-only freeze is lifted for every other product; this one stays out because it is retired."
+    },
+    {
+      "name": "nish-vault",
+      "product": true,
+      "reason": "fleet-ops#10653: the stub PR (Nishfleet/nish-vault#102) is not on main, so enrolling it would let later-sweep promote an overdue issue nothing can dispatch (nish-vault#38 is past its due date). Both required checks are red on runner netcup-vault-1, where the worker token dir is readable from the job: a jail defect on that runner, not in the stub. Re-enrol via PR when the stub is on main."
+    },
+    {
+      "name": "owner-gate",
+      "product": true,
+      "reason": "fleet-ops#10653: the stub PR (Nishfleet/owner-gate#6) cannot merge, because main is frozen by the freeze-main ruleset and lifting it is an admin action. The labels and the checkout are already in place. Re-enrol via PR when the stub is on main."
     }
   ]
 }
