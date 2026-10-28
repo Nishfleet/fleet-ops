@@ -6,12 +6,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import pytest
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
 
+pytest.importorskip("litellm")
+
 import litellm  # noqa: E402
-import pytest  # noqa: E402
 import yaml  # noqa: E402
 from litellm import Router  # noqa: E402
 from litellm.litellm_core_utils.duration_parser import duration_in_seconds  # noqa: E402

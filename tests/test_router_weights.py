@@ -14,9 +14,12 @@ import random
 import re
 from pathlib import Path
 
+import pytest
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
+
+pytest.importorskip("litellm")
 
 import yaml  # noqa: E402
 from litellm import Router  # noqa: E402

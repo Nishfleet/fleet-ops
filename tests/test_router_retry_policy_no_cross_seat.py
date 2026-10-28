@@ -101,9 +101,12 @@ import socketserver
 import threading
 from typing import List
 
+import pytest
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
+
+pytest.importorskip("litellm")
 
 import litellm  # noqa: E402
 from litellm import Router  # noqa: E402
