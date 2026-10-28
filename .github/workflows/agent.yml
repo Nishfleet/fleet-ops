@@ -1161,25 +1161,28 @@ jobs:
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
-  # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
+  # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled. A head that edits
+  # .github/workflows/** arms with the runner user's own login instead, because the App has no workflows permission.
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
     runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
     timeout-minutes: 10
-    permissions:
-      pull-requests: write
-    concurrency:
-      group: arm-${{ github.repository }}-${{ inputs.arm_pr || inputs.review_pr }}
-      cancel-in-progress: false
+    permissions: {pull-requests: write}
+    concurrency: {group: "arm-${{ github.repository }}-${{ inputs.arm_pr || inputs.review_pr }}", cancel-in-progress: false}
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.arm_pr || inputs.review_pr }}
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
       # The head this run's own review job approved; empty on an arm_pr dispatch.
       REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      # These two steps stay inline, because the App has no workflows permission (Nish, 2026-10-04) and
+      # so cannot push this file, while it can push .github/actions/**: the private-key read and the arm that
+      # uses the runner user's own gh login, the admin login the worker jail hides. A tricked worker must not be
+      # able to edit either line (fleet-ops#10723).
       - name: Read App private key
         id: app-key
         run: |
@@ -1202,9 +1205,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Arm the approved head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
+        id: arm-head
         run: |
           set -euo pipefail
           pr=$(gh api "repos/$REPO/pulls/$PR")
@@ -1213,18 +1214,22 @@ jobs:
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
           # The App has no workflows permission, so GitHub refuses its arm on a PR that edits
           # .github/workflows/**. For such a PR the arm uses the runner user's gh login
-          # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
-          # run's review job just approved this exact head (REVIEWED). No comment or dispatch
-          # input switches it on, any other arm keeps the App token, and a failed file-list read
-          # fails the step instead of falling to the wider login.
+          # (GH_TOKEN unset), as the orchestrate job does, but only when this run's review job
+          # just approved this exact head (REVIEWED). No comment or dispatch input switches it
+          # on, and a failed file-list read fails the step instead of falling to the wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
           if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
             echo "armed #$PR at $SHA (workflow edit, runner login)"
+            echo "armed=true" >> "$GITHUB_OUTPUT"
           else
-            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-            echo "armed #$PR at $SHA"
+            echo "armed=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Arm with the App token
+        if: steps.arm-head.outputs.armed == 'false'
+        uses: Nishfleet/fleet-ops/.github/actions/arm@main
+        with:
+          app-token: ${{ steps.arm-token.outputs.token }}
   # Files one orchestrator issue for a PR that has waited over an hour and that no worker
   # owns: a session's own branch, or a claim PR whose issue is closed or deleted (40 of 53
   # waiting fleet PRs on 2026-10-11). The App token files it so the needs-orchestrator label
