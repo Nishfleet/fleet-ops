@@ -1308,8 +1308,6 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
 
 
-# --- Units kept in the 2026-10-23 glue audit (issue #10125): nothing tests
-# --- their keys, and a silent edit to any of them disables a job with no symptom.
 PR_SWEEP = ROOT / "systemd/fleet-pr-sweep@.service"
 LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 REMOTE_CONTROL = INSTALLED / "claude-remote-control.service"
@@ -1318,8 +1316,6 @@ AMP_RUNNERS = {
     "nish": (ROOT / "systemd/amp-runner-nish.service", "vps-nish", "tooling"),
     "rajeev": (ROOT / "systemd/amp-runner-rajeev.service", "vps-rajeev", "products"),
 }
-# A system unit has no %h, so the units under test spell their home paths out. One
-# gitleaks:allow line holds every literal, and the assertions read these names.
 HOME = "/home/nish"  # gitleaks:allow
 BIN_CLAUDE = f"{HOME}/.local/bin/claude"
 BIN_AMP = f"{HOME}/.amp/bin/amp"
@@ -1351,8 +1347,6 @@ def sh_script(unit: Path, home: Path) -> str:
     return argv[2]
 
 
-# A stand-in for the gh CLI. `--jq` is applied here the way the real CLI applies it,
-# and every `issue edit` is appended to $FAKE_GH_LOG, so a test reads the promotions the loop made.
 FAKE_GH = """#!/bin/sh
 prog=""
 sub=""
