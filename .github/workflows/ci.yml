@@ -52,11 +52,8 @@ jobs:
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
-      # Plus cua-driver never on the host (fleet-ops#9297).
-      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error
-      # The cua-driver rule's own ruleid:/ok: fixtures, so a loosened rule goes red.
-      - run: semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
+      # No glue (Nish 2026-09-29; 0509 reads no-glue.yml by URL), no host cua-driver plus its fixtures (#9297).
+      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
         if: github.event_name == 'pull_request'
