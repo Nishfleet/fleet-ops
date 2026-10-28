@@ -228,13 +228,6 @@ jobs:
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
-      - name: The Mac's daily topgrade job runs from mac/, with no home path (fleet-ops#10508)
-        # The job was hand-written and lived in no repo, so a changed schedule or
-        # argument reached the Mac unseen. Parses mac/ with plistlib and tomllib and
-        # pins the schedule, the arguments, the steps and the absence of home paths
-        # (launchd does not expand `~`).
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_mac_topgrade.py
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.
@@ -255,7 +248,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync, gh login check and needs-triage tests (fleet-ops#9967, #9706, #9308, #9932)
+      - name: fleet-sync, gh login check, needs-triage and Mac topgrade tests (fleet-ops#9967, #9706, #9308, #9932, #10508)
         # Runs fleet-sync.service's own agent installs and its link check against a temp home.
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
@@ -264,7 +257,7 @@ jobs:
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22

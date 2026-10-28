@@ -128,4 +128,6 @@ def test_config_expands_tilde_only_where_topgrade_expands_it():
 
 
 def test_ci_runs_this_file():
-    assert "pytest -q -p no:cacheprovider tests/test_mac_topgrade.py" in CI.read_text()
+    lines = [line for line in CI.read_text().splitlines() if "tests/test_mac_topgrade.py" in line]
+    assert lines, "ci.yml runs no step naming this file"
+    assert any("pipx run --spec pytest" in line for line in lines), lines
