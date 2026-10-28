@@ -23,7 +23,7 @@ poller, no wrapper.
 
   | Pool | Units | Registered to | Labels (as listed by the API) |
   |---|---|---|---|
-  | agent | `netcup-agent-1..22` | org runner group `agent` (id 3) | `self-hosted`, `agent`. Ten of the 22 also carry `linux`, `x64`. |
+  | agent | `netcup-agent-1..10` | org runner group `agent` (id 3) | `self-hosted`, `agent` |
   | fleet-ci | `netcup-fleet-ci-1..3` | org, `fleet-ci-3` in the restricted group `drive-eval` | `self-hosted`, `linux`, `x64`, `fleet-ci` |
   | vault | `netcup-vault-1` | one repository outside the org | not covered here |
 
@@ -164,7 +164,7 @@ it.
   also checks for a newer version when it starts, which can add time on the
   first start after a release.
 - Throughput during the gap: a runner is not available between one job ending
-  and its replacement registering. With 22 agent runners the effect is small,
+  and its replacement registering. With 10 agent runners the effect is small,
   and the Step 3 check measures it.
 - Cache loss: checkouts, tool downloads and anything else in the work
   directory are fetched again every job. The expected cost is the clone time
