@@ -1152,8 +1152,18 @@
               when: reboot_issue.stdout | int == 0
 
         - name: Report the run
+          vars:
+            tincan_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
           ansible.builtin.debug:
             msg:
+              # One plain line per update this run checked but did not apply,
+              # with the reason, so nothing is held back silently (#9965).
+              checked_not_applied: >-
+                {{ (['Cua Spaces ' ~ cua_installed.stdout ~ ' -> ' ~ cua_target ~ ': not installed, a desk agent run was not idle; next run retries']
+                    if cua_desk_busy | default(false) | bool else [])
+                   + (tincan_busy | map('regex_replace', '^(.*)$', 'tincan listener \1: still on the old build, it was mid-job; restarts when idle') | list)
+                   + (['reboot: needed by ' ~ ((reboot_pkgs | default({})).stdout_lines | default([]) | join(', ') | default('unknown packages', true)) ~ '; never automatic, the open reboot issue asks Nish']
+                      if reboot_flag.stat.exists else []) }}
               dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
               stale_pause_cleared: "{{ (stale_cleared | default({})).results | default([]) | map(attribute='item') | list }}"
               dispatch_paused: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
@@ -1179,7 +1189,7 @@
               hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
               hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
-              tincan_listeners_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
+              tincan_listeners_busy: "{{ tincan_busy }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"

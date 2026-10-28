@@ -60,3 +60,11 @@ def test_every_new_step_is_checked_in_the_final_assert():
     that = " ".join(ASSERT["ansible.builtin.assert"]["that"])
     for var in ("hermes_update", "hermes_restart", "tincan_upgrade", "tincan_listeners", "app_versions_after"):
         assert var in that
+
+
+def test_every_update_held_back_gets_one_digest_line():
+    report = next(t for t in BLOCK["always"] if t["name"] == "Report the run")
+    digest = report["ansible.builtin.debug"]["msg"]["checked_not_applied"]
+    # The three places the run checks an update and holds it back.
+    for hold in ("cua_desk_busy", "tincan_busy", "reboot_flag.stat.exists"):
+        assert hold in digest, hold
