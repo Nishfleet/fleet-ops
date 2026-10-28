@@ -42,7 +42,6 @@ SYSCALL_GROUPS = {
     "@privileged",
     "@raw-io",
     "@reboot",
-    "@resources",
     "@swap",
 }
 NAMESPACE_TYPES = {"user", "pid", "net", "mnt", "uts", "ipc", "cgroup"}
@@ -91,6 +90,8 @@ def test_address_families_and_syscall_and_namespace_deny_lists() -> None:
     assert FAMILIES <= families, f"{DROPIN.name}: missing socket families {FAMILIES - families}"
     groups = set(svc.get("SystemCallFilter", "").replace("~", " ").split())
     assert SYSCALL_GROUPS <= groups, f"{DROPIN.name}: missing syscall groups {SYSCALL_GROUPS - groups}"
+    assert "@resources" not in groups, f"{DROPIN.name}: @resources would SIGSYS bun's setrlimit"
+    assert svc.get("SystemCallErrorNumber") == "EPERM", f"{DROPIN.name}: denied syscalls must return EPERM"
     restricted = svc.get("RestrictNamespaces", "")
     assert restricted.startswith("~"), f"{DROPIN.name}: RestrictNamespaces= must be a ~ deny list"
     types = set(restricted.lstrip("~").split())
