@@ -1361,13 +1361,12 @@ def test_ssh_bind_check_fails_when_a_wildcard_is_reintroduced(listen: str) -> No
 
 
 def test_ssh_bind_check_fails_on_a_reset_after_the_binds() -> None:
-    text = "[Socket]\nListenStream=100.108.184.97:22\nListenStream=\n"
+    text = SSH_SOCKET_DROPIN.read_text().rstrip("\n") + "\nListenStream=\n"
     assert ssh_bind_offenders(text) != [], "a trailing reset clears the tailnet binds and leaves the distro's own"
 
 
 def test_ssh_bind_check_accepts_the_tailnet_binds() -> None:
-    text = "[Socket]\nListenStream=\nListenStream=100.108.184.97:22\nListenStream=[fd7a:115c:a1e0::d23a:b862]:22\n"
-    assert ssh_bind_offenders(text) == []
+    assert ssh_bind_offenders(SSH_SOCKET_DROPIN.read_text()) == []
 
 
 def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
