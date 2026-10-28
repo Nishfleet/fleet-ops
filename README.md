@@ -1080,13 +1080,33 @@ Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
 `rm ~/.claude-max/agents`. The live agent files stay as plain files.
 
+## Managed-settings defaults
+
+`rootfs/etc/claude-code/managed-settings.json` is the box-wide Claude Code
+managed settings file itself, not a drop-in. `ansible/host.yml` installs it with
+the same `validate:` as the drop-ins, so a file that is not a JSON object never
+reaches `/etc` and cannot stop Claude Code from starting. It carries the
+subagent model, the advisor model, the per-model settings, the hand-picked
+`model-lanes` plugin and the box-wide permission `deny` and `ask` lists.
+`/etc/claude-code` is not in `owned_dirs`: every file in it is covered by an
+explicit copy task, a single-file one or a directory one, never a sweep.
+
+- Verify: `cmp /etc/claude-code/managed-settings.json
+  rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
+  repo copy), and `claude -p hi` starts on the box.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
+- The check is the `unit` job's `tests/test_claude_managed_settings.py`: every
+  file under `rootfs/etc/claude-code/` is a JSON object, its copy task runs that
+  JSON-object `validate:` as root and keeps the file's mode, and the defaults
+  file is installed as itself and not as part of a directory copy.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
 Code managed-settings drop-in; Claude Code merges every
-`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
-hand-installed `/etc/claude-code/managed-settings.json` is not touched and
-`/etc/claude-code` is not in `owned_dirs`. It does four things:
+`/etc/claude-code/managed-settings.d/*.json` into the managed settings. It does
+four things:
 
 - Tells the auto-mode safety checker which orgs and repos are ours.
 - Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
@@ -1151,9 +1171,10 @@ always at `origin/main` (a failure fails the unit).
 - `80-inbox.json` registers the inbox directory marketplace and enables `inbox`.
   Its content is the file that was hand-written on the box, carried over as-is.
 
-Every `enabledPlugins` key merges with the hand-installed
-`/etc/claude-code/managed-settings.json`, which keeps its own `model-lanes` line:
-two files naming the same id with the same value is a no-op merge.
+Every `enabledPlugins` key merges with `/etc/claude-code/managed-settings.json`,
+which now ships from `rootfs/etc/claude-code/managed-settings.json` (README,
+"Managed-settings defaults") and keeps its own `model-lanes` line: two files
+naming the same id with the same value is a no-op merge.
 
 - Verify: `claude -p hi --output-format stream-json --verbose` prints an init
   line whose plugin list carries every enabled id.
@@ -1316,6 +1337,9 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32). `later-sweep.service` reads
 this list too, so the overdue sweep follows enrolment without a second list.
+`sweep_only` names repos that are not enrolled but whose agent-ready items
+the worker-exit top-up in `agent.yml` still re-sweeps (fleet-ops and drive,
+fleet-ops#10638): a retry of items already labelled, never admit or intake.
 
 Each enrolled repo needs three preconditions:
 
