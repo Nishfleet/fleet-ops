@@ -786,6 +786,9 @@ jobs:
           # Logins whose unedited `coordinator-approval: <sha>` comment counts,
           # hold-risky's APPROVERS.
           APPROVERS: nish3451 github-actions[bot]
+          # A head gets three review asks. An ask the review answered with `review-held: <sha>`
+          # (Claude usage limit) is not counted, up to 12 asks in all: a weekly limit lasts days,
+          # and an hourly ask past that only adds comments (#10743).
           STUCK: |
             .pr.headRefOid as $sha
             | $sha[0:7] as $s7
@@ -797,11 +800,12 @@ jobs:
             | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
             | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
             | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
+            | [$bot[] | select(any(.lines[]; . == "review-held: \($sha)"))] as $held
             | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
               elif ($no | length) > 0 then {class: "stuck", reason: "the reviewer did not approve \($s7)", url: ($no[-1].html_url // "")}
-              elif ($asked | length) >= 3 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries", url: ($asked[-1].html_url // "")}
+              elif ($asked | length) - ($held | length) >= 3 or ($asked | length) >= 12 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries (\($held | length) held at a usage limit)", url: ($asked[-1].html_url // "")}
               else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
         run: |
           set -euo pipefail

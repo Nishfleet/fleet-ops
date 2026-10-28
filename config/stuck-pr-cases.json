@@ -377,6 +377,389 @@
      "mergeable": "UNKNOWN"
     }
    }
+  },
+  {
+   "id": "asked-three-times-two-held-at-a-usage-limit-is-asked-again",
+   "want": "review",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     }
+    ]
+   }
+  },
+  {
+   "id": "asked-four-times-one-held-at-a-usage-limit-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     }
+    ]
+   }
+  },
+  {
+   "id": "held-on-an-older-head-does-not-count",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: fd39de101a4bfe1a3f74923f62e9f22601081626\n\nheld",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: fd39de101a4bfe1a3f74923f62e9f22601081626\n\nheld",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     }
+    ]
+   }
+  },
+  {
+   "id": "asked-twelve-times-all-held-is-stuck",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit (You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     }
+    ]
+   }
   }
  ]
 }

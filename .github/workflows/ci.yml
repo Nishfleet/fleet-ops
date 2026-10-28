@@ -1193,6 +1193,8 @@ jobs:
           cat > /dev/null; echo "$model" >> "$STATE/models"
           if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; printf '%b\n' "$SECOND"; exit 0; fi
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1
+          # claude's own usage-limit line (2026-10-28 orchestrate sessions), with CLAUDE_LIMIT as the exit code
+          [ -z "${CLAUDE_LIMIT:-}" ] || { echo "You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)"; exit "$CLAUDE_LIMIT"; }
           printf '%b\n' "$FIRST"
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
@@ -1230,7 +1232,7 @@ jobs:
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
+              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1286,6 +1288,8 @@ jobs:
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
+            [ -z "${CLAUDE_LIMIT:-}" ] || grep -qx "review-held: $SHA" "$STATE/comments" || problem="$problem a usage limit did not hold the head"
+            [ -n "${CLAUDE_LIMIT:-}" ] || ! grep -q '^review-held:' "$STATE/comments" || problem="$problem a head was held with no usage limit"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
@@ -1339,7 +1343,10 @@ jobs:
           claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
           other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
-          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
+          claude-call-fails-with-no-answer-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
+          claude-seat-at-its-usage-limit-holds-the-head-with-no-red-run||approve|0.95|clean|none|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
+          claude-limit-line-with-exit-0-still-holds||approve|0.95|clean|none|CLAUDE_LIMIT=0|no|0|claude-opus-5-5
+          guard-first-review-at-its-usage-limit-holds-before-the-others|1|approve|0.95|clean|clean_ok|CLAUDE_LIMIT=1|no|0|claude-opus-5-5
           diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
           diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
           CASES

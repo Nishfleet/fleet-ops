@@ -1035,12 +1035,20 @@ jobs:
           echo "first review: built by '${built:-unknown}', model $first_model"
           # The model gets the diff as text and no tools (--tools ""): a tool could open the
           # runner's key files and the review is posted publicly (claude honors an empty --tools,
-          # checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did
-          # not finish: retry. No fallback to another family, no approval without this review. The guard head's second review (Fable) is the same call.
+          # checked 2026-10-10). A call that fails or answers nothing did not finish: retry. No fallback
+          # to another family, no approval without this review. The guard head's second review (Fable) is the same call.
           ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence \
             --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' \
             --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
-          review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
+          # A Claude usage limit is not a non-answer: claude prints one line such as "You've hit your 5-hour limit · resets 11pm"
+          # and exits 1 until the window resets. The head is held with no verdict and no red run; the stuck-review sweep asks
+          # again each hour, and a held ask does not count toward its three tries (#10743).
+          rc=0; review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" 2> "$RUNNER_TEMP/first.err") || rc=$?
+          if [ "$rc" != 0 ] || [ "$(grep -c . <<<"$review")" -le 1 ]; then
+            lim=$(cat "$RUNNER_TEMP/first.err" - <<<"$review" | grep -m 1 -iE "hit your [a-z0-9 -]*limit|usage limit reached" | head -c 200 || true)
+            [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe first review (%s) is at its Claude usage limit (%s). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.' "$SHA" "$first_model" "$lim")"; exit 0; }
+            [ "$rc" = 0 ] || review=
+          fi
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
