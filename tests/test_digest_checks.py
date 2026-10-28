@@ -21,6 +21,10 @@ canonical prompts under config/hermes/ honest:
 - the evening site check stores a timestamped site_checked row on every run, so
   an audit can verify the nightly publish claim after the fact, and the reply
   carries one short line when that row could not be saved (fleet-ops#9862),
+- and the evening site check never writes over a store it could not read, so a
+  run that reads nothing leaves every stored wait and broken item alone, and it
+  reports STORED-SAVE-FAILED instead of claiming the row was saved
+  (fleet-ops#9862),
 - ansible/host.yml applies the prompts to the live jobs,
 - and it deletes the named retired jobs from the same cron store, so a proof job
   whose issue has closed stops existing, while a fresh one is left alone
@@ -115,6 +119,8 @@ a = sys.argv[1:]
 if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
     sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
 elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
+    if os.environ.get("FAKE_SET_FAIL"):
+        sys.exit(1)
     open(os.environ["FAKE_SAVED"], "w").write(a[5])
 else:
     sys.exit(2)
@@ -384,11 +390,13 @@ else:
 _FEED = "<rss><channel><lastBuildDate>Thu, 15 Oct 2026 02:00:00 +0000</lastBuildDate><item><pubDate>Thu, 15 Oct 2026 02:00:00 +0000</pubDate></item></channel></rss>"
 
 
-def _run_2b(tmp_path, store, code, feed):
+def _run_2b(tmp_path, store, code, feed, set_fails=False):
     env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
     (tmp_path / "bin/curl").write_text(FAKE_CURL)
     (tmp_path / "bin/curl").chmod(0o755)
     env = {**env, "FAKE_CODE": code, "FAKE_FEED": feed, "TZ": "UTC"}
+    if set_fails:
+        env["FAKE_SET_FAIL"] = "1"
     r = subprocess.run(["bash", "-c", _site_command()], env=env, capture_output=True, text=True, timeout=60)
     saved = pathlib.Path(env["FAKE_SAVED"])
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
@@ -396,7 +404,7 @@ def _run_2b(tmp_path, store, code, feed):
 
 def _site_command():
     text = EVENING.read_text()
-    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); test -z \"$R\" && R='{}'; W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
+    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
     return text[start:text.index("\n", start)]
 
 
@@ -447,6 +455,18 @@ def test_site_check_with_a_failing_page_still_stores_a_checked_row(tmp_path):
 def test_site_check_stores_nothing_when_the_store_is_unreadable(tmp_path):
     lines, saved = _run_2b(tmp_path, "not json", "200", _FEED)
     assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-UNREADABLE"]
+    assert saved is None
+
+
+def test_site_check_stores_nothing_when_the_store_read_returns_nothing(tmp_path):
+    lines, saved = _run_2b(tmp_path, "", "200", _FEED)
+    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-UNREADABLE"]
+    assert saved is None
+
+
+def test_site_check_reports_a_failed_save(tmp_path):
+    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14", "wait:a#1": "open|x"}), "200", _FEED, set_fails=True)
+    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVE-FAILED"]
     assert saved is None
 
 
