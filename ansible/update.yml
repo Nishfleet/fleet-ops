@@ -294,7 +294,7 @@
                 argv: [systemctl, start, restic-r2-backup.service]
               register: pre_update_backup
               timeout: 3600
-              changed_when: pre_update_backup.rc == 0
+              changed_when: true
 
         - name: Record tool versions before the update
           become: true
@@ -1216,7 +1216,6 @@
               hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
               hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
               pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
-              tincan_update: "{{ 'failed' if (tincan_upgrade | default({})).failed | default(false) else 'ran' }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
