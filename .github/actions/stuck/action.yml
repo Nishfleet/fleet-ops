@@ -1,5 +1,4 @@
-# The stuck job's steps (agent.yml), moved out so edits to them do not clash with the rest of agent.yml (fleet-ops#10723).
-# The job keeps its if, runs-on, permissions, concurrency and env (REPO, PR, SHA, REASON, URL), which these steps read.
+# agent.yml's stuck job runs these steps; the job keeps its if, permissions, concurrency and env (fleet-ops#10723).
 name: stuck
 description: File or update one orchestrator issue for a PR that has waited over an hour and that no worker owns.
 runs:
@@ -22,14 +21,9 @@ runs:
     - name: Issue token
       id: issue-token
       uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-      with:
-        app-id: "4728578"
-        private-key: ${{ steps.app-key.outputs.pem }}
-        permission-issues: write
+      with: {app-id: "4728578", private-key: "${{ steps.app-key.outputs.pem }}", permission-issues: write}
     - name: File or update the stuck-PR issue
-      env:
-        GH_TOKEN: ${{ github.token }}
-        ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
+      env: {GH_TOKEN: "${{ github.token }}", ISSUE_TOKEN: "${{ steps.issue-token.outputs.token }}"}
       shell: bash -e {0}
       run: |
         set -euo pipefail

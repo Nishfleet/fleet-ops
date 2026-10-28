@@ -1217,12 +1217,8 @@ jobs:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
-    permissions:
-      pull-requests: read
-      issues: read
-    concurrency:
-      group: stuck-${{ github.repository }}-${{ inputs.stuck_pr }}
-      cancel-in-progress: false
+    permissions: {pull-requests: read, issues: read}
+    concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.stuck_pr }}
