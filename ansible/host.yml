@@ -703,6 +703,17 @@
         group: root
         mode: "0644"
 
+    # The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
+    # drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
+    # a copy after a failed backup. Stopped, not removed: it is box-only. A box
+    # without the timer is fine.
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+      failed_when: false
+
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
     # that changes the URL and the checksum together, and this block's
