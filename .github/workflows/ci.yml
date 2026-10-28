@@ -56,22 +56,28 @@ jobs:
       - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
         # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
+        # The base is the merge base with the base branch, not github.event.pull_request.base.sha:
+        # that SHA is the base branch's tip when the PR was opened, so a base that has moved on
+        # puts already-merged main commits in the range and fails the PR for trailers it does
+        # not carry (fleet-ops#10553). fetch-depth: 0 above makes the merge base reachable, and
+        # HEAD is the PR's merge commit, so the range holds the PR's own commits only.
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         shell: bash
         run: |
-          log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
+          base=$(git merge-base HEAD "origin/${GITHUB_BASE_REF:-main}")
+          log=$(git log --format=%B "$base..HEAD")
           ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
       - name: A new component links a design note
         # Design-it-twice (#10556): a PR that adds a unit, quadlet or Pi extension carries `design-note: docs/design/<file>.md` (or a URL).
         if: github.event_name == 'pull_request'
-        env: {BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_BODY: "${{ github.event.pull_request.body }}"}
+        env: {HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_BODY: "${{ github.event.pull_request.body }}"}
         shell: bash
         run: |
-          new=$(git diff --name-only --diff-filter=A --no-renames "$BASE_SHA...$HEAD_SHA")
+          base=$(git merge-base HEAD "origin/${GITHUB_BASE_REF:-main}")
+          new=$(git diff --name-only --diff-filter=A --no-renames "$base...HEAD")
           grep -E '^(systemd/[^/]+\.(service|timer|socket)|containers/quadlet/[^/]+\.container|pi-extensions/[^/]+/package\.json)$' <<<"$new" >/dev/null || exit 0
           n=$(sed -nE 's/\r?$//; s/^design-note: *//p' <<<"$PR_BODY"); n=${n%%$'\n'*}
           [[ $n == https://* || ( $n == docs/design/*.md && -f $n ) ]] || { echo "::error::new component: add a line 'design-note: docs/design/<file>.md' (or a URL) to the PR body"; exit 1; }
