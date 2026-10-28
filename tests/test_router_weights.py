@@ -14,11 +14,12 @@ import random
 import re
 from pathlib import Path
 
-import yaml
-from litellm import Router
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
+
+import yaml  # noqa: E402
+from litellm import Router  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml"
 PREFERRED = re.compile(r"^opencodego-ds41flash-worker-(capable|cheap)$")

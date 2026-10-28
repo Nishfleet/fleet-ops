@@ -101,20 +101,21 @@ import socketserver
 import threading
 from typing import List
 
-import litellm
-from litellm import Router
-from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,
-                                InternalServerError, NotFoundError, RateLimitError)
-from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
-from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
-from litellm.types.router import RetryPolicy
-
-import jsonschema
-import httpx
-import yaml
 from router_litellm_pin import require_pinned_litellm
 
 require_pinned_litellm(__file__)
+
+import litellm  # noqa: E402
+from litellm import Router  # noqa: E402
+from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,  # noqa: E402
+                                InternalServerError, NotFoundError, RateLimitError)
+from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy  # noqa: E402
+from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck  # noqa: E402
+from litellm.types.router import RetryPolicy  # noqa: E402
+
+import jsonschema  # noqa: E402
+import httpx  # noqa: E402
+import yaml  # noqa: E402
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"

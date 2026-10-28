@@ -57,6 +57,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 pytest.importorskip("litellm")
 
@@ -66,9 +69,6 @@ from litellm import Router  # noqa: E402
 from litellm.router_utils.cooldown_handlers import (  # noqa: E402
     _resolve_allowed_fails_from_policy,
 )
-from router_litellm_pin import require_pinned_litellm  # noqa: E402
-
-require_pinned_litellm(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "litellm-proxy.yaml"

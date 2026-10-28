@@ -8,10 +8,12 @@ v1.105.0 stream-slot leak (fleet-ops#10694), so the two versions do not answer
 the same questions.
 
 Every test_router_*.py that loads litellm calls require_pinned_litellm(__file__)
-after its litellm imports, so a pytest run and a direct run of the file both
-fail when the installed version differs. test_router_consumer_groups.py reads
-the config with yq and loads no litellm, so ROUTER_TESTS_WITHOUT_LITELLM exempts
-it. Run the rest on the pin:
+above its litellm imports, so a version-drift import error does not pre-empt the
+pin message, and both a pytest run and a direct run of the file fail when the
+installed version differs. tests/conftest.py calls the same check for every
+router module, so a new test_router_*.py is covered even if it forgets the call.
+test_router_consumer_groups.py reads the config with yq and loads no litellm, so
+ROUTER_TESTS_WITHOUT_LITELLM exempts it. Run the rest on the pin:
 
     uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \\
         python -m pytest -q -p no:cacheprovider tests/test_router_*.py
@@ -37,7 +39,11 @@ def pinned_litellm() -> str:
         PROXY_CONTAINER.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
-    assert match, f"no litellm version pinned in {PROXY_CONTAINER}"
+    if not match:
+        raise RuntimeError(
+            "no 'Image=ghcr.io/berriai/litellm:v<version>@sha256:<digest>' line in "
+            f"{PROXY_CONTAINER}"
+        )
     return match.group(1)
 
 
@@ -50,8 +56,9 @@ def require_pinned_litellm(module_file: str) -> None:
         return
     running = importlib.metadata.version("litellm")
     pinned = pinned_litellm()
-    assert running == pinned, (
-        f"{name} runs against the proxy image's litellm {pinned}, not {running}. "
-        f"Run: uvx --with litellm=={pinned} --with pytest==8.3.5 --with jsonschema "
-        f"--with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py"
-    )
+    if running != pinned:
+        raise RuntimeError(
+            f"{name} runs against the proxy image's litellm {pinned}, not {running}. "
+            f"Run: uvx --with litellm=={pinned} --with pytest==8.3.5 --with jsonschema "
+            f"--with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py"
+        )
