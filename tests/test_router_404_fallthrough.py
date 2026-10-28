@@ -13,7 +13,7 @@ row needed a SECOND 404 to park and leaked one 404 to a caller on every other
 pick.
 
 This test pins the mechanism against the pinned proxy image
-(ghcr.io/berriai/litellm:v1.98.0, containers/quadlet/fleet-litellm-proxy.container),
+(ghcr.io/berriai/litellm:v1.105.0, containers/quadlet/fleet-litellm-proxy.container),
 not against a mock of it:
 
   * _should_cooldown_based_on_deployment_policy returns None when the policy
@@ -38,8 +38,10 @@ candidate list, the next row in the group takes the job" path the fleet gets.
 With two rows on the same order, simple-shuffle picks between them and the test
 would be a coin flip.
 
-No network beyond 127.0.0.1, no Redis, no API key. Run:
-    python tests/test_router_404_fallthrough.py
+No network beyond 127.0.0.1, no Redis, no API key. Run on the proxy image's
+litellm (see containers/quadlet/fleet-litellm-proxy.container):
+    uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \
+        python tests/test_router_404_fallthrough.py
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
 
 pytest.importorskip("litellm")
 

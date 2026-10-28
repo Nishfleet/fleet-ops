@@ -476,13 +476,14 @@ jobs:
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
-    permissions:
-      issues: write
-      pull-requests: read
-      # actions: `gh run view` liveness (fleet-ops#8777). Read, not write: every caller stub grants read, and write startup-failed their sweeps (fleet-ops#10638).
-      actions: read
-      checks: read
-      statuses: read
+    # contents: read is required because `statusCheckRollup` on a private repository
+    # needs it as well as checks: read; without it GitHub answers "Resource not
+    # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"
+    # and the sweep dies on the first claim PR it reads (tether#56). A public repo
+    # never asks for it, so 0509 and drive stayed green. actions: read, not write,
+    # is `gh run view` liveness (fleet-ops#8777); write startup-failed their sweeps
+    # (fleet-ops#10638).
+    permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
       stalled_refs: ${{ steps.list.outputs.stalled_refs }}
@@ -764,16 +765,12 @@ jobs:
        (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 20
-    # issues: write posts the rework note on a claim issue; pull-requests:
-    # write posts the stuck-review marker. checks and statuses read each
-    # head's state; actions: read is `gh run view`
-    # for a claim issue's live run. All within what every caller stub grants.
-    permissions:
-      issues: write
-      pull-requests: write
-      checks: read
-      statuses: read
-      actions: read
+    # issues: write posts the rework note on a claim issue; pull-requests: write
+    # posts the stuck-review marker. checks and statuses read each head's state;
+    # actions: read is `gh run view` for a claim issue's live run. contents: read
+    # is here for the same reason as the list job's: on a private repository GitHub
+    # refuses the head's checks for a token without it (tether#56).
+    permissions: {issues: write, pull-requests: write, contents: read, checks: read, statuses: read, actions: read}
     outputs:
       review: ${{ steps.find.outputs.review }}
       arm: ${{ steps.find.outputs.arm }}

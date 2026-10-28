@@ -1283,7 +1283,28 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
+    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "docs/layout.md names the unit this tunes"
+
+
+TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
+TINCAN_RELAY_DIST_DROPIN = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
+TINCAN_RELAY_DIST_DROPIN_DIR = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"
+
+
+def test_tincan_relay_ships_dist_and_the_temporary_dropin_is_retired() -> None:
+    exec_start = [line for line in TINCAN_RELAY_UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    assert len(exec_start) == 1, "tincan-relay.service must have exactly one ExecStart"
+    assert "--dist %S/tincan-relay/dist" in exec_start[0], "relay-upgrade --from-github 404s without --dist"
+    assert "--release-url https://github.com/mvanhorn/agent-tincan/releases/download" in exec_start[0], (
+        "relay-upgrade --from-github needs the release URL"
+    )
+    retired = json.loads(
+        subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
+    )
+    assert TINCAN_RELAY_DIST_DROPIN in retired, "the hand-placed --dist drop-in restates the shipped unit and must be deleted"
+    assert TINCAN_RELAY_DIST_DROPIN_DIR not in retired, "retire the file, not the directory: a later drop-in there must survive"
+    for base in (ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"):
+        assert not (base / "tincan-relay.service.d/dist-temp.conf").exists(), f"{base} must not ship the temporary drop-in"
 
 
 def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
@@ -1423,8 +1444,8 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
 
 
 def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "README.md").read_text()
-    assert "systemctl --user start <unit>" in readme, "the README lost the run line"
+    readme = (ROOT / "docs" / "layout.md").read_text()
+    assert "systemctl --user start <unit>" in readme, "docs/layout.md lost the run line"
     for relative in WAKE_UNITS:
         unit = relative.split("/")[-1]
         assert f"systemctl --user disable --now {unit}" in readme

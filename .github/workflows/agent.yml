@@ -1211,12 +1211,8 @@ jobs:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
     runs-on: [self-hosted, agent]
     timeout-minutes: 10
-    permissions:
-      pull-requests: read
-      issues: read
-    concurrency:
-      group: stuck-${{ github.repository }}-${{ inputs.stuck_pr }}
-      cancel-in-progress: false
+    permissions: {pull-requests: read, issues: read}
+    concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
     env:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.stuck_pr }}
@@ -1225,56 +1221,7 @@ jobs:
       URL: ${{ inputs.stuck_url }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
-      - name: Issue token
-        id: issue-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-issues: write
-      - name: File or update the stuck-PR issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          pr=$(gh api "repos/$REPO/pulls/$PR")
-          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the next sweep decides"; exit 0; }
-          marker="stuck-pr: #$PR"
-          why="PR #$PR ($(jq -r .head.ref <<<"$pr")) has waited over an hour at ${SHA:0:7}: $REASON."
-          [ -z "$URL" ] || why="$why Blocking comment: $URL"
-          old=$(gh issue list -R "$REPO" --state open -L 100 --search "\"$marker\" in:body" --json number,body |
-            jq -c --arg m "$marker" '[.[] | select(.body | split("\n") | any(.[]; startswith($m + " ")))] | first // empty')
-          if [ -n "$old" ]; then
-            n=$(jq -r .number <<<"$old")
-            if gh issue view "$n" -R "$REPO" --json body,comments --jq '[.body, .comments[].body] | join("\n")' | grep -qF "$marker $SHA"; then
-              echo "#$n already reports #$PR at $SHA"
-              exit 0
-            fi
-            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "$(printf '%s %s\n\n%s' "$marker" "$SHA" "$why")"
-            echo "updated #$n for #$PR at $SHA"
-            exit 0
-          fi
-          body=$(printf '%s %s\n\n%s\n\nTake the PR over: fix the blocker lines or merge main on its branch and push (a new head gets a fresh review and the sweep arms it once approved), or close it as superseded. %s' \
-            "$marker" "$SHA" "$why" "$(jq -r .html_url <<<"$pr")")
-          url=$(GH_TOKEN=$ISSUE_TOKEN gh issue create -R "$REPO" --title "Stuck PR #$PR: $REASON" --body "$body")
-          # Labelled after creation, so the labeled event that starts the
-          # orchestrate job is its own event from the App.
-          GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
-          echo "filed $url for #$PR at $SHA"
+      - uses: Nishfleet/fleet-ops/.github/actions/stuck@main
   inish-daily:
     # The Daily edition, published to https://nish.sh/daily (inish.in only redirects). The editorial standard is the
     # product repo's automation/HERMES_DAILY.md, the mechanical contract prompts/inish-daily.md here, so a product
