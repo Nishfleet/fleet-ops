@@ -177,6 +177,18 @@ The rules still in force:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
   To switch it off, give those two runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
+  fleet-ops gets runners first (fleet-ops#10717): GitHub hands queued
+  self-hosted jobs out first come, first served, so a product burst queued
+  fleet-ops behind it. `netcup-agent-20` to `-30` (not the offline `-23`), 10 of
+  the 28 live agent runners, also carry the label `fleet-ops`. agent.yml's
+  `work` and `stuck` jobs and agent-dispatch.yml's `orchestrate` job ask for
+  `[self-hosted, fleet-ops]` when `github.repository` (the caller) is
+  fleet-ops and `[self-hosted, agent]` otherwise, so no product caller can ask
+  for the reserved label. Those runners keep `agent`, so they take product work
+  whenever fleet-ops has none queued. The labels live at GitHub:
+  `gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`
+  (org-owner scope; the runner PAT gets 403). To switch it off, set the three
+  `runs-on` lines back to `[self-hosted, agent]` and delete the label.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
