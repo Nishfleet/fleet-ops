@@ -79,3 +79,29 @@ def test_stepfun_row_is_refused_once_stepfun_reviewed(tmp_path):
     headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "stepfun-step5preview-worker-capable")
     out = seat_try(tmp_path, headers, OK_BODY, want="", used="Jev GLM StepFun")
     assert "rc=1" in out and "a family that already reviewed this head" in out
+
+
+def test_row_of_the_wrong_family_is_refused(tmp_path):
+    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "alibaba-qwen38max-judge")
+    out = seat_try(tmp_path, headers, OK_BODY, want="GLM", used="")
+    assert "rc=1" in out and "(Qwen), not the GLM family" in out
+
+
+def test_answer_cut_at_its_token_limit_is_refused(tmp_path):
+    out = seat_try(tmp_path, OK_HEADERS, OK_BODY.replace('"stop"', '"length"'))
+    assert "rc=1" in out and "cut at its token limit or empty" in out
+
+
+def test_empty_answer_is_refused(tmp_path):
+    out = seat_try(tmp_path, OK_HEADERS, OK_BODY.replace('"APPROVE"', '" \\n "'))
+    assert "rc=1" in out and "cut at its token limit or empty" in out
+
+
+def test_retries_run_out_on_a_failed_call(tmp_path):
+    # Every call fails: one first try and one per REVIEW_BACKOFF delay, then exit 1 with the reason and no review.
+    script = functions() + 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; return 7; }\nseat_try senior second GLM ""; echo "rc=$?"; cat "$RUNNER_TEMP/second-why"\n'
+    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0 0", "PATH": "/usr/bin:/bin"}
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+    assert "rc=1" in out and "curl exit 7" in out
+    assert len((tmp_path / "calls").read_text().split()) == 3
+    assert not (tmp_path / "second.txt").exists()
