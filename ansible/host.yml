@@ -246,6 +246,9 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+    drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
+    drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
+    drive_mcp_servers: "{{ {'drive': drive_mcp_entry | combine({'args': drive_mcp_words[1:]})} }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
