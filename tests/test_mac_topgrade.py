@@ -128,6 +128,5 @@ def test_config_expands_tilde_only_where_topgrade_expands_it():
 
 
 def test_ci_runs_this_file():
-    lines = [line for line in CI.read_text().splitlines() if "tests/test_mac_topgrade.py" in line]
-    assert lines, "ci.yml runs no step naming this file"
-    assert any("pipx run --spec pytest" in line for line in lines), lines
+    # ci.yml finds every test under tests/ (fleet-ops#10721), so this file runs without being named there.
+    assert "pytest -q -p no:cacheprovider tests --ignore-glob=" in CI.read_text()

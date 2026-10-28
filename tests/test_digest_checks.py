@@ -80,7 +80,8 @@ def test_host_yml_applies_the_prompts_to_the_live_jobs():
 
 
 def test_ci_runs_this_file():
-    assert "tests/test_digest_checks.py" in CI.read_text()
+    # ci.yml finds every test under tests/ (fleet-ops#10721), so this file runs without being named there.
+    assert "pytest -q -p no:cacheprovider tests --ignore-glob=" in CI.read_text()
 
 
 FAKE_GH = """#!/usr/bin/env python3
