@@ -1446,7 +1446,7 @@ jobs:
           # actions jobs API. The name match covers a caller stub, whose job
           # reads "<stub job> / orchestrate".
           CAP_COUNT: >-
-            [.[] | select(.name == "orchestrate" or (.name | endswith(" / orchestrate")))
+            [.[] | select((.name // "") as $n | $n == "orchestrate" or ($n | endswith(" / orchestrate")))
               | select(any(.steps[]?; .name == "Run the orchestrator session" and (.conclusion == "success" or .conclusion == "failure")))]
             | length
         run: |
@@ -1469,8 +1469,8 @@ jobs:
           # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
           # since 00:00 IST, whose session step concluded, over this workflow's
           # `issues` and `workflow_dispatch` runs (the only events that can
-          # start this job). Over the cap the run skips and the issue keeps
-          # needs-orchestrator for a later dispatch. 0 = no cap.
+          # start this job). Over the cap, or when a GitHub 5xx leaves the count
+          # unreadable, the run skips and the issue keeps needs-orchestrator.
           DAILY_MAX=${DAILY_MAX:-10}
           case $DAILY_MAX in
             ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
@@ -1478,20 +1478,19 @@ jobs:
           if [ "$DAILY_MAX" -gt 0 ]; then
             since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
             wid=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id)
-            ids=
+            retry() { local o i; for i in 1 2 3; do o=$("$@") && { printf '%s\n' "$o"; return 0; }; sleep $((i * 5)); done; return 1; }
+            unknown() { echo "::warning::orchestrate: daily cap count unreadable (GitHub error); #$ISSUE keeps needs-orchestrator for the sweep"; exit 0; }
             for ev in issues workflow_dispatch; do
-              ids+=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/$wid/runs" -f event="$ev" -f created=">=${since%%T*}" -f per_page=100 --jq ".workflow_runs[] | select(.created_at >= \"$since\") | .id")$'\n'
+              ids+=$'\n'$(retry gh api --method GET --paginate "repos/$REPO/actions/workflows/$wid/runs" -f event="$ev" -f created=">=${since%%T*}" -f per_page=100 --jq ".workflow_runs[] | select(.created_at >= \"$since\") | .id") || unknown
             done
             ids=$(printf '%s' "$ids" | grep -E '^[0-9]+$' | sort -u || true)
             nruns=$(printf '%s' "$ids" | grep -c . || true)
-            # More runs than this: the count is unknown, so cap rather than
-            # let a busy repo run uncounted.
             if [ "$nruns" -gt 400 ]; then
               echo "::warning::orchestrate: $nruns runs since 00:00 IST in $REPO, too many to count; daily cap holds #$ISSUE (keeps needs-orchestrator)"
               exit 0
             fi
-            jobs_json=$(for id in $ids; do gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[] | {name, steps: [.steps[]? | {name, conclusion}]}'; done | jq -s .)
-            count=$(jq "$CAP_COUNT" <<<"$jobs_json")
+            jobs_json=$(for id in $ids; do retry gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[] | {name, steps: [.steps[]? | {name, conclusion}]}' || exit 1; done) || unknown
+            count=$(jq -s "$CAP_COUNT" <<<"$jobs_json")
             if [ "$count" -ge "$DAILY_MAX" ]; then
               echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-off runs since 00:00 IST in $REPO); #$ISSUE keeps needs-orchestrator; dispatch task=orchestrate issue=$ISSUE after midnight IST"
               exit 0
