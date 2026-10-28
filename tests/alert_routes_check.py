@@ -277,6 +277,10 @@ def main(root):
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
     bad, paging = check_datasource_refs(root, Path(root).parent), {}
+    for c in contacts_doc:
+        for rcv in c.get("receivers") or []:
+            if ".GeneratorURL" in json.dumps(rcv):
+                bad.append(f"{c['name']}: the issue body must not interpolate .GeneratorURL, the private Grafana host, because this repo is public (fleet-ops#10763)")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():
