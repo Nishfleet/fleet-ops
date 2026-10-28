@@ -176,6 +176,19 @@
       # repo stopped shipping it. `copy` never deletes, so the live file is
       # retired here or it keeps loading a plugin id no marketplace lists.
       - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
+      # The 2025 Node install the 2026-10-28 glue sweep found (G11, #10548): a
+      # second unversioned tree beside the live ~/.local/lib/node_modules and
+      # the ~/.hermes/node/bin shims npm and npx point at. Nothing in the repo,
+      # rootfs/ or a unit reads it, and `node` there was a byte-identical copy
+      # of /usr/local/bin/node, so PATH still resolves once it is gone.
+      - "{{ nish_home }}/.local/bin/bin"
+      - "{{ nish_home }}/.local/bin/include"
+      - "{{ nish_home }}/.local/bin/lib"
+      - "{{ nish_home }}/.local/bin/node"
+      - "{{ nish_home }}/.local/bin/README.md"
+      - "{{ nish_home }}/.local/bin/CHANGELOG.md"
+      - "{{ nish_home }}/.local/bin/LICENSE"
+      - "{{ nish_home }}/.local/bin/share"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
