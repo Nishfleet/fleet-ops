@@ -220,6 +220,21 @@
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
+    # ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
+    # checkout that user units can read (fleet-ops#10479): root owns it, no
+    # worktree is attached to it, and every deploy moves it to the merged
+    # commit. UMask=0077 (20-umask.conf) leaves its newer files 0600, which
+    # locked readers out once already (#10472), so this makes the whole tree
+    # readable and not writable by anyone but root.
+    - name: Make the deploy checkout readable by every user and writable by root only
+      ansible.builtin.file:
+        path: "{{ (playbook_dir ~ '/..') | realpath }}"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false
@@ -291,6 +306,56 @@
         group: root
         mode: preserve
       notify: Reload systemd
+
+    # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
+    # in common with nish. Its drop-in is rootfs/etc/systemd/system/
+    # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
+    # is copied once (force: false), so a re-run never overwrites the runner's live state.
+    - name: Create the pilot runner user
+      ansible.builtin.user:
+        name: fleet-runner
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/fleet-runner
+        create_home: true
+
+    - name: Copy runner 1 to the pilot user once
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.local/share/agent-runner/1/"
+        dest: /var/lib/fleet-runner/1/
+        remote_src: true
+        local_follow: false
+        force: false
+        owner: fleet-runner
+        group: fleet-runner
+        mode: preserve
+        directory_mode: '0750'
+      when: (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
+      notify:
+        - Reload systemd
+        - Restart pilot runner
+
+    # The copy keeps `bin` and `externals` as the absolute links they are under
+    # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
+    # at once and the unit crash-looped (fleet-ops#10491). Point them at their
+    # sibling directories instead. A link that is already relative is left alone.
+    - name: Read the pilot runner links
+      ansible.builtin.stat:
+        path: "/var/lib/fleet-runner/1/{{ item }}"
+      loop: [bin, externals]
+      register: pilot_links
+
+    - name: Point the pilot runner links at the copy
+      ansible.builtin.file:
+        src: "{{ item.stat.lnk_target | basename }}"
+        dest: "{{ item.stat.path }}"
+        state: link
+        owner: fleet-runner
+        group: fleet-runner
+      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
 
     - name: Install agent runner units
       ansible.builtin.template:
@@ -2458,6 +2523,11 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    - name: Restart pilot runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
