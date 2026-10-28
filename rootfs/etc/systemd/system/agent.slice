@@ -20,7 +20,17 @@
 # overflow is killed inside agent.slice instead of being swapped onto the
 # host. Verify after install: systemctl show agent.slice -p MemorySwapMax
 # must read 1073741824, not infinity.
+# ManagedOOMMemoryPressure (fleet-ops#10603): the runner drop-in carries the
+# oomd kill rule on the runner units only. A detached job in this slice that
+# is not a runner (fix-0509-7752, 2026-10-28 14:56 IST) sat at 4.3G anon on its
+# 4G MemoryHigh with 90% memory pressure and 4.2M throttle events for over 45
+# minutes, and the host-wide stall alert fired because nothing could kill it.
+# On the slice, oomd kills the descendant cgroup under the most pressure once
+# the slice has held 80% for the 60s in oomd.conf.d/99-fleet.conf, the same
+# rule user-1000.slice uses.
 [Slice]
 MemoryHigh=26G
 MemoryMax=28G
 MemorySwapMax=1G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=80%
