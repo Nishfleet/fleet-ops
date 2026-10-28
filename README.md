@@ -418,8 +418,8 @@ journalctl -u fleet-host-config.service -n 60 --no-pager   # PLAY RECAP failed=0
 
 ### Root deploy units: run, off, delete
 
-Three root units carry a merge to the box. All three are installed by
-`fleet-host-config.service` itself from `rootfs/etc/systemd/system/`, so the
+Four units carry a merge to the box (`fleet-sync.service` is user scope). The
+three root ones are installed by `fleet-host-config.service` itself from `rootfs/etc/systemd/system/`, so the
 bootstrap below is the only hand step.
 
 | unit | what it does | started by |

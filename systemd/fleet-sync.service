@@ -57,6 +57,11 @@ ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo 
 #    they are gone, and without it LINK-GUARD fails on the dangling links.
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
 ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
+# 2.1 The retired weekly retro and the stale user copy of the tincan claude
+#     listener (fleet-ops#10125) left live links to deleted deploy-clone files.
+#     rm -f is a no-op once they are gone; without it LINK-GUARD fails on them.
+ExecStart=/bin/rm -f /home/nish/.config/systemd/user/retro-weekly.service /home/nish/.config/systemd/user/retro-weekly.timer /home/nish/.config/systemd/user/retro-weekly-api.service /home/nish/.config/systemd/user/retro-weekly-api.socket /home/nish/.config/systemd/user/timers.target.wants/retro-weekly.timer /home/nish/.config/systemd/user/sockets.target.wants/retro-weekly-api.socket /home/nish/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf
+ExecStart=/bin/rmdir --ignore-fail-on-non-empty /home/nish/.config/systemd/user/tincan-listen-claude-vps.service.d
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
 #     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
