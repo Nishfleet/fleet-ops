@@ -26,32 +26,32 @@ groups:
       (
         max by (vendor) (
           label_replace((
-            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
             /
-            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[7d]), "vendor", "$1", "model_id", "^([^-]+).*"))
           ), "span", "7d", "", "")
           or label_replace((
-            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            sum by (vendor) (label_replace(increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
             /
-            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
+            sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]) and on (model_id) increase(litellm_input_cached_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*"))
           ), "span", "48h", "", "")
         )
         < on (vendor)
         (
           label_replace(vector(0.9396), "vendor", "stepfun", "", "")
           or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-          or label_replace(vector(0.9221), "vendor", "opencodego", "", "")
+          or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
           or label_replace(vector(0.9259), "vendor", "minimax", "", "")
           or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
           or label_replace(vector(0.9056), "vendor", "zai", "", "")
-          or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
+          or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
           or label_replace(vector(0.8231), "vendor", "straitly", "", "")
           or label_replace(vector(0.7566), "vendor", "cline", "", "")
           or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
         )
       )
       and on (vendor)
-      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
+      sum by (vendor) (label_replace(increase(litellm_input_tokens_metric_total{model_id!="zai-glm53flash-senior"}[48h]), "vendor", "$1", "model_id", "^([^-]+).*")) > 1000000
     for: 15m
     labels:
       grafana_folder: fleet

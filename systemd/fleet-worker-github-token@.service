@@ -3,11 +3,17 @@ Description=Mint a one-hour nishfleet-worker App token for Nishfleet/%i (fleet-o
 # A detached worker (AGENTS.md "Session-outliving work") has no workflow to
 # mint its GH_TOKEN, so the launch line pulls this unit in with Requires= and
 # loads its env file with a required EnvironmentFile=: no mint, no worker. The
-# token is the App's own grant (credentials/app-manifest.json, the same three
-# writes agent.yml's "App token" step asks for), limited to the one repo named
-# by the instance. It lives in the user runtime dir (tmpfs, mode 0700), never
-# on disk and never in argv: the App JWT goes to curl as a config fd. Nothing
-# secret reaches the journal.
+# token holds the three writes agent.yml's "App token" step asks for, a subset
+# of the App's grant (credentials/app-manifest.json), limited to the one repo
+# named by the instance. An instance named actions:<repo> mints a token that
+# holds Actions write only, into its own env file, for fleet-pr-sweep@.service
+# (fleet-ops#10601). No worker launch line names it, because with Actions write
+# a fooled worker could dispatch an unjailed orchestrate run. That is the
+# launch lines' convention, not a wall: any process with this uid can start the
+# instance or read the App key itself, and fleet-pr-sweep@.service deletes and
+# revokes its token as soon as its calls end. It lives in the user runtime dir
+# (tmpfs, mode 0700), never on disk and never in argv: the App JWT goes to curl
+# as a config fd. Nothing secret reaches the journal.
 #
 # Switch off: `systemctl --user mask 'fleet-worker-github-token@*.service'`;
 # every detached launch then refuses to start.
@@ -23,15 +29,17 @@ Environment=APP_ID=4728578
 Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
 ExecStartPre=/bin/rm -f %t/fleet-worker-github-token/%i.env %t/fleet-worker-github-token/%i.env.new
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
+  inst=%i; repo=$${inst#actions:}; perms="{\\"contents\\":\\"write\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"write\\"}"; \
+  [ "$$repo" = "$$inst" ] || perms="{\\"actions\\":\\"write\\"}"; \
   b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
   now=$$(date +%%s); \
   h=$$(printf "{\\"alg\\":\\"RS256\\",\\"typ\\":\\"JWT\\"}" | b64); \
   p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
   s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
   auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
-  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/%i/installation" | jq -er .id); \
-  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"%i\\"],\\"permissions\\":{\\"contents\\":\\"write\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"write\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/$$repo/installation" | jq -er .id); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"repositories\\":[\\"$$repo\\"],\\"permissions\\":$$perms}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
   printf "GH_TOKEN=%%s\\n" "$$tok" > "$$RUNTIME_DIRECTORY/%i.env.new"; \
   mv -f "$$RUNTIME_DIRECTORY/%i.env.new" "$$RUNTIME_DIRECTORY/%i.env"; \
-  echo "minted a GitHub App token for Nishfleet/%i contents, issues and pull_requests write, valid one hour"'
+  echo "minted a GitHub App token for Nishfleet/$$repo with $$perms, valid one hour"'
 TimeoutStartSec=120

@@ -276,7 +276,7 @@ def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
 
 
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None, noop_fail="", noop_err=""):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", cursor_live=0, runner_name="netcup-agent-1", issue=5, senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None, noop_fail="", noop_err=""):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -309,7 +309,7 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "RUNNER_TEMP": str(tmp),
         "ENGINE": engine,
         "MISS": "false",
-        "REF": "claim/issue-5-x",
+        "REF": "claim/issue-%s-x" % issue,
         "REPO": "o/r",
         "CLAUDE_MODEL": model,
         "CLAUDE_MAX_TURNS": "200",
@@ -350,57 +350,81 @@ def test_claude_lane_invocation(tmp_path):
     assert ran == ["claude"] and cursor == ""
 
 
-@pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-3", "netcup-agent-11", "netcup-agent-09", "runner-without-a-number"])
-def test_odd_or_unnumbered_runner_keeps_seat_a_and_hides_the_default_login(tmp_path, name):
-    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name)
+@pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-2", "netcup-agent-3", "netcup-agent-4", "netcup-agent-11", "netcup-agent-09", "runner-without-a-number"])
+def test_odd_issue_keeps_seat_a_on_every_runner(tmp_path, name):
+    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name, issue=5)
     assert r.returncode == 0, r.stderr
     assert f"CCD={seat_a}" in claude
-    assert f"claude lane: seat=a auth=login runner={name}" in r.stdout
+    assert f"claude lane: seat=a auth=login issue=5 runner={name}" in r.stdout
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" in bwrap
     assert f"--tmpfs {seat_a}" not in bwrap
     # every other Claude dir and backup dir is hidden; only the running seat stays
     _assert_backups_hidden(bwrap, home)
 
 
-@pytest.mark.parametrize("name", ["netcup-agent-2", "netcup-agent-4", "netcup-agent-12", "netcup-agent-22", "netcup-agent-08"])
-def test_even_runner_unsets_the_config_dir_and_hides_seat_a(tmp_path, name):
-    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name)
+@pytest.mark.parametrize("name", ["netcup-agent-1", "netcup-agent-2", "netcup-agent-4", "netcup-agent-12", "netcup-agent-22", "netcup-agent-08", "runner-without-a-number"])
+def test_even_issue_unsets_the_config_dir_on_every_runner(tmp_path, name):
+    r, bwrap, claude, _, _, seat_a, home = _worker(tmp_path, "claude", runner_name=name, issue=6)
     assert r.returncode == 0, r.stderr
     assert "CCD=unset" in claude
-    assert f"claude lane: seat=b auth=login runner={name}" in r.stdout
+    assert f"claude lane: seat=b auth=login issue=6 runner={name}" in r.stdout
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
     _assert_backups_hidden(bwrap, home)
 
 
+def test_seat_follows_the_issue_not_the_runner(tmp_path):
+    runners = ["netcup-agent-1", "netcup-agent-2", "netcup-agent-13", "netcup-agent-99", "runner-without-a-number"]
+    for i, runner in enumerate(runners):
+        d = tmp_path / f"even-{i}"; d.mkdir()
+        r, _, claude, _, _, _, _ = _worker(d, "claude", runner_name=runner, issue=9696)
+        assert r.returncode == 0, r.stderr
+        assert f"claude lane: seat=b auth=login issue=9696 runner={runner}" in r.stdout
+        assert "CCD=unset" in claude
+    for i, runner in enumerate(runners):
+        d = tmp_path / f"odd-{i}"; d.mkdir()
+        r, _, claude, _, _, seat_a, _ = _worker(d, "claude", runner_name=runner, issue=9695)
+        assert r.returncode == 0, r.stderr
+        assert f"claude lane: seat=a auth=login issue=9695 runner={runner}" in r.stdout
+        assert f"CCD={seat_a}" in claude
+
+
+@pytest.mark.parametrize("issue,seat", [("08", "b"), ("09", "a")])
+def test_a_leading_zero_issue_is_read_as_decimal(tmp_path, issue, seat):
+    r, _, _, _, ran, _, _ = _worker(tmp_path, "claude", issue=issue)
+    assert r.returncode == 0, r.stderr
+    assert f"claude lane: seat={seat} auth=login issue={issue}" in r.stdout
+    assert ran == ["claude"]
+
+
 def test_own_seat_with_a_login_is_used_without_a_warning(tmp_path):
-    for i, (name, seat) in enumerate((("netcup-agent-1", "a"), ("netcup-agent-2", "b"))):
+    for i, (issue, seat) in enumerate(((5, "a"), (6, "b"))):
         d = tmp_path / str(i)
         d.mkdir()
-        r, _, claude, _, ran, seat_a, _ = _worker(d, "claude", runner_name=name)
+        r, _, claude, _, ran, seat_a, _ = _worker(d, "claude", issue=issue)
         assert r.returncode == 0, r.stderr
-        assert f"claude lane: seat={seat} auth=login runner={name}" in r.stdout
+        assert f"claude lane: seat={seat} auth=login issue={issue} runner=netcup-agent-1" in r.stdout
         assert "missing login" not in r.stdout and "::warning::" not in r.stdout
         assert (f"CCD={seat_a}" in claude) == (seat == "a")
         assert ran == ["claude"]
 
 
-def test_odd_runner_with_seat_a_login_missing_uses_seat_b(tmp_path):
-    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name="netcup-agent-3", login_a=None)
+def test_odd_issue_with_seat_a_login_missing_uses_seat_b(tmp_path):
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", issue=5, login_a=None)
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
-    assert "claude lane: seat=b auth=login runner=netcup-agent-3" in r.stdout
+    assert "claude lane: seat=b auth=login issue=5 runner=netcup-agent-1" in r.stdout
     assert "CCD=unset" in claude and ran == ["claude"] and cursor == ""
     # the jail is seat b's: seat a hidden, the default login left readable
     assert f"--tmpfs {seat_a}" in bwrap
     assert f"--ro-bind /dev/null {home}/.claude/.credentials.json" not in bwrap
 
 
-def test_even_runner_with_default_login_missing_uses_seat_a(tmp_path):
-    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name="netcup-agent-4", login_b=None)
+def test_even_issue_with_default_login_missing_uses_seat_a(tmp_path):
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", issue=6, login_b=None)
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=b missing login, using seat=a" in r.stdout
-    assert "claude lane: seat=a auth=login runner=netcup-agent-4" in r.stdout
+    assert "claude lane: seat=a auth=login issue=6 runner=netcup-agent-1" in r.stdout
     assert f"CCD={seat_a}" in claude and ran == ["claude"] and cursor == ""
     # the jail is seat a's: the default login hidden, seat a left readable
     assert f"--tmpfs {seat_a}" not in bwrap
@@ -409,15 +433,15 @@ def test_even_runner_with_default_login_missing_uses_seat_a(tmp_path):
 
 
 def test_an_empty_login_file_counts_as_missing(tmp_path):
-    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-3", login_a="")
+    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", issue=5, login_a="")
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
     assert "CCD=unset" in claude
 
 
-@pytest.mark.parametrize("name", ["netcup-agent-3", "netcup-agent-4"])
-def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, name):
-    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, login_a=None, login_b=None)
+@pytest.mark.parametrize("issue", [5, 6])
+def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, issue):
+    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", issue=issue, login_a=None, login_b=None)
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=a and seat=b both missing login, skipping the claude lane" in r.stdout
     assert "fallthrough: cursor (claude login missing)" in r.stdout
@@ -537,29 +561,39 @@ def _hides(home, keep):
     return r.stdout.strip()
 
 
-def _lane_seat(runner_name, home, seat_a_dir):
+def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
     """Runs the lane's own seat lines (parity, then the login check) against real
     files under home and returns (seat, whether CLAUDE_CONFIG_DIR survives)."""
     lines = _step("work", "Worker").splitlines()
-    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("runner_n="))
+    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a_dir="))
     b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
-    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=cursor\n" + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=cursor\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": str(seat_a_dir), "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     seat, cfg = r.stdout.splitlines()[-1].split()
     return seat, cfg != "unset"
 
 
+def test_a_non_numeric_id_keeps_seat_a(tmp_path):
+    home = tmp_path / "home"
+    seat_a = home / ".claude-seat"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".config/gh").mkdir(parents=True)
+    seat_a.mkdir()
+    (seat_a / ".credentials.json").write_text("planted")
+    assert _lane_seat("miss", home, seat_a) == ("a", True)
+
+
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
-@pytest.mark.parametrize("runner_name,missing,final", [
-    ("netcup-agent-3", None, "a"),
-    ("netcup-agent-4", None, "b"),
-    ("netcup-agent-3", "a", "b"),  # own login missing: the lane moves to the other seat
-    ("netcup-agent-4", "b", "a"),
+@pytest.mark.parametrize("issue,missing,final", [
+    (5, None, "a"),
+    (6, None, "b"),
+    (5, "a", "b"),  # own login missing: the lane moves to the other seat
+    (6, "b", "a"),
 ])
-def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, runner_name, missing, final):
-    """Real bwrap, an odd and an even runner. The lane's own parity rule picks the seat: odd
-    keeps CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b); a missing login moves it to the
+def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest(tmp_path, issue, missing, final):
+    """Real bwrap, an odd and an even issue. The lane's own issue-parity rule picks the seat:
+    odd keeps CLAUDE_CONFIG_DIR (seat a), even unsets it (seat b); a missing login moves it to the
     other seat. The Worker then uses the already-hidden gh dir as the stand-in `seat_a` for
     seat b's jail. The jail shows only the seat finally used."""
     home = tmp_path / "home"
@@ -578,7 +612,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         p.write_text("planted")
     if missing:  # this seat has no login; the lane's check sees no file
         ((seat_a / ".credentials.json") if missing == "a" else (home / ".claude/.credentials.json")).unlink()
-    seat, keeps_cfg = _lane_seat(runner_name, home, seat_a)
+    seat, keeps_cfg = _lane_seat(issue, home, seat_a)
     assert (seat, keeps_cfg) == (final, final == "a")
     lines = _jail_lines()
     seat_b = seat == "b"
@@ -604,7 +638,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
     # Every other engine reads no login at all.
     assert read_all("jail_base") == {"a": False, **none}
-    # The claude lane reads the seat of the runner it runs on and nothing else: no other
+    # The claude lane reads the seat the issue's parity picks and nothing else: no other
     # seat, no Max dir, no backup, no plain backup file.
     if seat_b:
         assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
@@ -621,9 +655,9 @@ def _tok_env(seat):
 
 @pytest.mark.parametrize("name,seat", [("netcup-agent-1", "a"), ("netcup-agent-2", "b")])
 def test_seat_with_a_token_file_logs_in_with_the_token_and_an_empty_config_dir(tmp_path, name, seat):
-    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name=name, tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, bwrap, claude, cursor, ran, seat_a, home = _worker(tmp_path, "claude", runner_name=name, issue={"a": 5, "b": 6}[seat], tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
-    assert f"claude lane: seat={seat} auth=token runner={name}" in r.stdout
+    assert f"claude lane: seat={seat} auth=token issue={5 if seat == 'a' else 6} runner={name}" in r.stdout
     assert f"TOK={_tok_env(seat)}" in claude and _tok_env("b" if seat == "a" else "a") not in claude
     # a fresh, empty CLAUDE_CONFIG_DIR inside the job's temp dir, not the seat's login dir
     ccd = next(ln for ln in claude.splitlines() if ln.startswith("CCD="))[4:]
@@ -651,7 +685,7 @@ def test_missing_token_file_keeps_the_login_and_the_fallback(tmp_path):
     r, _, claude, _, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-3", login_a=None, tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
-    assert "claude lane: seat=b auth=login runner=netcup-agent-3" in r.stdout
+    assert "claude lane: seat=b auth=login issue=5 runner=netcup-agent-3" in r.stdout
     assert "TOK=unset" in claude and "CCD=unset" in claude and _tok_env("b") not in claude and ran == ["claude"]
 
 
@@ -682,7 +716,7 @@ def _probe(tmp_path, **kw):
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
 @pytest.mark.parametrize("name,seat", [("netcup-agent-1", "a"), ("netcup-agent-2", "b")])
 def test_real_jail_token_present_reaches_claude_through_the_environment_only(tmp_path, name, seat):
-    r, kv, seen, home = _probe(tmp_path, runner_name=name, login_a="planted", login_b="planted", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, kv, seen, home = _probe(tmp_path, runner_name=name, issue={"a": 5, "b": 6}[seat], login_a="planted", login_b="planted", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert f"claude lane: seat={seat} auth=token" in r.stdout
     assert kv["ENV"] == _tok_env(seat)  # in the environment ...
     assert kv["CCDFILES"] == "0" and kv["CCD"].startswith(str(tmp_path / "runner-tmp"))
@@ -698,7 +732,7 @@ def test_real_jail_token_present_reaches_claude_through_the_environment_only(tmp
 def test_real_jail_token_missing_keeps_the_login_and_hides_the_other_seats_token(tmp_path, name, seat):
     other = "b" if seat == "a" else "a"
     # only the other seat has a token file; the chosen seat has none, so it uses its login
-    r, kv, seen, home = _probe(tmp_path, runner_name=name, login_a="planted", login_b="planted", **{f"tok_{other}": _tok_env(other)})
+    r, kv, seen, home = _probe(tmp_path, runner_name=name, issue={"a": 5, "b": 6}[seat], login_a="planted", login_b="planted", **{f"tok_{other}": _tok_env(other)})
     assert f"claude lane: seat={seat} auth=login" in r.stdout
     assert kv["ENV"] == "unset"
     login = ".claude-other-seat"  # not a seat; hidden by the glob
@@ -748,7 +782,7 @@ def _fallback_env(tmp_path):
 def test_token_never_reaches_the_engine_a_rate_limit_falls_through_to(tmp_path, name, seat, senior, engine):
     # A refused seat sends the packet to cursor (senior) or pi: that engine must not
     # inherit the seat's non-rotating token, nor the lane's temp config dir.
-    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, senior=senior, claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, _, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, issue={"a": 5, "b": 6}[seat], senior=senior, claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert f"TOK={_tok_env(seat)}" in claude  # claude itself had it
     assert f"fallthrough: {engine} (claude rate limit)" in r.stdout and ran == ["claude", engine]
@@ -774,7 +808,7 @@ def _tokens_tried(claude):
 
 @pytest.mark.parametrize("name,seat,other", [("netcup-agent-1", "a", "b"), ("netcup-agent-2", "b", "a")])
 def test_revoked_token_retries_once_with_the_other_seats_token(tmp_path, name, seat, other):
-    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env(seat))
+    r, bwrap, claude, cursor, ran, _, _ = _worker(tmp_path, "claude", runner_name=name, issue={"a": 5, "b": 6}[seat], tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env(seat))
     assert r.returncode == 0, r.stderr
     assert _tokens_tried(claude) == [_tok_env(seat), _tok_env(other)]
     assert f"::warning::claude lane: seat={seat} token rejected, retrying with seat={other}" in r.stdout
@@ -881,3 +915,57 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
+
+
+DUP_GH = """#!/bin/bash
+echo "gh $*" >> "$STATE/gh.log"
+case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;; esac
+"""
+
+
+def _dup_gate(tmp_path, title, open_issues, list_fail=""):
+    """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
+    script = _step("work", "Gate")
+    start = script.index("# A still-firing alert re-files")
+    end = script.index("skip duplicate-alert; fi\n", start)
+    end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
+    b = tmp_path / "bin"
+    b.mkdir()
+    (b / "gh").write_text(DUP_GH)
+    (b / "gh").chmod(0o755)
+    issue = json.dumps({"title": title, "body": "b"})
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=50 REPO=o/r\nissue={json.dumps(issue)}\n{script[start:end]}\necho PROCEED\n'
+    env = {**os.environ, "PATH": f"{b}:{SYS_PATH}", "STATE": str(tmp_path), "OPEN_JSON": json.dumps(open_issues), "LIST_FAIL": list_fail}
+    r = subprocess.run(["bash", "-e", "-c", prog], env=env, capture_output=True, text=True)
+    if list_fail:
+        return r.returncode, r.stdout
+    assert r.returncode == 0, r.stderr
+    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
+    return r.stdout.strip().splitlines()[-1], log
+
+
+ALERT = "alert: SystemUnitFailed restic-r2-size-guard.service"
+
+
+def test_alert_with_an_older_open_twin_is_closed_as_its_duplicate(tmp_path):
+    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 41, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
+    assert out == "SKIP duplicate-alert"
+    assert "gh issue close 50 -R o/r --duplicate-of 41 --comment duplicate: the alert is still firing; #41 is open for it" in log
+    assert "comment 41" not in log and "issue comment" not in log, "the older issue gets no comment"
+
+
+def test_alert_without_an_open_twin_proceeds(tmp_path):
+    out, log = _dup_gate(tmp_path, ALERT, [{"number": 50, "title": ALERT}, {"number": 60, "title": ALERT}, {"number": 30, "title": ALERT + " x"}])
+    assert out == "PROCEED"
+    assert "issue close" not in log
+
+
+def test_non_alert_title_skips_the_lookup(tmp_path):
+    out, log = _dup_gate(tmp_path, "grafana alert: DatasourceError", [{"number": 41, "title": "grafana alert: DatasourceError"}])
+    assert out == "PROCEED"
+    assert log == ""
+
+
+def test_a_failed_twin_lookup_fails_the_gate_loud(tmp_path):
+    rc, out = _dup_gate(tmp_path, ALERT, [], list_fail="1")
+    assert rc != 0 and "PROCEED" not in out

@@ -10,13 +10,29 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- the stored-item command discovers every open issue labelled
+  needs-nish-decision from the repositories it reads, stores each one, and
+  prints WAITING-UNREAD for a repository whose list could not be read, so a
+  labelled decision can never be missed by a title judgement
+  (fleet-ops#9741),
+- the waiting step runs no command of its own: the label alone decides, and a
+  stored issue whose label was removed prints UNLABELLED and drops out
+  (fleet-ops#9741),
+- a repository with issues enabled and no labelled issue reads as empty, not as
+  unreadable, and stores no key for it, so a healthy repository cannot flood the
+  reply with a false unread line (fleet-ops#9741),
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
-- ansible/host.yml applies the prompts to the live jobs.
+- a stored wait item closed as not planned is never reported as FIXED, so a
+  decision Nish declined is not shipped to him as a fix (fleet-ops#10289),
+- ansible/host.yml applies the prompts to the live jobs,
+- and it deletes the named retired jobs from the same cron store, so a proof job
+  whose issue has closed stops existing, while a fresh one is left alone
+  (fleet-ops#10545).
 """
 import datetime
 import fnmatch
@@ -27,6 +43,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MORNING = ROOT / "config/hermes/digest-morning.md"
@@ -68,7 +85,7 @@ def test_shipped_count_has_no_command_substitution_in_its_loop():
 
 
 def test_host_yml_applies_the_prompts_to_the_live_jobs():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "config/hermes/" in text
     assert "digest-morning" in text and "digest-evening" in text
     assert "- cron" in text and "- edit" in text and "- --prompt" in text
@@ -83,7 +100,35 @@ import json, os, sys
 a = sys.argv[1:]
 d = json.load(open(os.environ["FAKE_GH"]))
 if a[:2] == ["repo", "list"]:
-    print("\\n".join(d["repos"]))
+    if d.get("failrepos"):
+        print("the repositories could not be read", file=sys.stderr)
+        sys.exit(1)
+    repos = d["repos"]
+    if "--jq" in a:
+        jq = a[a.index("--jq") + 1]
+        if "hasIssuesEnabled" in jq:
+            repos = [r for r in repos if r not in d.get("noissues", [])]
+        print("\\n".join(repos))
+    else:
+        print(json.dumps([{"name": r, "hasIssuesEnabled": r not in d.get("noissues", [])} for r in repos]))
+elif a[:2] == ["issue", "list"]:
+    repo = a[a.index("--repo") + 1]
+    if repo.split("/")[-1] in d.get("faillist", []):
+        print("the repository could not be read", file=sys.stderr)
+        sys.exit(1)
+    if repo.split("/")[-1] in d.get("silentfail", []):
+        sys.exit(1)
+    out = []
+    for key, obj in d["issues"].items():
+        if not key.startswith(repo + "#"):
+            continue
+        if obj.get("state") != "OPEN":
+            continue
+        if "needs-nish-decision" not in [x["name"] for x in obj.get("labels", [])]:
+            continue
+        num = int(key.rsplit("#", 1)[1])
+        out.append({"number": num, "title": obj.get("title", "issue %d" % num), "url": obj.get("url", ""), "labels": obj.get("labels", [])})
+    print(json.dumps(out))
 elif a[:2] == ["issue", "view"]:
     key = a[a.index("--repo") + 1] + "#" + a[2]
     if key not in d["issues"]:
@@ -143,8 +188,8 @@ def _run_2a(prompt, tmp_path, gh, store):
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
 
 
-def _issue(state, *labels):
-    return {"state": state, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
+def _issue(state, *labels, state_reason="COMPLETED"):
+    return {"state": state, "stateReason": state_reason if state == "CLOSED" else None, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
 
 
 def _run_row(conclusion, name, days_ago=1):
@@ -165,6 +210,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
             "Nishfleet/alpha#1": _issue("CLOSED", "needs-nish-decision"),
             "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
             "Nishfleet/alpha#3": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#5": _issue("OPEN", "priority-now"),
         },
         "runs": {
             "Nishfleet/alpha": [
@@ -191,6 +237,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "open|needs-nish-decision",
         "wait:alpha#3": "open|needs-nish-decision",
         "wait:alpha#4": "open|needs-nish-decision",
+        "wait:alpha#5": "open|needs-nish-decision",
         "broken:alpha:Midrun": "failure",
         "broken:alpha:Nullrun": "failure",
         "broken:alpha:Cancelled": "failure",
@@ -204,6 +251,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "CHANGED",
         "wait:alpha#3": "UNCHANGED",
         "wait:alpha#4": "UNKNOWN",
+        "wait:alpha#5": "UNLABELLED",
         "broken:alpha:Midrun": "UNCHANGED",
         "broken:alpha:Nullrun": "UNCHANGED",
         "broken:alpha:Cancelled": "UNCHANGED",
@@ -225,7 +273,179 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
     }
 
 
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_wait_item_closed_as_not_planned_is_not_reported_as_fixed(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {
+            "Nishfleet/alpha#7": _issue("CLOSED", "needs-nish-decision", state_reason="NOT_PLANNED"),
+            "Nishfleet/alpha#8": _issue("CLOSED", "needs-nish-decision", state_reason=None),
+        },
+        "runs": {"Nishfleet/alpha": []},
+    }
+    store = json.dumps({"wait:alpha#7": "open|needs-nish-decision", "wait:alpha#8": "open|needs-nish-decision"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store)
+    assert "ROW wait:alpha#7 NOT-PLANNED https://example.com/i" in lines
+    assert "ROW wait:alpha#8 NOT-PLANNED https://example.com/i" in lines
+    assert not any(" FIXED " in l for l in lines)
+    assert saved == {}
+
+
 _WINDOW_PUSHES = 30
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_issue_not_in_the_store_is_discovered_and_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "issues": {
+            "Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#8": _issue("OPEN", "needs-nish-decision", "priority-now"),
+            "Nishfleet/alpha#9": _issue("OPEN", "agent-ready"),
+            "Nishfleet/alpha#10": _issue("CLOSED", "needs-nish-decision"),
+        },
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = {l.split(" ")[1]: l.split(" ")[2] for l in lines if l.startswith("ROW ")}
+    assert rows["wait:alpha#6"] == "UNCHANGED"
+    assert rows["wait:alpha#7"] == "NEW"
+    assert rows["wait:alpha#8"] == "NEW"
+    assert not any("alpha#9" in l or "alpha#10" in l for l in lines)
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "UNCHANGED_TOTAL 1" in lines
+    assert saved == {
+        "wait:alpha#6": "open|needs-nish-decision",
+        "wait:alpha#7": "open|needs-nish-decision",
+        "wait:alpha#8": "open|needs-nish-decision,priority-now",
+    }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_failure_is_loud_and_the_rest_is_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "faillist": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert lines[-1] == "STORED-SAVED"
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_skips_a_repository_with_issues_disabled(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "faillist": ["quiet"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_is_loud(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD all" in lines
+    assert not any(l.startswith("ROW wait:") for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_keeps_the_stored_items(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(
+        prompt,
+        tmp_path,
+        gh,
+        json.dumps({"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}),
+    )
+    assert "WAITING-UNREAD all" in lines
+    assert "ROW wait:alpha#6 UNCHANGED" in lines
+    assert "ROW broken:alpha:ci UNKNOWN" in lines
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_reads_a_repository_with_no_labelled_issue_as_empty(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "empty"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/empty": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "silentfail": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_names_a_stored_issue_once(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = [l for l in lines if l.startswith("ROW wait:alpha#6 ")]
+    assert rows == ["ROW wait:alpha#6 UNCHANGED"]
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision"}
+
+
+def test_both_digests_run_the_same_waiting_discovery():
+    segs = []
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        segs.append(seg[:seg.index("; done)") + len("; done)")])
+    assert segs[0] == segs[1]
+
+
+def test_waiting_discovery_loop_has_no_command_substitution_in_its_body():
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        body = seg[seg.index("do "):seg.index("; done")]
+        assert "$(" not in body, prompt.name
+
+
+def test_the_waiting_discovery_command_is_the_only_labelled_sweep():
+    for prompt in (MORNING, EVENING):
+        assert prompt.read_text().count("--label needs-nish-decision --state open") == 1, prompt.name
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
@@ -378,3 +598,170 @@ def test_site_check_with_a_failing_page_is_unknown(tmp_path):
     lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
     assert lines == ["ROW site UNKNOWN"]
     assert saved is None
+
+
+PRUNE = "Delete the retired jobs from Hermes' cron store"
+READ = "Read Hermes' scheduled jobs"
+
+FAKE_CRON_STUB = """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+if args[:2] != ["cron", "remove"] or len(args) != 3:
+    sys.exit("unexpected call: %r" % (args,))
+store = os.environ["FAKE_STORE"]
+jobs = json.load(open(store))["jobs"]
+left = [j for j in jobs if j["id"] != args[2]]
+if len(left) == len(jobs):
+    sys.exit("no such job: " + args[2])
+json.dump({"jobs": left}, open(store, "w"))
+open(os.environ["FAKE_LOG"], "a").write(args[2] + chr(10))
+"""
+
+
+def _cron(expr):
+    return {"kind": "cron", "expr": expr, "display": expr}
+
+
+def _once(offset_days):
+    at = datetime.datetime.now().astimezone().replace(hour=10, minute=0, second=0, microsecond=0)
+    at += datetime.timedelta(days=offset_days)
+    return {"kind": "once", "run_at": at.isoformat(timespec="seconds"), "display": at.strftime("once at %Y-%m-%d %H:%M")}
+
+
+def _job(job_id, name, enabled, **schedule):
+    return {"id": job_id, "name": name, "enabled": enabled, "schedule": schedule}
+
+
+CRON_LIVE = [
+    _job("3acce3a945cb", "digest-morning", True, **_cron("0 8 * * *")),
+    _job("682de9846caa", "digest-evening", True, **_cron("0 20 * * *")),
+    _job("9fdc0c9fff6c", "scorecard-weekly", True, **_cron("0 9 * * 1")),
+    _job("b30761322118", "audit-claims", True, **_cron("30 8,20 * * *")),
+    _job("783b31b9d5e5", "audit-urgent", True, **_cron("50 8,20 * * *")),
+    _job("6362250bf181", "audit-file", True, **_cron("10 9,21 * * *")),
+    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
+    _job("4231290e3e00", "sec-k3-key-renewal", True, **_once(400)),
+    _job("1145b749d731", "sec-daily-summary", True, **_cron("0 21 * * *")),
+    _job("33199b7bfff5", "sec-coordinator-backstop", True, **_cron("41 */6 * * *")),
+]
+
+CRON_PROOF = [
+    _job("13d3db49b9c5", "tmp-9579-proof", True, **_cron("0 20 1 1 *")),
+    _job("f16c57bb6885", "tmp-9717-proof", True, **_cron("0 0 1 1 *")),
+]
+
+CRON_EXPIRED = [
+    _job("d4efa85f43c3", "sec-k1-limited-key", False, **_once(-5)),
+    _job("50229bbf6c4a", "sec-r2-deadline", False, **_once(-2)),
+    _job("0de3952d8ecb", "sec-r2-precheck", False, **_once(-3)),
+    _job("df6163647275", "sec-k2-cloudflare-key", False, **_once(-2)),
+    _job("bdc37cb70a4a", "sec-c5-before-monday", False, **_once(-3)),
+    _job("fc1c6a815b80", "sec-dnssec-cf-registrar", False, **_once(-5)),
+    _job("7eda90c8dd97", "sec-morning-yes-1023", False, **_once(-5)),
+]
+
+CRON_KEPT = [
+    _job("eba16b1df90e", "tmp-9737-proof", False, **_cron("5 22 * * *")),
+    _job("111111111111", "sec-future-reminder", False, **_once(3)),
+    _job("222222222222", "atmp-proof", True, **_cron("0 7 4 4 *")),
+    _job("333333333333", "tmp-10600-proof", True, **_once(2)),
+]
+
+
+def _retired_ids():
+    lines = ansible_host.text().splitlines()
+    out = []
+    for line in lines[lines.index("    hermes_retired_jobs:") + 1 :]:
+        if line.startswith("      #"):
+            continue
+        if not line.startswith("      - "):
+            break
+        out.append(line.split("- ", 1)[1].strip())
+    return out
+
+
+def _task_text(name):
+    lines = ansible_host.text().splitlines()
+    start = lines.index(f"    - name: {name}")
+    end = start + 1
+    while end < len(lines) and not lines[end].startswith("    - "):
+        end += 1
+    block = [line for line in lines[start:end] if line.strip() not in ("become: true", "become_user: nish")]
+    while block and not block[-1].strip():
+        block.pop()
+    return block
+
+
+def _prune(tmp_path, jobs):
+    if shutil.which("ansible-playbook") is None:
+        pytest.skip("ansible-playbook is not installed")
+    stub = tmp_path / ".local/bin/hermes"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(FAKE_CRON_STUB)
+    stub.chmod(0o755)
+    store = tmp_path / ".hermes/cron/jobs.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    if jobs is not None:
+        store.write_text(json.dumps({"jobs": jobs}))
+    log = tmp_path / "calls.log"
+    log.write_text("")
+    playbook = tmp_path / "prune.yml"
+    playbook.write_text(
+        "\n".join(
+            [
+                "- hosts: localhost",
+                "  connection: local",
+                "  gather_facts: false",
+                "  vars:",
+                f"    nish_home: {tmp_path}",
+                f"    hermes_retired_jobs: {json.dumps(_retired_ids())}",
+                "    nish_env:",
+                f"      HOME: {tmp_path}",
+                f"      PATH: {stub.parent}:/usr/local/bin:/usr/bin:/bin",
+                f"      FAKE_STORE: {store}",
+                f"      FAKE_LOG: {log}",
+                "  tasks:",
+                *_task_text(READ),
+                *_task_text(PRUNE),
+                "",
+            ]
+        )
+    )
+    run = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(playbook)],
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "PATH": "/usr/local/bin:/usr/bin:/bin", "ANSIBLE_LOCALHOST_WARNING": "false"},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    left = json.loads(store.read_text())["jobs"] if store.exists() else None
+    return left, log.read_text().split()
+
+
+def test_the_host_jobs_remove_the_proof_jobs_and_the_expired_one_shots(tmp_path):
+    assert _retired_ids() == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
+    jobs, calls = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    assert sorted(calls) == sorted(job["id"] for job in CRON_PROOF + CRON_EXPIRED)
+    assert jobs == CRON_LIVE + CRON_KEPT
+
+
+def test_the_host_jobs_leave_a_fresh_proof_job_alone(tmp_path):
+    fresh = _job("444444444444", "tmp-10600-proof", True, **_once(0))
+    jobs, calls = _prune(tmp_path, CRON_LIVE + [fresh])
+    assert calls == []
+    assert jobs == CRON_LIVE + [fresh]
+
+
+def test_the_host_jobs_remove_nothing_on_a_second_run(tmp_path):
+    jobs, _ = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    again, calls = _prune(tmp_path, jobs)
+    assert calls == []
+    assert again == jobs
+
+
+def test_the_host_jobs_remove_nothing_without_a_store(tmp_path):
+    jobs, calls = _prune(tmp_path, None)
+    assert calls == []
+    assert jobs is None

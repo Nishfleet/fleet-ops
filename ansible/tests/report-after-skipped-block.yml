@@ -356,11 +356,22 @@
           come back and read as a pi failure. It rendered as
           {{ rendered_never_run }}.
 
+    - name: The failure text carries the git pins off the default branch
+      ansible.builtin.assert:
+        that:
+          - "rendered_never_run is search('git pins off the default branch: not run')"
+        fail_msg: >-
+          The closing assert's failure text no longer separates a git pin check
+          that ran and found nothing from one that never ran, so a red daily
+          run reads as a clean pin check. It rendered as
+          {{ rendered_never_run }}.
+
     - name: The failure text renders the reply when the smoke answered
       ansible.builtin.set_fact:
         rendered_answered: "{{ lookup('template', '/tmp/fleet-update-failmsg.j2') }}"
       vars:
         pi_smoke: {rc: 0, stdout: "OK\n", stderr: ""}
+        off_branch_pins: {stdout_lines: []}
 
     - name: The failure text reads the reply
       ansible.builtin.assert:
@@ -376,6 +387,7 @@
         rendered_failed: "{{ lookup('template', '/tmp/fleet-update-failmsg.j2') }}"
       vars:
         pi_smoke: {rc: 1, stdout: "", stderr: "litellm: connection refused\n"}
+        off_branch_pins: {stdout_lines: []}
 
     - name: The failure text carries the stderr
       ansible.builtin.assert:
