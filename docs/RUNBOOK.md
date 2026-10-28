@@ -23,6 +23,45 @@ rail are in `README.md`; design and enforced rules are in
    gauge per deployment (0 healthy, 1 partial, 2 outage).
 5. `uptime` for load; merged-PR counts per repo for throughput.
 
+## The failed-unit check and leftover ad-hoc units
+
+`ansible/update.yml` fails the daily update when `systemctl list-units
+--state=failed` is not empty, for system units and for nish's user units. The
+check is strict and stays strict: a failed unit fails the run, whatever it is
+and whenever it stopped. Nothing is tolerated and nothing is reset.
+
+A leftover is cleared by hand, not by the run. `systemctl --user reset-failed
+<unit>` is one stock line, and it is the only thing that clears it: the run
+calling `reset-failed` itself would drop the record of a unit this run has not
+read yet, and it would turn a red run green without anyone reading the name.
+So the run stays red until the named units are reset. That is what it is for:
+a red daily update is a list of names, and the names are the fix.
+
+The run reads no `Transient` flag and no stop time. A tolerance window needs a
+start it cannot get: the gap between two runs varies (the drain waits up to
+150 min, apt and the tool updates run long, `FLEET_PAUSED` can hold the fleet
+for days), so a window either equals the run period and can miss a red run, or
+is wide enough to hide a failure for days. Both were tried and cut
+(fleet-ops#10211).
+
+The cause of a leftover is a `systemd-run` transient under the user manager. A
+unit `systemd-run` created stays loaded in `failed` state after it stops, and
+for a `--user` unit nothing else reports it: node_exporter reads only the
+system bus, so a failed user unit has no detector at all. The launcher rule in
+AGENTS.md "Session-outliving work" is the fix: launch a system unit as nish.
+A failed system unit fires `SystemUnitFailed` and becomes a fix job.
+
+To read a leftover before clearing it, ask the unit, not `status` (`status`
+prints the unit file path, not the flag):
+
+    systemctl --user show -p Transient --value <unit>       # yes = no unit file
+    systemctl --user show -p InactiveEnterTimestamp --value <unit>
+
+Then one line clears it: `systemctl --user reset-failed <unit>`.
+
+The 2026-10-23 leftovers are gone. The 2026-10-28 daily update reported
+`failed units: []` and `failed=0`.
+
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
@@ -66,8 +105,11 @@ After a slice change, both the unit and the cgroup must read the new cap:
 Interactive shells do not read `~/.config/environment.d`. The systemd user
 manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
-a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
-not from an interactive shell (README, "systemd by default").
+a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
+`EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
+because such a unit stays loaded in `failed` state after it stops and nothing
+resets it ("The failed-unit check and leftover ad-hoc units" above). Not from
+an interactive shell either (README, "systemd by default").
 
 The loader that ran the systemd environment generator in those files from
 2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
