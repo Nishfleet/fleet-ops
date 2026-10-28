@@ -1,0 +1,123 @@
+# Fleet scorecard alerts (fleet-ops#10711): a target missed two days running opens a fleet-ops issue.
+#
+# "Two days running" is two consecutive 24h windows ending now (a rolling window, so a
+# `for: 48h` would not mean the same). Each rule reads GitHub through the stock fleet-github
+# data source and the SQL expression returns 1 only when both windows miss. Routing as
+# queue-stuck.yaml: severity warning, catch-all route files the issue. No data is OK.
+#
+# Only two of the six scorecard numbers have a source today. The failed share counts every
+# non-success finished run, because GitHub run data has no infra-versus-test split.
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: fleet-scorecard
+    folder: fleet
+    interval: 1h
+    rules:
+      - uid: scorecard-run-failure-share
+        title: Agent run failure share over 2% two days running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent.yml}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN t0 > 0 AND t1 > 0 AND f0 * 50 > t0 AND f1 * 50 > t1 THEN 1 ELSE 0 END AS missed
+                FROM (
+                  SELECT SUM(CASE WHEN age < 86400 THEN 1 ELSE 0 END) AS t0,
+                         SUM(CASE WHEN age < 86400 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f0,
+                         SUM(CASE WHEN age >= 86400 AND age < 172800 THEN 1 ELSE 0 END) AS t1,
+                         SUM(CASE WHEN age >= 86400 AND age < 172800 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f1
+                  FROM (
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(created_at) AS age, conclusion
+                    FROM (SELECT created_at, conclusion FROM A UNION ALL SELECT created_at, conclusion FROM B) AS all_runs
+                    WHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')
+                  ) AS aged
+                ) AS windows
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}More than 2% of finished agent and dispatch runs in fleet-ops failed in each of the last two 24h windows.{{ else }}The fleet cannot read GitHub runs for the Fleet scorecard failure-share rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Scorecard target: under 2% (fleet-ops#10711). Find what fails most (a runner, a seat, a lane), fix that, and prove the share fell. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      - uid: scorecard-products-behind
+        title: Products not ahead of fleet-ops in merged PRs two days running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "is:merged repo:Nishfleet/fleet-ops", timeField: 2}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public", timeField: 2}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN p0 <= o0 AND p1 <= o1 THEN 1 ELSE 0 END AS missed
+                FROM (
+                  SELECT SUM(CASE WHEN plane = 'products' AND age < 86400 THEN 1 ELSE 0 END) AS p0,
+                         SUM(CASE WHEN plane = 'fleet-ops' AND age < 86400 THEN 1 ELSE 0 END) AS o0,
+                         SUM(CASE WHEN plane = 'products' AND age >= 86400 AND age < 172800 THEN 1 ELSE 0 END) AS p1,
+                         SUM(CASE WHEN plane = 'fleet-ops' AND age >= 86400 AND age < 172800 THEN 1 ELSE 0 END) AS o1
+                  FROM (
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at) AS age, 'fleet-ops' AS plane FROM A
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM B
+                  ) AS merged
+                ) AS windows
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Product repos merged no more PRs than fleet-ops in each of the last two 24h windows.{{ else }}The fleet cannot read GitHub pull requests for the Fleet scorecard products rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Scorecard target: products ahead of the control plane (fleet-ops#10711). Check whether product work is admitted and unblocked, and say what holds it. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
