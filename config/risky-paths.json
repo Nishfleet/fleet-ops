@@ -12,8 +12,8 @@
       "(^|[/._-])top-?up([/._-]|$)",
       "(^|[/._-])meter(s|ing)?([/._-]|$)",
       "(^|/)(dodo|stripe|checkout|invoice|refund|subscription|wallet)[^/]*([/.]|$)",
-      "^\\.github/workflows/",
-      "(^|/)auth",
+      "^\\.github/",
+      "(^|/)(o?auth|sessions?|permissions?)([/._-]|$)|(^|/)auth",
       "security",
       "(^|/)(package\\.json|package-lock\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|uv\\.lock|poetry\\.lock)$",
       "(^|/)requirements[^/]*\\.txt$",
@@ -22,7 +22,14 @@
       "(^|/)[^/]*csp[^/]*$",
       "(^|/)_headers$",
       "(^|/)[^/]*wrangler[^/]*\\.(json|jsonc|toml)$",
-      "(^|[/._-])prod(uction)?[._-][^/]*\\.(json|jsonc|ya?ml|toml|env)$|(^|/)prod(uction)?/"
+      "(^|[/._-])prod(uction)?[._-][^/]*\\.(json|jsonc|ya?ml|toml|env)$|(^|/)prod(uction)?/",
+      "(^|/)db/",
+      "(^|/)(Dockerfile|\\.npmrc)$",
+      "(^|/)vite\\.config\\.[cm]?[jt]s$",
+      "(^|/)(AGENTS|CLAUDE)\\.md$",
+      "(^|/)\\.claude/",
+      "^prompts/",
+      "^docs/(REBUILD-|engines/|quality-bar\\.md)"
     ],
     "Nishfleet/0509": [
       "\\.(sh|py|bash|zsh)$",
@@ -53,7 +60,7 @@
       "^systemd/"
     ]
   },
-  "safe": ["^docs/", "^docs-site/.*\\.mdx?$", "(^|/)(README|CHANGELOG|CONTRIBUTING|LICENSE)[^/]*$"],
+  "safe": ["^docs/(?!(REBUILD-|engines/|quality-bar\\.md))", "^docs-site/.*\\.mdx?$", "(^|/)(README|CHANGELOG|CONTRIBUTING|LICENSE)[^/]*$"],
   "diff": [
     {"id": "data-delete", "hold_no_patch": true, "files": "\\.sql$|^migrations/", "pattern": "\\b(drop|delete|truncate)\\b"},
     {"id": "row-rewrite", "hold_no_patch": true, "files": "\\.sql$|^migrations/", "pattern": "\\b(update\\b[^;]*\\bset\\b|alter\\s+table|rename\\s+(to|column))"},
@@ -63,7 +70,9 @@
     {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "guard": [
-    "^\\.github/workflows/",
+    "^\\.github/(workflows|actions)/",
+    "^\\.github/zizmor\\.ya?ml$",
+    "^credentials/",
     "^config/risky-paths\\.json$",
     "^prompts/risky-review\\.md$"
   ],
@@ -121,7 +130,7 @@
     {"id": "fleet-ops-nftables", "want": true, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["rootfs/etc/nftables.conf"]},
     {"id": "fleet-ops-repo-name-case", "want": true, "repo": "nishfleet/FLEET-OPS", "labels": [], "changed_files": 1, "files": ["prompts/worker.md"]},
     {"id": "fleet-ops-safe-doc", "want": false, "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["docs/RUNBOOK.md"]},
-    {"id": "fleet-only-path-on-0509", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["prompts/system.md"]},
+    {"id": "prompts-held-on-0509", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["prompts/system.md"]},
     {"id": "auth-code-held", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/auth.server.ts"], "patches": [{"file": "app/lib/auth.server.ts", "patch": "@@ -1 +1 @@\n+export const x = 1"}]},
     {"id": "workers-code-held", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["workers/app.ts"], "patches": [{"file": "workers/app.ts", "patch": "@@ -1 +1 @@\n+x"}]},
     {"id": "rename-into-risky-path", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 2, "files": ["app/routes/x.ts", "core/billing.js"], "patches": [{"file": "app/routes/x.ts", "patch": "@@ -1 +1 @@\n+x"}]},
@@ -134,7 +143,7 @@
     {"id": "fleet-ops-tier-guard-list", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["config/risky-paths.json"]},
     {"id": "fleet-ops-tier-guard-review-prompt", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["prompts/risky-review.md"]},
     {"id": "fleet-ops-tier-held-systemd", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["systemd/litellm.service"]},
-    {"id": "fleet-ops-tier-held-credentials", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["credentials/app-manifest.json"]},
+    {"id": "fleet-ops-tier-guard-credentials", "want": true, "tier": "guard", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["credentials/app-manifest.json"]},
     {"id": "fleet-ops-tier-held-codeowners", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".github/CODEOWNERS"]},
     {"id": "fleet-ops-tier-held-script-not-guard", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": ["template/run.sh"]},
     {"id": "fleet-ops-tier-held-claude-dir", "want": true, "tier": "held", "repo": "Nishfleet/fleet-ops", "labels": [], "changed_files": 1, "files": [".claude/settings.json"]},
@@ -143,6 +152,16 @@
     {"id": "0509-tier-held-billing", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/billing/plans.ts"]},
     {"id": "0509-tier-green-old-arm-allowlist", "want": false, "tier": "green", "repo": "Nishfleet/0509", "labels": [], "changed_files": 7, "files": ["app/routes/home.tsx", "app/components/nav.tsx", "app/lib/competitor/x.ts", "app/lib/onboarding/y.ts", "tests/unit/home.test.ts", "e2e/home.spec.ts", "docs/notes.md"]},
     {"id": "0509-tier-held-auth", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/auth.server.ts"]},
+    {"id": "0509-tier-guard-composite-action", "want": true, "tier": "guard", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": [".github/actions/setup/action.yml"]},
+    {"id": "0509-tier-held-dependabot", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": [".github/dependabot.yml"]},
+    {"id": "0509-tier-held-oauth", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/oauth.ts"]},
+    {"id": "0509-tier-held-session", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/session.server.ts"]},
+    {"id": "0509-tier-held-permissions", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/permissions/roles.ts"]},
+    {"id": "0509-tier-held-db", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/lib/db/users.ts"]},
+    {"id": "0509-tier-held-build-config", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 3, "files": ["vite.config.ts", ".npmrc", "Dockerfile"]},
+    {"id": "0509-tier-held-agents-md", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["AGENTS.md"]},
+    {"id": "0509-tier-held-quality-bar", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["docs/quality-bar.md"]},
+    {"id": "0509-tier-green-plain-doc", "want": false, "tier": "green", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["docs/notes.md"]},
     {"id": "0509-tier-held-package-json", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["package.json"]},
     {"id": "0509-tier-held-lockfile", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["pnpm-lock.yaml"]},
     {"id": "0509-tier-held-requirements", "want": true, "tier": "held", "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["evals/requirements-dev.txt"]},
