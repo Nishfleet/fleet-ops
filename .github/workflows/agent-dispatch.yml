@@ -173,8 +173,8 @@ jobs:
           # Only PRs the bulk list does not call MERGEABLE are re-read: the
           # bulk list says UNKNOWN until GitHub recomputes a PR after a push
           # to main, and a per-PR read triggers that (fleet-ops#8557).
-          for pr in $(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,isDraft,isCrossRepository,mergeable,closingIssuesReferences \
-            --jq '.[] | select((.isDraft or .isCrossRepository | not) and .mergeable != "MERGEABLE" and (.closingIssuesReferences | length) > 0) | .number'); do
+          for pr in $(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,isCrossRepository,mergeable,closingIssuesReferences \
+            --jq '.[] | select((.isDraft or .isCrossRepository | not) and .mergeable != "MERGEABLE" and ((.closingIssuesReferences | length) > 0 or (.headRefName | test("^[a-z]+/issue-[0-9]+$")))) | .number'); do
             for _ in 1 2 3; do
               v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefOid,mergeable)
               [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
@@ -879,7 +879,7 @@ jobs:
             fi
             # Stuck: agent.yml's stuck job decides (stale, rework, owner). A PR with no issue becomes a Stuck PR report: at most three
             # open, two new a sweep, because the orchestrate job has a daily cap (18 at once on 2026-10-11 left most with no run).
-            if [ "$(jq '.closingIssuesReferences | length' <<<"$p")" = 0 ]; then [ "$slots" -gt 0 ] || continue; slots=$((slots - 1)); fi
+            if ! jq -e '(.closingIssuesReferences | length) > 0 or (.headRefName | test("^[a-z]+/issue-[0-9]+$"))' <<<"$p" >/dev/null; then [ "$slots" -gt 0 ] || continue; slots=$((slots - 1)); fi
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"

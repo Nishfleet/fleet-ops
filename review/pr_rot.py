@@ -8,9 +8,9 @@ a block (with the runner login, `--blocked`). Input is the environment: REPO, PR
 The rules, in order:
 1. Stale: a head commit 7 or more days old closes the PR with a comment and keeps the branch. Its open
    issue gets `agent-ready` again with a link to the branch; a PR with no open issue gets one filed
-   from its title and body.
+   from its title and body. A parked or blocked issue keeps its labels and only gets the comment.
 2. Rounds: a round is a head the reviewer blocked or this program sent back. Under 2 rounds the PR's
-   issue (gh's closingIssuesReferences, so any branch name) gets `needs-orchestrator`, and the
+   issue (gh's closingIssuesReferences, so any branch name, else the N of a `<kind>/issue-N` branch) gets `needs-orchestrator`, and the
    orchestrate job continues the PR's own head branch. At 2 or more the issue gets
    `needs-orchestrator` and `strong-only` and one comment, and is not sent back again.
 3. A PR with no open issue is filed for the orchestrator as a `Stuck PR #N` issue, as before.
@@ -32,6 +32,7 @@ LIVE = {"queued", "in_progress", "waiting", "pending", "requested"}
 BLOCKED = re.compile(r"^reviewer: ([0-9a-f]{40}) blocked\.", re.M)
 REWORK = re.compile(r"^rework: PR #(\d+) at ([0-9a-f]{7})", re.M)
 RUN = re.compile(r"actions/runs/(\d+)")
+ISSUE_BRANCH = re.compile(r"^[a-z]+/issue-(\d+)$")
 
 
 def rounds(pr, sha, pr_comments, issue_comments):
@@ -52,17 +53,18 @@ def decide(pr, sha, issue, pr_comments, issue_comments, head_date, now, live=Fal
         return {"do": "skip", "why": "head moved or PR closed; the newer event decides"}
     if blocked_only and not any(m == sha for c in pr_comments if c.get("user", {}).get("login") == "github-actions[bot]" for m in BLOCKED.findall(c.get("body") or "")):
         return {"do": "skip", "why": f"no block on {sha[:7]}"}
+    labels = {x["name"] for x in (issue or {}).get("labels", [])}
+    held = bool(((issue or {}).get("issue_dependencies_summary") or {}).get("blocked_by", 0) or labels & (PARKED - {"needs-orchestrator"}))
     if now - head_date >= STALE:
-        return {"do": "stale", "issue": issue["number"] if issue else None}
+        return {"do": "stale", "issue": issue["number"] if issue else None, "held": held}
     if issue is None:
         return {"do": "skip", "why": "no open issue; the sweep files it"} if blocked_only else {"do": "file"}
-    labels = {x["name"] for x in issue.get("labels", [])}
     r = rounds(n, sha, pr_comments, issue_comments)
     if r >= ROUNDS:
         if any(f"rounds: PR #{n} " in (c.get("body") or "") for c in issue_comments):
             return {"do": "skip", "why": f"#{issue['number']} already handed to its owner"}
         return {"do": "owner", "issue": issue["number"], "rounds": r}
-    if (issue.get("issue_dependencies_summary") or {}).get("blocked_by", 0) or labels & PARKED:
+    if held or "needs-orchestrator" in labels:
         return {"do": "skip", "why": f"#{issue['number']} is parked, queued or blocked; its owner has it"}
     if any((c.get("body") or "").startswith(f"rework: PR #{n} at {sha[:7]}") for c in issue_comments):
         return {"do": "skip", "why": f"#{issue['number']} already has the rework note for {sha[:7]}"}
@@ -86,11 +88,11 @@ def comments(repo, n):
     return [c for page in gh_json("api", "--paginate", "--slurp", f"repos/{repo}/issues/{n}/comments?per_page=100") for c in page]
 
 
-def open_issue(repo, n):
-    for ref in gh_json("pr", "view", str(n), "-R", repo, "--json", "closingIssuesReferences")["closingIssuesReferences"]:
-        if f"{ref['repository']['owner']['login']}/{ref['repository']['name']}".lower() != repo.lower():
-            continue
-        issue = gh_json("api", f"repos/{repo}/issues/{ref['number']}")
+def open_issue(repo, n, branch):
+    refs = gh_json("pr", "view", str(n), "-R", repo, "--json", "closingIssuesReferences")["closingIssuesReferences"]
+    nums = [r["number"] for r in refs if f"{r['repository']['owner']['login']}/{r['repository']['name']}".lower() == repo.lower()]
+    for i in nums + [int(m.group(1)) for m in [ISSUE_BRANCH.match(branch)] if m]:
+        issue = gh_json("api", f"repos/{repo}/issues/{i}")
         if issue.get("state") == "open":
             return issue
     return None
@@ -122,12 +124,13 @@ def act(repo, pr, sha, d, reason, url):
         if i is None:
             body = f"Re-filed from PR #{n}, closed after 7 days with no new commit (fleet-ops#10573). Reuse branch `{ref}`: {tree}\n\n{pr.get('body') or ''}"
             i = gh("issue", "create", "-R", repo, "--title", pr["title"], "--body", body, "--label", "agent-ready").strip().rsplit("/", 1)[-1]
-        else:
+        elif not d["held"]:
             gh("issue", "edit", str(i), "-R", repo, "--add-label", "agent-ready")
             gh("issue", "edit", str(i), "-R", repo, "--remove-label", "needs-orchestrator,orchestrator-tried,agent-in-progress", check=False)
+        if d["issue"] is not None:
             gh("issue", "comment", str(i), "-R", repo, "--body", f"stale: PR #{n} had no new commit for 7 days and is closed. Reuse branch `{ref}`: {tree}")
         gh("pr", "close", str(n), "-R", repo, "--comment", f"stale: no new commit for 7 days, closed (fleet-ops#10573). The branch is kept; #{i} carries the work again.")
-        return f"closed #{n} as stale; #{i} is agent-ready"
+        return f"closed #{n} as stale; #{i} {'keeps its parked labels' if d['held'] else 'is agent-ready'}"
     if d["do"] == "file":
         return file_stuck(repo, pr, sha, reason, url)
     if d["do"] == "rework":
@@ -153,7 +156,7 @@ def main():
         print(f"#{n} is from a fork; nothing to do")
         return
     head_date = datetime.fromisoformat(gh("api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date").strip().replace("Z", "+00:00"))
-    issue = open_issue(repo, n)
+    issue = open_issue(repo, n, pr["head"]["ref"])
     issue_comments = comments(repo, issue["number"]) if issue else []
     live = False
     started = [c["body"] for c in issue_comments if (c.get("body") or "").startswith("agent run started:")]

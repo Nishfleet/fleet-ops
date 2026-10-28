@@ -112,6 +112,17 @@ def test_a_seven_day_pr_is_closed_and_its_issue_made_agent_ready(tmp_path):
     assert "--delete-branch" not in writes
 
 
+def test_a_seven_day_pr_on_a_parked_issue_is_closed_and_the_issue_keeps_its_labels(tmp_path):
+    out, writes = run(tmp_path, labels=("needs-nish-decision",), age=timedelta(days=9))
+    assert "issue edit" not in writes
+    assert "issue comment 77 -R o/r --body stale: PR #5" in writes and "pr close 5" in writes
+
+
+def test_a_relates_to_claim_pr_finds_its_issue_from_the_branch(tmp_path):
+    out, writes = run(tmp_path, ref="claim/issue-77", issue=False, reason="it conflicts with main")
+    assert f"rework: PR #5 at {SHA[:7]}: it conflicts with main." in writes
+
+
 def test_a_seven_day_pr_with_no_issue_is_re_filed_from_its_title_and_body(tmp_path):
     out, writes = run(tmp_path, ref="hand-named", issue=False, age=timedelta(days=8))
     assert "issue create -R o/r --title Make it faster --body Re-filed from PR #5" in writes
@@ -137,7 +148,7 @@ def test_a_pr_with_no_issue_is_filed_as_a_stuck_pr(tmp_path):
     ("live run", {"live": True}),
     ("fork", {"fork": True}),
     ("no block on this head", {"pr_comments": [blocked(OLD[0])], "flags": ("--blocked",)}),
-    ("blocked but no issue", {"issue": False, "pr_comments": [blocked(SHA)], "flags": ("--blocked",)}),
+    ("blocked but no issue", {"ref": "hand-named", "issue": False, "pr_comments": [blocked(SHA)], "flags": ("--blocked",)}),
 ])
 def test_nothing_is_written_when_the_rule_does_not_apply(tmp_path, case, kw):
     out, writes = run(tmp_path, **kw)
