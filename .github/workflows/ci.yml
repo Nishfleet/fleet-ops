@@ -1179,8 +1179,8 @@ jobs:
             *4000/v1/chat/completions*) # the two extra reviewers: the GLM row for the senior seat and the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
               for a in "$@"; do [ "${#a}" -le 131072 ] || { echo "mock curl: one argument over 128 KiB (E2BIG)" >&2; exit 7; }; done
               [ -z "${JUDGE_SLEEPS:-}" ] || sleep "$JUDGE_SLEEPS"
-              h= b= req=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; esac; shift; done
-              m=$(jq -r .model "$req")
+              h= b= req= sid=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; -H) case $2 in x-litellm-session-id:*) sid=${2#*: } ;; esac ;; esac; shift; done
+              m=$(jq -r .model "$req"); echo "$m $sid" >> "$STATE/sessions"
               if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; [ -z "${SECOND_ONCE:-}" ] || [ -e "$STATE/second-once" ] || { : > "$STATE/second-once"; exit 7; }; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
               elif [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; cut=${THIRD_CUT:-}; ans=$THIRD
               else echo "mock curl: unexpected model $m" >&2; exit 7; fi
@@ -1292,6 +1292,8 @@ jobs:
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/second-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the second reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"
+            # Each extra reviewer and seat gets its own router session that names the PR: a shared one pinned the fallback to the row that already reviewed (fleet-ops#10419).
+            [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
             ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
