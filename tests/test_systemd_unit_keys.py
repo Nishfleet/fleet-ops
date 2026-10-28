@@ -925,6 +925,7 @@ NODE_INSTALL_LAYOUT = (
     ".local/bin/README.md",
     ".local/bin/CHANGELOG.md",
     ".local/bin/LICENSE",
+    ".local/bin/share",
 )
 
 NODE_LAYOUT_SPELLINGS = ("{{{{ nish_home }}}}/{{path}}", "~nish/{{path}}", "~/{{path}}", "%h/{{path}}")
