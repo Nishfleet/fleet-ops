@@ -1155,14 +1155,14 @@ jobs:
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
-            *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
-              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
+            *"issues/7/"*) case "$*" in *labels*) echo "$*" >> "$STATE/labels" ;; *) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
+              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;; esac ;;
             *"pulls/7/files"*) case "${GUARD:-}" in fail) exit 1 ;; rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;; "") echo app/routes/home.tsx ;; 1) echo .github/workflows/new.yml ;; *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;; esac ;;
             "issue "*) case "$*" in *create*) echo "$*" >> "$STATE/issues"; echo https://github.com/Nishfleet/fleet-ops/issues/99 ;; esac ;;
             *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
-              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"labels\":[{\"name\":\"needs-split\"}],\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1286,7 +1286,7 @@ jobs:
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
