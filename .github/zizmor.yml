@@ -2,6 +2,9 @@
 # https://docs.zizmor.sh/configuration/
 # Every entry below is a finding kept on purpose, with its reason.
 rules:
+  self-repository:
+    # ci.yml calls its area workflows as ./ (fleet-ops#10721); actionlint 1.7.12 rejects the $/ form.
+    disable: true
   unpinned-uses:
     config:
       policies:
