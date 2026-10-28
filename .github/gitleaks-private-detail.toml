@@ -47,10 +47,10 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
-description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
+description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
 targetRules = ["private-home-path"]
-paths = ['''(^|/)systemd/fleet-sync\.service$''']
-regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
 condition = "AND"
 
 [[allowlists]]
@@ -100,6 +100,40 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
+description = "The six Tincan wake services and the Cua desk daemon are user units whose ExecStart=, Environment= and EnvironmentFile= lines name the tincan and vendor binaries, each listener's own config and prompt, and the cursor listener's seat file; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Only those paths are allowed, so a new one in these files still fails the scan. The desk daemon lived at systemd/ in this PR's first commit and moved under rootfs/etc/systemd/user/ (fleet-ops#10140), and a PR scan reads every commit"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = [
+  '''(^|/)systemd/tincan-listen-(command-code|cursor-vps|devin-vps|fleet-worker|opencode|pi)\.service$''',
+  '''(^|/)systemd/cua-desk-daemon\.service$''',
+  '''(^|/)rootfs/etc/systemd/user/cua-desk-daemon\.service$''',
+]
+regexes = [
+  '''^home/nish/\.local/bin/(tincan|command-code|cursor-agent|devin|pi|opencode)$''',
+  '''^home/nish/\.config/tincan/[a-z-]+\.json$''',
+  '''^home/nish/\.config/tincan/prompts/[a-z-]+\.txt$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test reads the wake units back, so it spells out one listener's home and TINCAN_CONFIG path in an expected string and asserts the cursor and desk seat files the units load (fleet-ops#10133, #10140). Only those three literals are allowed in this file"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = [
+  '''^home/nish/\.config/tincan/$''',
+  '''^home/nish/\.local/bin/tincan$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The router quadlet lists one EnvironmentFile= line per seat file it serves (a unit line cannot carry gitleaks:allow), and its test reads those lines back; fleet-ops#10451. Only the seats directory is allowed"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)(containers/quadlet/fleet-litellm-proxy\.container|tests/test_litellm_proxy_seat_keys\.py)$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The desktop server unit binds the tailnet address with -interface, which takes an address and not a name (no inline comment on an ExecStart= line to carry gitleaks:allow)"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)systemd/tigervnc\.service$''']
@@ -114,8 +148,53 @@ regexes = ['''^100\.64\.0\.0$''']
 condition = "AND"
 
 [[allowlists]]
+description = "The two Claude Code plugin drop-ins name the directory each marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only these two directories are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/(60-nish-mods|80-inbox)\.json$''']
+regexes = [
+  '''^home/nish/workspaces/tooling/claude-mods$''',
+  '''^home/nish/workspaces/tooling/claude-code-mods-petekp-inbox$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The seo-fix-kit D1 backup retirement names three user-unit paths the host deploy stops, disables and deletes (fleet-ops#10145). An earlier commit of that PR wrote them as literals; the play now renders them from nish_home and the test asserts that form, and a PR scan reads every commit while history cannot be rewritten on an open PR. Only these three paths, in the two files that carry the retirement"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
 regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
+condition = "AND"
+
+[[allowlists]]
+description = "The Hermes backend unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names its program, its environment file and its PATH entries, and the tailnet address it binds; moved byte for byte from /etc/systemd/system, fleet-ops#10542. Only paths under its own .hermes tree, .local/bin, and the one address that unit binds are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-serve\.service$''']
+regexes = [
+  '''^home/nish/\.hermes(/.*)?$''',
+  '''^home/nish/\.local/bin$''',
+  '''^100\.108\.184\.97$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test reads the Hermes backend unit back, so it spells out that unit's pinned program path and the tailnet address it binds (fleet-ops#10542). Only those two literals are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = [
+  '''^home/nish/\.hermes/hermes-agent/\.hermes/bin/hermes$''',
+  '''^100\.108\.184\.97$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "An earlier commit of the Drive pin (fleet-ops#10547) wrote the server's root as an absolute home path; the fragment now carries ~/Drive and the play renders it from nish_home, and the test asserts that form. A PR scan reads every commit while history cannot be rewritten on an open PR. Only that one path is allowed"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(config/drive-mcp\.json|tests/test_chrome_devtools_mcp\.py)$''']
+regexes = ['''^home/nish/Drive$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The machine-wide Claude Code managed-settings file denies Read on the seat and tincan secret paths and Edit on the deploy clone, so it must name them; a JSON file has no comment line to carry gitleaks:allow. Only those three home paths and the one relative seats path are allowed, so a new one still fails the scan; fleet-ops#10543"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
+regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|home/nish/workspaces/tooling/fleet-ops-deploy-clone/|\.config/fleet-ops/seats)$''']
 condition = "AND"

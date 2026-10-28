@@ -1,9 +1,10 @@
 # Prometheus configuration — repo-sourced (fleet-ops#1534).
 #
-# The Debian package owns /etc/prometheus/prometheus.yml; fleet-sync.service
+# The Debian package owns /etc/prometheus/prometheus.yml; ansible/tasks/alerting.yml
 # deploys this as a root-owned copy (not a symlink: prometheus cannot
 # traverse /home/nish) and reloads prometheus after the change
-# (fleet-ops#8084).
+# (fleet-ops#8084). The install is skipped until the alertmanager web config
+# and its password file are both in place (fleet-ops#10058).
 global:
   scrape_interval: 30s
   scrape_timeout: 25s
@@ -20,6 +21,15 @@ alerting:
   alertmanagers:
     - static_configs:
         - targets: ['127.0.0.1:9093']
+      # Alertmanager requires basic auth on every route (see
+      # rootfs/etc/default/prometheus-alertmanager). The username is not a
+      # secret; the password comes from a hand-placed 0600 file that
+      # ansible/tasks/alerting.yml keeps owned by the prometheus user, so it
+      # stays out of this repo. promtool does not open the file, so CI passes
+      # without it, and the deploy probes the pair before it installs this.
+      basic_auth:
+        username: fleet
+        password_file: /etc/prometheus/alertmanager_password
 
 scrape_configs:
   - job_name: prometheus
@@ -57,6 +67,9 @@ scrape_configs:
   - job_name: alertmanager
     static_configs:
       - targets: ['127.0.0.1:9093']
+    basic_auth:
+      username: fleet
+      password_file: /etc/prometheus/alertmanager_password
 
   # --- 0509 blackbox probes removed 2026-10-01 (fleet-ops#9014) -----------
   # Deleted, not repointed. All 12 targets of the three blackbox-0509-* jobs
@@ -103,8 +116,8 @@ scrape_configs:
           - https://api.0509.io/
           - https://seofixkit.com/
           - https://siterep.net/
-          - https://tinystudio.io/
-          - https://tinystudio.in/
+          # TinyStudio is offline on purpose while it is rebuilt (Nish, 2026-10-25):
+          # put https://tinystudio.io/ and https://tinystudio.in/ back at relaunch.
           - https://aiconverter.app/
           - https://inish.in/
     relabel_configs:

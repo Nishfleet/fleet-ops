@@ -1,0 +1,401 @@
+- name: Create the Chrome DevTools MCP install directory
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ chrome_devtools_mcp_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy the Chrome DevTools MCP package.json and package-lock.json
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../config/chrome-devtools-mcp/{{ item }}"
+    dest: "{{ chrome_devtools_mcp_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - package.json
+    - package-lock.json
+  register: chrome_devtools_pins
+
+- name: Look for the installed Chrome DevTools MCP server
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ chrome_devtools_mcp_dir }}/node_modules/.bin/chrome-devtools-mcp"
+  register: chrome_devtools_installed
+
+- name: Install the pinned Chrome DevTools MCP server from the lockfile
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/npm", ci, --ignore-scripts, --no-audit, --no-fund]
+    chdir: "{{ chrome_devtools_mcp_dir }}"
+  timeout: 300
+  when: chrome_devtools_pins.changed or not chrome_devtools_installed.stat.exists
+
+- name: Link the Chrome DevTools MCP server into nish's ~/.local/bin
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    src: "{{ chrome_devtools_mcp_dir }}/node_modules/.bin/chrome-devtools-mcp"
+    dest: "{{ chrome_devtools_mcp_bin }}"
+    state: link
+
+- name: Create the shared MCP config directory
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ nish_home }}/.config/mcp"
+    state: directory
+    mode: "0755"
+
+- name: Read the shared MCP config
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.config/mcp/mcp.json"
+  register: shared_mcp
+  failed_when: false
+  diff: false
+
+- name: Install the shared MCP config (Pi reads it through pi-mcp-adapter)
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    content: "{{ shared_next | to_nice_json(indent=2) }}\n"
+    dest: "{{ nish_home }}/.config/mcp/mcp.json"
+    mode: "0600"
+  vars:
+    shared_now: "{{ (shared_mcp.content | default('e30=') | b64decode | from_json) }}"
+    shared_servers: "{{ (shared_now.mcpServers | default({})) | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args, 'lifecycle': 'lazy', 'idleTimeout': 5}}) }}"
+    shared_next: "{{ shared_now | combine({'mcpServers': shared_servers}) }}"
+  when: shared_next != shared_now
+  diff: false
+
+- name: Read each agent CLI's chrome-devtools entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item }}", mcp, get, chrome-devtools]
+  loop: "{{ [nish_home ~ '/.local/bin/devin', nish_home ~ '/.local/bin/cmd'] | select('file') | list }}"
+  register: mcp_entry
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  timeout: 60
+
+- name: Drop a stale chrome-devtools entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
+  loop: "{{ mcp_entry.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc == 0 and (chrome_devtools_mcp_words | reject('in', item.stdout ~ item.stderr) | list | length) > 0
+  timeout: 60
+
+- name: Add the chrome-devtools entry to each agent CLI
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: "{{ ['bash', '-c', 'umask 077; exec \"$@\"', 'bash', item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
+  loop: "{{ mcp_entry.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc != 0 or (chrome_devtools_mcp_words | reject('in', item.stdout ~ item.stderr) | list | length) > 0
+  timeout: 60
+
+- name: Read Cursor's MCP config
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.cursor/mcp.json"
+  register: cursor_mcp
+  failed_when: false
+  diff: false
+
+- name: Swap Cursor's dead camofox entry for chrome-devtools
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    content: "{{ cursor_next | to_nice_json(indent=2) }}\n"
+    dest: "{{ nish_home }}/.cursor/mcp.json"
+    mode: "0600"
+  vars:
+    cursor_now: "{{ (cursor_mcp.content | default('e30=') | b64decode | from_json) }}"
+    cursor_servers: "{{ (cursor_now.mcpServers | default({})) | dict2items | rejectattr('key', 'in', ['camofox-browser', 'chrome-devtools']) | items2dict }}"
+    cursor_next: "{{ cursor_now | combine({'mcpServers': cursor_servers | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args}}) | combine(drive_mcp_servers if 'drive' in cursor_servers else {})}) }}"
+  when: cursor_next != cursor_now
+  diff: false
+
+- name: Read Claude Code's drive entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/claude", mcp, get, drive]
+  register: drive_entry
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  timeout: 60
+
+- name: Drop a stale drive entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/claude", mcp, remove, drive, --scope, user]
+  when: drive_entry.rc == 0 and (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
+  timeout: 60
+
+- name: Pin the Drive filesystem server in Claude Code's user config
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
+  when: drive_entry.rc != 0 or (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
+  timeout: 60
+
+- name: Look for Codex's config
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ nish_home }}/.codex/config.toml"
+  register: codex_config
+
+- name: Drop Codex's dead camofox entry and its subtables
+  become: true
+  become_user: nish
+  ansible.builtin.replace:
+    path: "{{ nish_home }}/.codex/config.toml"
+    regexp: '(?m)^\[mcp_servers\.camofox-browser(?:\.[^\]\n]+)?\]\n(?:[^\[\n][^\n]*\n|\n)*'
+    replace: ""
+  when: codex_config.stat.exists and codex_config.stat.isreg
+  diff: false
+
+# Codex loads every *.rules file in ~/.codex/rules/ at start. config.toml
+# is left to Codex; this file only adds forbidden commands, which reject
+# without a prompt under any approval policy.
+- name: Create Codex's rules directory
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ nish_home }}/.codex/rules"
+    state: directory
+    mode: "0755"
+
+- name: Install the Codex execpolicy floor
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../config/codex/rules/fleet-floor.rules"
+    dest: "{{ nish_home }}/.codex/rules/fleet-floor.rules"
+    mode: "0644"
+
+- name: Read Hermes' config
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.hermes/config.yaml"
+  register: hermes_config
+  failed_when: false
+  diff: false
+
+- name: Add the chrome-devtools entry under Hermes' mcp_servers
+  become: true
+  become_user: nish
+  ansible.builtin.lineinfile:
+    path: "{{ nish_home }}/.hermes/config.yaml"
+    insertafter: '^mcp_servers:$'
+    line: "  chrome-devtools: {command: {{ chrome_devtools_mcp_bin }}, args: [{{ chrome_devtools_mcp_args | join(', ') }}], enabled: true}"
+    regexp: '^  chrome-devtools: \{'
+  vars:
+    hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
+  when: hermes_text is search('(?m)^mcp_servers:$') and hermes_text is not search('(?m)^  chrome-devtools:')
+  diff: false
+
+- name: Install the Bot Desktop packages Hermes computer_use needs on a headless host
+  ansible.builtin.apt:
+    name:
+      - tigervnc-standalone-server
+      - xfce4-panel
+      - xfwm4
+      - xfdesktop4
+      - xfce4-settings
+      - dbus-x11
+      - x11-xserver-utils
+      - x11-utils
+      - x11-xkb-utils
+      - xauth
+      - fonts-dejavu-core
+    state: present
+    install_recommends: false
+    lock_timeout: 300
+
+- name: Let Hermes start its own headless Bot Desktop when computer_use needs a display
+  become: true
+  become_user: nish
+  ansible.builtin.lineinfile:
+    path: "{{ nish_home }}/.hermes/config.yaml"
+    line: "bot_desktop: {auto_start: true}"
+  vars:
+    hermes_text: "{{ hermes_config.content | default('') | b64decode }}"
+  when: hermes_config.content is defined and hermes_text is not search('(?m)^bot_desktop:')
+  diff: false
+
+- name: Look for the Command Code seat
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ commandcode_seat_file }}"
+  register: commandcode_seat_stat
+
+- name: Read the Command Code seat (an unreadable seat is a warning, not a silent skip)
+  when: commandcode_seat_stat.stat.exists
+  block:
+    - name: Slurp the Command Code seat
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_seat_file }}"
+      register: commandcode_seat
+      no_log: true
+      diff: false
+  rescue:
+    - name: Warn that the Command Code seat exists but cannot be read
+      ansible.builtin.debug:
+        msg: "WARNING: {{ commandcode_seat_file }} exists but could not be read; cmd keeps whatever login it has"
+
+    - name: Record that the Command Code seat could not be read
+      ansible.builtin.set_fact:
+        commandcode_problems: "{{ commandcode_problems | default([]) + ['the seat exists but could not be read'] }}"
+
+- name: Log Command Code in from the seat (a login that already exists is never replaced)
+  when: commandcode_seat_key != ''
+  block:
+    - name: Create the Command Code login directory
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ commandcode_auth_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Write the seat's key as the Command Code login unless a login file exists
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "{{ {'apiKey': commandcode_seat_key} | to_nice_json(indent=2) }}\n"
+        dest: "{{ commandcode_auth_file }}"
+        mode: "0600"
+        force: false
+      no_log: true
+      diff: false
+
+    - name: Keep the Command Code login at mode 0600, whatever key it holds
+      become: true
+      become_user: nish
+      ansible.builtin.file:
+        path: "{{ commandcode_auth_file }}"
+        mode: "0600"
+      when: not ansible_check_mode
+      no_log: true
+      diff: false
+
+    - name: Read the Command Code login to compare it with the seat
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ commandcode_auth_file }}"
+      register: commandcode_login_text
+      when: not ansible_check_mode
+      no_log: true
+      diff: false
+
+    - name: Say that the Command Code login does not hold the seat's key
+      ansible.builtin.debug:
+        msg: "NOTE: {{ commandcode_auth_file }} does not contain the seat's key (a login made by cmd, or a rotated or revoked seat key); it is left alone. To take the seat's key, delete the file and the next run writes it."
+      when: not ansible_check_mode and commandcode_seat_key not in (commandcode_login_text.content | b64decode)
+  rescue:
+    - name: Warn that the Command Code login could not be set up
+      ansible.builtin.debug:
+        msg: "WARNING: could not set up the Command Code login in {{ commandcode_auth_dir }} (step: {{ ansible_failed_task.name | default('unknown') }}); the rest of the run continues, then the run fails"
+
+    - name: Record that the Command Code login could not be set up
+      ansible.builtin.set_fact:
+        commandcode_problems: "{{ commandcode_problems | default([]) + ['the login could not be set up at step: ' ~ (ansible_failed_task.name | default('unknown'))] }}"
+
+- name: Read Hermes' scheduled jobs
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.hermes/cron/jobs.json"
+  register: hermes_jobs
+  failed_when: false
+  diff: false
+  no_log: true
+
+- name: Delete the retired jobs from Hermes' cron store
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv:
+      - "{{ nish_home }}/.local/bin/hermes"
+      - cron
+      - remove
+      - "{{ item }}"
+  environment: "{{ nish_env }}"
+  loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
+  vars:
+    hermes_jobs_ids: >-
+      {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+         | default([]) | map(attribute='id') | list }}
+
+- name: Apply config/hermes/digest-*.md to the live digest jobs
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv:
+      - "{{ nish_home }}/.local/bin/hermes"
+      - cron
+      - edit
+      - "{{ job.id }}"
+      - --prompt
+      - "{{ wanted }}"
+  environment: "{{ nish_env }}"
+  loop: "{{ digest_prompts }}"
+  loop_control:
+    loop_var: digest
+    label: "{{ digest }}"
+  vars:
+    job: "{{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
+    wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
+  when: job.id is defined and (job.prompt | default('')) != wanted
+  changed_when: true
+
+- name: Read Hermes' scheduled jobs again
+  become: true
+  become_user: nish
+  ansible.builtin.slurp:
+    src: "{{ nish_home }}/.hermes/cron/jobs.json"
+  register: hermes_jobs_after
+  failed_when: false
+  diff: false
+  no_log: true
+
+- name: Link the packaged gh into nish's ~/.local/bin
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ nish_home }}/.local/bin/gh"
+    src: /usr/bin/gh
+    state: link
+    force: true

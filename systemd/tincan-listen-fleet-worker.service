@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Tincan wake for fleet-worker (tincan listen -> headless pi drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+[Service]
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/fleet-worker.json
+Environment=FLEET_TASK_ID=tincan-fleet-worker
+StateDirectory=tincan-listen-fleet-worker
+WorkingDirectory=%S/tincan-listen-fleet-worker
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/pi --print --provider litellm --model worker-cheap < /home/nish/.config/tincan/prompts/fleet-worker.txt'
+Restart=always
+RestartSec=30
+[Install]
+WantedBy=default.target
