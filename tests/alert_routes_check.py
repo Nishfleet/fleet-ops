@@ -143,11 +143,13 @@ def dead_row_shape(rules, points, bad):
     description = annotations.get("description", "")
     if '{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}' not in description:
         bad.append("router-dead-row: the journal grep must fall back to the requested_model when the series carries no model_id")
-    if '{{ if $labels.model_id }}Do NOT remove or bench the row' not in description or 'the remove-or-bench rule does not apply' not in description:
-        bad.append("router-dead-row: the description must scope the remove-or-bench instruction to series that carry a router row id, never to a proxy-level series")
+    if "Do NOT remove or bench it without Nish's explicit yes" not in description or "{{ if $labels" in description:
+        bad.append("router-dead-row: the description must keep the remove-or-bench gate for every series, proxy-level included")
     template = (points.get("router-dead-row-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
     if ".Labels.requested_model" not in template or "proxy-level" not in template or "unnamed proxy request" not in template:
         bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
+    if re.search(r"(?<!\$)\$[A-Za-z_{]", template):
+        bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
 
 
 def main(root):
