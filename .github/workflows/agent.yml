@@ -114,7 +114,7 @@ jobs:
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
           i=${REF#claim/issue-}; i=${i%%-*}
-          skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
+          skip() { echo "gate: skip ($1)"; printf '%s\n' go=false "skip=$1" >> "$GITHUB_OUTPUT"; exit 0; }
           miss=false
           case $REF in *-miss-review) miss=true ;; esac
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
@@ -859,20 +859,34 @@ jobs:
         # priority-now first, then oldest, unblocked, and only for a lane the
         # Gate would admit, so a lanes-full skip never chains. Re-adding
         # agent-ready as the App fires `issues: labeled`, the same event a
-        # person's label sends; the Gate still decides.
-        if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        # person's label sends; the Gate still decides. It starts one item per
+        # free lane, not one per exit: a pool that drained stayed idle with 22
+        # runners free and 20 ready (fleet-ops#10685). A Gate skip other than
+        # lanes-full runs it too, so a label or comment event refills the pool
+        # with no worker exit; such a skip frees no lane, so it pokes no sweep.
+        # The filters below match the Gate's, so an item this step relabels
+        # either runs, waits lanes-full, or leaves the pool, and refills stop.
+        if: always() && !endsWith(inputs.ref, '-miss-review') && steps.gate.outputs.miss != 'true' && (steps.gate.outputs.go == 'true' || (steps.gate.outputs.go == 'false' && steps.gate.outputs.skip != 'lanes-full'))
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
+          EXITED: ${{ steps.gate.outputs.go }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # shellcheck disable=SC2016 # $n is yq's variable
           slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
-          strong_free=false; regular_free=false
-          # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
-          # falls through to Cursor (cap 1) or pi in the Worker.
-          strong_free=true
-          if [ "$(live devin)" -lt 4 ] || [ "$(live opencode)" -lt 2 ] || [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
+          # Free regular lanes, the Gate's caps: Devin 4, opencode 2, pi the router's slots.
+          regular=0
+          for lane in devin:4 opencode:2 "pi:$slots"; do
+            n=$(( ${lane#*:} - $(live "${lane%%:*}") ))
+            if [ "$n" -gt 0 ]; then regular=$((regular + n)); fi
+          done
+          # The senior lane has no cap (Claude; a rate-limited run falls through to Cursor
+          # or pi in the Worker), so strong-only items take from the same budget, with at
+          # least one start a run, as before, while the regular lanes are full.
+          budget=$(( regular > 0 ? regular : 1 ))
+          started=0
+          echo "free lanes: $regular regular, budget $budget"
           # An issue whose labeled run still waits for a runner must not be
           # poked again: the new run displaces the waiting one in the
           # agent-<repo>-<ref> group, and GitHub cancels it (fleet-ops#9269:
@@ -890,21 +904,32 @@ jobs:
             [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || continue
             # Same park labels the Gate skips, so a parked issue cannot take the handoff (drive #14, 2026-10-02).
             jq -e 'any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic"))' <<<"$issue" >/dev/null && continue
-            if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then $strong_free || continue
-            else $regular_free || continue
+            jq -e '.title | startswith("__scout_probe_")' <<<"$issue" >/dev/null && continue
+            strong=false
+            if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then strong=true
+            else [ "$regular" -gt 0 ] || continue
             fi
             if grep -qxF -- "$(jq -r .title <<<"$issue")" <<<"$waiting"; then echo "skip #$n: its dispatch run already waits"; continue; fi
             gh issue edit "$n" -R "$REPO" --remove-label agent-ready
             gh issue edit "$n" -R "$REPO" --add-label agent-ready
             echo "next: #$n"
-            exit 0
+            started=$((started + 1)); budget=$((budget - 1))
+            $strong || regular=$((regular - 1))
+            [ "$budget" -gt 0 ] || break
           done
-          echo "next: none ready for a free lane"
+          echo "started: $started"
+          # A skip freed no lane: nothing else can start, and a sweep per skip would chain.
+          [ "$EXITED" = true ] || exit 0
+          [ "$started" -gt 0 ] || echo "next: none ready for a free lane"
           # Nothing ready can still mean stuck work: an issue left agent-in-progress whose
           # claim PR is red or conflicting after its run ended sends no event, and only the 6h
           # sweep re-lists it (drive #106 #117 #298). Run that sweep now; it starts no worker
           # when nothing is stuck. The runner user's gh login dispatches it (App token may lack actions: write).
-          env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
+          if [ "$started" = 0 ]; then
+            env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
+          fi
+          # Every lane went to this repo's ready work: another repo's sweep would only skip lanes-full.
+          [ "$budget" -gt 0 ] || exit 0
           # Lane counts above are host-wide but the listing is this repo's
           # only: a strong-only issue waiting in another repo sat until that
           # repo's own sweep, which GitHub delays by hours. Sweep every other
