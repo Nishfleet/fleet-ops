@@ -17,7 +17,7 @@ jobs:
   # ci: the one required check. It runs no tests: it needs every other job here, so a red job turns it red.
   # `!cancelled()` so a failed need still runs it: a skipped required check would pass.
   ci:
-    needs: [lint, systemd-verify, unit, simulations, grafana-boot, cloudflare-tokens-tofu, ratchet]
+    needs: [lint, systemd-verify, unit, simulations, grafana-boot, session-hop-drill, cloudflare-tokens-tofu, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1841,6 +1841,98 @@ jobs:
   # GitHub credential and never plans or applies: it only checks that the files
   # are formatted and the config is valid, with the provider schemas from the
   # lock file (-backend=false, so no state is read or written).
+  # fleet-ops#9412 (item 3 of #9361): the session-hop drill. Runs the pinned litellm image against a real Redis with
+  # a 4+ row mock group: pin one session to a row, put that row on 429, make 100 more calls and count the calls
+  # whose answering row differs from the previous call's. A stale pin (BerriAI/litellm#45145) scatters the session
+  # across rows; the fixed image keeps the hop share at or under 2%. Mock rows only: no provider key, no network.
+  # The hop definition is the session-hop alert's (a hop is a different row from the same session's previous call
+  # inside 5 minutes), but the alert's SQL (#9475) does not exist yet and a CI run has no Postgres: the drill reads
+  # the answering row from the x-litellm-model-id response header instead.
+  session-hop-drill:
+    name: session-hop-drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Not a gate until the image carries the pin fix: until then the drill is red by design and only documents the
+    # leak, so it cannot block the PR queue. Remove this line in the PR that bumps the image to the fixed release
+    # (#9411), the same PR that makes this a hard gate. Upstream issue: https://github.com/BerriAI/litellm/issues/45145
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Path gate (pull requests only)
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/litellm-proxy\.yaml$|containers/quadlet/fleet-litellm-proxy\.container$|\.github/workflows/ci\.yml$)'; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "session-hop-drill run=$run"
+      - name: Drill the hop share against the pinned image
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/berriai/litellm:$(sed -n 's|^Image=ghcr.io/berriai/litellm:||p' containers/quadlet/fleet-litellm-proxy.container)
+          test "$image" != ghcr.io/berriai/litellm:
+          echo "drill image: $image"
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends redis-server
+          redis-server --port 6379 --daemonize yes --save '' >/dev/null
+          # The production worker-capable group with every row turned into a mock: same ids, same cooldown and
+          # allowed_fails settings, no key, no network.
+          # num_retries 2 lets a 429 on the pinned row fall to a peer in the same call.
+          cfg=$RUNNER_TEMP/drill.yaml
+          yq '{"model_list": [.model_list[] | select(.model_name == "worker-capable")
+                | .litellm_params |= (del(.max_budget, .budget_duration, .tags, .api_base, .max_parallel_requests, .input_cost_per_token, .output_cost_per_token, .cache_read_input_token_cost, .cache_creation_input_token_cost) | .model = "openai/drill" | .api_key = "drill" | .mock_response = "ok" | .order = 1 | .weight = 1)],
+                "router_settings": (.router_settings | pick(["routing_strategy", "cooldown_time", "allowed_fails", "allowed_fails_policy"]))
+                  + {"optional_pre_call_checks": ["session_affinity"], "redis_host": "127.0.0.1", "redis_port": 6379, "deployment_affinity_ttl_seconds": 600, "num_retries": 2}}' \
+            config/litellm-proxy.yaml > "$cfg"
+          rows=$(yq '.model_list | length' "$cfg")
+          [ "$rows" -ge 4 ] || { echo "::error::the drill group has $rows rows, need at least 4"; exit 1; }
+          up() {
+            docker rm -f litellm >/dev/null 2>&1 || true
+            docker run -d --name litellm --network host -v "$cfg:/app/config.yaml:ro" "$image" --config /app/config.yaml --port 4000 >/dev/null
+            for _ in $(seq 1 120); do
+              curl -fsS http://127.0.0.1:4000/health/readiness >/dev/null 2>&1 && return 0
+              [ "$(docker inspect -f '{{.State.Running}}' litellm)" = true ] || break
+              sleep 2
+            done
+            echo "::error::the proxy did not become ready"; docker logs litellm 2>&1 | tail -n 30; exit 1
+          }
+          # One call; prints the id of the row that answered, or nothing when the call failed.
+          call() {
+            curl -sS -o /dev/null -D - http://127.0.0.1:4000/v1/chat/completions \
+              -H 'content-type: application/json' -H 'x-litellm-session-id: drill-1' \
+              -d '{"model":"worker-capable","messages":[{"role":"user","content":"hi"}]}' \
+              | tr -d '\r' | sed -n 's/^x-litellm-model-id: //Ip'
+          }
+          # Phase 1: every row answers; the first call pins the session to the row that took it.
+          up
+          pinned=$(call)
+          [ -n "$pinned" ] || { echo "::error::the first call returned no x-litellm-model-id"; docker logs litellm 2>&1 | tail -n 30; exit 1; }
+          echo "session pinned to $pinned"
+          # Phase 2: that row now answers 429. The pin lives in Redis, so it survives the restart.
+          docker rm -f litellm >/dev/null
+          ROW=$pinned yq -i '(.model_list[] | select(.model_info.id == strenv(ROW)) | .litellm_params.mock_response) = "litellm.RateLimitError"' "$cfg"
+          up
+          prev=$pinned; hops=0; nonfirst=0; failed=0
+          for _ in $(seq 1 100); do
+            row=$(call)
+            if [ -z "$row" ]; then failed=$((failed + 1)); continue; fi
+            nonfirst=$((nonfirst + 1))
+            if [ "$row" != "$prev" ]; then hops=$((hops + 1)); fi
+            prev=$row
+          done
+          echo "hops=$hops non_first_calls=$nonfirst failed_calls=$failed rows=$rows pinned_row=$pinned image=$image"
+          [ "$nonfirst" -ge 50 ] || { echo "::error::only $nonfirst of 100 calls answered"; docker logs litellm 2>&1 | tail -n 30; exit 1; }
+          # hops <= 2% of non-first calls
+          [ $((hops * 50)) -le "$nonfirst" ] || { echo "::error::hop share $hops/$nonfirst is over 2% on $image"; exit 1; }
+
   cloudflare-tokens-tofu:
     name: cloudflare-tokens-tofu
     runs-on: ubuntu-latest
