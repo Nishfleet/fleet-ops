@@ -1174,7 +1174,7 @@ router_settings:
   enable_tag_filtering: false
   retry_policy:
     # Long note 9: docs/litellm-router-notes.md
-    AuthenticationErrorRetries: 0
+    AuthenticationErrorRetries: 1
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1

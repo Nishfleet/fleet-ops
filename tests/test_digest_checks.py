@@ -10,6 +10,17 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- the stored-item command discovers every open issue labelled
+  needs-nish-decision from the repositories it reads, stores each one, and
+  prints WAITING-UNREAD for a repository whose list could not be read, so a
+  labelled decision can never be missed by a title judgement
+  (fleet-ops#9741),
+- the waiting step runs no command of its own: the label alone decides, and a
+  stored issue whose label was removed prints UNLABELLED and drops out
+  (fleet-ops#9741),
+- a repository with issues enabled and no labelled issue reads as empty, not as
+  unreadable, and stores no key for it, so a healthy repository cannot flood the
+  reply with a false unread line (fleet-ops#9741),
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
@@ -89,7 +100,35 @@ import json, os, sys
 a = sys.argv[1:]
 d = json.load(open(os.environ["FAKE_GH"]))
 if a[:2] == ["repo", "list"]:
-    print("\\n".join(d["repos"]))
+    if d.get("failrepos"):
+        print("the repositories could not be read", file=sys.stderr)
+        sys.exit(1)
+    repos = d["repos"]
+    if "--jq" in a:
+        jq = a[a.index("--jq") + 1]
+        if "hasIssuesEnabled" in jq:
+            repos = [r for r in repos if r not in d.get("noissues", [])]
+        print("\\n".join(repos))
+    else:
+        print(json.dumps([{"name": r, "hasIssuesEnabled": r not in d.get("noissues", [])} for r in repos]))
+elif a[:2] == ["issue", "list"]:
+    repo = a[a.index("--repo") + 1]
+    if repo.split("/")[-1] in d.get("faillist", []):
+        print("the repository could not be read", file=sys.stderr)
+        sys.exit(1)
+    if repo.split("/")[-1] in d.get("silentfail", []):
+        sys.exit(1)
+    out = []
+    for key, obj in d["issues"].items():
+        if not key.startswith(repo + "#"):
+            continue
+        if obj.get("state") != "OPEN":
+            continue
+        if "needs-nish-decision" not in [x["name"] for x in obj.get("labels", [])]:
+            continue
+        num = int(key.rsplit("#", 1)[1])
+        out.append({"number": num, "title": obj.get("title", "issue %d" % num), "url": obj.get("url", ""), "labels": obj.get("labels", [])})
+    print(json.dumps(out))
 elif a[:2] == ["issue", "view"]:
     key = a[a.index("--repo") + 1] + "#" + a[2]
     if key not in d["issues"]:
@@ -171,6 +210,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
             "Nishfleet/alpha#1": _issue("CLOSED", "needs-nish-decision"),
             "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
             "Nishfleet/alpha#3": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#5": _issue("OPEN", "priority-now"),
         },
         "runs": {
             "Nishfleet/alpha": [
@@ -197,6 +237,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "open|needs-nish-decision",
         "wait:alpha#3": "open|needs-nish-decision",
         "wait:alpha#4": "open|needs-nish-decision",
+        "wait:alpha#5": "open|needs-nish-decision",
         "broken:alpha:Midrun": "failure",
         "broken:alpha:Nullrun": "failure",
         "broken:alpha:Cancelled": "failure",
@@ -210,6 +251,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "CHANGED",
         "wait:alpha#3": "UNCHANGED",
         "wait:alpha#4": "UNKNOWN",
+        "wait:alpha#5": "UNLABELLED",
         "broken:alpha:Midrun": "UNCHANGED",
         "broken:alpha:Nullrun": "UNCHANGED",
         "broken:alpha:Cancelled": "UNCHANGED",
@@ -250,6 +292,160 @@ def test_wait_item_closed_as_not_planned_is_not_reported_as_fixed(prompt, tmp_pa
 
 
 _WINDOW_PUSHES = 30
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_issue_not_in_the_store_is_discovered_and_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "issues": {
+            "Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#8": _issue("OPEN", "needs-nish-decision", "priority-now"),
+            "Nishfleet/alpha#9": _issue("OPEN", "agent-ready"),
+            "Nishfleet/alpha#10": _issue("CLOSED", "needs-nish-decision"),
+        },
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = {l.split(" ")[1]: l.split(" ")[2] for l in lines if l.startswith("ROW ")}
+    assert rows["wait:alpha#6"] == "UNCHANGED"
+    assert rows["wait:alpha#7"] == "NEW"
+    assert rows["wait:alpha#8"] == "NEW"
+    assert not any("alpha#9" in l or "alpha#10" in l for l in lines)
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "UNCHANGED_TOTAL 1" in lines
+    assert saved == {
+        "wait:alpha#6": "open|needs-nish-decision",
+        "wait:alpha#7": "open|needs-nish-decision",
+        "wait:alpha#8": "open|needs-nish-decision,priority-now",
+    }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_failure_is_loud_and_the_rest_is_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "faillist": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert lines[-1] == "STORED-SAVED"
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_skips_a_repository_with_issues_disabled(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "faillist": ["quiet"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_is_loud(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD all" in lines
+    assert not any(l.startswith("ROW wait:") for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_keeps_the_stored_items(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(
+        prompt,
+        tmp_path,
+        gh,
+        json.dumps({"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}),
+    )
+    assert "WAITING-UNREAD all" in lines
+    assert "ROW wait:alpha#6 UNCHANGED" in lines
+    assert "ROW broken:alpha:ci UNKNOWN" in lines
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_reads_a_repository_with_no_labelled_issue_as_empty(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "empty"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/empty": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "silentfail": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_names_a_stored_issue_once(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = [l for l in lines if l.startswith("ROW wait:alpha#6 ")]
+    assert rows == ["ROW wait:alpha#6 UNCHANGED"]
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision"}
+
+
+def test_both_digests_run_the_same_waiting_discovery():
+    segs = []
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        segs.append(seg[:seg.index("; done)") + len("; done)")])
+    assert segs[0] == segs[1]
+
+
+def test_waiting_discovery_loop_has_no_command_substitution_in_its_body():
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        body = seg[seg.index("do "):seg.index("; done")]
+        assert "$(" not in body, prompt.name
+
+
+def test_the_waiting_discovery_command_is_the_only_labelled_sweep():
+    for prompt in (MORNING, EVENING):
+        assert prompt.read_text().count("--label needs-nish-decision --state open") == 1, prompt.name
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
