@@ -106,19 +106,17 @@ script, or prompt lands unseen.
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it. README
   "Provider watch" has the run, off and delete steps.
-- `systemd/amp-runner-nish.service`, `amp-runner-rajeev.service`,
-  `executor.service`, `syncthing.service` and `tigervnc.service` — stock vendor
-  binaries (Amp, Executor, Syncthing, TigerVNC) run under systemd. They were hand-placed on the
+- `systemd/executor.service`, `syncthing.service` and `tigervnc.service` — stock vendor
+  binaries (Executor, Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
   `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`
-  and `enable --now`. The files match what ran before (only the two Amp
-  `Description=` lines lost their account names), so adopting them restarted
-  nothing: a unit edit applies at the unit's next restart (never restart
+  and `enable --now`. The files match what ran before, so adopting them
+  restarted nothing: a unit edit applies at the unit's next restart (never restart
   `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the five units. Switch one off with
+  `systemd-analyze verify` on the three units. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
 - `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` — the live Agent Tincan
@@ -661,7 +659,7 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone, amp, syncthing). Stale npm
+   plugins, cursor-agent, devin, uv, bun, rclone, syncthing). Stale npm
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.
@@ -1116,13 +1114,33 @@ Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
 `rm ~/.claude-max/agents`. The live agent files stay as plain files.
 
+## Managed-settings defaults
+
+`rootfs/etc/claude-code/managed-settings.json` is the box-wide Claude Code
+managed settings file itself, not a drop-in. `ansible/host.yml` installs it with
+the same `validate:` as the drop-ins, so a file that is not a JSON object never
+reaches `/etc` and cannot stop Claude Code from starting. It carries the
+subagent model, the advisor model, the per-model settings, the hand-picked
+`model-lanes` plugin and the box-wide permission `deny` and `ask` lists.
+`/etc/claude-code` is not in `owned_dirs`: every file in it is covered by an
+explicit copy task, a single-file one or a directory one, never a sweep.
+
+- Verify: `cmp /etc/claude-code/managed-settings.json
+  rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
+  repo copy), and `claude -p hi` starts on the box.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
+- The check is the `unit` job's `tests/test_claude_managed_settings.py`: every
+  file under `rootfs/etc/claude-code/` is a JSON object, its copy task runs that
+  JSON-object `validate:` as root and keeps the file's mode, and the defaults
+  file is installed as itself and not as part of a directory copy.
+
 ## Agent autonomy drop-in
 
 `rootfs/etc/claude-code/managed-settings.d/50-agent-autonomy.json` is a Claude
 Code managed-settings drop-in; Claude Code merges every
-`/etc/claude-code/managed-settings.d/*.json` into its managed settings. The
-hand-installed `/etc/claude-code/managed-settings.json` is not touched and
-`/etc/claude-code` is not in `owned_dirs`. It does four things:
+`/etc/claude-code/managed-settings.d/*.json` into the managed settings. It does
+four things:
 
 - Tells the auto-mode safety checker which orgs and repos are ours.
 - Allows auto-merge (`gh pr merge --auto`) of an agent's own green PR in the
@@ -1185,9 +1203,10 @@ always at `origin/main` (a failure fails the unit).
 - `80-inbox.json` registers the inbox directory marketplace and enables `inbox`.
   Its content is the file that was hand-written on the box, carried over as-is.
 
-Every `enabledPlugins` key merges with the hand-installed
-`/etc/claude-code/managed-settings.json`, which keeps its own `model-lanes` line:
-two files naming the same id with the same value is a no-op merge.
+Every `enabledPlugins` key merges with `/etc/claude-code/managed-settings.json`,
+which now ships from `rootfs/etc/claude-code/managed-settings.json` (README,
+"Managed-settings defaults") and keeps its own `model-lanes` line: two files
+naming the same id with the same value is a no-op merge.
 
 - Verify: `claude -p hi --output-format stream-json --verbose` prints an init
   line whose plugin list carries every enabled id.
@@ -1350,6 +1369,9 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32). `later-sweep.service` reads
 this list too, so the overdue sweep follows enrolment without a second list.
+`sweep_only` names repos that are not enrolled but whose agent-ready items
+the worker-exit top-up in `agent.yml` still re-sweeps (fleet-ops and drive,
+fleet-ops#10638): a retry of items already labelled, never admit or intake.
 
 Each enrolled repo needs three preconditions:
 

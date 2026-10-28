@@ -1302,6 +1302,15 @@ def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_in
     assert "TF_ENCRYPTION" not in text and "passphrase" not in text.lower(), "the key and method belong in the private file only"
 
 
+def test_cloudflare_tokens_unit_writes_secrets_as_the_secrets_app_not_a_personal_login() -> None:
+    text = CF_TOKENS_UNIT.read_text()
+    assert "gh auth token" not in text and "GITHUB_TOKEN" not in text, "a personal login must not write repo secrets (fleet-ops#10601)"
+    assert "TF_VAR_github_app_pem=" in text
+    # The App key can write every installed repo's secrets: it lives in the directory the worker jails hide.
+    assert "%h/.config/cloudflare/nishfleet-secrets.private-key.pem" in text
+    assert "pem_file        = var.github_app_pem" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
+
+
 def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
@@ -1312,16 +1321,9 @@ PR_SWEEP = ROOT / "systemd/fleet-pr-sweep@.service"
 LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 REMOTE_CONTROL = INSTALLED / "claude-remote-control.service"
 ROOT_TINCAN = INSTALLED / "tincan-listen-claude-vps.service"
-AMP_RUNNERS = {
-    "nish": (ROOT / "systemd/amp-runner-nish.service", "vps-nish", "tooling"),
-    "rajeev": (ROOT / "systemd/amp-runner-rajeev.service", "vps-rajeev", "products"),
-}
 HOME = "/home/nish"  # gitleaks:allow
 BIN_CLAUDE = f"{HOME}/.local/bin/claude"
-BIN_AMP = f"{HOME}/.amp/bin/amp"
-AMP_PATH = f"{HOME}/.local/bin:{HOME}/.amp/bin:/usr/local/bin:/usr/bin:/bin"
-AMP_SERVE_ROOT = f"{HOME}/workspaces"
-TINCAN_MCP_CONFIG = f"{AMP_SERVE_ROOT}/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json"
+TINCAN_MCP_CONFIG = f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json"
 
 
 def unit_directives(path: Path) -> dict[str, list[str]]:
@@ -1596,38 +1598,6 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
     assert seats[0].endswith(".env")
 
 
-@pytest.mark.parametrize("seat", sorted(AMP_RUNNERS))
-def test_amp_runner_scrubs_the_shell_token_and_pins_the_cli_flags(seat: str) -> None:
-    unit, runner_id, folder = AMP_RUNNERS[seat]
-    keys = unit_directives(unit)
-    unset = set(keys["UnsetEnvironment"][0].split())
-    assert {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} <= unset, (
-        "a token exported by a shell overrides the config-dir login (fleet-ops#9645)"
-    )
-    assert f"PATH={AMP_PATH}" in keys["Environment"]
-    assert keys["Type"] == ["simple"]
-    argv = keys["ExecStart"][0].split()
-    assert argv[0] == BIN_AMP
-    assert argv[1:] == [
-        "--no-tui",
-        "--runner-id",
-        runner_id,
-        "--no-serve-cwd",
-        f"--discover-dirs={AMP_SERVE_ROOT}/{folder}",
-    ]
-    assert keys["WorkingDirectory"] == [f"{AMP_SERVE_ROOT}/{folder}"], "the working directory is the only served directory"
-    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["15"]
-    assert keys["MemoryHigh"] == ["1500M"] and keys["MemoryMax"] == ["3G"] and keys["TasksMax"] == ["512"]
-    assert keys["WantedBy"] == ["default.target"]
-
-
-def test_amp_runner_seats_are_split_by_config_dir_and_nothing_else() -> None:
-    nish = unit_directives(AMP_RUNNERS["nish"][0])
-    rajeev = unit_directives(AMP_RUNNERS["rajeev"][0])
-    assert nish["Environment"] == [f"CLAUDE_CONFIG_DIR=%h/.claude-vps", f"PATH={AMP_PATH}"]
-    assert rajeev["Environment"] == [f"PATH={AMP_PATH}"], "rajeev is the default seat: ~/.claude with CLAUDE_CONFIG_DIR unset"
-    assert "claude-vps" in " ".join(nish["Environment"]) and "claude-vps" not in " ".join(rajeev["Environment"])
-    assert nish["ExecStart"] != rajeev["ExecStart"]
 WAKE_UNITS = (
     "systemd/tincan-listen-command-code.service",
     "systemd/tincan-listen-cursor-vps.service",
