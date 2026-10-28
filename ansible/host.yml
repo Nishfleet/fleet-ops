@@ -310,7 +310,8 @@
     # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
     # in common with nish. Its drop-in is rootfs/etc/systemd/system/
     # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
-    # is copied once (force: false), so a re-run never overwrites the runner's live state.
+    # is copied once: only while the copy has no runsvc.sh, so a re-run never overwrites the
+    # runner's live state.
     - name: Create the pilot runner user
       ansible.builtin.user:
         name: fleet-runner
@@ -325,12 +326,13 @@
         dest: /var/lib/fleet-runner/1/
         remote_src: true
         local_follow: false
-        force: false
         owner: fleet-runner
         group: fleet-runner
         mode: preserve
         directory_mode: '0750'
-      when: (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
+      when:
+        - (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
+        - "'/var/lib/fleet-runner/1/runsvc.sh' is not exists"
       notify:
         - Reload systemd
         - Restart pilot runner
