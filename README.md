@@ -301,12 +301,9 @@ script, or prompt lands unseen.
   Stopping Alertmanager does not touch
   `hermes-gateway.service`.
 - `systemd/fleet-sync.service` (started by
-  `.github/workflows/deploy-box.yml` on push) — the whole deploy mechanism:
-  a clean-clone check that prints
-  `DEPLOY-BLOCKED` and fails, `git fetch` + `git merge --ff-only` plus one
-  `sh` line that runs two `git merge-base --is-ancestor` probes and, unless
-  `HEAD` equals `origin/main`, prints `DEPLOY-BLOCKED` with the branch, the
-  commits that are not on main and the fix (fleet-ops#9967), `systemctl
+  `.github/workflows/deploy-box.yml` on push) — the user-scope half of the
+  deploy mechanism:
+  `systemctl
   --user link` of `fleet-unit-failed@.service` and
   `systemctl --user daemon-reload`, `systemd-tmpfiles --user --create`,
   user-scope `install -C` copies (`config/pi-models.json` to
@@ -317,28 +314,36 @@ script, or prompt lands unseen.
   and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead
-  (fleet-ops#7743, #9967). Root-owned files (`/etc/**`, `agent.slice`, everything under
+  (fleet-ops#7743, #9967). The git pull itself (`git fetch` +
+  `git merge --ff-only`, the clean-clone check that prints `DEPLOY-BLOCKED`
+  and fails, and the `git merge-base --is-ancestor` probe) moved to
+  `rootfs/etc/systemd/system/fleet-deploy-sync.service`, which runs as root
+  (fleet-ops#10477). Root-owned files (`/etc/**`, `agent.slice`, everything under
   `rootfs/`) are not this unit's job: `fleet-host-config.service` installs them
-  as root from its own clone.
+  as root from its own clone. This unit only reads the deploy clone, which is
+  root-owned — agent sessions can read it and cannot edit it.
 
 ## Install
 
 There is no installer. Every live user-scope path is a **symlink into this
 repo**, so a push to `main` is the deploy (`deploy-box.yml` runs
-`fleet-sync.service`, a fetch plus `--ff-only` merge, described below) — the
+`fleet-host-config.service`, then `fleet-deploy-sync.service`, then
+`fleet-sync.service`, described below) — the
 file the fleet runs and the file in git are the same inode. Nothing is copied,
 so nothing can drift, and the
 5,948 LOC that used to copy files and then hunt for the drift copying caused
 (`install.sh`, `MANIFEST`, `bin/fleet-ops-deploy`, `bin/fleet-deploy-check`,
 `bin/fleet-ops-drift.py`) were deleted on 2026-09-18.
 
-`deploy-box.yml` starts `fleet-sync.service` on every push to main, which
-keeps the clone current. It is the only deploy machinery on the box:
+`deploy-box.yml` starts `fleet-host-config.service`, then
+`fleet-deploy-sync.service`, then `fleet-sync.service` on every push to main:
+root applies the root-owned host config and pulls the deploy clone, and the
+user-scope unit links the rest. They are the only deploy machinery on the box:
 
 ```
 systemctl --user status fleet-sync.service
-systemctl --user start fleet-sync.service   # force a sync now
-journalctl --user -u fleet-sync.service -n 50
+systemctl start fleet-deploy-sync.service   # force the root pull now
+journalctl -u fleet-deploy-sync.service -n 50
 ```
 
 The unit fails loudly on a dirty or diverged clone. That is
@@ -346,7 +351,7 @@ correct: the live source must be clean `origin/main`, and a failed
 `fleet-sync.service` fires `OnFailure=fleet-unit-failed@` (healthchecks.io
 fail ping, fleet-ops#9033).
 
-The sync is a `git fetch` of `main` into `refs/remotes/origin/main`
+The pull is a `git fetch` of `main` into `refs/remotes/origin/main`
 followed by a `git merge --ff-only` of that named ref — never
 `git pull`, which merges the multi-entry `FETCH_HEAD` and dies with
 `Cannot fast-forward to multiple branches` when anything else in the
@@ -355,7 +360,8 @@ clone has written that file (fleet-ops#8893). One `sh` line then runs
 only when `HEAD == origin/main`, so a deploy window that ends a commit
 short fails the unit instead of leaving the live clone quietly behind.
 The line prints `DEPLOY-BLOCKED`, the branch, `HEAD` and `origin/main`,
-the commits that are not on main, and `switch main` as the fix, because
+the commits that are not on main, and `sudo git switch main` as the fix
+(the clone is root-owned, fleet-ops#10477), because
 the bare exit code this replaced left six red deploy-box runs printing
 only `exit code 1` (fleet-ops#9967). A session that needs a work branch
 uses a worktree: a work branch checked out in the deploy clone blocks
@@ -446,7 +452,12 @@ The live source — the tree every live symlink resolves into:
 
 `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`
 
-It must stay on branch `main`, clean. Feature and auditor work uses a linked
+It belongs to root, is writable by root only, and stays on branch `main`,
+clean — agent sessions running as nish read it and cannot edit it, so a
+stray session commit can no longer block or stage a deploy (fleet-ops#10477).
+The only writer is `fleet-deploy-sync.service` (root). `ansible/host.yml`
+keeps the ownership (`Make the user-scope deploy clone root-owned`), so `sudo`
+repairs it after any manual fix. Feature and auditor work uses a linked
 worktree. `products/fleet-ops` still points at the worktree parent
 (`/home/nish/workspaces/tooling/fleet-ops`) until no linked worktrees remain
 there; that parent carries the pre-rewrite init history (16 commits with no

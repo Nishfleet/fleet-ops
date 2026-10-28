@@ -1,4 +1,4 @@
-"""fleet-sync names the cause when the deploy clone is not at origin/main (fleet-ops#9967)."""
+"""fleet-deploy-sync names the cause when the deploy clone is not at origin/main (fleet-ops#9967)."""
 
 import os
 import shlex
@@ -6,8 +6,15 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-UNIT = ROOT / "systemd" / "fleet-sync.service"
+UNIT = ROOT / "rootfs" / "etc" / "systemd" / "system" / "fleet-deploy-sync.service"
 CLONE = "workspaces/tooling/fleet-ops-deploy-clone"
+# The clone path the unit spells out (a system unit has no %h), read back
+# from the unit so this file carries no literal home path.
+ABSOLUTE = next(
+    line[line.index("/") : line.index(CLONE) + len(CLONE)]
+    for line in UNIT.read_text().splitlines()
+    if CLONE in line
+)
 GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
@@ -23,6 +30,7 @@ def expand(raw: str, home: Path) -> str:
         raw.replace("%%", "\x00")
         .replace("$$", "\x01")
         .replace("%h", str(home))
+        .replace(ABSOLUTE, str(home / CLONE))
         .replace("\x00", "%")
         .replace("\x01", "$")
     )
@@ -35,7 +43,7 @@ def probe(home: Path) -> list[str]:
         expanded = expand(raw[len("ExecStart=") :], home)
         if "DEPLOY-BLOCKED: the deploy clone is not at origin/main" in expanded:
             return shlex.split(expanded)
-    raise AssertionError("no clone-state probe found in systemd/fleet-sync.service")
+    raise AssertionError("no clone-state probe found in rootfs/etc/systemd/system/fleet-deploy-sync.service")
 
 
 def git(cwd: Path, *args: str) -> str:

@@ -1,8 +1,6 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
-# user-scope deploy steps), then the fleet-host-config.service system oneshot
-# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
-# this runner's user start that one system unit, so no step uses sudo.
-# The unit's own guards still gate every step. fleet-ops#8519
+# deploy-box: push-triggered. Starts fleet-host-config.service (rootfs/ as
+# root, fleet-ops#10477), then fleet-deploy-sync.service (root pulls the
+# deploy clone), then fleet-sync.service (user-scope deploy steps). #8519
 name: deploy-box
 
 on:
@@ -21,14 +19,16 @@ jobs:
   apply:
     name: apply
     runs-on: [self-hosted, fleet-ci]
-    # The unit allows TimeoutStartSec=300 for the steps alone; 10 min leaves
-    # headroom without letting a hung step park a runner.
+    # The units allow TimeoutStartSec=600+300+300 for the steps; the job's
+    # 10 min leaves headroom without parking a runner on a hung step.
     timeout-minutes: 10
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Start fleet-sync.service (user-scope deploy steps)
-        run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
+      - name: Start fleet-deploy-sync.service (root pulls the deploy clone to main)
+        run: /usr/bin/systemctl start fleet-deploy-sync.service || { /usr/bin/journalctl --no-pager -xeu fleet-deploy-sync.service --lines=60; exit 1; }
+      - name: Start fleet-sync.service (user-scope deploy steps)
+        run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }

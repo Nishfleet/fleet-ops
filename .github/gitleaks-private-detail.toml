@@ -170,3 +170,10 @@ targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
 regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
 condition = "AND"
+
+[[allowlists]]
+description = "fleet-deploy-sync.service is the root unit that pulls the deploy clone (fleet-ops#10477): a system unit has no %h for another user's home, and a unit line cannot carry an inline gitleaks:allow comment. Only the deploy clone path is allowed, so a new home path in this unit still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/fleet-deploy-sync\.service$''']
+regexes = ['''^home/nish/workspaces/tooling/fleet-ops-deploy-clone$''']
+condition = "AND"

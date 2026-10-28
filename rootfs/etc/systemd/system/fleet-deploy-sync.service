@@ -1,0 +1,52 @@
+# The pull that deploys user-scope config: fetch and fast-forward the deploy
+# clone (/home/nish/workspaces/tooling/fleet-ops-deploy-clone) to origin/main,
+# as root. These were fleet-sync.service steps 0 and 1 until fleet-ops#10477:
+# a clone agent sessions could edit, and a pull that any stray session commit
+# therefore blocked (DEPLOY-BLOCKED, fleet-sync#9033's dirty-tree guard). With
+# the pull here and the clone owned root (ansible/host.yml, "Make the
+# user-scope deploy clone root-owned"), a session can read the clone and
+# nothing more, so the dirty-tree guard only fires on a deploy-path mistake
+# and no longer on an agent edit.
+#
+# Started by .github/workflows/deploy-box.yml and by
+# fleet-deploy.service, always AFTER fleet-host-config.service: that unit
+# applies ansible/host.yml from its own root-owned clone, which both installs
+# this unit file and makes the deploy clone root-owned before the first
+# root-run pull needs it. polkit (rootfs/etc/polkit-1/rules.d/
+# 50-fleet-host-config.rules) lets user nish start this unit and nothing
+# beyond the allowlist, so the deploy job needs no sudo.
+[Unit]
+Description=Pull the deploy clone to origin/main (root; the pull fleet-sync ran as nish until #10477)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+# Dirty working tree (fleet-ops#9033): print DEPLOY-BLOCKED and fail before
+# fetch/merge. git merge --ff-only already refuses a dirty tree, but its
+# wording is quiet; this line is the loud journal marker the map and RUNBOOK
+# name, and OnFailure= pages.
+ExecStart=/bin/sh -c 'git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --quiet && git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --cached --quiet || { echo DEPLOY-BLOCKED; exit 1; }'
+# Fast-forward the clone deterministically (fleet-ops#8893). `git pull
+# --ff-only origin main` delegates to `git merge --ff-only FETCH_HEAD`, and a
+# multi-entry `FETCH_HEAD` (e.g. from a concurrent `git fetch`, or a
+# multi-valued `branch.main.merge` config) makes merge refuse with `fatal:
+# Cannot fast-forward to multiple branches`, silently stopping the whole
+# deploy. Fetch main into its remote-tracking ref explicitly, then merge that
+# named ref — a single commit can never produce the multi-branch refusal.
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge --ff-only refs/remotes/origin/main
+# Probe (fleet-ops#8893): the step above is now deterministic, but a deploy
+# window that ever ends with HEAD not equal to origin/main is a silent stop.
+# `git diff` would compare trees and miss an empty commit, so assert commit
+# identity in both directions: origin/main is an ancestor of HEAD (HEAD is not
+# behind) AND HEAD is an ancestor of origin/main (HEAD is not ahead). Together
+# those are true only when HEAD == origin/main; either false exits non-zero and
+# the unit fails loud, so OnFailure=fleet-unit-failed@ pages instead of the clone
+# quietly lagging. fleet-ops#9967: "fail loud" shipped as a bare git exit code,
+# so the six red deploy-box runs printed only `exit code 1`. One sh line now
+# prints DEPLOY-BLOCKED, the branch and head it found, the commits that are not
+# on main, and the fix (sudo: the clone is root-owned, fleet-ops#10477).
+ExecStart=/bin/sh -c 'cd /home/nish/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at /home/nish/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; if git merge-base --is-ancestor refs/remotes/origin/main HEAD && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then exit 0; fi; echo "DEPLOY-BLOCKED: the deploy clone is not at origin/main, so no unit or config was updated."; echo "  branch $$(git rev-parse --abbrev-ref HEAD), head $$(git rev-parse --short HEAD), origin/main $$(git rev-parse --short refs/remotes/origin/main)"; git log --oneline -n 20 refs/remotes/origin/main..HEAD | sed "s/^/  not-on-main: /"; echo "  fix: sudo git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone switch main, then work from a worktree, not the deploy clone"; exit 1'

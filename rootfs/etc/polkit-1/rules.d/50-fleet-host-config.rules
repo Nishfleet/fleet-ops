@@ -6,12 +6,15 @@
 //
 // fleet-host-config.service: applies merged main from its own root-owned
 // clone, so starting it grants no other power (the deploy job).
+// fleet-deploy-sync.service: pulls the deploy clone to origin/main and runs
+// its own DEPLOY-BLOCKED guards (fleet-ops#10477; the deploy job).
 // fleet-update.service: the daily update oneshot; re-run after a fix is live.
 // restic-r2-backup.service: the nightly backup oneshot; BackupFailed texts
 // Nish after 2h, so a re-run after the fix clears it.
 // restic-r2-size-guard.service: the backup size check oneshot; same reason.
 var fleetStartableUnits = [
     "fleet-host-config.service",
+    "fleet-deploy-sync.service",
     "fleet-update.service",
     "restic-r2-backup.service",
     "restic-r2-size-guard.service"

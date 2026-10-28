@@ -241,6 +241,20 @@
         group: root
         mode: "u=rwX,go=rX"
 
+    # The user-scope deploy clone (fleet-ops#10477): agent sessions run as
+    # nish and must not write here, so the tree is root-owned, readable by
+    # every user, and the only writer is fleet-deploy-sync.service (root).
+    # The Grafana quadlet mounts provisioning dirs from it read-only and the
+    # user units link configs out of it, so go=rX keeps every reader working.
+    - name: Make the user-scope deploy clone root-owned and writable by root only
+      ansible.builtin.file:
+        path: "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false

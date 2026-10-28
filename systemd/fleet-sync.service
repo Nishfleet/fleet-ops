@@ -20,35 +20,12 @@ OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
-# 0. Dirty working tree (fleet-ops#9033): print DEPLOY-BLOCKED and fail
-#    before fetch/merge. git merge --ff-only already refuses a dirty tree,
-#    but its wording is quiet; this line is the loud journal marker the
-#    map and RUNBOOK name, and OnFailure= pages.
-ExecStart=/bin/sh -c 'git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --quiet && git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --cached --quiet || { echo DEPLOY-BLOCKED; exit 1; }'
-# 1. Fast-forward the clone deterministically (fleet-ops#8893).
-#    `git pull --ff-only origin main` delegates to `git merge --ff-only FETCH_HEAD`,
-#    and a multi-entry `FETCH_HEAD` (e.g. from a concurrent `git fetch` in the
-#    deploy clone, or a multi-valued `branch.main.merge` config) makes merge refuse
-#    with `fatal: Cannot fast-forward to multiple branches`, silently stopping the
-#    whole deploy. Fetch main into its remote-tracking ref explicitly, then merge
-#    that named ref — a single commit can never produce the multi-branch refusal.
-ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone merge --ff-only refs/remotes/origin/main
-#    Probe (fleet-ops#8893): the step above is now deterministic, but a deploy
-#    window that ever ends with HEAD not equal to origin/main is a silent stop.
-#    `git diff` would compare trees and miss an empty commit, so assert commit
-#    identity in both directions: origin/main is an ancestor of HEAD (HEAD is not
-#    behind) AND HEAD is an ancestor of origin/main (HEAD is not ahead). Together
-#    those are true only when HEAD == origin/main; either false exits non-zero and
-#    the unit fails loud, so OnFailure=fleet-unit-failed@ pages instead of the clone
-#    quietly lagging.
-#    fleet-ops#9967: "fail loud" shipped as a bare git exit code, so the six red
-#    deploy-box runs printed only `exit code 1`. The cause — a session had checked a
-#    work branch out in the deploy clone, so the clone was a commit ahead of main —
-#    lived in the journal alone, and each run took a manual read to explain. One sh
-#    line now prints DEPLOY-BLOCKED, the branch and head it found, the commits that
-#    are not on main, and the fix.
-ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at %h/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; if git merge-base --is-ancestor refs/remotes/origin/main HEAD && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then exit 0; fi; echo "DEPLOY-BLOCKED: the deploy clone is not at origin/main, so no unit or config was updated."; echo "  branch $$(git rev-parse --abbrev-ref HEAD), head $$(git rev-parse --short HEAD), origin/main $$(git rev-parse --short refs/remotes/origin/main)"; git log --oneline -n 20 refs/remotes/origin/main..HEAD | sed "s/^/  not-on-main: /"; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then work from a worktree, not the deploy clone"; exit 1'
+# 0-1. The pull is gone from this unit (fleet-ops#10477): fetch/merge/dirty-tree
+#      belong to fleet-deploy-sync.service (rootfs/etc/systemd/system/), which
+#      runs as root AFTER fleet-host-config.service, because this unit now runs
+#      as nish and the deploy clone is root-owned — agent sessions can read the
+#      clone and cannot edit it, so a stray session edit can no longer block a
+#      deploy. Every ExecStart below reads the clone; none writes to it.
 # 2. Link the OnFailure handler, drop the retired prometheus-reload live
 #    links, then re-read unit files. Link first so daemon-reload loads
 #    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
