@@ -3,7 +3,8 @@ program (read out with yq, never copied) against a fake gh.
 
 A PR whose comments JSON passes the 131072-byte single-argument limit is
 judged like any other, and one PR whose verdict errors is skipped with a
-warning while the rest are judged and the job still fails at the end.
+warning while the rest are judged and the job still fails at the end. A
+review-retry issue closes once its head has a verdict or its PR moved on.
 """
 import json
 import os
@@ -25,10 +26,12 @@ case "$1 $2" in
   "pr checks") echo '[]' ;;
   "pr comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "issue list")
-    case "$*" in *'Stuck PR'*) echo 0 ;; *) echo '[]' ;; esac ;;
+    case "$*" in *'Stuck PR'*) echo 0 ;; *review-retry*) cat "$FAKE_DIR/retry.tsv" 2>/dev/null ;; *) echo '[]' ;; esac ;;
+  "pr view") echo "${FAKE_PR_VIEW:-}" ;;
+  "issue close") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "api --paginate")
     n=${3#*/issues/}; n=${n%%/*}
-    cat "$FAKE_DIR/comments-$n.json" ;;
+    if [ "${4:-}" = --jq ]; then jq -r "$5" "$FAKE_DIR/comments-$n.json"; else cat "$FAKE_DIR/comments-$n.json"; fi ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -59,7 +62,7 @@ def filler(size):
     return {"user": {"login": "someone"}, "body": "x" * size, "created_at": OLD, "updated_at": OLD}
 
 
-def _run(tmp_path, comments, armed=()):
+def _run(tmp_path, comments, armed=(), retry="", pr_view=""):
     fake = tmp_path / "fake"
     fake.mkdir()
     runner_temp = tmp_path / "runner-temp"
@@ -68,6 +71,7 @@ def _run(tmp_path, comments, armed=()):
     home.mkdir()
     prs = [pr(n) | ({"autoMergeRequest": {"enabledAt": OLD}} if n in armed else {}) for n in comments]
     (fake / "prs.json").write_text(json.dumps(prs))
+    (fake / "retry.tsv").write_text(retry)
     for n, c in comments.items():
         (fake / f"comments-{n}.json").write_text(json.dumps(c))
     gh = fake / "gh"
@@ -78,7 +82,7 @@ def _run(tmp_path, comments, armed=()):
     env = {
         **os.environ, "HOME": str(home), "PATH": f"{fake}:{os.environ['PATH']}", "FAKE_DIR": str(fake),
         "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(out),
-        "APPROVERS": _y(f"{STEP} | .env.APPROVERS").strip(), "STUCK": _y(f"{STEP} | .env.STUCK"),
+        "APPROVERS": _y(f"{STEP} | .env.APPROVERS").strip(), "STUCK": _y(f"{STEP} | .env.STUCK"), "FAKE_PR_VIEW": pr_view,
     }
     r = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{STEP} | .run")],
@@ -124,8 +128,30 @@ def test_a_refused_disarm_is_a_warning_and_the_pr_is_still_armed(tmp_path):
     assert _armed(outputs) == [101, 102]
 
 
-@pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-rework", "stuck-file"])
+@pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-file"])
 def test_dispatch_jobs_run_after_a_failed_sweep(job):
     cond = " ".join(_y(f'.jobs."{job}".if').split())
     assert cond.startswith("!cancelled() && ")
     assert "needs.stuck-prs.outputs." in cond
+
+
+HEAD = "ab" * 20
+
+
+def verdict(body):
+    return {"user": {"login": "github-actions[bot]"}, "body": body, "created_at": OLD, "updated_at": OLD}
+
+
+@pytest.mark.parametrize("state,head,comments,closed,why", [
+    ("OPEN", HEAD, [verdict(f"reviewer: {HEAD} blocked. Fix the items below.")], True, f"the review finished: reviewer: {HEAD} blocked"),
+    ("OPEN", HEAD, [verdict(f"coordinator-approval: {HEAD}")], True, f"the review finished: coordinator-approval: {HEAD}"),
+    ("OPEN", "cd" * 20, [], True, "moved to a new head, cdcdcdcdcdcd"),
+    ("MERGED", HEAD, [], True, "PR #7 is MERGED"),
+    ("OPEN", HEAD, [verdict(f"reviewer: {'cd' * 20} blocked.")], False, ""),
+])
+def test_a_review_retry_issue_closes_once_its_head_is_settled(tmp_path, state, head, comments, closed, why):
+    r, _ = _run(tmp_path, {7: comments}, retry=f"55\t7\t{HEAD[:12]}\n", pr_view=f"{state} {head}")
+    log = (tmp_path / "fake" / "writes.log")
+    writes = log.read_text() if log.exists() else ""
+    assert ("issue close 55" in writes) is closed, r.stdout + r.stderr
+    assert why in writes

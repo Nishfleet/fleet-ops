@@ -1130,25 +1130,10 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
-      # and a PR from a fork never reaches here at all.
+      # A blocked PR on any branch goes back to the orchestrator through its issue, at most two rounds (fleet-ops#10435, #10573).
+      # The runner login sets the label, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label.
       - name: Send a blocked orch PR back to the orchestrator
-        run: |
-          set -euo pipefail
-          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
-          [ "$n" != "$ref" ] || exit 0
-          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
-          grep -qx "$SHA" <<<"$rev" || exit 0
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
-          rounds=$(grep -c . <<<"$rev")
-          if [ "$rounds" -gt 3 ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
-          else
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
-          fi
+        run: env -u GH_TOKEN -u GITHUB_TOKEN python3 -I "$HOME/workspaces/tooling/fleet-ops-deploy-clone/review/pr_rot.py" --blocked
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
   # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
@@ -1257,36 +1242,12 @@ jobs:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
+          permission-pull-requests: write
       - name: File or update the stuck-PR issue
         env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_TOKEN: ${{ steps.issue-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          pr=$(gh api "repos/$REPO/pulls/$PR")
-          [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the next sweep decides"; exit 0; }
-          marker="stuck-pr: #$PR"
-          why="PR #$PR ($(jq -r .head.ref <<<"$pr")) has waited over an hour at ${SHA:0:7}: $REASON."
-          [ -z "$URL" ] || why="$why Blocking comment: $URL"
-          old=$(gh issue list -R "$REPO" --state open -L 100 --search "\"$marker\" in:body" --json number,body |
-            jq -c --arg m "$marker" '[.[] | select(.body | split("\n") | any(.[]; startswith($m + " ")))] | first // empty')
-          if [ -n "$old" ]; then
-            n=$(jq -r .number <<<"$old")
-            if gh issue view "$n" -R "$REPO" --json body,comments --jq '[.body, .comments[].body] | join("\n")' | grep -qF "$marker $SHA"; then
-              echo "#$n already reports #$PR at $SHA"
-              exit 0
-            fi
-            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "$(printf '%s %s\n\n%s' "$marker" "$SHA" "$why")"
-            echo "updated #$n for #$PR at $SHA"
-            exit 0
-          fi
-          body=$(printf '%s %s\n\n%s\n\nTake the PR over: fix the blocker lines or merge main on its branch and push (a new head gets a fresh review and the sweep arms it once approved), or close it as superseded. %s' \
-            "$marker" "$SHA" "$why" "$(jq -r .html_url <<<"$pr")")
-          url=$(GH_TOKEN=$ISSUE_TOKEN gh issue create -R "$REPO" --title "Stuck PR #$PR: $REASON" --body "$body")
-          # Labelled after creation, so the labeled event that starts the
-          # orchestrate job is its own event from the App.
-          GH_TOKEN=$ISSUE_TOKEN gh issue edit "$url" -R "$REPO" --add-label needs-orchestrator
-          echo "filed $url for #$PR at $SHA"
+          GH_TOKEN: ${{ steps.issue-token.outputs.token }}
+        # The rot rules (stale, rounds, rework, Stuck PR issue) are a tested program read from main (fleet-ops#10573).
+        run: python3 -I "$HOME/workspaces/tooling/fleet-ops-deploy-clone/review/pr_rot.py"
   inish-daily:
     # The Daily edition, published to https://nish.sh/daily (inish.in only redirects). The editorial standard is the
     # product repo's automation/HERMES_DAILY.md, the mechanical contract prompts/inish-daily.md here, so a product

@@ -719,8 +719,8 @@ jobs:
       - name: Sweep moves PRs waiting over 15 minutes (STUCK)
         # Runs the stuck-prs job's own STUCK program, read out of the workflow,
         # against every case in config/stuck-pr-cases.json. The grep lines pin
-        # the wiring: the verdict feeds the four lists, each list starts its
-        # agent.yml job, and a deleted claim issue is filed, not fatal.
+        # the wiring: the verdict feeds the three lists, and each list starts
+        # its agent.yml job, whose program tests/test_pr_rot.py runs.
         if: always()
         run: |
           set -euo pipefail
@@ -730,11 +730,11 @@ jobs:
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
           run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "file=$file"'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
           done
           bad=0
-          for j in stuck-review:review_pr stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr; do
+          for j in stuck-review:review_pr stuck-arm:arm_pr stuck-file:stuck_pr; do
             [ "$(yq ".jobs.\"${j%%:*}\".needs" "$f")" = stuck-prs ] && [ "$(yq ".jobs.\"${j%%:*}\".with.${j#*:}" "$f")" != null ] || { echo "${j%%:*} is not wired to stuck-prs"; bad=1; }
           done
           [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
@@ -743,7 +743,7 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
+          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py tests/test_pr_rot.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
@@ -835,7 +835,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
+          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-file red-main"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do
@@ -1512,18 +1512,18 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all five sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
-        # run status alone.
+        # config/sweep-liveness-events.json, and checks that all three sweep
+        # reads (stalled, orphans, red PRs) use it and none still reads the run status
+        # alone. review/pr_rot.py's copy runs the same cases in tests/test_pr_rot.py.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 3 ] || { echo "expected 3 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 3 ] || { echo "expected 3 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do

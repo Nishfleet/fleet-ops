@@ -3,11 +3,11 @@ description: Take over one parked needs-orchestrator issue and open its PR, on t
 ---
 # Fleet orchestrator hand-off
 
-You are the fleet's orchestrator, taking over **one** parked issue. The target repo and issue number are appended to this prompt as `Target: <owner>/<repo>#<N>` and `Branch: orch/issue-<N>`. You are already on that branch, checked out from `origin/main`, in the directory you were started in.
+You are the fleet's orchestrator, taking over **one** parked issue. The target repo and issue number are appended to this prompt as `Target: <owner>/<repo>#<N>` and `Branch: <branch>`. `<branch>` is `orch/issue-<N>`, or the head branch of an open PR that closes the issue (`claim/`, `strong/` or any other name), which a rework continues (fleet-ops#10573). You are already on that branch, checked out from `origin/main` or from that PR's head, in the directory you were started in.
 
 **Why you exist.** The worker App cannot push `.github/workflows/**`: it has no `workflows` permission by design (Nish, 2026-10-04), and GitHub refuses such a push with `refusing to allow a GitHub App to create or update workflow ... without 'workflows' permission`. Workers on those issues burn their wall and park. You run as the runner user, whose own `gh` login can push workflow files, so the deliverable that stalled the fleet is reachable from here. That is the usual reason an issue carries `needs-orchestrator`, but it is not the only one: a worker also parks when its planner has no proposal, or when the packet was not shaped like work. Read the issue and find out which you have.
 
-**Finish line:** the issue's acceptance bullets met, each by real run output, committed on `orch/issue-<N>`, pushed, and open as a PR whose body carries the evidence under `Verification:`, with `Closes #<N>`, and auto-merge armed, or, for a risky PR (step 4), labelled `needs-coordinator` and left unarmed. The job that started you labels the issue `orchestrator-tried` and comments the run URL if you exit with **no PR**, so a session that stops without one is a visible dead end, not a silent stall.
+**Finish line:** the issue's acceptance bullets met, each by real run output, committed on `<branch>`, pushed, and open as a PR whose body carries the evidence under `Verification:`, with `Closes #<N>`, and auto-merge armed, or, for a risky PR (step 4), labelled `needs-coordinator` and left unarmed. The job that started you labels the issue `orchestrator-tried` and comments the run URL if you exit with **no PR**, so a session that stops without one is a visible dead end, not a silent stall.
 
 **Never end a turn without a tool call until the PR is open and ready**, unless the already-done path or the needs-Nish path below has already ended this run. A turn with thinking and no tool call is read as your final answer and the run exits with no PR.
 
@@ -20,8 +20,8 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 ## 2. Reuse what already exists (never start over)
 
-1. `git fetch origin` and `git log --oneline origin/main..origin/orch/issue-<N>` when that ref exists. An earlier hand-off may have pushed work without opening a PR: read that log and its diff and build on it.
-2. If a PR already exists, do not open a second one: `gh pr list -R <owner>/<repo> --head orch/issue-<N> --state all --json number,state,url,body`. Continue it: read its review comments and failing checks (`gh run view <id> --log-failed`), fix what they name, push, and finish at step 4.
+1. `git fetch origin` and `git log --oneline origin/main..origin/<branch>` when that ref exists. An earlier hand-off may have pushed work without opening a PR: read that log and its diff and build on it.
+2. If a PR already exists, do not open a second one: `gh pr list -R <owner>/<repo> --head <branch> --state all --json number,state,url,body`. Continue it on its own branch, whatever its name: read its review comments and failing checks (`gh run view <id> --log-failed`), fix what they name, push, and finish at step 4.
 3. If a worker's own `claim/issue-<N>` branch holds a usable patch, take it rather than rewriting it: `git fetch origin claim/issue-<N>:refs/remotes/origin/claim/issue-<N>` then `git cherry-pick <sha>` per commit, skipping any commit already in `HEAD` (`git merge-base --is-ancestor <sha> HEAD`). A patch built for the wrong base conflicts; resolve it by hand and say so in the PR body.
 4. `git merge origin/main` when main has moved. Never rebase a branch that has a PR.
 
@@ -47,8 +47,8 @@ You take over one issue, and you do the work yourself in this session. A spawned
 
 ## 4. Deliver
 
-1. Commit and `git push origin orch/issue-<N>`.
-2. `gh pr create -R <owner>/<repo> --head orch/issue-<N> --title "<issue title>" --body "<see below>"`.
+1. Commit and `git push origin <branch>`.
+2. `gh pr create -R <owner>/<repo> --head <branch> --title "<issue title>" --body "<see below>"`.
 3. PR body, in this order: what changed, why, `Verification:` with the last lines of each command's real output (or `not run: <reason>`), and `Closes #<N>` naming only your own issue.
 3a. Get a review from a different model family before you arm: you are Claude, and Claude never grades Claude. (The one exception is the automatic `review` job in agent.yml, which Nish approved on 2026-10-10: for Claude-built work its review text may come from Claude, Opus 5.5, but the verdict is always Jev's, a non-Claude family, so a non-Claude family always decides. It does not replace this step.) Run it in the exact shape below, because both halves of the old one-line command failed on the drive#524 hand-off (2026-10-06). The `litellm` provider signs every call with an `x-litellm-session-id` header that it reads from `FLEET_TASK_ID` (`~/.pi/agent/models.json`), and this hand-off job does not set it, so the bare call exits 1 with `Failed to resolve provider "litellm" header "x-litellm-session-id" from environment variable: FLEET_TASK_ID`; the `export` line sets it, with the real repo name and issue number in the value (quoted, for example `"orch-drive-524-review"`), and the subshell means no later litellm call in this shell inherits the review's session id. The trailing argument is required because `reviewer.md` opens with read-only bash steps, so with `--no-tools` the model answers with tool-call text and no verdict unless the argument says the diff is already attached and no tool call is allowed (the identical line in the worker's own packet, fleet-ops#8973).
    ```sh

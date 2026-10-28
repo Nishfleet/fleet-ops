@@ -1,8 +1,9 @@
-"""fleet-ops#10435: a coordinator PR (orch/issue-N) whose review blocked goes back to the orchestrator.
+"""fleet-ops#10435, #10573: a PR whose review blocked goes back to the orchestrator, on its own branch.
 
 Runs the real `run:` blocks (read out with yq) against a stub `gh` and a real git mirror:
-the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR
-instead of skipping) and its worktree step (start from the PR head)."""
+the orchestrate job's `issue` step (continue an open PR that closes the issue, on any branch,
+instead of skipping) and its worktree step (start from the PR head). The send-back rules
+themselves are review/pr_rot.py's, tested in tests/test_pr_rot.py."""
 import json
 import os
 import pathlib
@@ -66,58 +67,20 @@ SHA = "a" * 40
 OTHER = "b" * 40
 
 
-def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels="", cross=False):
-    body = "".join(f"{s}\n" for s in reviews)
-    pr = json.dumps({"headRefName": ref, "isCrossRepository": cross})
-    return _env(tmp_path, PR="5", SHA=SHA, GH_PR_JSON=pr, GH_REVIEWS=body, GH_LABELS=labels)
-
-
 SEND = ("agent.yml", "review", "Send a blocked orch PR back to the orchestrator")
 
 
-def test_a_blocked_orch_pr_puts_needs_orchestrator_back_on_its_issue(tmp_path):
-    env, log = _review(tmp_path)
-    r = _run(_block(*SEND), env)
-    assert r.returncode == 0, r.stderr
-    calls = log.read_text()
-    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator --remove-label orchestrator-tried" in calls
-    assert "issue comment 77" in calls and "pull/5" in calls
+def test_the_send_back_runs_the_rot_program_from_main_with_the_runner_login():
+    block = _block(*SEND)
+    assert "env -u GH_TOKEN -u GITHUB_TOKEN python3 -I" in block
+    assert "fleet-ops-deploy-clone/review/pr_rot.py\" --blocked" in block
 
 
-@pytest.mark.parametrize("case", ["not-orch", "fork", "no-block-for-this-head", "already-labelled"])
-def test_nothing_is_sent_back_when_it_does_not_apply(tmp_path, case):
-    kw = {"not-orch": {"ref": "claim/issue-77"}, "fork": {"cross": True}, "no-block-for-this-head": {"reviews": (OTHER,)}, "already-labelled": {"labels": "1"}}[case]
-    env, log = _review(tmp_path, **kw)
-    assert _run(_block(*SEND), env).returncode == 0
-    assert "issue edit" not in log.read_text()
-
-
-def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
-    env, log = _review(tmp_path, cross=True)
-    r = _run(_block(*SEND), env)
-    assert r.returncode == 0, r.stderr
-    assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
-
-
-def test_the_fourth_block_goes_to_nish_not_back_to_the_orchestrator(tmp_path):
-    env, log = _review(tmp_path, reviews=(OTHER, OTHER, OTHER, SHA))
-    assert _run(_block(*SEND), env).returncode == 0
-    calls = log.read_text()
-    assert "--add-label needs-nish-decision" in calls
-    assert "--add-label needs-orchestrator" not in calls
-
-
-def test_three_blocks_still_get_a_rework_round(tmp_path):
-    env, log = _review(tmp_path, reviews=(OTHER, OTHER, SHA))
-    assert _run(_block(*SEND), env).returncode == 0
-    assert "--add-label needs-orchestrator" in log.read_text()
-
-
-def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
-    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs),
+def _issue_env(tmp_path, exists, open_prs, pulls_fail=False, closing="", pr=None):
+    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs), GH_CLOSING=closing, GH_PR_JSON=json.dumps(pr or {}),
                     GH_LABELS="needs-orchestrator", RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
     gh = tmp_path / "bin/gh"
-    gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
+    gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*"closedBy"*) echo "$GH_CLOSING" ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
     if pulls_fail:
         env["GH_PULLS_FAIL"] = "1"
     return env, log
@@ -142,6 +105,20 @@ def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
     out = tmp_path / "out"
     assert not out.exists() or "go=true" not in out.read_text()
     assert "the PR list for orch/issue-77 failed; skip" in log.read_text() + r.stdout
+
+
+@pytest.mark.parametrize("pr,branch", [
+    ({"state": "OPEN", "isCrossRepository": False, "headRefName": "strong/issue-77"}, "strong/issue-77"),
+    ({"state": "OPEN", "isCrossRepository": True, "headRefName": "strong/issue-77"}, "orch/issue-77"),
+    ({"state": "CLOSED", "isCrossRepository": False, "headRefName": "claim/issue-77"}, "orch/issue-77"),
+])
+def test_issue_step_continues_the_head_branch_of_an_open_pr_that_closes_the_issue(tmp_path, pr, branch):
+    env, log = _issue_env(tmp_path, False, 0, closing="9", pr=pr)
+    r = _run(_block(*ISSUE_STEP), env)
+    assert r.returncode == 0, r.stderr
+    out = (tmp_path / "out").read_text()
+    assert "go=true" in out and f"branch={branch}\n" in out, r.stdout
+    assert "pr view 9 -R Nishfleet/fleet-ops --json state,isCrossRepository,headRefName" in log.read_text()
 
 
 def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
@@ -187,6 +164,19 @@ def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
         wt = home / "workspaces/agent-worktrees/orch-fleet-ops-77"
         log = subprocess.run(["git", "log", "--format=%s", "-1"], cwd=wt, capture_output=True, text=True, check=True).stdout.strip()
         assert log == "pushed fix attempt"
+
+
+def test_worktree_step_checks_out_a_strong_branch_under_its_own_name(tmp_path):
+    home, work, seed, env = _mirror(tmp_path)
+    _git("checkout", "-q", "-b", "strong/issue-77", "main", cwd=work)
+    _git("commit", "-q", "--allow-empty", "-m", "strong attempt", cwd=work)
+    _git("push", "-q", str(seed), "strong/issue-77", cwd=work)
+    r = _run(_block(*WORKTREE_STEP), {**env, "BRANCH": "strong/issue-77"})
+    assert r.returncode == 0, r.stderr
+    wt = home / "workspaces/agent-worktrees/orch-fleet-ops-77"
+    git = lambda *a: subprocess.run(["git", *a], cwd=wt, capture_output=True, text=True, check=True).stdout.strip()
+    assert git("rev-parse", "--abbrev-ref", "HEAD") == "strong/issue-77"
+    assert git("log", "--format=%s", "-1") == "strong attempt"
 
 
 def test_worktree_step_refuses_to_remove_a_tree_a_build_unit_is_building_in(tmp_path):
