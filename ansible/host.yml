@@ -712,7 +712,10 @@
         name: restic-r2-locked-copy.timer
         enabled: false
         state: stopped
-      failed_when: false
+      register: locked_copy_timer
+      failed_when:
+        - locked_copy_timer.failed | default(false)
+        - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
