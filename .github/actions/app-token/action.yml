@@ -26,6 +26,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - shell: bash
+      env:
+        PERMS: ${{ inputs.permission-contents }}${{ inputs.permission-issues }}${{ inputs.permission-pull-requests }}
+      run: '[ -n "$PERMS" ] || { echo "::error::app-token needs at least one permission-* input"; exit 1; }'
     - id: key
       shell: bash
       run: |

@@ -1144,9 +1144,9 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
-  # fleet-ops#10218: label unlabelled issues from people, 5 a run, with the App token (a GITHUB_TOKEN
-  # label starts no run). Only the owner's fleet-ops issues get needs-orchestrator. Other people and the
-  # owner's product-repo issues get needs-triage. Bot-filed issues are left to the admit job (#8304).
+  # fleet-ops#10218: label unlabelled issues from people needs-triage, 5 a run, with the App token (a
+  # GITHUB_TOKEN label starts no run). Every issue goes through the admit job's Jev gate, the owner's
+  # included. Bot-filed issues are left alone (#8304).
   label-unlabelled:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && (
@@ -1159,6 +1159,7 @@ jobs:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: App token
         id: app-token
+        # @main on purpose: runner group 3 and the guard-path review accept it; a SHA pin strands every job.
         uses: Nishfleet/fleet-ops/.github/actions/app-token@main
         with:
           permission-issues: write
@@ -1167,14 +1168,14 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for l in needs-orchestrator needs-triage; do gh api "repos/$REPO/labels/$l" >/dev/null 2>&1 || gh label create "$l" -R "$REPO" --color fbca04; done
-          list=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0) and (.user.login | endswith("[bot]") | not) and (.author_association | IN("OWNER","MEMBER","COLLABORATOR")) and (now - (.created_at | fromdateiso8601) > 600)) | "\(.number) \(.user.login)"')
-          while read -r n who; do
-            l=needs-triage
-            [ "$REPO" = Nishfleet/fleet-ops ] && [ "$who" = nish3451 ] && l=needs-orchestrator
-            gh issue edit "$n" -R "$REPO" --add-label "$l" >/dev/null
-            echo "label-unlabelled: #$n -> $l"
-          done < <(grep . <<<"$list" | head -n 5)
+          gh api "repos/$REPO/labels/needs-triage" >/dev/null 2>&1 || gh label create needs-triage -R "$REPO" --color fbca04
+          since=$(date -u -d '-30 days' +%F)
+          gh api -X GET search/issues -f q="repo:$REPO is:issue is:open no:label created:>=$since" -f sort=created -f order=asc -f per_page=100 \
+            --jq '.items[] | select((.user.login | endswith("[bot]") | not) and (.author_association | IN("OWNER","MEMBER","COLLABORATOR")) and (now - (.created_at | fromdateiso8601) > 600)) | .number' | head -n 5 |
+          while read -r n; do
+            gh issue edit "$n" -R "$REPO" --add-label needs-triage >/dev/null
+            echo "label-unlabelled: #$n -> needs-triage"
+          done
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
