@@ -8,15 +8,40 @@
 # report the count (fleet-ops#9385 point 2).
 #
 # The bar: no vendor in use may fall more than 2 points below the share it read
-# in the 48h after the bump. That reading was taken on this box at
+# in the 48h after the bump (opencodego excepted, below). That reading was taken on this box at
 # 2026-10-25T08:12Z, and the floors below are it minus 0.02:
 #
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.8723
-#   minimax      0.9459 -> 0.9259      alibaba     0.8484 -> 0.8284
-#   opencodego2  0.9441 -> 0.9241      straitly    0.8431 -> 0.8231
-#   opencodego   0.9421 -> 0.9221      cline       0.7766 -> 0.7566
-#   commandcode  0.9298 -> 0.9098      anthropic   0.4531 -> 0.4331
+#   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
+#   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
+#   opencodego   0.9421 -> 0.9021      anthropic   0.4531 -> 0.4331
+#   commandcode  0.9298 -> 0.9098
 #   zai          0.9256 -> 0.9056
+#
+# opencodego's floor is 4 points down, not 2 (fleet-ops#10630; the same alert
+# was filed as #10506 and #10588, each 0.0003 to 0.0005 under the old floor).
+# Its 48h read is a token-weighted mix of rows, and the 0.9421 baseline caught a
+# mix the box does not hold on a quiet day. Per row at 2026-10-28, from
+# litellm_input_*_metric_total: worker-capable 25.1M tokens at 0.956 (0.945 to
+# 0.956 on each of the last four days, 7M to 141M a day); assistant 2.7M at
+# 0.78; judge 0.9M at 0.73; worker-cheap 0.4M at 0.21. Worker-cheap read 0.956
+# on 19.4M tokens four days ago and carries 0.2M a day now, so its low share is
+# sparse calls finding a cold cache, not a changed prefix, and every row still
+# reports cached_tokens. The vendor 48h read has run 0.927 to 0.942 on days
+# with the same worker-capable share, so the 0.9421 baseline is the top of that
+# swing and 0.9021 is the baseline re-read from a fresh 48h (0.9216) minus 2
+# points. The cost: a 2 to 4 point drift on opencodego now passes; a failure on
+# the worker-capable row, which carries 86% of the tokens, still takes the
+# vendor under 0.9021 (a big row at 0.92 reads 0.8784, a test case below), and
+# the 1-hour paging rule covers a total one.
+#
+# alibaba (0.8484) is not judged (fleet-ops#10410). It carries only the one-shot
+# judge row alibaba-qwen38max-judge, about 100 requests and 3M input tokens a
+# day with a different prompt each time, so its share tracks how close together
+# the calls land, not whether the provider caches: 0.83 in the 2h to
+# 2026-10-25T11:46Z, 0.03 from 2026-10-26T11:00Z (14 requests in 6h), and the
+# row's own cache_proof shows the endpoint reports cached_tokens. A floor taken
+# from a burst fires on every quiet day.
 #
 # A vendor not listed is not judged. ollama, openrouter and xkiro carried no
 # traffic in that window; ollama's provider still cannot report a cached count
@@ -71,7 +96,7 @@ groups:
     interval: 5m
     rules:
       - uid: prompt-cache-share-guard
-        title: Prompt-cache share 2 points below its post-bump baseline
+        title: Prompt-cache share below its post-bump floor
         condition: C
         data:
           - refId: A
@@ -98,13 +123,12 @@ groups:
                   (
                     label_replace(vector(0.9396), "vendor", "stepfun", "", "")
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-                    or label_replace(vector(0.9221), "vendor", "opencodego", "", "")
+                    or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
                     or label_replace(vector(0.9259), "vendor", "minimax", "", "")
                     or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
                     or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
                     or label_replace(vector(0.8231), "vendor", "straitly", "", "")
-                    or label_replace(vector(0.8284), "vendor", "alibaba", "", "")
                     or label_replace(vector(0.7566), "vendor", "cline", "", "")
                     or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
                   )
@@ -165,7 +189,7 @@ groups:
         execErrState: Error
         for: 15m
         annotations:
-          summary: 'Prompt-cache share on {{ $labels.vendor }} is 2 points below its post-bump baseline'
-          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points. Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+          summary: 'Prompt-cache share on {{ $labels.vendor }} is under its post-bump floor'
+          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (4 for opencodego, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
         labels: {severity: warning, signal: prompt-cache-share-guard}
         isPaused: false

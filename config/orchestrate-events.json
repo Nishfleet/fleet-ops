@@ -739,6 +739,66 @@
       "want_model": "claude-sonnet-5-5",
       "want_turns": "40",
       "want_runner": "pi"
+    },
+    {
+      "id": "502-then-good",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "fail_runs": 1,
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "502-always-holds",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "fail_runs": 99,
+      "want_go": false
+    },
+    {
+      "id": "jobs-502-then-good",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "fail_jobs": 1,
+      "want_go": true,
+      "want_model": "claude-sonnet-5-5",
+      "want_turns": "40"
+    },
+    {
+      "id": "jobs-502-always-holds",
+      "daily_max": "2",
+      "model_var": null,
+      "labels": [],
+      "runs": [
+        {
+          "id": 101,
+          "session": "success"
+        }
+      ],
+      "fail_jobs": 99,
+      "want_go": false
     }
   ],
   "session_cases": [
