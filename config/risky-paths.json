@@ -13,7 +13,7 @@
       "(^|[/._-])meter(s|ing)?([/._-]|$)",
       "(^|/)(dodo|stripe|checkout|invoice|refund|subscription|wallet)[^/]*([/.]|$)",
       "^\\.github/workflows/[^/]*(deploy|release|publish|prod)[^/]*\\.ya?ml$",
-      "(^|/)wrangler[^/]*\\.(json|jsonc|toml)$",
+      "(^|/)[^/]*wrangler[^/]*\\.(json|jsonc|toml)$",
       "(^|[/._-])prod(uction)?[._-][^/]*\\.(json|jsonc|ya?ml|toml|env)$|(^|/)prod(uction)?/"
     ],
     "Nishfleet/0509": [
@@ -91,6 +91,7 @@
     {"id": "wrangler-env", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["wrangler.staging.json"]},
     {"id": "wrangler-toml", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["wrangler.toml"]},
     {"id": "wrangler-nested-toml", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["infra/cron/wrangler.production.toml"]},
+    {"id": "wrangler-named-worker-config", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["workers/support-inbox.wrangler.jsonc"]},
     {"id": "wrangler-readme-safe", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["docs/wrangler.md"]},
     {"id": "dev-vars", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": [".dev.vars"]},
     {"id": "dev-vars-example", "want": true, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["apps/web/.dev.vars.example"]},
