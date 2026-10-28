@@ -135,7 +135,7 @@ def _fake_box(tmp_path, gh, store):
     if shutil.which("jq") is None:
         pytest.skip("jq is not installed")
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(exist_ok=True)
     for name, body in (("gh", FAKE_GH), ("hermes", FAKE_HERMES)):
         (bindir / name).write_text(body)
         (bindir / name).chmod(0o755)
@@ -397,9 +397,11 @@ def _run_2b(tmp_path, store, code, feed, set_fails=False):
     env = {**env, "FAKE_CODE": code, "FAKE_FEED": feed, "TZ": "UTC"}
     if set_fails:
         env["FAKE_SET_FAIL"] = "1"
+    lo = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     r = subprocess.run(["bash", "-c", _site_command()], env=env, capture_output=True, text=True, timeout=60)
+    hi = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=1)
     saved = pathlib.Path(env["FAKE_SAVED"])
-    return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
+    return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None), (lo, hi)
 
 
 def _site_command():
@@ -411,12 +413,12 @@ def _site_command():
 _STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 
-def _checked(saved):
+def _checked(saved, window):
     parts = saved["site_checked"].split("|")
     assert len(parts) == 3 and _STAMP.fullmatch(parts[2]), f"site_checked is not code|edition|UTC stamp: {saved['site_checked']!r}"
     when = datetime.datetime.strptime(parts[2], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-    age = abs((datetime.datetime.now(datetime.timezone.utc) - when).total_seconds())
-    assert age < 120, f"site check timestamp is {age}s away from now"
+    lo, hi = window
+    assert lo <= when <= hi, f"site check timestamp {parts[2]} is outside the run window {lo.isoformat()}..{hi.isoformat()}"
     return parts[0], parts[1]
 
 
@@ -425,49 +427,55 @@ def _without_checked(saved):
 
 
 def test_site_check_stores_the_newest_edition_date(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"inish": "200|2026-09-29", "wait:a#1": "open|x"}), "200", _FEED)
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"inish": "200|2026-09-29", "wait:a#1": "open|x"}), "200", _FEED)
     assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVED"]
     assert _without_checked(saved) == {"wait:a#1": "open|x", "site": "200|2026-10-15"}
-    assert _checked(saved) == ("200", "2026-10-15")
+    assert _checked(saved, window) == ("200", "2026-10-15")
 
 
 def test_site_check_with_the_same_edition_is_unchanged(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
     assert lines == ["ROW site UNCHANGED 200|2026-10-15", "STORED-SAVED"]
     assert _without_checked(saved) == {"site": "200|2026-10-15"}
-    assert _checked(saved) == ("200", "2026-10-15")
+    assert _checked(saved, window) == ("200", "2026-10-15")
 
 
 def test_site_check_without_a_feed_date_still_stores_a_checked_row(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14"}), "200", "<html></html>")
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14"}), "200", "<html></html>")
     assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
     assert _without_checked(saved) == {"site": "200|2026-10-14"}
-    assert _checked(saved) == ("200", "none")
+    assert _checked(saved, window) == ("200", "none")
 
 
 def test_site_check_with_a_failing_page_still_stores_a_checked_row(tmp_path):
-    lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
+    lines, saved, window = _run_2b(tmp_path, "{}", "500", _FEED)
     assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
     assert saved.keys() == {"site_checked"}
-    assert _checked(saved) == ("500", "none")
+    assert _checked(saved, window) == ("500", "none")
 
 
 def test_site_check_stores_nothing_when_the_store_is_unreadable(tmp_path):
-    lines, saved = _run_2b(tmp_path, "not json", "200", _FEED)
-    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-UNREADABLE"]
+    lines, saved, _ = _run_2b(tmp_path, "not json", "200", _FEED)
+    assert lines == ["STORED-UNREADABLE"]
     assert saved is None
 
 
 def test_site_check_stores_nothing_when_the_store_read_returns_nothing(tmp_path):
-    lines, saved = _run_2b(tmp_path, "", "200", _FEED)
-    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-UNREADABLE"]
+    lines, saved, _ = _run_2b(tmp_path, "", "200", _FEED)
+    assert lines == ["STORED-UNREADABLE"]
     assert saved is None
 
 
 def test_site_check_reports_a_failed_save(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14", "wait:a#1": "open|x"}), "200", _FEED, set_fails=True)
+    lines, saved, _ = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14", "wait:a#1": "open|x"}), "200", _FEED, set_fails=True)
     assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVE-FAILED"]
     assert saved is None
+
+
+def test_site_check_prints_no_row_line_when_the_store_was_not_read(tmp_path):
+    for store in ("not json", ""):
+        lines, _, _ = _run_2b(tmp_path, store, "200", _FEED)
+        assert not any(x.startswith("ROW site") for x in lines), lines
 
 
 PRUNE = "Delete the retired jobs from Hermes' cron store"
