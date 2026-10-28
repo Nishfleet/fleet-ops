@@ -20,7 +20,8 @@ def run_restore(tmp_path, dump):
     script = restore_prelude() + '\nrestore sample ' + str(tmp_path / "dump.sql") + '\ncat "$w/report.txt"\n'
     env = {"RUNNER_TEMP": str(tmp_path / "run"), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"), "PATH": "/usr/bin:/bin"}
     (tmp_path / "run").mkdir()
-    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True).stdout
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=True)
+    return done.stdout + done.stderr
 
 
 def test_restore_counts_rows_per_table_and_removes_the_sqlite_file(tmp_path):
@@ -32,7 +33,14 @@ def test_restore_counts_rows_per_table_and_removes_the_sqlite_file(tmp_path):
 
 def test_broken_dump_is_reported_after_one_retry(tmp_path):
     out = run_restore(tmp_path, SAMPLE + "INSERT INTO missing VALUES (1);\n")
-    assert "- sample: restore failed twice" in out
+    assert "- sample: restore failed" in out
+
+
+def test_planted_dot_command_and_failed_import_leak_nothing(tmp_path):
+    out = run_restore(tmp_path, SAMPLE + ".shell touch " + str(tmp_path / "pwned") + "\nINSERT INTO missing VALUES ('secret-row');\n")
+    assert not (tmp_path / "pwned").exists()
+    assert "- sample: restore failed" in out
+    assert "secret-row" not in out
 
 
 def test_workflow_calls_no_cloudflare_write_and_obeys_the_drill_rules():

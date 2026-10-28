@@ -1196,7 +1196,6 @@ jobs:
           permission-issues: write
           skip-token-revoke: "false"
       - name: Ask Jev and apply the verdict
-        id: admit
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}

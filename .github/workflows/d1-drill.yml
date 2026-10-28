@@ -25,11 +25,11 @@ jobs:
           say() { echo "$*" | tee -a "$w/report.txt" >> "$GITHUB_STEP_SUMMARY"; }
           restore() {
             local db=$w/$1.db t out=""
-            sqlite3 -bail "$db" < "$2" || { rm -f "$db"; sqlite3 -bail "$db" < "$2"; } || { say "- $1: restore failed twice"; return; }
+            sqlite3 -safe -bail "$db" < "$2" 2>/dev/null || { rm -f "$db"; sqlite3 -safe -bail "$db" < "$2" 2>/dev/null; } || { say "- $1: restore failed"; return; }
             while IFS= read -r t; do
-              c=$(sqlite3 "$db" "select count(*) from \"$t\"") || { say "- $1: row count failed on $t"; return; }
+              c=$(sqlite3 -safe "$db" "select count(*) from \"$t\"" 2>/dev/null) || { say "- $1: row count failed on $t"; return; }
               out+="$t=$c "
-            done < <(sqlite3 "$db" "select name from sqlite_master where type='table' and name not glob 'sqlite_*' and name not glob '_cf_*'")
+            done < <(sqlite3 -safe "$db" "select name from sqlite_master where type='table' and name not glob 'sqlite_*' and name not glob '_cf_*'")
             say "- $1: ${out:+ok, restored once, rows: ${out% }}${out:-restored but has no tables}; live count not run"
           }
           read -r key mod <<< "$(aws s3api list-objects-v2 --endpoint-url "$R2_ENDPOINT" --bucket seofixkit-backups --prefix d1/ --query 'sort_by(Contents,&LastModified)[-1].[Key,LastModified]' --output text)"
