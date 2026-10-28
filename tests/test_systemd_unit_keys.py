@@ -918,20 +918,18 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
 
 
 NODE_INSTALL_LAYOUT = (
-    '"{{ nish_home }}/.local/bin/bin"',
-    '"{{ nish_home }}/.local/bin/include"',
-    '"{{ nish_home }}/.local/bin/lib"',
-    '"{{ nish_home }}/.local/bin/node"',
-    '"{{ nish_home }}/.local/bin/README.md"',
-    '"{{ nish_home }}/.local/bin/CHANGELOG.md"',
-    '"{{ nish_home }}/.local/bin/LICENSE"',
-    '"{{ nish_home }}/.local/bin/share"',
+    ".local/bin/bin",
+    ".local/bin/include",
+    ".local/bin/lib",
+    ".local/bin/node",
+    ".local/bin/README.md",
+    ".local/bin/CHANGELOG.md",
+    ".local/bin/LICENSE",
 )
 
-NODE_LIVE_PATHS = (
-    '"{{ nish_home }}/.local/bin/npm"',
-    '"{{ nish_home }}/.local/bin/npx"',
-)
+NODE_LAYOUT_SPELLINGS = ("{{{{ nish_home }}}}/{{path}}", "~nish/{{path}}", "~/{{path}}", "%h/{{path}}")
+NODE_SCANNED = ("ansible", "systemd", "rootfs", "config", "prompts", "template")
+NODE_LIVE_PATHS = (".local/bin/npm", ".local/bin/npx")
 
 
 def test_glue_sweep_node_layout_is_retired_and_nothing_in_the_repo_reads_it() -> None:
@@ -939,15 +937,20 @@ def test_glue_sweep_node_layout_is_retired_and_nothing_in_the_repo_reads_it() ->
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     for path in NODE_INSTALL_LAYOUT:
-        assert f"- {path}\n" in retired.group(1), f"host.yml deletes {path} from the host"
+        assert f'- "{{{{ nish_home }}}}/{path}"\n' in retired.group(1), (
+            f"host.yml deletes {path} from the host"
+        )
     for live in NODE_LIVE_PATHS:
-        assert f"- {live}\n" not in retired.group(1), f"the live {live} shim is not retired"
+        assert f'- "{{{{ nish_home }}}}/{live}"\n' not in retired.group(1), (
+            f"the live {live} launcher is not retired"
+        )
     assert '"{{ nish_home }}/.local/lib/node_modules"' not in retired.group(1)
     assert not (ROOT / "rootfs/home").exists(), "fleet-ops ships no copy of the layout"
-    needles = [path.strip('"').replace("{{ nish_home }}", "/home/nish") for path in NODE_INSTALL_LAYOUT]
-    scanned = ["ansible", "systemd", "rootfs", "config", "prompts", "template"]
+    needles = [s.format(path=path) for path in NODE_INSTALL_LAYOUT for s in NODE_LAYOUT_SPELLINGS]
+    for name in NODE_SCANNED:
+        assert (ROOT / name).is_dir(), f"{name} is gone, so the scan below reads nothing"
     readers = []
-    for name in scanned:
+    for name in NODE_SCANNED:
         for path in (ROOT / name).rglob("*"):
             if not path.is_file() or path == HOST_YML:
                 continue

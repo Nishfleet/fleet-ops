@@ -177,10 +177,10 @@
       # retired here or it keeps loading a plugin id no marketplace lists.
       - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
       # The 2025 Node install the 2026-10-28 glue sweep found (G11, #10548): a
-      # second unversioned tree beside the live ~/.local/lib/node_modules and
-      # the ~/.hermes/node/bin shims npm and npx point at. Nothing in the repo,
-      # rootfs/ or a unit reads it, and `node` there was a byte-identical copy
-      # of /usr/local/bin/node, so PATH still resolves once it is gone.
+      # second unversioned tree beside the live ~/.local/lib/node_modules. The
+      # npm and npx launchers are symlinks to ~/.hermes/node/bin, and the node
+      # binary at the top of this tree was a byte-identical copy of
+      # /usr/local/bin/node, so PATH still resolves once the tree is gone.
       - "{{ nish_home }}/.local/bin/bin"
       - "{{ nish_home }}/.local/bin/include"
       - "{{ nish_home }}/.local/bin/lib"
