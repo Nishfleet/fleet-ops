@@ -480,8 +480,7 @@ jobs:
     permissions:
       issues: write
       pull-requests: read
-      # actions: liveness is `gh run view` (fleet-ops#8777), write for the re-fire dispatch.
-      # checks and statuses: the sweep reads the head's statusCheckRollup.
+      # actions: `gh run view` liveness (fleet-ops#8777), write for re-fire. checks, statuses: statusCheckRollup.
       actions: write
       checks: read
       statuses: read
@@ -700,9 +699,7 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart themselves (fleet-ops#10420, #10475): idle 6 h, then a tried issue gets
-      # needs-orchestrator back on the runner login and a labelled one is dispatched (no label write).
-      # queued = live runs named by run-name at the top; 3 ended or re-fired hand-offs, then needs-nish-decision.
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
