@@ -317,7 +317,8 @@
       ansible.builtin.command: git -C {{ rootfs }}/.. diff --name-only {{ applied_sha }} {{ head_sha.stdout }} -- rootfs/etc
       register: deploy_changes
       changed_when: false
-      failed_when: false  # old commit gone (shallow clone, history rewrite): skip the drift check, never wedge the deploy
+      # old commit gone (shallow clone, history rewrite): skip the drift check rather than wedge the deploy; any other git error fails
+      failed_when: deploy_changes.rc != 0 and deploy_changes.stderr is not search('bad object|bad revision|unknown revision')
       check_mode: false  # read-only; runs under --check too
       when: applied_sha is match('^[0-9a-f]{40}$')
 

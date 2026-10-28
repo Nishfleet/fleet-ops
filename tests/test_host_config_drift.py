@@ -4,12 +4,13 @@ import shutil
 import subprocess
 
 import pytest
+import yaml
 
-if not shutil.which("yq") or not shutil.which("ansible-playbook"):
-    pytest.skip("yq or ansible missing", allow_module_level=True)
+if not shutil.which("ansible-playbook"):
+    pytest.skip("ansible missing", allow_module_level=True)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PLAY = json.loads(subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout)[0]
+PLAY = yaml.safe_load((ROOT / "ansible/host.yml").read_text())[0]
 TASKS = {t["name"]: t for t in PLAY["tasks"]}
 NAMES = [
     "List the files rootfs/ ships, with checksums",
@@ -108,3 +109,8 @@ def test_missing_old_commit_skips_the_check(fixture):
     (fixture / "box" / UNIT).write_text("[Service]\nUMask=0022\n")
     result = _run(fixture)
     assert result.returncode == 0, result.stdout
+
+
+def test_unexpected_git_failure_fails_the_run(fixture):
+    (fixture / "repo/.git/HEAD").write_text("ref: refs/heads/nope\n")
+    assert _run(fixture).returncode != 0
