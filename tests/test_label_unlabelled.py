@@ -17,7 +17,7 @@ done
 case $1 in
   api) [ -e "$FAKE_DIR/api-fails" ] && exit 1; jq -r "$q" "$FAKE_DIR/issues.json" ;;
   label) ;;
-  issue) echo "$*" >> "$FAKE_DIR/calls" ;;
+  issue) [ -e "$FAKE_DIR/edit-fails" ] && exit 1; echo "$*" >> "$FAKE_DIR/calls" ;;
 esac
 """
 
@@ -41,9 +41,17 @@ ISSUES = [
 ]
 
 
-def run(tmp_path, repo, issues=ISSUES, api_fails=False):
-    step = subprocess.run(["yq", ".jobs.label-unlabelled.steps[0].run", WF],
+def job(expr):
+    return subprocess.run(["yq", "-o=json", f".jobs.label-unlabelled{expr}", WF],
                           check=True, capture_output=True, text=True).stdout
+
+
+def sweep_step():
+    return json.loads(job('.steps[] | select(.run | contains("gh issue edit"))'))
+
+
+def run(tmp_path, repo, issues=ISSUES, api_fails=False, edit_fails=False):
+    step = sweep_step()["run"]
     (tmp_path / "bin").mkdir()
     gh = tmp_path / "bin/gh"
     gh.write_text(FAKE_GH)
@@ -52,6 +60,8 @@ def run(tmp_path, repo, issues=ISSUES, api_fails=False):
     (tmp_path / "calls").touch()
     if api_fails:
         (tmp_path / "api-fails").touch()
+    if edit_fails:
+        (tmp_path / "edit-fails").touch()
     env = {**os.environ, "PATH": f"{tmp_path/'bin'}:{os.environ['PATH']}",
            "FAKE_DIR": str(tmp_path), "REPO": repo, "GH_TOKEN": "x"}
     done = subprocess.run(["bash", "-c", step], env=env, capture_output=True, text=True)
@@ -74,10 +84,10 @@ def test_product_repo_owner_issue_gets_needs_triage_bot_issue_needs_orchestrator
     assert edits(calls) == {"1": "needs-triage", "4": "needs-orchestrator"}
 
 
-def test_per_run_cap_is_20(tmp_path):
+def test_per_run_cap_is_5(tmp_path):
     done, calls = run(tmp_path, "Nishfleet/fleet-ops", [issue(n) for n in range(1, 31)])
     assert done.returncode == 0
-    assert len(edits(calls)) == 20
+    assert len(edits(calls)) == 5
 
 
 def test_empty_list_edits_nothing_and_stays_green(tmp_path):
@@ -90,10 +100,26 @@ def test_failed_read_fails_loud(tmp_path):
     assert done.returncode != 0 and calls == []
 
 
+def test_failed_edit_fails_loud(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/fleet-ops", edit_fails=True)
+    assert done.returncode != 0 and calls == []
+
+
+def test_edit_credential_is_the_app_token_on_the_app_runner():
+    assert sweep_step()["env"]["GH_TOKEN"] == "${{ steps.app-token.outputs.token }}"
+    assert "GH_TOKEN" not in sweep_step()["run"]
+    assert json.loads(job(".runs-on")) == ["self-hosted", "agent"]
+    assert json.loads(job('.steps[] | select(.id == "app-token") | .with.permission-issues')) == "write"
+
+
+def test_label_create_failure_is_not_hidden():
+    assert "|| true" not in sweep_step()["run"]
+
+
 def test_triggers_are_sweep_only_and_opened_stays_out():
-    cond = subprocess.run(["yq", ".jobs.label-unlabelled.if", WF], check=True,
-                          capture_output=True, text=True).stdout
+    cond = json.loads(job(".if"))
     assert "schedule" in cond and "workflow_dispatch" in cond
+    assert "github.event_name" in cond and "github.event.action" not in cond
     on = subprocess.run(["yq", "-o=json", ".on.issues.types", WF], check=True,
                         capture_output=True, text=True).stdout
     assert "opened" not in json.loads(on)

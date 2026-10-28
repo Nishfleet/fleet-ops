@@ -1145,26 +1145,47 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ matrix.ref }}
-  # fleet-ops#10218: label open unlabelled trusted issues, 20 a run, as the runner
-  # login (a GITHUB_TOKEN label starts no run; admit trusts only that login).
-  # Owner issues in a product repo get needs-triage, the rest needs-orchestrator.
+  # fleet-ops#10218: label unlabelled trusted issues, 5 a run, with the App token (a GITHUB_TOKEN
+  # label starts no run). Owner issues in a product repo get needs-triage, the rest needs-orchestrator.
   label-unlabelled:
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
-    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' && (
+        github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
+    runs-on: [self-hosted, agent]
     timeout-minutes: 10
-    permissions: {issues: write}
+    permissions: {}
     steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="$HOME/.config/fleet-worker/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
       - env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          for l in needs-orchestrator needs-triage; do gh label create "$l" -R "$REPO" --color fbca04 >/dev/null 2>&1 || true; done
+          for l in needs-orchestrator needs-triage; do gh label create "$l" -R "$REPO" --color fbca04 --force; done
           list=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select((has("pull_request") | not) and (.labels | length == 0) and ((.author_association | IN("OWNER","MEMBER","COLLABORATOR")) or .user.login == "nishfleet-worker[bot]") and (now - (.created_at | fromdateiso8601) > 600)) | "\(.number) \(.user.login)"')
           while read -r n who; do
-            l=needs-orchestrator; [ "$REPO" != Nishfleet/fleet-ops ] && [ "$who" = nish3451 ] && l=needs-triage
-            env -u GH_TOKEN gh issue edit "$n" -R "$REPO" --add-label "$l" >/dev/null && echo "label-unlabelled: #$n -> $l"
-          done < <(grep . <<<"$list" | head -n 20)
+            l=needs-orchestrator
+            [ "$REPO" != Nishfleet/fleet-ops ] && [ "$who" = nish3451 ] && l=needs-triage
+            gh issue edit "$n" -R "$REPO" --add-label "$l" >/dev/null
+            echo "label-unlabelled: #$n -> $l"
+          done < <(grep . <<<"$list" | head -n 5)
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -1184,10 +1205,7 @@ jobs:
     permissions: {}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      # The same two steps as agent.yml's (App key read and App token), unchanged
-      # in behaviour: the key stays on the runner, is masked, and goes only to
-      # create-github-app-token. The token it mints is scoped to the calling repo
-      # and holds issues: write alone; no new secret and no new key location.
+      # agent.yml's two steps: the key stays on the runner and is masked; the token is issues: write.
       - name: Read App private key
         id: app-key
         run: |
@@ -1196,12 +1214,7 @@ jobs:
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"
           done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
+          { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
       # No owner and no repositories: scoped to the calling repo, as in agent.yml.
       - name: App token
         id: app-token
@@ -1223,10 +1236,9 @@ jobs:
           # no cap. Counted from today's triage-admit comments, so a re-run or a
           # retried sweep cannot over-admit.
           DAILY_MAX: ${{ vars.ADMIT_DAILY_MAX }}
-          # Who may label or file an issue for admission: the human owner login
-          # alone. No bot login (nishfleet-worker[bot], github-actions[bot]) is
-          # trusted, so a fleet-filed or automation-labelled issue can never
-          # reach the worker queue by itself; it keeps needs-triage for a person.
+          # Who may label or file an issue for admission: the human owner login alone.
+          # No bot login is trusted, so a fleet-filed or automation-labelled issue never
+          # reaches the worker queue by itself; it keeps needs-triage for a person.
           # fleet-ops#8313: only owner-filed issues are admitted.
           TRUSTED_LOGINS: |
             nish3451
@@ -1541,16 +1553,9 @@ jobs:
           # credential (~/.gitconfig -> gh auth git-credential), and a repo it
           # cannot read fails this step loudly instead of claiming an issue it
           # cannot build.
-          # The refspec maps into refs/remotes/origin/*, NOT into refs/heads/*:
-          # with prune, a heads->heads refspec deletes every local branch that is
-          # not on origin, which is exactly the branch holding a hand-off that
-          # died before its push (proven live: --prune removed
-          # refs/heads/orch/issue-localonly). Pruning only refs/remotes is safe.
-          # It also gives the worktree a real origin/main, which the prompt's
-          # "git log --oneline origin/main..HEAD" reuse step needs.
-          fetch_mirror() {
-            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
-          }
+          # The refspec maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a
+          # heads->heads refspec deletes the local branch holding a hand-off that died
+          # before its push (proven live). It also gives the worktree a real origin/main.
           # The age-out that deleted HEAD also removed old objects, so the same
           # mirror can fail the fetch with "unresolved deltas" (fleet-ops#9526).
           # The mirror is a cache of origin: when the fetch fails AND the object
@@ -1674,18 +1679,12 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          # Worktree removal first and unconditional: a session cut at the job
-          # wall can leave the worktree, and a leftover checkout costs the next
-          # hand-off a clone. remove --force is how a dirty tree goes, and this
-          # is never a pgrep-kill of anything (a wrong pattern there can take a
-          # worker's process with it, fleet-ops#7743).
-          # Skip the removal while a running user unit has this worktree as its
-          # WorkingDirectory: the session hands its build to a detached unit
-          # (orch-<repo>-<N>-build) that outlives it, and removing the tree
-          # under that unit killed orch-drive-642-build on 2026-10-07
-          # (status=200/CHDIR, uncommitted edits lost, fleet-ops#9377). If the
-          # unit list cannot be read, keep the tree too: systemd-tmpfiles ages
-          # it out after 3 days and the next hand-off rebuilds it anyway.
+          # Worktree removal first and unconditional: a leftover checkout costs the next
+          # hand-off a clone. Never a pgrep-kill (a wrong pattern can take a worker's
+          # process with it, fleet-ops#7743). Skip it while a running user unit has this
+          # worktree as WorkingDirectory: removing it under orch-drive-642-build lost
+          # uncommitted edits (fleet-ops#9377). If the unit list cannot be read, keep the
+          # tree: systemd-tmpfiles ages it out after 3 days.
           # No user runtime directory (a runner with no user systemd instance)
           # means no user manager and so no running unit that could use the
           # tree: skip the check and remove as before.
