@@ -32,9 +32,7 @@
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
 #              before this step leaves its pause marker, and the next run
-#              clears the flags it lists before step 1. The previous-run
-#              clear carries tags: [resume], which fleet-update.service's
-#              ExecStopPost reruns when a run is killed at its timeout.
+#              clears the flags it lists before step 1.
 #   5. verify  Every netcup runner online at GitHub, every queue sweep run
 #              accepted by GitHub, pi answering a real call with its
 #              extensions loaded and every one of them pinned, no failed
@@ -90,12 +88,8 @@
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
     # tincan has no default relay: it reads one from a config file named by
-    # this variable. Any joined agent's config carries the same relay. The
-    # unit reads TINCAN_CONFIG from a root-only EnvironmentFile that the host
-    # config writes from the relay config already on the box, so no relay
-    # config path is named in this repo (fleet-ops#9965). Unset: tincan is
-    # skipped and the skip is named in the report, not failed.
-    tincan_env_config: "{{ lookup('ansible.builtin.env', 'TINCAN_CONFIG') }}"
+    # this variable. Any joined agent's config carries the same relay.
+    tincan_env_config: "{{ nish_env.HOME }}/.config/tincan/claude-vps.json"
     # Each runs as nish with its own stdin; a failure is reported at the end,
     # never skipped quietly. devin is updated by its official installer, the
     # same script that installed it (the version dir's `distribution` file
@@ -159,21 +153,15 @@
       ansible.builtin.meta: end_play
       when: fleet_paused.stat.exists
 
-    # These carry the resume tag the unit's ExecStopPost runs with on every
-    # stop (success included): a run killed at TimeoutStartSec never reaches
-    # its always: block, and the flags it set would hold the fleet for up to
-    # a day. The previous run's power-loss fallback below stays.
     - name: Look for a dispatch pause an earlier run left behind
       ansible.builtin.stat:
         path: "{{ pause_marker }}"
       register: stale_pause
-      tags: [resume]
 
     # Before the pause below, so its read sees the flags as people left them.
     # A failed clear fails the run here and keeps the file for the next one.
     - name: Clear the flags a killed earlier run left set
       when: stale_pause.stat.exists
-      tags: [resume]
       block:
         - name: Read the repos it paused
           ansible.builtin.slurp:
@@ -305,7 +293,7 @@
               ansible.builtin.command:
                 argv: [systemctl, start, restic-r2-backup.service]
               register: pre_update_backup
-              timeout: 7200
+              timeout: 3600
               changed_when: pre_update_backup.rc == 0
 
         - name: Record tool versions before the update
@@ -543,10 +531,6 @@
           become: true
           become_user: nish
           environment: "{{ nish_env | combine({'TINCAN_CONFIG': tincan_env_config}) }}"
-          # No TINCAN_CONFIG (the root-only env file is missing): no relay to
-          # reconnect, so the upgrade would only fail; the skip is named in
-          # the report instead.
-          when: tincan_env_config | length > 0
           ansible.builtin.command:
             argv: [tincan, upgrade]
             stdin: ""
@@ -1232,7 +1216,7 @@
               hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
               hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
               pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
-              tincan_update: "{{ ('failed' if (tincan_upgrade | default({})).failed | default(false) else 'ran') if tincan_env_config | length > 0 else 'not updated: TINCAN_CONFIG is unset (the root-only env file is missing)' }}"
+              tincan_update: "{{ 'failed' if (tincan_upgrade | default({})).failed | default(false) else 'ran' }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"

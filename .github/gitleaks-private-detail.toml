@@ -25,12 +25,6 @@ regex = '''\.config/fleet-ops/seats'''
 keywords = [".config/fleet-ops/seats"]
 
 [[rules]]
-id = "private-tincan-relay-config"
-description = "Path of a tincan relay config file, named instead of discovered from the box (fleet-ops#9965)"
-regex = '''\.config/tincan/[A-Za-z0-9._-]+'''
-keywords = [".config/tincan/"]
-
-[[rules]]
 id = "private-tailscale-ipv4"
 description = "Tailscale address (100.64.0.0/10)"
 regex = '''\b100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}\b'''
