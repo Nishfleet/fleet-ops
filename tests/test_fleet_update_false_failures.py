@@ -27,6 +27,12 @@ def matches(cmdline):
     return subprocess.run(["grep", "-qE", PATTERN], input=cmdline + "\n", text=True).returncode == 0
 
 
+def test_both_npm_leftovers_are_found_for_removal():
+    find = INNER["Find stale npm staging dirs a stopped self-update left behind"]["ansible.builtin.find"]
+    assert find["patterns"] == [".*-stage-*", ".*-old-*"]
+    assert find["hidden"] is True
+
+
 def test_a_long_lived_npm_exec_is_not_install_activity():
     assert not matches("npm exec @modelcontextprotocol/server-filesystem /srv/notes")
 
