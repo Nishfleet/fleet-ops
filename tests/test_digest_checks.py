@@ -456,13 +456,13 @@ def test_site_check_with_a_failing_page_still_stores_a_checked_row(tmp_path):
 
 def test_site_check_stores_nothing_when_the_store_is_unreadable(tmp_path):
     lines, saved, _ = _run_2b(tmp_path, "not json", "200", _FEED)
-    assert lines == ["STORED-UNREADABLE"]
+    assert lines == ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]
     assert saved is None
 
 
 def test_site_check_stores_nothing_when_the_store_read_returns_nothing(tmp_path):
     lines, saved, _ = _run_2b(tmp_path, "", "200", _FEED)
-    assert lines == ["STORED-UNREADABLE"]
+    assert lines == ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]
     assert saved is None
 
 
@@ -472,10 +472,31 @@ def test_site_check_reports_a_failed_save(tmp_path):
     assert saved is None
 
 
-def test_site_check_prints_no_row_line_when_the_store_was_not_read(tmp_path):
-    for store in ("not json", ""):
-        lines, _, _ = _run_2b(tmp_path, store, "200", _FEED)
-        assert not any(x.startswith("ROW site") for x in lines), lines
+def test_site_check_reports_the_page_result_even_when_the_store_was_not_read(tmp_path):
+    for code, feed, rows in (
+        ("200", _FEED, ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]),
+        ("500", _FEED, ["ROW site UNKNOWN", "STORED-UNREADABLE"]),
+        ("200", "<html></html>", ["ROW site UNKNOWN", "STORED-UNREADABLE"]),
+    ):
+        lines, saved, _ = _run_2b(tmp_path, "not json", code, feed)
+        assert lines == rows, (code, lines)
+        assert saved is None
+
+
+def test_the_evening_sequence_carries_the_checked_row_from_2a_into_2b(tmp_path):
+    gh = {"repos": [], "issues": {}, "runs": {}}
+    two_a, stored_after_2a = _run_2a(EVENING, tmp_path, gh, "{}")
+    assert two_a == ["UNCHANGED_TOTAL 0", "STORED-SAVED"], two_a
+    assert stored_after_2a == {}
+    (tmp_path / "bin/curl").write_text(FAKE_CURL)
+    (tmp_path / "bin/curl").chmod(0o755)
+    env = {**_fake_box(tmp_path, gh, json.dumps(stored_after_2a)), "FAKE_CODE": "200", "FAKE_FEED": _FEED, "TZ": "UTC"}
+    lo = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    out = subprocess.run(["bash", "-c", _site_command()], env=env, capture_output=True, text=True, timeout=60)
+    hi = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=1)
+    saved = json.loads(pathlib.Path(env["FAKE_SAVED"]).read_text())
+    assert out.stdout.splitlines() == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVED"]
+    assert _checked(saved, (lo, hi)) == ("200", "2026-10-15")
 
 
 PRUNE = "Delete the retired jobs from Hermes' cron store"
