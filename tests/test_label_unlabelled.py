@@ -1,15 +1,13 @@
 """label-unlabelled: the job in agent-dispatch.yml (fleet-ops#10218).
 
-Runs the job's real `run:` block, read out with yq, against a fake gh on
-PATH. The fake gh executes the `--jq` string it is passed, so the job's own
-filter decides what gets labelled, never a copy. Covers: only open,
-unlabelled issues from a trusted author get the owner label (needs-
-orchestrator in fleet-ops, needs-triage in a product repo); the fleet's own
-[bot] automations file as CONTRIBUTOR and count, while strangers
-(author_association NONE), human contributors, labelled issues, PRs and
-issues inside the 10-minute grace stay unlabelled; and the job triggers on
-the sweep only - `opened` stays out of on.issues.types, so no issue event
-can fan a full sweep out per opened issue.
+Runs the job's real `run:` block, read out with yq, against a fake gh on PATH.
+The fake gh executes the `--jq` string it is passed, so the job's own filter
+decides what gets labelled. Covers: trust is the stock author association plus
+the worker bot login (other bots, strangers, labelled issues, PRs and issues
+inside the 10-minute grace stay unlabelled); product-repo owner issues get
+needs-triage (admit's input), the rest needs-orchestrator; 20 edits a run; a
+failed read fails the job; and the sweep is the only trigger (`opened` stays
+out of on.issues.types, so no issue event fans a sweep out).
 """
 import json
 import os
@@ -28,8 +26,8 @@ for ((i = 0; i < $#; i++)); do
   [ "${args[$i]}" = --jq ] && q=${args[$((i + 1))]}
 done
 case $1 in
-  api) jq -r "$q" "$FAKE_DIR/issues.json" ;;
-  label) echo "label $*" >> "$FAKE_DIR/calls" ;;
+  api) [ -e "$FAKE_DIR/api-fails" ] && exit 1; jq -r "$q" "$FAKE_DIR/issues.json" ;;
+  label) ;;
   issue) echo "$*" >> "$FAKE_DIR/calls" ;;
 esac
 """
@@ -37,45 +35,76 @@ esac
 OLD = "2026-01-01T00:00:00Z"
 YOUNG = (datetime.now(timezone.utc) - timedelta(seconds=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def issue(n, assoc="MEMBER", login="nish3451", created=OLD, labels=(), **extra):
+    return {"number": n, "author_association": assoc, "user": {"login": login}, "created_at": created,
+            "labels": [{"name": x} for x in labels], **extra}
+
+
 ISSUES = [
-    {"number": 1, "author_association": "MEMBER", "user": {"login": "nish3451"}, "created_at": OLD, "labels": []},
-    {"number": 2, "author_association": "MEMBER", "user": {"login": "nish3451"}, "created_at": OLD, "labels": [{"name": "agent-ready"}]},
-    {"number": 3, "author_association": "MEMBER", "user": {"login": "nish3451"}, "created_at": OLD, "labels": [], "pull_request": {}},
-    {"number": 4, "author_association": "CONTRIBUTOR", "user": {"login": "nishfleet-worker[bot]"}, "created_at": OLD, "labels": []},
-    {"number": 5, "author_association": "NONE", "user": {"login": "driveby"}, "created_at": OLD, "labels": []},
-    {"number": 6, "author_association": "CONTRIBUTOR", "user": {"login": "human-outsider"}, "created_at": OLD, "labels": []},
-    {"number": 7, "author_association": "MEMBER", "user": {"login": "nish3451"}, "created_at": YOUNG, "labels": []},
+    issue(1),
+    issue(2, labels=["agent-ready"]),
+    issue(3, pull_request={}),
+    issue(4, "CONTRIBUTOR", "nishfleet-worker[bot]"),
+    issue(5, "NONE", "driveby"),
+    issue(6, "CONTRIBUTOR", "dependabot[bot]"),
+    issue(7, created=YOUNG),
 ]
 
 
-def run(tmp_path, repo):
+def run(tmp_path, repo, issues=ISSUES, api_fails=False):
     step = subprocess.run(["yq", ".jobs.label-unlabelled.steps[0].run", WF],
                           check=True, capture_output=True, text=True).stdout
     (tmp_path / "bin").mkdir()
     gh = tmp_path / "bin/gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
-    (tmp_path / "issues.json").write_text(json.dumps(ISSUES))
+    (tmp_path / "issues.json").write_text(json.dumps(issues))
+    (tmp_path / "calls").touch()
+    if api_fails:
+        (tmp_path / "api-fails").touch()
     env = {**os.environ, "PATH": f"{tmp_path/'bin'}:{os.environ['PATH']}",
            "FAKE_DIR": str(tmp_path), "REPO": repo}
-    subprocess.run(["bash", "-c", step], check=True, env=env, capture_output=True)
-    return (tmp_path / "calls").read_text().splitlines()
+    done = subprocess.run(["bash", "-c", step], env=env, capture_output=True, text=True)
+    return done, (tmp_path / "calls").read_text().splitlines()
 
 
-@pytest.mark.parametrize("repo,label", [("Nishfleet/fleet-ops", "needs-orchestrator"),
-                                        ("Nishfleet/0509", "needs-triage")])
-def test_only_trusted_unlabelled_issues_get_owner_label(tmp_path, repo, label):
-    calls = run(tmp_path, repo)
-    edits = [c for c in calls if c.startswith("issue edit")]
-    assert [c.split()[2] for c in edits] == ["1", "4"]
-    assert all(f"--add-label {label}" in c for c in edits)
+def edits(calls):
+    return {c.split()[2]: c.split()[-1] for c in calls if c.startswith("issue edit")}
+
+
+def test_fleet_ops_labels_trusted_issues_needs_orchestrator(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/fleet-ops")
+    assert done.returncode == 0
+    assert edits(calls) == {"1": "needs-orchestrator", "4": "needs-orchestrator"}
+
+
+def test_product_repo_owner_issue_gets_needs_triage_bot_issue_needs_orchestrator(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/0509")
+    assert done.returncode == 0
+    assert edits(calls) == {"1": "needs-triage", "4": "needs-orchestrator"}
+
+
+def test_per_run_cap_is_20(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/fleet-ops", [issue(n) for n in range(1, 31)])
+    assert done.returncode == 0
+    assert len(edits(calls)) == 20
+
+
+def test_empty_list_edits_nothing_and_stays_green(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/fleet-ops", [])
+    assert done.returncode == 0 and calls == []
+
+
+def test_failed_read_fails_loud(tmp_path):
+    done, calls = run(tmp_path, "Nishfleet/fleet-ops", api_fails=True)
+    assert done.returncode != 0 and calls == []
 
 
 def test_triggers_are_sweep_only_and_opened_stays_out():
     cond = subprocess.run(["yq", ".jobs.label-unlabelled.if", WF], check=True,
                           capture_output=True, text=True).stdout
     assert "schedule" in cond and "workflow_dispatch" in cond
-    assert "opened" not in cond
     on = subprocess.run(["yq", "-o=json", ".on.issues.types", WF], check=True,
                         capture_output=True, text=True).stdout
     assert "opened" not in json.loads(on)
