@@ -663,6 +663,11 @@ one standing session. Each request from the phone or a claude.ai/code project
 relay then gets its own session with a fresh context. The one standing session
 it replaces was measured at $52.0 over 21.0 h with a 69k average context; the
 number after the restart is the real test.
+The staged file as of 2026-10-28 (#9438) adds `--capacity 1`, so one session
+runs at a time: in `same-dir` mode every session edits `~/workspaces`, and bursts
+of up to 10 sessions could overwrite each other. A second request is refused or
+queued. Drop the flag to go back to the default of 32. `~/.claude/projects` needs
+no fleet pruning: Claude Code deletes transcripts after 30 days (`cleanupPeriodDays`).
 
 - Apply a staged change to it. Nish does this, because it cuts the phone link
   for about a minute:
