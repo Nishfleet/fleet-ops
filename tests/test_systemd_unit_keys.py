@@ -1,6 +1,7 @@
 """A unit file with an unknown directive must fail CI: systemd skips it with a warning and exit 0 (fleet-ops#9967)."""
 
 import fnmatch
+import functools
 import json
 import os
 import re
@@ -932,6 +933,151 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
     assert not (ROOT / "rootfs/etc/systemd/system/tiny-studio-smb-bridge.service").exists(), (
         "fleet-ops ships no copy of the SMB bridge"
     )
+
+
+GLUE_SWEEP_USER_CONFIG_DEBRIS = (
+    "{{ nish_home }}/.config/systemd/user/nish-root.service",
+    "{{ nish_home }}/.config/systemd/user/nish-root.exec",
+    "{{ nish_home }}/.config/systemd/user/nish-root.service.d",
+    "{{ nish_home }}/.config/systemd/user/nnp-probe.service",
+    "{{ nish_home }}/.config/systemd/user/nnp-probe.service.d",
+    "/tmp/nish-root",
+    "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service.bak-20261024",
+    "{{ nish_home }}/.pi/agent/settings.json.bak-20261004-ysk",
+    "{{ nish_home }}/.pi/agent/settings.json.bak-20261005",
+    "{{ nish_home }}/.pi/agent/mcp-adapter.json.bak-executor",
+    "{{ nish_home }}/.hermes/config.yaml.bak-8766-20260925T200306Z",
+    "{{ nish_home }}/.hermes/config.yaml.bak-autoskills-20261009",
+    "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20260929",
+    "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20261008",
+    "{{ nish_home }}/.hermes/sandbox.conf.bak-8766",
+    "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23",
+)
+
+ADAPTER_CONFIG_JAILS = (
+    ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/20-lockdown.conf",
+    ROOT / "rootfs/etc/systemd/system/actions.runner.nish3451-nish-vault.netcup-vault-1.service.d/20-lockdown.conf",
+    ROOT / "rootfs/etc/systemd/system/dockerd-eval.service",
+)
+
+
+def glue_sweep_needle(path: str) -> str:
+    basename = path.rsplit("/", 1)[-1]
+    return basename if "." in basename else path
+
+
+SANDBOX_HIDING_DIRECTIVES = ("InaccessiblePaths=", "TemporaryFileSystem=")
+
+
+def glue_sweep_directives(text: str) -> list[str]:
+    return text.replace("\\\n", " ").splitlines()
+
+
+def glue_sweep_tokens(line: str) -> list[str]:
+    return [
+        part.strip("\"'`,;()[]").lstrip("-+") for part in re.split(r"[\s=]+", line) if part
+    ]
+
+
+def glue_sweep_matching_lines(text: str, name: str) -> list[str]:
+    return [
+        line
+        for line in glue_sweep_directives(text)
+        if any(
+            part == name or part.endswith(f"/{name}") or part.startswith(f"{name}/")
+            for part in glue_sweep_tokens(line)
+        )
+    ]
+
+
+def glue_sweep_sandbox_paths(text: str) -> list[str]:
+    return [
+        token
+        for line in glue_sweep_directives(text)
+        if line.startswith(SANDBOX_HIDING_DIRECTIVES)
+        for token in line.split("=", 1)[1].split()
+    ]
+
+
+def glue_sweep_hides(paths: list[str], suffix: str) -> bool:
+    ancestors = [suffix[: index + 1].rstrip("/") for index, char in enumerate(suffix) if char == "/"]
+    ancestors = [ancestor for ancestor in ancestors if ancestor] + [suffix]
+    cleaned = [token.lstrip("-+").rstrip("/") for token in paths]
+    return any(token.endswith(ancestor) for token in cleaned for ancestor in ancestors)
+
+
+@functools.cache
+def shipped_repo_texts() -> tuple[tuple[str, str], ...]:
+    skip_dirs = {
+        ".git",
+        ".venv",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+    }
+    skip_files = {"ansible/host.yml", str(Path(__file__).resolve().relative_to(ROOT))}
+    found = []
+    for parent, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
+        for name in filenames:
+            path = Path(parent) / name
+            relative = str(path.relative_to(ROOT))
+            if relative in skip_files or path.is_symlink() or not path.is_file():
+                continue
+            found.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+    assert found, "the scan found no files, so it proves nothing"
+    return tuple(found)
+
+
+@functools.cache
+def retired_entries() -> list[str]:
+    block = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", HOST_YML.read_text())
+    assert block, "host.yml retired nothing, so the list moved"
+    entries = [line.strip()[2:].strip("\"") for line in block.group(1).splitlines() if line.strip()]
+    return list(entries)
+
+
+def test_glue_sweep_user_config_debris_is_retired() -> None:
+    entries = retired_entries()
+    missing = [path for path in GLUE_SWEEP_USER_CONFIG_DEBRIS if path not in entries]
+    assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
+
+
+def test_no_shipped_file_uses_a_deleted_glue_sweep_path() -> None:
+    for relative, text in shipped_repo_texts():
+        for path in GLUE_SWEEP_USER_CONFIG_DEBRIS:
+            needle = glue_sweep_needle(path)
+            if needle not in text:
+                continue
+            failing = [
+                line
+                for line in glue_sweep_matching_lines(text, needle)
+                if not line.startswith(SANDBOX_HIDING_DIRECTIVES)
+            ]
+            assert not failing, (
+                f"{relative} names the deleted {needle}, and only a hide rule may: {failing[0]}"
+            )
+
+
+def test_every_jail_that_hides_pi_credentials_also_hides_the_adapter_config() -> None:
+    credential_jails = [
+        (relative, text)
+        for relative, text in shipped_repo_texts()
+        if relative.startswith(("rootfs/etc/systemd/", "systemd/"))
+        and glue_sweep_hides(glue_sweep_sandbox_paths(text), "/.pi/agent/auth.json")
+    ]
+    assert credential_jails, "no shipped unit hides the pi credentials, so the jails moved"
+    rehomed = {str(path.relative_to(ROOT)) for path in ADAPTER_CONFIG_JAILS} - {
+        relative for relative, _ in credential_jails
+    }
+    assert not rehomed, f"these units no longer hide the pi credentials: {sorted(rehomed)}"
+    for relative, text in credential_jails:
+        assert glue_sweep_hides(glue_sweep_sandbox_paths(text), "/.pi/agent/mcp-adapter.json"), (
+            f"{relative} hides the pi credentials but not the live mcp-adapter.json"
+        )
 
 
 def test_alertmanager_reads_the_repo_installed_config() -> None:
