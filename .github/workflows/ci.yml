@@ -39,7 +39,7 @@ jobs:
           [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
 
   # One file per area (fleet-ops#10721), so parallel PRs edit different files; pytest finds tests/ itself.
-  lint: {uses:./.github/workflows/ci-lint.yml}
+  lint: {uses: ./.github/workflows/ci-lint.yml}
   systemd-verify: {uses: ./.github/workflows/ci-systemd.yml}
   unit: {uses: ./.github/workflows/ci-unit.yml}
   simulations: {uses: ./.github/workflows/ci-simulations.yml}

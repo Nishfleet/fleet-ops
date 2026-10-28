@@ -181,7 +181,7 @@ jobs:
           t=$RUNNER_TEMP/review-mock
           rm -rf "$t"
           mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats"
-          : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env"
+          : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env" # gitleaks:allow (an empty mock file)
           : > "$t/home/AGENTS.md"
           mkdir -p "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts"
           : > "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md"
