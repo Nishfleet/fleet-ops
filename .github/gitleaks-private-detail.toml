@@ -153,3 +153,24 @@ targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
 regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
 condition = "AND"
+
+[[allowlists]]
+description = "The Hermes backend unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names its program, its environment file and its PATH entries, and the tailnet address it binds; moved byte for byte from /etc/systemd/system, fleet-ops#10542. Only paths under its own .hermes tree, .local/bin, and the one address that unit binds are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-serve\.service$''']
+regexes = [
+  '''^home/nish/\.hermes(/.*)?$''',
+  '''^home/nish/\.local/bin$''',
+  '''^100\.108\.184\.97$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test reads the Hermes backend unit back, so it spells out that unit's pinned program path and the tailnet address it binds (fleet-ops#10542). Only those two literals are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = [
+  '''^home/nish/\.hermes/hermes-agent/\.hermes/bin/hermes$''',
+  '''^100\.108\.184\.97$''',
+]
+condition = "AND"
