@@ -1,14 +1,3 @@
-"""label-unlabelled: the job in agent-dispatch.yml (fleet-ops#10218).
-
-Runs the job's real `run:` block, read out with yq, against a fake gh on PATH.
-The fake gh executes the `--jq` string it is passed, so the job's own filter
-decides what gets labelled. Covers: trust is the stock author association plus
-the worker bot login (other bots, strangers, labelled issues, PRs and issues
-inside the 10-minute grace stay unlabelled); product-repo owner issues get
-needs-triage (admit's input), the rest needs-orchestrator; 20 edits a run; a
-failed read fails the job; and the sweep is the only trigger (`opened` stays
-out of on.issues.types, so no issue event fans a sweep out).
-"""
 import json
 import os
 import pathlib
@@ -64,7 +53,7 @@ def run(tmp_path, repo, issues=ISSUES, api_fails=False):
     if api_fails:
         (tmp_path / "api-fails").touch()
     env = {**os.environ, "PATH": f"{tmp_path/'bin'}:{os.environ['PATH']}",
-           "FAKE_DIR": str(tmp_path), "REPO": repo}
+           "FAKE_DIR": str(tmp_path), "REPO": repo, "GH_TOKEN": "x"}
     done = subprocess.run(["bash", "-c", step], env=env, capture_output=True, text=True)
     return done, (tmp_path / "calls").read_text().splitlines()
 
