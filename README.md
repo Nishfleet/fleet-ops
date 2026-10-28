@@ -1551,7 +1551,7 @@ lists and an optional ignore list live on the host, in the unit's `StateDirector
   a real call to free or in-plan ids only; every other seat's body forbids all calls and sends the
   ids back as a `needs-nish-decision` line (the unit decides, not the model; MiniMax is marked flat
   on the router config header: "he is on the flat MiniMax Yearly Plus plan (5-hour and weekly
-  limits, no per-token bill)", Nish 2026-10-09; the OpenCode keys are unlimited for
+  limits, no per-token bill)", Nish 2026-10-09; Alibaba Token Plan is marked flat too: $18/mo prepaid, 45,000 credits, no per-token bill, router config header, fleet-ops#9220, kept per Nish 2026-10-28, fleet-ops#9914; the OpenCode keys are unlimited for
   one DeepSeek flash model only, so they are not marked). Then an eval-score before any router weight
   (`tests/evals`), a router PR only inside the standing rules (no new spend, 3 to 5 providers,
   removing a router row needs Nish's yes, no extra weight for a lower score), and a plain
