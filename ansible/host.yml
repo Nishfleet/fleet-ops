@@ -190,6 +190,12 @@
       # repo stopped shipping it. `copy` never deletes, so the live file is
       # retired here or it keeps loading a plugin id no marketplace lists.
       - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
+      # The daily Hermes reminder about the GitHub App from #9676 (#10137): the
+      # 2026-10-23 glue audit named it, and #9676 carries the reminder now, so the
+      # job's work is done. Only the file is named: this playbook cannot list
+      # ~/.hermes/scripts, and retiring a directory blind would delete files no
+      # one has looked at. The job that ran it is in hermes_retired_jobs.
+      - "{{ nish_home }}/.hermes/scripts/remind-orchestrator-app.sh"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -209,11 +215,14 @@
     # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
     # it is given, so a job whose work is done stays until something deletes it.
     # Listed by id and never searched for: a worker's fresh proof job is legitimate,
-    # and a rule that matched names would delete it on the next deploy. The live
-    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # and a rule that matched names would delete it on the next deploy. Every job the
+    # host still needs is absent from this list.
     # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
     # config/restic/include.txt.
     hermes_retired_jobs:
+      # The daily reminder about the GitHub App (#10137): #9676 carries it now.
+      # The script it ran is in the retired list above.
+      - 527a50bfda03
       # The two proof jobs from the digest runs (#9579, #9717). Both were still
       # enabled on a schedule that fires once a year, so they would have run 1 Jan.
       - 13d3db49b9c5

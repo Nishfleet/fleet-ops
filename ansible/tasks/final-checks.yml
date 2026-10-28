@@ -24,6 +24,18 @@
     job: "{{ (hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([]) | selectattr('name', 'equalto', digest) | first | default({}) }}"
     wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../config/hermes/' ~ digest ~ '.md') | regex_replace('\\n+$', '') }}"
 
+# The retired reminder job (#10137) is deleted by id, so a wrong id removes nothing and
+# leaves a job running a script this playbook has already deleted. The store is read
+# again above, so this is the state the prune task actually left behind.
+- name: Fail when the retired Hermes reminder job is still in the store
+  ansible.builtin.assert:
+    that: >-
+      ((hermes_jobs_after.content | default('e30=') | b64decode | from_json).jobs | default([])
+      | selectattr('name', 'equalto', 'remind-orchestrator-app') | list | length) == 0
+    fail_msg: "The retired Hermes reminder job (#10137) is still in the cron store, so the id in hermes_retired_jobs is not the live one. The job runs a script this playbook has already deleted. Read the id out of the live store, put it in hermes_retired_jobs, and rerun."
+    quiet: true
+  when: hermes_jobs_after.content is defined
+
 - name: Apply pending handlers before the Grafana credential check
   ansible.builtin.meta: flush_handlers
 
