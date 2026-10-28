@@ -59,6 +59,16 @@ def repo(tmp_path):
     c["b2"] = commit(r, {"other.txt": "z\n"}, "main moves elsewhere")
     git(r, "checkout", "-qb", "clean", c["b2"])
     c["clean"] = commit(r, {"list.txt": "a\nb\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03"}, "clean rebase")
+    # the same lines with a whitespace change inside one, and the PR's line moved to another place in the file
+    git(r, "checkout", "-qb", "ws", c["b2"])
+    c["ws"] = commit(r, {"list.txt": "a\n b\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03"}, "rebase, whitespace inside the PR line")
+    git(r, "checkout", "-qb", "moved", c["b2"])
+    c["moved"] = commit(r, {"list.txt": "b\na\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03"}, "rebase, the PR line moved")
+    # main edits the line the PR replaced; a head that keeps both edits is what union replay gives, but the PR's own -x line is gone
+    git(r, "checkout", "-qb", "m3", c["b0"])
+    c["b3"] = commit(r, {"app.txt": "x1\n"}, "main edits the PR's line")
+    git(r, "checkout", "-qb", "both", c["b3"])
+    c["both"] = commit(r, {"list.txt": "a\nb\nc\n", "app.txt": "x1\ny\n", "blob.bin": b"\x00\x03"}, "rebase, conflict kept both edits")
     git(r, "checkout", "-qb", "merged", c["old"])
     git(r, "merge", "-q", "--no-edit", c["b2"])
     c["merged"] = git(r, "rev-parse", "HEAD")
@@ -119,7 +129,7 @@ def interdiff(r, said, out, diff, old):
     lines = diff.splitlines()
     return r.returncode == 0 and not said and not out and lines[0].startswith(f"=== INTERDIFF: head {old}") \
         and "scope=interdiff" in r.stdout and f"Only the interdiff against approved head {old}" in r.stdout \
-        and not any(l in ("++y", "-+y", "+-x", "--x") for l in lines)
+        and not any(l in ("++y", "-+y") for l in lines)
 
 
 def test_conflict_that_changed_own_hunk_reviews_only_the_interdiff(tmp_path, repo):
@@ -140,12 +150,25 @@ def test_changed_binary_file_does_not_carry(tmp_path, repo):
     assert interdiff(r, said, out, diff, c["old"]) and "blob.bin" in diff, r.stdout + r.stderr + diff
 
 
+@pytest.mark.parametrize("head,base", [("ws", "b2"), ("moved", "b2"), ("both", "b3")])
+def test_whitespace_position_or_own_line_change_does_not_carry(tmp_path, repo, head, base):
+    c = repo[1]
+    r, said, out, diff = review(tmp_path, repo, c[base], c[head], [approval(c["old"])])
+    assert interdiff(r, said, out, diff, c["old"]), r.stdout + r.stderr + diff
+
+
+def verdict(line):
+    return {"user": {"login": "github-actions[bot]"}, "created_at": "t", "updated_at": "t", "body": line}
+
+
 @pytest.mark.parametrize("comments", [
     [approval(MISSING)],  # the approved head cannot be fetched: the range-diff errors
     [],  # nothing approved before
     [approval("OLD", login="someone")],  # an approval line from another login
     [approval("OLD", edited=True)],  # an edited bot comment
-], ids=["range-diff-error", "no-prior-approval", "other-login", "edited-comment"])
+    [verdict("reviewer: 1111111111111111111111111111111111111111 blocked. Fix these.\n\ncoordinator-approval: OLD")],  # an approval line quoted below the first line
+    [approval("OLD"), verdict("reviewer: 1111111111111111111111111111111111111111 blocked. Fix these.")],  # a later head was blocked
+], ids=["range-diff-error", "no-prior-approval", "other-login", "edited-comment", "quoted-approval-line", "blocked-after-approval"])
 def test_anything_else_gets_a_full_review(tmp_path, repo, comments):
     c = repo[1]
     comments = json.loads(json.dumps(comments).replace("OLD", c["old"]))
