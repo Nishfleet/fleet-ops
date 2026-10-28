@@ -9,6 +9,7 @@ plain http.server standing in for the providers: a walled group answers 429
 from __future__ import annotations
 
 import asyncio
+import gc
 import http.server
 import json
 import socketserver
@@ -78,7 +79,13 @@ def test_live_config_senior_is_glm_only_with_no_fallback():
 def test_synthetic_key_stays_under_its_measured_concurrency():
     rows = [row for row in _config()["model_list"]
             if row["litellm_params"].get("api_base") == "https://api.synthetic.new/openai/v1"]
-    assert sum(row["litellm_params"]["max_parallel_requests"] for row in rows) <= 8
+    assert sum(row["litellm_params"].get("max_parallel_requests", 0) for row in rows) <= 8
+
+
+def test_senior_rows_carry_no_slot_cap():
+    # fleet-ops#10694: v1.105.0 never releases a stream's slot when the client is gone before the first chunk
+    rows = [row for row in _config()["model_list"] if row["model_name"] == "senior"]
+    assert rows and all("max_parallel_requests" not in row["litellm_params"] for row in rows)
 
 
 def _route(model: str, walled: set) -> list:
@@ -126,3 +133,63 @@ def test_a_429_on_senior_reaches_the_caller_with_no_other_group_hit():
     with pytest.raises((litellm.RateLimitError, RouterRateLimitError)):
         _route("senior", {"senior"})
     assert set(h.split("/")[1] for h in HITS) == {"senior"}
+
+
+class _StreamHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                 "choices": [{"index": 0, "delta": {"content": "a"}, "finish_reason": None}]}
+        try:
+            for _ in range(3):
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except OSError:
+            pass
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.parametrize("read_first_chunk", [False, True])
+def test_a_senior_row_answers_after_a_client_drops_its_stream(read_first_chunk):
+    # fleet-ops#10694: with the live senior litellm_params (no slot cap), a stream abandoned before
+    # its first chunk or after it leaves the row free for the next call.
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _StreamHandler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    live = next(r for r in _config()["model_list"] if r["model_name"] == "senior")["litellm_params"]
+    params = {k: v for k, v in live.items() if k not in ("api_base", "api_key", "model", "tags")}
+    params.update({"model": "openai/glm", "api_base": f"http://127.0.0.1:{srv.server_address[1]}", "api_key": "k"})
+    saved = litellm.callbacks
+    litellm.callbacks = []
+
+    async def scenario():
+        router = Router(model_list=[{"model_name": "senior", "litellm_params": params, "model_info": {"id": "senior-row"}}],
+                        num_retries=0)
+        messages = [{"role": "user", "content": "hi"}]
+        dropped = await router.acompletion(model="senior", messages=messages, stream=True)
+        if read_first_chunk:
+            async for _ in dropped:
+                break
+            await dropped.aclose()
+        del dropped
+        gc.collect()
+        second = await router.acompletion(model="senior", messages=messages, stream=True)
+        return [c async for c in second]
+
+    try:
+        assert asyncio.run(scenario())
+    finally:
+        litellm.callbacks = saved
+        srv.shutdown()
+        srv.server_close()

@@ -283,9 +283,7 @@ model_list:
     - prepaid
     - senior
     order: 1
-    # The key's 8th slot. 12 parallel calls on this key gave 8x200 and 4x429 "Too many concurrent requests", so 8 one-slot rows sit at
-    # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
-    max_parallel_requests: 1
+    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     # 60 s, not the 900 s of the sibling Synthetic rows: the senior group has one or two rows, so a long park takes half or all of the tier
     # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked the row 900 s at 06:14 UTC, and
     # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
@@ -318,7 +316,7 @@ model_list:
     # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
+    # No max_parallel_requests on a senior row (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     cooldown_time: 900
   model_info:
     mode: chat
