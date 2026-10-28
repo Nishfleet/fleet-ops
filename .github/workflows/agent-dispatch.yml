@@ -541,8 +541,7 @@ jobs:
           }
           stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
-            # One issue, no PR append: the jq below re-checks agent-ready and blocked_by,
-            # and agent.yml's Gate re-checks again, so a split or parked issue is skipped.
+            # One issue, no PR append: the jq below and agent.yml's Gate re-check, so a split or parked issue is skipped.
             nums=$ISSUE
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
@@ -700,8 +699,7 @@ jobs:
             esac
             pages="$pages$i"$'\n'
           done
-          # agent.yml's Gate skips these five labels: a ref with one wastes a matrix slot.
-          # ci.yml keeps this set equal to the Gate's `for l in` list.
+          # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
           refs=$(printf '%s' "$pages" |
             jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
@@ -721,17 +719,19 @@ jobs:
               | .act = (if .tried and (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
-          queued=$(for st in queued in_progress; do gh api "repos/$GITHUB_REPOSITORY/actions/workflows/agent-dispatch.yml/runs?status=$st&per_page=100" --jq '.workflow_runs[] | select(.event | IN("issues", "workflow_dispatch")) | .id' || exit 1; done |
-            while read -r id; do gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.name == "orchestrate" and .status != "completed")] | length' || exit 1; done | awk '{s += $1} END {print s + 0}') || queued=5
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { prs=[]; queued=5; }
+          queued=$(for st in queued in_progress; do gh api "repos/$GITHUB_REPOSITORY/actions/workflows/agent-dispatch.yml/runs?status=$st&per_page=100" --jq '.workflow_runs[] | select(.event | IN("issues", "workflow_dispatch")) | .id' || exit 1; done | head -5 |
+            while read -r id; do gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.name == "orchestrate" and .status != "completed")] | length' || exit 1; done | awk '{s += $1} END {print s + 0}') || { echo "::error::run count failed, no re-queues this sweep"; queued=5; }
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { echo "::error::PR list failed, no re-queues this sweep"; prs=[]; queued=5; }
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR: $(jq -r '.runs | map(ltrimstr("orchestrator hand-off ended without a PR: ")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
-              else env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label "$(jq -r 'if .tried then "orchestrator-tried" else "needs-orchestrator" end' <<<"$r")" &&
-                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"; fi
+              elif [ "$(jq -r .tried <<<"$r")" = true ]; then env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
+              elif env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label needs-orchestrator; then
+                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::error::#$n lost needs-orchestrator, add it back by hand"
+              else echo "::warning::#$n: re-fire refused"; fi
             done
   unblocked:
     needs: list
