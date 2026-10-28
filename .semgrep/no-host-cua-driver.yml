@@ -15,7 +15,7 @@ rules:
       2026-10-06, fleet-ops#9297): it has no display and cua-driver cannot run
       headless. Use the copy inside a Cua Space through list_tools and
       call_tool(space=...).
-    pattern-regex: '(?i)--select[ \t=]+["'']?cua-driver\b|\bcua[ \t]+agents[ \t]+setup\b[^\n]*--cua-driver\b|\bcua-driver["'']?(?:[ \t]+|[ \t]*,[ \t]*(?:"args"|args)[ \t]*:[ \t]*\[[ \t]*)["'']?mcp\b|\b(?:curl|wget|gh[ \t]+release[ \t]+download|(?:pipx?|uv[ \t]+tool|cargo|brew|npm|pnpm)[ \t]+(?:install|i|add))\b[^\n]*cua-driver'
+    pattern-regex: '(?i)--select[ \t=]+["'']?cua-driver\b|\bcua[ \t]+agents[ \t]+setup\b[^\n]*--cua-driver\b|\bcua-driver["'']?(?:[ \t]+|[ \t]*,[ \t]*(?:"args"|args)[ \t]*:[ \t]*\[[ \t]*)["'']?mcp\b|\b(?:curl|wget|uvx|npx|gh[ \t]+release[ \t]+download|(?:pip[3x]?|-m[ \t]+pip|uv[ \t]+(?:tool|pip)|cargo|brew|npm|pnpm|yarn|go|apt(?:-get)?|dnf|snap)[ \t]+(?:install|i|add))\b[^\n]*cua-driver'
     paths:
       # The excludes exist only so this rule's own literals and fixtures cannot
       # self-match in a repo scan; `semgrep --test` still reads the fixture.
