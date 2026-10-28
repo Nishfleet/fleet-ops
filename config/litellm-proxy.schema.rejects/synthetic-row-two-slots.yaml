@@ -1,6 +1,6 @@
 # fleet-ops#9596: a Synthetic row holding two slots. Each holds exactly one, so the row count is the key's
 # concurrency and the 7-row cap keeps it under the measured 8.
-# Built from the live config's judge and senior rows and its router_settings,
+# Built from the live config's judge and synthetic-glm53flashe-worker-capable rows and its router_settings,
 # which pass the schema alone, so this file breaks only the rule named above.
 model_list:
 - model_name: judge
@@ -20,48 +20,27 @@ model_list:
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: 'Same gateway and model as opencodego2 (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own.'
+    cache_proof: 'Same gateway and model as the removed key-2 rows (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own.'
     id: opencodego-ds41flash-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    reasoning_effort: max
-    extra_headers:
-      x-opencode-session: fleet2-judge
-    tags:
-    - prepaid
-    - opencode-go
-    order: 2
-    max_parallel_requests: 2
-    cooldown_time: 900
-  model_info:
-    mode: chat
-    supports_prompt_caching: true
-    cache_proof: '2026-10-07 #9357 scoreboard (opencodego2): 88.4% cache-read 7d on real router traffic.'
-    id: opencodego2-ds41flash-judge
-    allowed_fails_policy:
-      BadRequestErrorAllowedFails: 1
-- model_name: senior
+- model_name: worker-capable
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
+    weight: 1
     max_parallel_requests: 2
     cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
     cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
-    id: synthetic-glm53flash-senior
+    id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge
@@ -97,8 +76,6 @@ router_settings:
   redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
   fallbacks:
-  - judge:
-    - senior
   - worker-cheap:
     - worker-capable
   cooldown_time: 60
