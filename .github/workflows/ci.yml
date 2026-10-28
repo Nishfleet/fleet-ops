@@ -541,7 +541,7 @@ jobs:
       - name: Orchestrate cap and session args (fleet-ops#9351)
         # Runs the orchestrate job's own scripts, read out of the workflow with
         # yq, never a copy: the "Check the issue is still parked" step against
-        # a fake gh that serves each cap_cases entry's runs and jobs, and the
+        # a fake gh that serves each cap_cases entry's issue comments, and the
         # "Run the orchestrator session" step against a fake claude that
         # records its argv. Remove the daily cap, the model or turns pin, or
         # --settings disableAllHooks from the workflow and a case here fails.
@@ -552,30 +552,25 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           cfg="$PWD/config/orchestrate-events.json"
           chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
-          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
-          for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          for v in "$chk" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
           t=$(mktemp -d); mkdir "$t/bin"
           cat > "$t/bin/gh" <<'FAKE'
           #!/usr/bin/env bash
           # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
-          q=; ev=
+          # Any call it does not know exits 99, so a cap that reads this
+          # workflow's runs again fails every capped case (fleet-ops#10641).
+          q=
           flaky() { n=$(<"$FAKE_DIR/$1"); [ "$n" -eq 0 ] || { echo $((n - 1)) > "$FAKE_DIR/$1"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; }
           for ((i = 1; i <= $#; i++)); do
-            a=${!i}
-            case $a in
-              --jq) j=$((i + 1)); q=${!j} ;;
-              event=*) ev=${a#event=} ;;
-            esac
+            [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }
           done
           case "$*" in
+            *repos/o/r/issues/comments*) flaky fail
+              jq -c '[_nwise(100)][]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
+            "issue comment 5 -R o/r --body orchestrator hand-off started: "*) [ ! -f "$FAKE_DIR/failpost" ] || exit 1; echo "$*" >> "$FAKE_DIR/posted" ;;
             "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
             *git/ref/heads/*) exit 1 ;;
-            *actions/runs/*/jobs*) flaky failj; all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
-              if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
-            *actions/workflows/*/runs*) flaky fail
-              jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
-            *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
             *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
           esac
           FAKE
@@ -587,14 +582,12 @@ jobs:
             id=$(jq -r .id <<<"$c")
             d="$t/$id"
             mkdir "$d"
-            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
+            jq -c --arg t "$today" --arg o "$old" '[.handoffs[] | {created_at: (if .when == "YESTERDAY" then $o else $t end), author_association: (.assoc // "MEMBER"), body: (.body // "orchestrator hand-off started: https://github.com/o/r/actions/runs/1")}] + [range(0; (.noise // 0)) | {created_at: $t, author_association: "MEMBER", body: "agent: claimed"}]' <<<"$c" > "$d/comments.json"
             jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
-            while IFS= read -r r; do
-              jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
-            done < <(jq -c '.runs[]' <<<"$c")
-            : > "$d/out"; jq -r '.fail_runs // 0' <<<"$c" > "$d/fail"; jq -r '.fail_jobs // 0' <<<"$c" > "$d/failj"
+            : > "$d/out"; jq -r '.fail_comments // 0' <<<"$c" > "$d/fail"
+            [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
-            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
               DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
@@ -609,6 +602,8 @@ jobs:
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
               want_runner=$(jq -r '.want_runner // empty' <<<"$c")
               [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
+              [ -f "$d/failpost" ] || [ -s "$d/posted" ] || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
+              [ "$(jq -r '.want_unreadable // false' <<<"$c")" = false ] || grep -q 'count unreadable' <<<"$log" || { echo "cap case $id: no unreadable warning: $log"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi
