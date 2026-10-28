@@ -14,29 +14,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # ci: every step is one vendor command. Required check by this name.
-  #
-  # `ci` is also the aggregate gate: it needs every other job in this file that
-  # runs on pull_request or merge_group, so a red grafana-boot or
-  # cloudflare-tokens-tofu fails the required check (PR #9507 merged with
-  # grafana-boot red). coordinator-approval is its own required check and stays
-  # out. `!cancelled()` so a failed need still runs this job and turns it red:
-  # a skipped required check would pass. A need that skips on its own (a job-level
-  # `if:`) counts as a pass; failure and cancelled do not. grafana-boot's path
-  # gate skips its steps, not the job, so it reports success.
+  # ci: the one required check. It runs no tests: it needs every other job here, so a red job turns it red.
+  # `!cancelled()` so a failed need still runs it: a skipped required check would pass.
   ci:
-    name: ci
-    needs: [grafana-boot, cloudflare-tokens-tofu, ratchet]
+    needs: [lint, systemd-verify, unit, simulations, grafana-boot, cloudflare-tokens-tofu, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - run: sudo apt-get update
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: Every needed job is green
+        if: always()
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          # Pin: every job except ci and coordinator-approval must be in ci's needs.
+          want=$(yq -r '.jobs | keys | .[] | select(. != "ci" and . != "coordinator-approval")' .github/workflows/ci.yml | sort)
+          have=$(yq -r '.jobs.ci.needs[]' .github/workflows/ci.yml | sort)
+          [ "$want" = "$have" ] || { echo "::error::ci needs ${have//$'\n'/ } but the other jobs are ${want//$'\n'/ }"; exit 1; }
+          # Failure and cancelled block; success and skipped pass.
+          bad=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
+          [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false, fetch-depth: 0}
       # fleet-ops#8724: the router config's hard rules (no bench list, a per-row
       # cooldown_time <=900 s, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
       # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
@@ -93,9 +100,15 @@ jobs:
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         with:
           version: v0.11.0
+
+  systemd-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
-        if: always()
-        run: sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
@@ -198,6 +211,14 @@ jobs:
         run: |
           sudo apt-get install -y -q python3-yaml >/dev/null
           python3 tests/alert_routes_check.py
+
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -212,43 +233,31 @@ jobs:
         # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
-      - name: Chrome DevTools MCP is pinned once and wired into every agent
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_hermes_computer_use.py
-      - name: orchestrator hand-off cleanup keeps a worktree a running unit uses (fleet-ops#9377)
+      - name: Chrome DevTools wiring, hand-off cleanup and Claude lanes
         # Runs the real cleanup step from agent-dispatch.yml against a real git
         # worktree with a stub systemctl: busy tree survives, idle tree goes.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py
-      - name: Claude lanes route, fall through and stay out of reach of the other engines
         # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
         # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
         # Cursor or pi. The same file runs the real bwrap and proves the claude lane
         # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
         # or a backup.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_lanes.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync's real lines run here - agent installs, LINK-GUARD, the clone-state probe, unknown keys, issue-desk's no-tools unit (fleet-ops#9967)
+      - name: fleet-sync, gh login check and needs-triage tests (fleet-ops#9967, #9706, #9308, #9932)
         # Runs fleet-sync.service's own agent installs and its link check against a temp home.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py
-      - name: gh login check pages on a lost login; the jail step refuses off a hosted runner
         # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
         # and the jail step below with plain bash in a temp home, with no
         # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
         # touching a file.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py
-      - name: needs-triage admission, digest reply shape, red-main issues and the Lighthouse wall skip (fleet-ops#9706, #9308, #9932)
         # Runs the admit job's own exclusion program, band program and run block,
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -936,6 +945,13 @@ jobs:
           yq -o=json "$u" | jq -r -f "$RUNNER_TEMP/pause.jq" > "$RUNNER_TEMP/pause-problems.txt"
           if [ -s "$RUNNER_TEMP/pause-problems.txt" ]; then sed "s|^|$u: |" "$RUNNER_TEMP/pause-problems.txt"; bad=1; fi
           test "$bad" -eq 0
+
+  simulations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
       - name: Risky-path hold classifier (hold-risky)
         # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
         # of the workflow, against every case in config/risky-paths.json, so the list
@@ -1159,13 +1175,13 @@ jobs:
           case "$*" in
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
-            *4000/v1/chat/completions*) # the two extra reviewers: the GLM row for the senior seat and the Qwen row for the judge seat, unless the case says otherwise
+            *4000/v1/chat/completions*) # the two extra reviewers: the GLM row for the senior seat and the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
               for a in "$@"; do [ "${#a}" -le 131072 ] || { echo "mock curl: one argument over 128 KiB (E2BIG)" >&2; exit 7; }; done
               [ -z "${JUDGE_SLEEPS:-}" ] || sleep "$JUDGE_SLEEPS"
               h= b= req=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; esac; shift; done
               m=$(jq -r .model "$req")
               if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; [ -z "${SECOND_ONCE:-}" ] || [ -e "$STATE/second-once" ] || { : > "$STATE/second-once"; exit 7; }; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
-              elif [ "$m" = "$THIRD_SEAT" ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; cut=${THIRD_CUT:-}; ans=$THIRD
+              elif [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; cut=${THIRD_CUT:-}; ans=$THIRD
               else echo "mock curl: unexpected model $m" >&2; exit 7; fi
               if [ -n "$noh" ]; then : > "$h"; else printf 'x-litellm-model-id: %s\r\n' "$mi" > "$h"; fi
               fr=stop; [ -z "$cut" ] || fr=length; printf '{"id":"chatcmpl-mock","model":"judge","choices":[{"index":0,"finish_reason":"%s","message":{"role":"assistant","content":"%s"}}]}' "$fr" "$ans" > "$b" ;;
@@ -1566,20 +1582,6 @@ jobs:
           devin-capacity-pushed|devin|capacity issues|1|yes
           CASES
           test "$bad" -eq 0
-      - name: Every other job in this workflow gates ci
-        if: always()
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          set -euo pipefail
-          # Pin: every job except ci and coordinator-approval must be in ci's needs.
-          want=$(yq -r '.jobs | keys | .[] | select(. != "ci" and . != "coordinator-approval")' .github/workflows/ci.yml | sort)
-          have=$(yq -r '.jobs.ci.needs[]' .github/workflows/ci.yml | sort)
-          [ "$want" = "$have" ] || { echo "::error::ci needs ${have//$'\n'/ } but the other jobs are ${want//$'\n'/ }"; exit 1; }
-          # Failure and cancelled block; success and skipped pass.
-          bad=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"' <<<"$NEEDS")
-          [ -z "$bad" ] || { echo "::error::needed jobs not green: $bad"; exit 1; }
-          echo "ci: needed jobs green: $(jq -r 'keys | join(", ")' <<<"$NEEDS")"
 
   # grafana-boot (fleet-ops#9358 follow-up): Grafana loads EVERY file under
   # config/grafana/provisioning/alerting as alert provisioning, so a promtool
@@ -1598,9 +1600,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
+        with: {persist-credentials: false, fetch-depth: 0}
       - name: Path gate (pull requests only)
         id: gate
         env:
@@ -1851,8 +1851,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+        with: {persist-credentials: false}
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
         with:

@@ -169,6 +169,12 @@ jobs:
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
+          # A still-firing alert re-files every 24h (#10325). An older open twin already holds it: close this one, no model call (#10348).
+          if jq -e '.title|startswith("alert: ")' <<<"$issue" >/dev/null; then
+            t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title)
+            twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open")
+            if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi
+          fi
           for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
@@ -210,18 +216,12 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only issues need a senior model other
-          # than SWE-2: Claude Code on a Claude seat first, then Cursor (paced to
-          # 1 run at once); with both full they stay agent-ready. Every other issue: pi while it has a free router slot
-          # (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3;
-          # fleet-ops#8975), else DeepSeek V4.1 Flash Free on the opencode CLI while
-          # fewer than 2 run (OpenCode's free tier answers only the opencode CLI,
-          # fleet-ops#8790), else Devin SWE-2 Max while
-          # fewer than 4 run ($0); when all three are full the issue
-          # waits (lanes-full) — there is no Cursor fallback (fleet-ops#8740).
-          # A lane's live count is the distinct worker directories (Devin,
-          # Cursor) or pi session directories on its bwrap command lines, so
-          # it spans every runner and repo on this host.
+          # Engine (Nish, 2026-09-25). strong-only: a senior model other than SWE-2, Claude Code first,
+          # then Cursor (1 at once); with both full they stay agent-ready. Any other issue: pi while it
+          # has a free router slot (first-try clean 85% tune, 5/5 held-out vs Devin 73%, 1/3; fleet-ops#8975),
+          # else DeepSeek V4.1 Flash Free on the opencode CLI while fewer than 2 run (its free tier answers
+          # only that CLI, fleet-ops#8790), else Devin SWE-2 Max while fewer than 4 run ($0); all three full
+          # waits (lanes-full), no Cursor fallback (fleet-ops#8740). Live count: distinct worker or pi session dirs on bwrap lines, host-wide.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           # pi has a free slot while its live workers are fewer than the summed
           # max_parallel_requests of the router's worker-capable seats. No seat is
@@ -969,7 +969,7 @@ jobs:
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
           # Seconds slept before each retry of an extra reviewer that failed for infrastructure reasons.
-          REVIEW_BACKOFF: "30 60 120"
+          REVIEW_BACKOFF: "30 60 120 240 480"
           THIRD_SEAT: judge
           THIRD_FAMILY: Qwen
         run: |
@@ -1085,13 +1085,13 @@ jobs:
             *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *) echo "family_of: unknown row id '$1'" >&2 ;;
           esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
-          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why
-            for d in 0 ${REVIEW_BACKOFF:-30 60 120}; do
+          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
+            for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
               sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
               if [ "$rc" != 0 ] || ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the call failed or its answer was not JSON (curl exit $rc)"
               else
-                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served")
-                if [ -z "$fam" ] || { [ -n "$want" ] && [ "$fam" != "$want" ]; }; then why="answered by ${served:-no row id} (${fam:-no known non-Claude family}), not the ${want:-a} family"
+                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served"); rerr=$(jq -r '(.error | if type == "object" then .message else . end) // empty' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null | head -c 200)
+                if [ -z "$fam" ] || { [ -n "$want" ] && [ "$fam" != "$want" ]; }; then why="answered by ${served:-no row id${rerr:+, the router said: $rerr}} (${fam:-no known non-Claude family}), not the ${want:-a} family"
                 elif [ -z "$want" ] && case " $used " in *" $fam "*) true ;; *) false ;; esac; then why="answered by $served ($fam), a family that already reviewed this head"
                 elif [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$pre-body.json")" = length ] || [ -z "${content//[[:space:]]/}" ]; then why="the answer was cut at its token limit or empty"
                 else printf '%s' "$content" > "$RUNNER_TEMP/$pre.txt"; printf '%s' "$served" > "$RUNNER_TEMP/$pre-row"; return 0; fi
@@ -1108,12 +1108,12 @@ jobs:
             exit 1; }
           seat_try "$SECOND_SEAT" second "$SECOND_FAMILY" "" & p2=$!; seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
           for x in "second $rc_second" "third $rc_third"; do read -r r rc <<<"$x"; [ "$rc" = 0 ] || { [ "$rc" = 1 ] && [ -e "$RUNNER_TEMP/$r-why" ]; } || give_up "reviewer process crashed: the $r reviewer exited $rc with no reason written"; done # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
-          # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head, asked through the judge seat; the comment names it.
+          # A family with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy, and Qwen is already the third reviewer.
           used=$JUDGE_FAMILY
           for r in second third; do [ ! -s "$RUNNER_TEMP/$r-row" ] || used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"; done
           for r in second third; do
             [ ! -s "$RUNNER_TEMP/$r-row" ] || continue
-            seat_try "$THIRD_SEAT" "$r" "" "$used" || give_up "the $r reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")"
+            seat_try assistant "$r" "" "$used" || give_up "the $r reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/$r-why" 2>/dev/null || echo "the review process died")"
             used+=" $(family_of "$(cat "$RUNNER_TEMP/$r-row")")"
           done
           all=; blk=; both=true
