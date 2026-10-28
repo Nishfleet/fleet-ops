@@ -14,9 +14,17 @@
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.8723
 #   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
 #   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
-#   opencodego   0.9421 -> 0.9221      anthropic   0.4531 -> 0.4331
+#   opencodego   0.9421 -> 0.9021      anthropic   0.4531 -> 0.4331
 #   commandcode  0.9298 -> 0.9098
 #   zai          0.9256 -> 0.9056
+#
+# opencodego's floor is 4 points down, not 2 (fleet-ops#10630; the same alert
+# was filed as #10506 and #10588 with 48h reads 0.0003 and 0.0005 under the old
+# floor). Its worker-capable row carries 25.1M of 29.2M input tokens in 48h and
+# reads 0.956; the assistant, judge and worker-cheap rows carry 4M tokens at
+# 0.78, 0.73 and 0.21, and pull the vendor total to the floor on a quiet day.
+# Every row still reports cached_tokens. A real cache failure on the big row
+# drops the vendor to about 0.1, far under 0.9021.
 #
 # alibaba (0.8484) is not judged (fleet-ops#10410). It carries only the one-shot
 # judge row alibaba-qwen38max-judge, about 100 requests and 3M input tokens a
@@ -106,7 +114,7 @@ groups:
                   (
                     label_replace(vector(0.9396), "vendor", "stepfun", "", "")
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-                    or label_replace(vector(0.9221), "vendor", "opencodego", "", "")
+                    or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
                     or label_replace(vector(0.9259), "vendor", "minimax", "", "")
                     or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
