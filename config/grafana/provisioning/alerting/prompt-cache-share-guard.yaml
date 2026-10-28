@@ -14,12 +14,12 @@
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.7700
 #   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
 #   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
-#   opencodego   0.9421 -> 0.9021      anthropic   0.4531 -> 0.4331
+#   opencodego   0.9421 -> 0.8800      anthropic   0.4531 -> 0.4331
 #   commandcode  0.9298 -> 0.9098
 #   zai          0.9256 -> 0.9056
 #
-# opencodego's floor is 4 points down, not 2 (fleet-ops#10630; the same alert
-# was filed as #10506 and #10588, each 0.0003 to 0.0005 under the old floor).
+# opencodego's floor is 6 points down, not 2 (fleet-ops#10757, after #10630's
+# 4; the same alert was filed as #10506, #10588 and #10630).
 # Its 48h read is a token-weighted mix of rows, and the 0.9421 baseline caught a
 # mix the box does not hold on a quiet day. Per row at 2026-10-28, from
 # litellm_input_*_metric_total: worker-capable 25.1M tokens at 0.956 (0.945 to
@@ -34,6 +34,17 @@
 # the worker-capable row, which carries 86% of the tokens, still takes the
 # vendor under 0.9021 (a big row at 0.92 reads 0.8784, a test case below), and
 # the 1-hour paging rule covers a total one.
+#
+# #10757 (2026-10-29): the 48h read was 0.9011, 0.0010 under 0.9021, with every
+# row still reporting cached_tokens. Per row over 48h: worker-capable 34.7M
+# tokens at 0.932; assistant 2.0M at 0.66; judge 0.9M at 0.73; worker-cheap
+# 0.6M at 0.20. Worker-capable's daily share (24h windows ending now and each
+# day back) read 0.929 on 27.9M, 0.946 on 6.7M, 0.955 on 16.6M, 0.936 on 8.3M
+# and 0.944 on 130M, so the big row held its 0.93 to 0.95 band and the vendor
+# share moved with the small rows' cold, sparse calls. 0.8800 is the fresh 48h
+# read (0.9011) minus 2 points. The cost: a worker-capable row that falls to
+# about 0.91 now passes; one at 0.90 beside the usual small rows reads 0.861
+# and fires (a test case below).
 #
 # synthetic's floor is 12 points down, not 2 (fleet-ops#10654). Its senior row
 # (glm53flash-senior, 16.7M of 44.8M input tokens in the 48h to 2026-10-28)
@@ -143,7 +154,7 @@ groups:
                   (
                     label_replace(vector(0.9396), "vendor", "stepfun", "", "")
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-                    or label_replace(vector(0.9021), "vendor", "opencodego", "", "")
+                    or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
                     or label_replace(vector(0.9259), "vendor", "minimax", "", "")
                     or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
@@ -210,6 +221,6 @@ groups:
         for: 15m
         annotations:
           summary: 'Prompt-cache share on {{ $labels.vendor }} is under its post-bump floor'
-          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (4 for opencodego and 12 for synthetic, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+          description: 'It served {{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ .Value | printf "%.3f" }}{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (6 for opencodego and 12 for synthetic, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
         labels: {severity: warning, signal: prompt-cache-share-guard}
         isPaused: false
