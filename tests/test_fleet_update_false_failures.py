@@ -1,4 +1,4 @@
-"""The daily update fails only when a check really failed: the npm check ignores a long-lived `npm exec`, a running npm is recorded instead of aborting the run, the router is given time before the smoke call, and a git pin off its repo's default branch is named instead of waved through."""
+"""The daily update fails only when a check really failed: the npm check ignores a long-lived `npm exec`, a running npm is recorded instead of aborting the run, the router is given time before the smoke call, every failed unit fails the run with nothing tolerated, and a git pin off its repo's default branch is named instead of waved through."""
 import json
 import os
 import pathlib
@@ -18,6 +18,8 @@ BLOCK = next(t for t in PLAY["tasks"] if "block" in t and "always" in t)
 INNER = {t["name"]: t for t in BLOCK["block"]}
 NAMES = [t["name"] for t in BLOCK["block"]]
 ASSERT = next(t for t in BLOCK["always"] if t["name"] == "Fail loudly if any step or check went wrong")["ansible.builtin.assert"]
+ALWAYS = {t["name"]: t for t in BLOCK["always"]}
+ALWAYS_NAMES = [t["name"] for t in BLOCK["always"]]
 THAT = " ".join(ASSERT["that"])
 FAIL_MSG = ASSERT["fail_msg"]
 NPM_CHECK = INNER["Check that no npm install or update runs as nish before its staging dirs go"]
@@ -107,6 +109,90 @@ def test_the_smoke_call_still_has_to_answer_ok_and_the_failure_text_separates_ne
     assert "(pi_smoke | default({})).stdout | default('') is search('OK')" in THAT
     assert "not run, an earlier step in the block failed" in FAIL_MSG
     assert "no reply, stderr: " in FAIL_MSG
+
+
+def test_the_failed_user_unit_check_tolerates_nothing_and_reads_no_flag_or_clock():
+    """A tolerance window was cut (fleet-ops#10211): the gap between two runs varies, so a
+    window either equals the run period and can miss a red run, or is wide enough to hide a
+    failure for days."""
+    assert "failed_system.stdout_lines | length == 0" in THAT
+    assert "failed_user.stdout_lines | length == 0" in THAT
+    assert "difference(" not in THAT
+    assert "Transient" not in THAT and "InactiveEnterTimestamp" not in THAT
+
+
+def test_the_failure_text_names_every_failed_unit_and_tolerates_none():
+    assert "failed units: " in FAIL_MSG
+    assert "failed_system.stdout_lines + failed_user.stdout_lines" in FAIL_MSG
+    assert "tolerated" not in FAIL_MSG
+
+
+def test_no_task_was_added_to_read_a_transient_flag_or_to_tolerate_a_unit():
+    assert [n for n in ALWAYS_NAMES if any(w in n for w in ("tolerat", "transient", "clock", "stale", "stop time"))] == []
+
+
+def test_the_run_never_resets_a_unit_so_a_fresh_failure_keeps_its_record():
+    argv = [t["ansible.builtin.command"]["argv"] for t in BLOCK["always"] if "ansible.builtin.command" in t]
+    argv += [t["ansible.builtin.command"]["argv"] for t in BLOCK["block"] if "ansible.builtin.command" in t]
+    assert [a for a in argv if "reset-failed" in a] == []
+    assert [a for a in argv if a[:2] == ["date", "+%s"]] == []
+    assert [a for a in argv if "--property=Transient" in a] == []
+
+
+def test_no_launch_line_in_the_runbook_leaves_a_loaded_failed_unit():
+    """A unit `systemd-run` created under the user manager stays loaded in `failed` state
+    after it stops and nothing resets it, which is the cause of the leftovers
+    (fleet-ops#10211). `--collect` is the stock flag that unloads it instead."""
+    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
+    launches = [line for line in runbook.splitlines() if line.lstrip().startswith("systemd-run") and "--user" in line]
+    assert launches, "the RUNBOOK has no `systemd-run --user` launch line to check"
+    assert all("--collect" in line for line in launches), launches
+
+
+def test_the_shell_startup_section_sends_work_to_the_launcher_rule_not_to_a_user_transient():
+    """That section is where the RUNBOOK last sent a reader to a user-manager transient
+    (fleet-ops#10211)."""
+    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
+    section = runbook.split("### Shell startup files", 1)[1].split("\n## ", 1)[0]
+    assert "--user" not in section, section
+    assert 'AGENTS.md "Session-outliving work"' in section
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible-playbook missing")
+def test_a_failed_user_unit_still_fails_the_run(tmp_path):
+    """The detector is unchanged by the cut: a failed user unit fails the run however old
+    it is, and the failure text names it (fleet-ops#10211)."""
+    probe = [
+        {
+            "name": "probe the failed-user-unit check of ansible/update.yml",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {
+                "failed_system": {"stdout_lines": []},
+                "failed_user": {"stdout_lines": ["item9-pi-only-1028.service loaded failed failed a one-off proof run"]},
+                "rc_state": {"stdout": "active"},
+            },
+            "tasks": [
+                {
+                    "name": "Fail loudly if any step or check went wrong",
+                    "ansible.builtin.assert": {
+                        "quiet": True,
+                        "that": ASSERT["that"],
+                        "fail_msg": ASSERT["fail_msg"],
+                    },
+                }
+            ],
+        }
+    ]
+    path = tmp_path / "failed-user-units.yml"
+    path.write_text(json.dumps(probe), encoding="utf-8")
+    result = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(path)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "item9-pi-only-1028.service" in result.stdout
+
 
 
 def test_the_git_pin_check_asks_github_about_the_default_branch_of_every_github_pin():
