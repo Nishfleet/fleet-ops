@@ -18,6 +18,9 @@ canonical prompts under config/hermes/ honest:
 - the waiting step runs no command of its own: the label alone decides, and a
   stored issue whose label was removed prints UNLABELLED and drops out
   (fleet-ops#9741),
+- a repository with issues enabled and no labelled issue reads as empty, not as
+  unreadable, and stores no key for it, so a healthy repository cannot flood the
+  reply with a false unread line (fleet-ops#9741),
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
@@ -361,6 +364,39 @@ def test_waiting_discovery_repo_list_failure_is_loud(prompt, tmp_path):
     assert "WAITING-UNREAD all" in lines
     assert not any(l.startswith("ROW wait:") for l in lines)
     assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_keeps_the_stored_items(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(
+        prompt,
+        tmp_path,
+        gh,
+        json.dumps({"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}),
+    )
+    assert "WAITING-UNREAD all" in lines
+    assert "ROW wait:alpha#6 UNCHANGED" in lines
+    assert "ROW broken:alpha:ci UNKNOWN" in lines
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_reads_a_repository_with_no_labelled_issue_as_empty(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "empty"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/empty": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
