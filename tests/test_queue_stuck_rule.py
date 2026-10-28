@@ -70,3 +70,8 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
         assert (r["for"], r["execErrState"], r["noDataState"]) == ("0s", "Error", "OK")
         assert "cannot read GitHub" in r["annotations"]["summary"]
         assert "notification_settings" not in r
+
+
+def test_needs_split_rule_reads_open_prs_with_that_label():
+    (a,) = [d for d in _rules()["queue-stuck-pr-needs-split"]["data"] if d["refId"] != "C"]
+    assert a["model"]["options"]["query"] == "org:Nishfleet is:pr is:open label:needs-split"
