@@ -128,7 +128,7 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: fleet-ops
-              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:agent-in-progress -linked:pr", timeField: 2}
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:agent-in-progress -linked:pr NOT \"grafana alert:\" in:title", timeField: 2}
               refId: A
           - refId: B
             relativeTimeRange: {from: 2592000, to: 0}
@@ -156,6 +156,6 @@ groups:
         for: 0s
         annotations:
           summary: '{{ if $values }}An issue has been agent-in-progress, or parked on needs-orchestrator with no orchestrator-tried, agent-blocked or needs-nish-decision label, for 3 hours with no pull request.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "Issue claimed or handed off for 3h with no PR", so it is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+sort%3Aupdated-asc'
+          description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
