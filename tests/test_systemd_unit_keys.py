@@ -297,6 +297,23 @@ def test_no_hermes_layer_takes_what_the_children_need() -> None:
             assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
 
 
+def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
+    unit = INSTALLED / "hermes-serve.service"
+    assert unit.is_file(), "the base hermes-serve unit must stay in rootfs/, or the shared sandbox drop-in covers no unit"
+    keys = _unit_keys(unit)
+    assert shlex.split(keys["ExecStart"][0]) == [
+        "/home/nish/.hermes/hermes-agent/.hermes/bin/hermes",
+        "serve",
+        "--host",
+        "100.108.184.97",
+        "--port",
+        "9119",
+    ], "the pinned program path and the tailnet bind address are the bytes that ran before"
+    assert _last(keys, "Restart") == "on-failure", "a clean exit must stay exited, not loop"
+    assert _last(keys, "RestartSec") == "10"
+    assert _last(keys, "RestartPreventExitStatus") == "78", "the config-error exit must not restart"
+
+
 def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
     sample = tmp_path / "sample.conf"
     sample.write_text("[Service]\n# RestrictNamespaces=user\n; SystemCallFilter=@system-service\n  ProtectSystem=strict\n  RestrictAddressFamilies=AF_INET \\\n    AF_UNIX\nProtectControlGroups=yes\r\n")
