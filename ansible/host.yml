@@ -23,14 +23,11 @@
   vars:
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
-    # Agent runners beyond the 22 that exist today (fleet-ops#10236). The
-    # runner's own `svc.sh install` writes this unit as root, and a worker
-    # shell has no sudo, so the repo writes it instead. A unit is enabled and
-    # started only when its directory holds a registration (`.runner` and
-    # `.credentials`): the one-time `config.sh` step needs an org admin token
-    # that the VPS key does not carry, so an unregistered runner must not
-    # restart-loop.
-    agent_runner_ids: [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+    # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
+    # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
+    # runner's registration lives at GitHub and removing it needs an org admin
+    # token that the VPS key does not carry.
+    agent_runner_retired_ids: "{{ range(31, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
     # release's SHASUMS256.txt (https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
@@ -112,6 +109,10 @@
     # (see the comment there). The drift check skips them too, so a --check
     # run, which removes nothing, still passes.
     retired:
+      # The daily drift run (fleet-ops#10457): deploy-box.yml applies every merge
+      # and fleet-host-config-boot.timer runs once per boot.
+      - /etc/systemd/system/fleet-host-config.timer
+      - /etc/systemd/system/timers.target.wants/fleet-host-config.timer
       - /etc/systemd/system/actions.runner.Nishfleet.netcup-fleet-ci-.service.d/10-restart.conf
       # drive moved to Nishfleet (2026-10-06): its runners are org agent runners now.
       - /etc/systemd/system/actions.runner.nish3451-drive.netcup-agent-drive-.service.d
@@ -143,6 +144,13 @@
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.service"
       - "{{ nish_home }}/.config/systemd/user/seofixkit-d1-backup.timer"
       - "{{ nish_home }}/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer"
+      # The Amp runners (#10662): removed from the repo and already gone from
+      # this host. Listed so a box that still has the links drops them instead of
+      # failing the link check in fleet-sync.service.
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
@@ -166,6 +174,15 @@
       - "{{ nish_home }}/workspaces/products/.githooks"
       - "{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"
       - "{{ nish_home }}/.cache/tincan-relink-once.sh"
+      # The alert-stack cut deleted the executor, its config and the tmpfiles
+      # lines that created this directory and link. tmpfiles is applied with
+      # --create only, so the link outlived the file it pointed at.
+      - "{{ nish_home }}/.config/prometheus-am-executor/config.yml"
+      # The chrome-devtools plugin left the nish-mods marketplace (2026-10-23
+      # glue audit), so the drop-in that enabled it enabled nothing and the
+      # repo stopped shipping it. `copy` never deletes, so the live file is
+      # retired here or it keeps loading a plugin id no marketplace lists.
+      - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -182,6 +199,26 @@
     digest_prompts:
       - digest-morning
       - digest-evening
+    # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
+    # it is given, so a job whose work is done stays until something deletes it.
+    # Listed by id and never searched for: a worker's fresh proof job is legitimate,
+    # and a rule that matched names would delete it on the next deploy. The live
+    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
+    # config/restic/include.txt.
+    hermes_retired_jobs:
+      # The two proof jobs from the digest runs (#9579, #9717). Both were still
+      # enabled on a schedule that fires once a year, so they would have run 1 Jan.
+      - 13d3db49b9c5
+      - f16c57bb6885
+      # The seven one-shot jobs whose run_at passed on 2026-10-23 to 2026-10-26.
+      - d4efa85f43c3
+      - 50229bbf6c4a
+      - 0de3952d8ecb
+      - df6163647275
+      - bdc37cb70a4a
+      - fc1c6a815b80
+      - 7eda90c8dd97
     chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
     chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
     chrome_devtools_mcp_args:
@@ -216,6 +253,21 @@
     commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
+    # ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
+    # checkout that user units can read (fleet-ops#10479): root owns it, no
+    # worktree is attached to it, and every deploy moves it to the merged
+    # commit. UMask=0077 (20-umask.conf) leaves its newer files 0600, which
+    # locked readers out once already (#10472), so this makes the whole tree
+    # readable and not writable by anyone but root.
+    - name: Make the deploy checkout readable by every user and writable by root only
+      ansible.builtin.file:
+        path: "{{ (playbook_dir ~ '/..') | realpath }}"
+        state: directory
+        recurse: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+
     - name: Check the prometheus config before installing it
       ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
       changed_when: false
@@ -258,6 +310,7 @@
         owner: root
         group: root
         mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
 
     # Restic backup include and exclude lists and the retention policy
     # (config/restic/). The backup and maintenance units read them from
@@ -288,29 +341,134 @@
         mode: preserve
       notify: Reload systemd
 
-    - name: Install agent runner units
-      ansible.builtin.template:
-        src: actions.runner.Nishfleet.netcup-agent.service.j2
-        dest: "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+    # fleet-update.service reads the healthchecks.io success-ping URL from a
+    # root-only curl config; the URL is not named in the repo (fleet-ops#9965).
+    - name: Make the directory for the update unit's root-only files
+      ansible.builtin.file:
+        path: /etc/fleet-ops
+        state: directory
         owner: root
         group: root
-        mode: '0644'
-      loop: "{{ agent_runner_ids }}"
-      notify: Reload systemd
+        mode: '0755'
 
-    # `.runner` alone is not proof of a registration: a `config.sh` cut between
-    # its two writes leaves `.runner` without `.credentials`, and the unit would
-    # start and fail. The pair is the registration.
-    - name: Start the registered agent runners
+    # The update's own healthchecks ping URL lives with the box's other ping
+    # URLs in the keystone env file, so one paste covers it once the check
+    # exists (creating the check needs the healthchecks.io account; no API key
+    # is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+    # the update unit cannot ping the other checks. A missing line leaves the
+    # mirror absent, the unit pings SKIP, and its check simply goes stale,
+    # which is the alert.
+    - name: Read the healthchecks ping URLs nish keeps for the box
+      ansible.builtin.slurp:
+        src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+      register: hc_env_source
+      failed_when: false
+      no_log: true
+
+    # Written as a curl config (`url = <URL>`), so the unit pings with a
+    # plain `curl --config` and the URL stays out of argv.
+    - name: Hand the update unit its own healthchecks URL, root-only
+      vars:
+        hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+      ansible.builtin.copy:
+        dest: /etc/fleet-ops/update-hc.curl
+        content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
+        owner: root
+        group: root
+        mode: '0600'
+      when: hc_update_lines | length > 0
+      diff: false
+      no_log: true
+
+    # Pilot (fleet-ops#10451): runner 1 runs as a service user with no sudo and no group
+    # in common with nish. Its drop-in is rootfs/etc/systemd/system/
+    # actions.runner.Nishfleet.netcup-agent-1.service.d/30-pilot-user.conf. The registration
+    # is copied once: only while the copy has no runsvc.sh, so a re-run never overwrites the
+    # runner's live state.
+    - name: Create the pilot runner user
+      ansible.builtin.user:
+        name: fleet-runner
+        system: true
+        shell: /usr/sbin/nologin
+        home: /var/lib/fleet-runner
+        create_home: true
+
+    - name: Copy runner 1 to the pilot user once
+      ansible.builtin.copy:
+        src: "{{ nish_home }}/.local/share/agent-runner/1/"
+        dest: /var/lib/fleet-runner/1/
+        remote_src: true
+        local_follow: false
+        owner: fleet-runner
+        group: fleet-runner
+        mode: preserve
+        directory_mode: '0750'
+      when:
+        - (nish_home ~ '/.local/share/agent-runner/1/runsvc.sh') is exists
+        - "'/var/lib/fleet-runner/1/runsvc.sh' is not exists"
+      notify:
+        - Reload systemd
+        - Restart pilot runner
+
+    # The copy keeps `bin` and `externals` as the absolute links they are under
+    # nish's home, which fleet-runner cannot enter (mode 0750), so runsvc.sh exited
+    # at once and the unit crash-looped (fleet-ops#10491). Point them at their
+    # sibling directories instead. A link that is already relative is left alone.
+    - name: Read the pilot runner links
+      ansible.builtin.stat:
+        path: "/var/lib/fleet-runner/1/{{ item }}"
+      loop: [bin, externals]
+      register: pilot_links
+
+    - name: Point the pilot runner links at the copy
+      ansible.builtin.file:
+        src: "{{ item.stat.lnk_target | basename }}"
+        dest: "{{ item.stat.path }}"
+        state: link
+        owner: fleet-runner
+        group: fleet-runner
+      loop: "{{ pilot_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+      notify: Restart pilot runner
+
+    # The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+    # paths, and the runner loads it over the unit's own HOME, so every job's gh read
+    # nish's .config/gh/config.yml and died with permission denied (fleet-ops#10510).
+    # HOME goes to the pilot's own; the other two point at nish's runtime and Claude seat,
+    # so they are dropped.
+    - name: Give the pilot runner its own HOME in the runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^HOME='
+        line: HOME=/var/lib/fleet-runner
+        insertbefore: BOF
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    - name: Drop nish's runtime paths from the pilot runner environment
+      ansible.builtin.lineinfile:
+        path: /var/lib/fleet-runner/1/.env
+        regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+        state: absent
+      when: "'/var/lib/fleet-runner/1/.env' is exists"
+      notify: Restart pilot runner
+
+    # The stop waits for a running job (TimeoutStopSec=5min), so no job is cut.
+    - name: Stop and disable the retired agent runners
       ansible.builtin.systemd_service:
         name: "actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
-        enabled: true
-        state: started
-        daemon_reload: true
-      loop: "{{ agent_runner_ids }}"
-      when:
-        - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.runner') is exists
-        - (nish_home ~ '/.local/share/agent-runner/netcup-agent-' ~ item ~ '/.credentials') is exists
+        enabled: false
+        state: stopped
+      loop: "{{ agent_runner_retired_ids }}"
+      when: ('/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-' ~ item ~ '.service') is exists
+
+    - name: Remove the retired agent runner units
+      ansible.builtin.file:
+        path: "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service"
+        state: absent
+      loop: "{{ agent_runner_retired_ids }}"
+      notify: Reload systemd
 
     - name: Install systemd user-manager drop-ins
       ansible.builtin.copy:
@@ -481,7 +639,9 @@
         dest: /etc/prometheus/
         owner: root
         group: root
-        mode: preserve
+        # Not preserve: a clone made under umask 077 holds these as 0600, and
+        # the prometheus user then cannot read the rules (fleet-ops#10472).
+        mode: "0644"
       notify:
         - Reload prometheus
         - Reload alertmanager
@@ -605,17 +765,30 @@
         mode: preserve
 
     # Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
-    # managed settings: here, the agents' auto-mode rules and the hook that
-    # bounces routine asks to Nish (README, "Agent autonomy drop-in"). A drop-in
+    # managed settings: here, the agents' auto-mode rules, the hook that
+    # bounces routine asks to Nish, the Beacon telemetry env and the enabled
+    # plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+    # "Claude plugin drop-ins"). The box-wide file those merge into,
+    # managed-settings.json, has its own task below (README, "Managed-settings
+    # defaults"). A drop-in
     # that does not parse stops Claude Code from starting on the whole box, so
     # validate refuses any file that is not a JSON object before it reaches
-    # /etc. /etc/claude-code is not in owned_dirs: its managed-settings.json is
-    # hand-installed. To switch this off, delete the file from rootfs/ and add
+    # /etc. /etc/claude-code is not in owned_dirs: the directory is installed
+    # file by file. To switch a file off, delete the file from rootfs/ and add
     # its /etc path to `retired`.
     - name: Install Claude Code managed-settings drop-ins
       ansible.builtin.copy:
         src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
         dest: /etc/claude-code/managed-settings.d/
+        owner: root
+        group: root
+        mode: preserve
+        validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+    - name: Install the Claude Code managed-settings defaults file
+      ansible.builtin.copy:
+        src: "{{ rootfs }}/etc/claude-code/managed-settings.json"
+        dest: /etc/claude-code/managed-settings.json
         owner: root
         group: root
         mode: preserve
@@ -636,6 +809,20 @@
         owner: root
         group: root
         mode: "0644"
+
+    # The backup unit starts the locked copy through OnSuccess= (restic-r2-backup
+    # drop-in 30-copy-on-success.conf), so the box-only copy timer must not fire
+    # a copy after a failed backup. Stopped, not removed: it is box-only. A box
+    # without the timer is fine.
+    - name: Stop the locked-copy timer, the backup unit starts the copy through OnSuccess
+      ansible.builtin.systemd_service:
+        name: restic-r2-locked-copy.timer
+        enabled: false
+        state: stopped
+      register: locked_copy_timer
+      failed_when:
+        - locked_copy_timer.failed | default(false)
+        - "'Could not find the requested service' not in (locked_copy_timer.msg | default(''))"
 
     # Leviathan is the session-log search the agents are told to run first
     # (AGENTS.md, prompts/worker.md). The release is pinned: a bump is a PR
@@ -801,6 +988,11 @@
       loop: "{{ agent_state_dbs.files }}"
       loop_control:
         label: "{{ item.path }}"
+      register: agent_state_db_chmod
+      # SQLite deletes its -journal, -wal and -shm files on its own, so one
+      # found a moment ago can be gone by now (fleet-ops#10388). Only that
+      # error is ignored; any other failure still fails the run.
+      failed_when: agent_state_db_chmod.failed and 'is absent' not in (agent_state_db_chmod.msg | default(''))
       # A file nish does not own is skipped: nish cannot chmod it.
       when: item.pw_name == 'nish'
 
@@ -1634,14 +1826,16 @@
       # Under --check the copy above did not really install the unit yet.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: Enable the daily drift run
+    # The daily drift timer is gone (fleet-ops#10457): the host changes when main
+    # changes, through deploy-box.yml, and after a boot. Stopped and disabled
+    # here, and its file is in `retired`. A box where it is already gone is fine.
+    - name: Stop and disable the retired daily host config timer
       ansible.builtin.systemd_service:
         name: fleet-host-config.timer
-        enabled: true
-        state: started
+        enabled: false
+        state: stopped
         daemon_reload: true
-      # Under --check the copy above did not really install the timer yet.
-      ignore_errors: "{{ ansible_check_mode }}"
+      failed_when: false
 
     # A reboot stops tether's Cua Space (Docker restart policy `no`) and its next
     # start publishes a new port, so the env file and the nft rule must be
@@ -2174,6 +2368,22 @@
       diff: false
       no_log: true
 
+    - name: Delete the retired jobs from Hermes' cron store
+      become: true
+      become_user: nish
+      ansible.builtin.command:
+        argv:
+          - "{{ nish_home }}/.local/bin/hermes"
+          - cron
+          - remove
+          - "{{ item }}"
+      environment: "{{ nish_env }}"
+      loop: "{{ hermes_retired_jobs | select('in', hermes_jobs_ids) | list }}"
+      vars:
+        hermes_jobs_ids: >-
+          {{ (hermes_jobs.content | default('e30=') | b64decode | from_json).jobs
+             | default([]) | map(attribute='id') | list }}
+
     - name: Apply config/hermes/digest-*.md to the live digest jobs
       become: true
       become_user: nish
@@ -2424,6 +2634,11 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    - name: Restart pilot runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
+
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
@@ -2506,3 +2721,26 @@
       ansible.builtin.systemd_service:
         name: prometheus-blackbox-exporter.service
         state: restarted
+
+    # Last step of the self-repair loop (fleet-ops#10338): a oneshot that failed
+    # before its fix landed stays failed, and its alerts keep firing, until
+    # something starts it again. Only a unit that is failed now is started, and
+    # --no-block keeps a long backup from holding the deploy. The unit list is
+    # the start list in rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules,
+    # minus fleet-host-config.service itself.
+    - name: Read whether each re-runnable oneshot is failed
+      ansible.builtin.command: /usr/bin/systemctl is-failed {{ item }}
+      loop:
+        - fleet-update.service
+        - restic-r2-backup.service
+        - restic-r2-size-guard.service
+      register: oneshot_failed
+      changed_when: false
+      failed_when: oneshot_failed.rc not in [0, 1]
+
+    - name: Re-run each failed oneshot after the deploy
+      ansible.builtin.command: /usr/bin/systemctl start --no-block {{ item.item }}
+      loop: "{{ oneshot_failed.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stdout == 'failed'

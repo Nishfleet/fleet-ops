@@ -98,7 +98,7 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 | `/home/nish/.local/share/fleet-grafana` | 486 MiB, 4.5 MiB kept | `grafana.db`: users, annotations, dashboard state, unified-search. `plugins/` is reinstalled from the catalog. |
 | `/home/nish/.local/share/drive` | 53 MiB | labelled eval train and held-out cases. A different model family wrote them; re-running the harness is not the same data. |
 | `/home/nish/.local/state/fleet-ops/cloudflare-tokens` | 344 KiB | OpenTofu state for the per-repo Cloudflare tokens (`infra/cloudflare-tokens/`). The only record of the live tokens; without it the `gha-*` tokens are deleted by hand and minted again. |
-| `/home/nish/.local/share/containers/storage/volumes` | 83 MiB | podman container volumes. |
+| `/home/nish/.local/share/containers/storage/volumes` | 3.3 GiB on disk, 83 MiB kept | podman container volumes. `exclude.txt` drops the orphaned pre-migration LiteLLM Postgres volume (3.2 GiB, last written 13:20 on 23 Oct 2026; no container mounts it and the nightly `pg_dump` is that database's backup, so it is superseded) and the litellm pycache volume (bytecode the proxy writes again). The orphaned volume was nearly all of the 3.6 GB of new data that tripped the size guard on 24 and 25 Oct (fleet-ops#10258). |
 | `~/workspaces/products` | 74 MiB source + `.git` | product working trees. Uncommitted edits, unpushed branches and repos with no remote yet exist only here; `exclude.txt` drops `node_modules`, `dist`, `build` and other rebuildable outputs at the top of each repo (about 1.3 GiB). Local `.env` files are kept too: the snapshot is encrypted and already holds `~/.config`, and a key that exists only on the box is exactly what a restore would otherwise lose. Local database files, dumps, data exports, archives and `.bak` copies (`.sqlite`, `.db`, `.sql`, `.csv`, `.ndjson`, `.gz`, `.tgz`, `.xz`, `.bz2`, `.zst`, `.zip`, `.7z`, `.tar`, `.bak`, `.old`, `.orig`, `.backup`) are dropped, because the locked copy could never forget a customer's rows; committed ones are still in git. |
 | `/etc` | 10 MiB | units, ssh, polkit, sysctl, cron, rclone and prometheus config. |
 | `/root` | ~4 KiB | root's scripts and keys. |
@@ -109,6 +109,12 @@ hand-installed R2 credentials (`netcup-r2.env`) and the retired
 Sum of the kept set: about 3.9 GiB before compression on 2026-10-07, about 1.5 GiB once the raw LiteLLM datadir (2.1 GiB), the stale copies and the Hermes rollback trees left on 2026-10-21, which restic reports as
 the snapshot's restore size (see `Verification` on the PR). That is inside the
 7 GiB target the issue sets and far inside the 10 GiB hard stop.
+
+On 24 and 25 Oct the size guard tripped both nightly runs: the dry run counted
+3.6 GB of new data against the 1 GiB limit, nearly all of it the orphaned
+pre-migration Postgres volume dropped above. Measured on 2026-10-25 with that
+exclusion: the guard's dry run reports 430 MB of new data and a 1.7 GiB restore
+size, and the run's snapshot (`c2f3fab3`) processed 22,104 files / 1.687 GiB.
 
 Measured on 2026-10-07 with these two lists against a scratch repository
 (`Verification` on the PR carries the numbers). The first backup added 3.30 GB
@@ -137,6 +143,7 @@ They are readable by the live unit, which runs as root.
 | `/home/nish/tool`, `.wix`, `Documents`, `backups`, `Downloads`, `Desktop`, `Music`, `Videos`, `Pictures`, `scratch` | ~360 MiB | personal scratch and retired files, not fleet state. The 6.7 MiB in `~/backups` is an old dump superseded by `agent-state/backups`. |
 | dotfiles at the top of `/home/nish` (`.bashrc`, `.viminfo`, `.zcompdump`, `.Xauthority`, …) | < 1 MiB | part of the OS image, not of the fleet state. |
 | `~/.local/share/fleet-litellm-postgres` | 2.1 GiB, about 700 MiB of churn a day | the raw datadir of the running LiteLLM Postgres. A file copy of a live Postgres is not crash-consistent, so it is not a backup, and its churn grew the repository by about 0.7 GB for every day a snapshot was kept. The `pg_dump` in `agent-state/backups` is the backup: restored from snapshot `66052ca5` and again from the newest kept snapshot after the first prune, and listed with `pg_restore --list` (146 tables) on 2026-10-21. The box-only backup unit writes `pg_dump -Fc` to a `.new` file and moves it over `litellm.dump` only after pg_dump exited 0, and neither of those two `ExecStartPre=` lines has a `-` prefix, so a failed dump fails the unit before restic runs and never replaces the previous dump with a partial one. |
+| the orphaned pre-migration LiteLLM Postgres podman volume (`df817408…`) | 3.2 GiB | the old cluster the 23 Oct 2026 migration left behind. No container mounts it; the live cluster's data dir is deliberately not backed up raw (row above), so this volume's state is superseded by the kept pre-migration dumps and the nightly `pg_dump`. Excluded on 2026-10-25 after it tripped the size guard on two consecutive nights (fleet-ops#10258); the files stay on disk. |
 | `/var/lib`, `/var/log` | — | duplicated by the `litellm.dump` and the host config kept above. Nothing in them is unreproducible. |
 
 Two deliberate exclusions inside a kept path, neither of which the old
@@ -195,15 +202,19 @@ summary. The unit fails with exit **78** when either limit is crossed:
   fails the backup unit **before** its `ExecStart`, so nothing over the limit
   is uploaded and the heartbeat ping is not sent. It runs after the pg_dump
   line, so the fresh dump is part of what is measured.
-- `restic-r2-locked-copy.service.d/10-needs-backup.conf` gives the locked copy
-  `Requires=restic-r2-backup.service`, so the copy into the `-locked` bucket is
-  **skipped** when the backup fails. `Requires=` on a oneshot service *starts*
-  it first, so the 06:15 locked copy also runs a guarded backup before it
-  copies. That is the cost: the backup runs twice a day instead of once. It is
-  paid on purpose, because a copy that follows a failed backup would push an
-  unwanted snapshot into the locked bucket, which nothing can reclaim from. The
-  backup unit takes the same `flock` the locked copy already takes, so the two
-  cannot run concurrently; the second waits rather than duplicating work.
+- `restic-r2-backup.service.d/30-copy-on-success.conf` sets
+  `OnSuccess=restic-r2-locked-copy.service`, so the copy into the `-locked`
+  bucket only follows a backup that finished well: a failed backup or a tripped
+  size guard never reaches it, and nothing can be reclaimed from the locked
+  bucket for 30 days. `OnSuccess=` needs systemd 249 or later. It replaces
+  `Requires=restic-r2-backup.service`, which on a oneshot service *starts* the
+  backup first, so the old 06:15 copy ran a second backup every day.
+  `10-needs-backup.conf` keeps only `After=`. The box-only
+  `restic-r2-locked-copy.timer` is redundant: the playbook task "Stop the
+  locked-copy timer" disables it, because a timer copy after a failed 04:38
+  backup is the case the old `Requires=` blocked. Both units take the same
+  `flock`, so they cannot run together. A hand `systemctl start
+  restic-r2-locked-copy` no longer runs a backup first.
 - The failed unit is the signal: `systemctl list-units --state=failed` shows
   `restic-r2-size-guard.service` and `restic-r2-backup.service`. Find out what
   grew (`journalctl -u restic-r2-size-guard`), fix the include or exclude list,
@@ -319,9 +330,9 @@ and changes one thing:
 - `restic-r2-backup.service.d/20-retention.conf` and
   `restic-r2-maintenance.service.d/10-retention.conf` replace the box-only
   forget lines with the policy from `retention.env`.
-- `restic-r2-locked-copy.service.d/10-needs-backup.conf` makes the locked copy
-  `Requires=` the backup unit. The box-only unit's own `After=` still sets the
-  order.
+- `restic-r2-backup.service.d/30-copy-on-success.conf` starts the locked copy
+  through `OnSuccess=`; `restic-r2-locked-copy.service.d/10-needs-backup.conf`
+  keeps only the `After=` order.
 
 These must already exist on the box; they hold credentials and stay
 hand-installed:
