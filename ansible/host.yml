@@ -2068,15 +2068,13 @@
       when: cursor_next != cursor_now
       diff: false
 
-    # The Drive entry is stock client config: this repo owns only its package
-    # spec (config/drive-mcp.json). A config Claude Code never wrote is left alone.
     - name: Read Claude Code's user config
       become: true
       become_user: nish
       ansible.builtin.slurp:
         src: "{{ nish_home }}/.claude.json"
       register: claude_user_config
-      failed_when: false
+      failed_when: claude_user_config.msg is defined and 'file not found' not in claude_user_config.msg
       diff: false
 
     - name: Pin the Drive filesystem server in Claude Code's user config
