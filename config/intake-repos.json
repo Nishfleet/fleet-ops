@@ -33,7 +33,7 @@
     {
       "name": "siterep-public",
       "product": true,
-      "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; decision ledger entry nish-vault#27; the end-date review is Nishfleet/siterep-public#173, due that day)"
+      "enrolled_by": "Nish, 2026-10-15 (Site Rep; the launch push to 2026-10-29 ended 2026-10-28 with 0 paying workspaces: the numbers and Nish's continue/adjust/stop call are Nishfleet/siterep-public#232; normal intake order from 2026-10-28)"
     },
     {
       "name": "tether",
@@ -43,7 +43,7 @@
     {
       "name": "seo-fix-kit",
       "product": true,
-      "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; decision ledger entry nish-vault#27; the end-date review is Nishfleet/siterep-public#173, due that day; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16)"
+      "enrolled_by": "Nish, 2026-10-15 (SEO Fix Kit; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16; the launch push to 2026-10-29 ended 2026-10-28 with 0 paid Fix Packs: the numbers and Nish's continue/adjust/stop call are Nishfleet/seo-fix-kit#317; normal intake order from 2026-10-28)"
     }
   ],
   "sweep_only": [
