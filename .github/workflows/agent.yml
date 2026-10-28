@@ -651,7 +651,7 @@ jobs:
             # is labelled, not armed: coordinator-approval is a required check on fleet-ops only (fleet-ops#10621).
             facts=$(gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' |
               jq -sc --arg repo "$REPO" --argjson pr "$(gh api "repos/$REPO/pulls/$n")" '{repo: $repo, labels: [$pr.labels[].name], files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}], changed_files: $pr.changed_files}') || facts=
-            verdict=$(jq -c --argjson cfg "$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json")" --arg label needs-coordinator "$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml" | yq .jobs.hold-risky.env.CLASSIFY)" <<<"$facts") || verdict=
+            verdict=$(jq -c --argjson cfg "$(curl -fsSL --retry 3 --max-time 60 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json")" --arg label needs-coordinator "$(curl -fsSL --retry 3 --max-time 60 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml" | yq .jobs.hold-risky.env.CLASSIFY)" <<<"$facts") || verdict=
             if ! jq -e '.risky == false' <<<"$verdict" >/dev/null 2>&1; then
               gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "risky by config/risky-paths.json: reviewed before it is armed"
