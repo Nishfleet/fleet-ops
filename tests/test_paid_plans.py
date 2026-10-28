@@ -2,6 +2,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
@@ -53,11 +54,33 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     assert not missing, f"fallbacks naming a group with no row: {missing}"
 
 
+REMOVED_PROVIDER_HOSTS = frozenset({"api.cline.bot", "ollama.com"})
+
+
+def _removed_provider_host(base):
+    return (urllib.parse.urlparse(base).hostname or "").rstrip(".")
+
+
+def _removed_provider_rows(bases):
+    return sorted({b for b in bases if _removed_provider_host(b) in REMOVED_PROVIDER_HOSTS})
+
+
 def test_no_row_serves_a_removed_provider_again():
-    # Cline and Ollama Cloud rows were removed with the owner's yes of 2026-10-23 (fleet-ops#10068). Re-adding one is the owner's call.
-    bases = _bases(_router_rows())
-    back = sorted({b for b in bases if b.startswith("https://api.cline.bot") or b.startswith("https://ollama.com")})
+    back = _removed_provider_rows(_bases(_router_rows()))
     assert not back, f"rows for removed providers are back: {back}. Re-adding them needs Nish (fleet-ops#10068)"
+
+
+def test_removed_provider_match_is_exact_on_hostname():
+    bases = [
+        "https://api.cline.bot/v1",
+        "https://ollama.com/v1",
+        "https://ollama.com./v1",
+        "https://api.cline.bot.evil.example/v1",
+        "https://ollama.com.evil.example/v1",
+        "https://api.openai.com/v1",
+    ]
+    back = _removed_provider_rows(bases)
+    assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
 
 
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():

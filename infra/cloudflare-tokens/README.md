@@ -14,11 +14,8 @@ Status: applied for the 10 repos that were in the list on 2026-10-09 with the
 minter token (`~/.config/cloudflare/token-minter.env`); the plan resolved every
 permission group name against the live API. Which jobs have run on the new
 tokens is in the PR body. A weekly timer renews them (see "Renewal").
-`inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
-apply` after that merge creates its token and writes its secret, so the state
-holds it before any run has used it. `fleet_console` (fleet-console-worker) was
-applied by hand on 2026-10-20 and is now in `main.tf`, so the weekly apply no
-longer destroys it; `seo-fix-kit` is new and is created by the next apply.
+`fleet_console` (fleet-console-worker) was applied by hand on 2026-10-20 and is
+now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 
 ## What it creates
 
@@ -34,7 +31,6 @@ longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
 | `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
-| `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
 | `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 
