@@ -77,10 +77,11 @@
     - Reload systemd
     - Reload nish's user manager
 
-# Drift: the copy tasks above already put back any hand edit to a file the
-# repo ships. What is left is a file on the box that the repo does not
-# ship: a hand install. Fail on it, so it pages instead of living on
-# unreviewed. /etc/systemd/system.control must stay empty, because
+# Drift: the copy tasks above put back any hand edit to a file the repo
+# ships, so the edit is gone by now; "Fail on a hand-edited file" below
+# reports it from the snapshot taken before them. What is left is a file on
+# the box that the repo does not ship: a hand install. Fail on it, so it
+# pages instead of living on unreviewed. /etc/systemd/system.control must stay empty, because
 # `systemctl set-property` without --runtime writes there and bypasses
 # the repo. Symlinks are enable/mask state, not config, so only regular
 # files count.
@@ -106,13 +107,27 @@
     fail_msg: "Hand-installed, not in fleet-ops rootfs/ (add it to the repo, delete it, or list it in /etc/fleet-ops/box-only): {{ unmanaged | join(', ') }}"
     quiet: true
   vars:
-    shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
+    shipped_paths: "{{ shipped.files | rejectattr('isdir') | rejectattr('islnk') | map(attribute='path') | map('replace', rootfs, '') | list }}"
     unmanaged: >-
       {{ live.files | map(attribute='path')
          | difference(shipped_paths) | difference(box_only)
          | reject('search', package_files | join('|'))
          | reject('search', '^(' ~ (retired | map('regex_escape') | join('|')) ~ ')(/|$)')
          | sort }}
+
+- name: Fail on a hand-edited file
+  ansible.builtin.assert:
+    that: hand_edited | default([]) | length == 0
+    fail_msg: "Hand-edited, differs from fleet-ops rootfs/ and not changed by this deploy (the copy tasks have put the repo's version back; make the change in the repo): {{ hand_edited | default([]) | join(', ') }}"
+    quiet: true
+
+- name: Record the commit this run applied
+  ansible.builtin.copy:
+    content: "{{ head_sha.stdout }}\n"
+    dest: "{{ applied_sha_file }}"
+    owner: root
+    group: root
+    mode: '0644'
 
 # Last on purpose: the handlers run first, so a missing credential file
 # fails this run without holding back the reloads above.
