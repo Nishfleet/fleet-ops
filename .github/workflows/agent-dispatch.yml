@@ -720,7 +720,7 @@ jobs:
           permission-actions: write
           permission-issues: write
           permission-pull-requests: read
-      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then dispatch (a tried one is re-labelled first); 3 ended or re-fired, then needs-nish-decision. App token: the job token cannot dispatch and a job-token label edit fires no event (fleet-ops#10640).
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then a tried one is re-labelled (the App token's label event starts the run) and an idle one is dispatched; 3 ended or re-fired, then needs-nish-decision. App token: the job token cannot dispatch and a job-token label edit fires no event (fleet-ops#10640).
       - id: requeue
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -744,19 +744,23 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
-            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
+          bad=0
+          while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
               elif [ "$(jq -r .tried <<<"$r")" = true ]; then
-                { gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator && gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n"; } || { echo "::error::#$n: re-queue refused"; exit 1; }
+                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator && continue
+                echo "::error::#$n: re-queue refused"; bad=1
+                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-queue marker refused"
               else
-                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"
+                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || { echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"; bad=1; }
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
               fi
-            done
+          done < <(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE")
+          [ "$bad" = 0 ]
   unblocked:
     needs: list
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'

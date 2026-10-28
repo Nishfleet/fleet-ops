@@ -101,19 +101,20 @@ def test_idle_six_hours_requeues_and_fresh_waits(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [1]
 
 
-def test_tried_requeue_dispatches_and_needs_no_runner_login(tmp_path):
-    """No gh login to unset, and a label edit by a token starts no run, so the sweep dispatches the
-    orchestrate run itself (fleet-ops#10640)."""
+def test_tried_requeue_swaps_labels_only(tmp_path):
+    """One trigger: the App token's label event starts the run, so a dispatch too would start two
+    (fleet-ops#10640)."""
     w = run(tmp_path, [issue(1)])
     assert "env -u GH_TOKEN" not in _y(f"{STEP} | .run")
-    assert w == ["issue edit 1 -R o/r --remove-label orchestrator-tried --add-label needs-orchestrator",
-                 "workflow run stub.yml -R o/r -f task=orchestrate -f issue=1"]
+    assert w == ["issue edit 1 -R o/r --remove-label orchestrator-tried --add-label needs-orchestrator"]
 
 
-def test_refused_requeue_fails_the_step_loud_and_dispatches_nothing(tmp_path):
-    out = run(tmp_path, [issue(1)], fail={"FAIL_EDIT": "1"}, ok=False)
-    assert "::error::#1: re-queue refused" in out
-    assert not (tmp_path / "writes.log").exists()
+def test_refused_requeue_fails_the_step_after_the_loop_and_counts_a_strike(tmp_path):
+    out = run(tmp_path, [issue(1), issue(2)], fail={"FAIL_EDIT": "1"}, ok=False)
+    assert "::error::#1: re-queue refused" in out and "::error::#2: re-queue refused" in out
+    w = (tmp_path / "writes.log").read_text().splitlines()
+    assert not [l for l in w if l.startswith(("workflow run", "issue edit"))]
+    assert [l for l in w if l.startswith("issue comment 1 ") and REFIRED.split("https")[0] in l]
 
 
 def test_batch_is_five(tmp_path):
@@ -154,7 +155,7 @@ def test_failed_dispatch_fails_loud_and_counts_a_strike(tmp_path):
     """A stub without the task and issue inputs refuses every dispatch: the marker still posts, so
     the third sweep escalates instead of retrying forever."""
     i = [issue(1, ended=0, labels=("needs-orchestrator",))]
-    out = run(tmp_path, i, fail={"FAIL_DISPATCH": "1"}, out=True)
+    out = run(tmp_path, i, fail={"FAIL_DISPATCH": "1"}, ok=False)
     assert "::error::#1: re-fire refused" in out
     w = (tmp_path / "writes.log").read_text().splitlines()
     assert [l for l in w if l.startswith("issue comment 1 ") and REFIRED.split("https")[0] in l]
