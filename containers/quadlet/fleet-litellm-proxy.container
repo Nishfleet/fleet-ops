@@ -76,7 +76,7 @@ Environment=PYTHONPYCACHEPREFIX=/pycache
 # EnvironmentFile= lines below fill. One line per os.environ/NAME in litellm-proxy.yaml.
 # Alibaba Model Studio Token Plan (fleet-ops#9220, judge row only): os.environ/ALIBABA_CODING_API_KEY in
 # config/litellm-proxy.yaml needs its own line, and the seat file ~/.config/fleet-ops/seats/alibaba-coding.env
-# is already covered by the seats/*.env EnvironmentFile below.
+# is already covered by the seat EnvironmentFile lines below.
 PodmanArgs=--env=ALIBABA_CODING_API_KEY
 # Anthropic Claude API (the tether group's Sonnet 5.5 row, Nish 2026-10-22): the prepaid key sits in a
 # seat file that the seat EnvironmentFile lines below already cover.
@@ -127,7 +127,21 @@ PodmanArgs=--env=ZAI_API_KEY
 Exec=--config /app/config.yaml --port 4000 --host 127.0.0.1 --num_workers 2
 
 [Service]
-EnvironmentFile=-%h/.config/fleet-ops/seats/*.env
+# One line per seat file whose key the PodmanArgs=--env=NAME lines above pass on (a test checks
+# the config's os.environ/NAME vars are all passed); a glob would hand the router every other seat's key.
+EnvironmentFile=-%h/.config/fleet-ops/seats/alibaba-coding.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/anthropic-api.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/cline.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/commandcode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/minimax.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/ollama.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/opencode.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/opencode-2.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/pareto.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/stepfun.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/synthetic.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/typesafe-jev.env
+EnvironmentFile=-%h/.config/fleet-ops/seats/zai.env
 EnvironmentFile=-%h/.config/straitly/straitly.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-master-key.env
 EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
@@ -135,6 +149,11 @@ EnvironmentFile=%h/.config/fleet-ops/litellm-db.env
 # instead of running with a cache it cannot authenticate to. ansible/host.yml renders it.
 EnvironmentFile=%h/.config/fleet-ops/litellm-keys/redis.env
 Slice=app-litellm.slice
+# The router's own cap, equal to app-litellm.slice's MemoryMax; the slice test below asserts the two
+# stay equal. The slice still bounds the whole tree at the same 5G, so this is not a tighter limit.
+# It gives the unit a cap of its own instead of `infinity` in `systemctl show -p MemoryMax`, and
+# makes the proxy's cgroup the one that hits its wall at 5G rather than the shared slice.
+MemoryMax=5G
 # Pre-start steps, in this order. A failing step fails the start job, so the proxy never runs on a
 # schema the job did not migrate; Restart=on-failure and OnFailure= then page as for any failed start.
 # The proxy is stopped while they run, so nothing writes between the dump and the migration.
@@ -147,7 +166,7 @@ Slice=app-litellm.slice
 #    config/restic/include.txt, so restic keeps the history. Rollback: stop the proxy,
 #    pg_restore --clean --if-exists the 152 file, revert the image PR, start the proxy; spend logs
 #    and key spend written after the dump are lost.
-ExecStartPre=/bin/sh -c 'umask 077 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && f=%h/workspaces/agent-state/backups/litellm-pre-migrate-$$n.dump && { test -s $$f || { /usr/bin/pg_dump -h 127.0.0.1 -U litellm -d litellm -Fc -f $$f.part && /usr/bin/pg_restore --list $$f.part | grep -q "TABLE DATA" && /bin/mv $$f.part $$f; }; }'
+ExecStartPre=/bin/sh -c 'umask 077 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && f=%h/workspaces/agent-state/backups/litellm-pre-migrate-$$n.dump && { test -s $$f || { /usr/bin/pg_dump -h 127.0.0.1 -U litellm -d litellm -Fc -f $$f.part && /usr/bin/pg_restore --list $$f.part | grep -q "TABLE DATA" && /bin/mv $$f.part $$f; }; } || exit 1'
 # 2. The image's own migration job (`litellm --skip_server_startup`, no --config, so the proxy's
 #    disable_prisma_schema_update is not read and prisma migrate deploy runs, then it exits). It
 #    exits non-zero when a migration fails and 0 when the schema is already current. The image on the
@@ -161,7 +180,7 @@ ExecStartPre=/bin/sh -c 'umask 077 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm
 #    complete"). A new image has a new digest, and a restored older dump has a different count, so
 #    both miss the marker and migrate as before; a failed job writes no marker, so the proxy still
 #    never starts on a schema the job did not migrate.
-ExecStartPre=/bin/sh -c 'umask 077; mkdir -p %S/fleet-ops && i=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && m=%S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n && { test -e $$m || { /usr/bin/podman run --rm --network host --env DATABASE_URL --env LITELLM_LOG=INFO --env PYTHONPYCACHEPREFIX=/pycache -v fleet-litellm-pycache:/pycache $$i --skip_server_startup && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && : > %S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n; }; }'
+ExecStartPre=/bin/sh -c 'umask 077; mkdir -p %S/fleet-ops && i=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2 && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && m=%S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n && { test -e $$m || { /usr/bin/podman run --rm --network host --env DATABASE_URL --env LITELLM_LOG=INFO --env PYTHONPYCACHEPREFIX=/pycache -v fleet-litellm-pycache:/pycache $$i --skip_server_startup && n=$$(/usr/bin/psql -h 127.0.0.1 -U litellm -d litellm -Atc "select count(*) from _prisma_migrations") && : > %S/fleet-ops/litellm-migrated-$${i##*@sha256:}-$$n; }; } || exit 1'
 # systemd's 90 s default would cover a first pull of a new image and the migration; Type=notify
 # ends the wait at container start, so this only bounds a hung dump or migration.
 TimeoutStartSec=15min
@@ -172,6 +191,19 @@ RestartSec=10s
 # Above the 45 s --stop-timeout, so podman's own SIGKILL fires first and the unit
 # still has time to remove the container.
 TimeoutStopSec=60
+# A planned stop ends in podman's SIGKILL of the one uvicorn worker that never exits (the pinned
+# litellm CLI has no uvicorn timeout_graceful_shutdown flag to bound it), so conmon exits 137 and the
+# unit would fail and page on a restart that worked (fleet-ops#10177). Exit 137 is therefore a
+# success. SuccessExitStatus= is unit-wide and also covers the ExecStartPre= shells, so each of those
+# ends in `|| exit 1`: a SIGKILLed pg_dump or migration container must fail the start with exit 1,
+# never leak a 137 that systemd reads as success. A failed start is podman exit 125, a crash is
+# another exit code or signal, and a kernel OOM kill inside this unit's cgroup ends the unit as
+# `oom-kill`, which OOMPolicy=stop (the default, written here so the pair stays together) sets
+# whatever the exit code. Not covered: an external `podman kill` or `kill -9` of the main container
+# with no OOM behind it ends as success, and Restart=on-failure does not restart it.
+# tests/test_litellm_proxy_stop_not_failure.py pins both halves.
+SuccessExitStatus=137
+OOMPolicy=stop
 
 [Install]
 WantedBy=default.target

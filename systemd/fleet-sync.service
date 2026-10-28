@@ -75,12 +75,13 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
 ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
 ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
-# 2b. ~/.config/environment.d/60-pi-xai-client-version.conf is a COPY of
-#     config/environment.d/ (fleet-ops#9219), installed before the daemon-reload
-#     so the user manager reads it on this run.
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/environment.d/60-pi-xai-client-version.conf /home/nish/.config/environment.d/60-pi-xai-client-version.conf
+# 2b. Retired the Grok client-version pin (fleet-ops#9223): pi-grok 0.13 does
+#     its own lookup of https://x.ai/cli/stable, so the file and its install
+#     line are gone, and this rm drops the copy earlier hosts still carry.
+#     Delete this step once every host has synced it.
+ExecStart=/bin/rm -f %h/.config/environment.d/60-pi-xai-client-version.conf
 # 2c. The leviathan index units, their configs and the tmpfiles rule are
-#     user-scope COPYs (fleet-ops#9313), same class as 2b/6/7/8: the
+#     user-scope COPYs (fleet-ops#9313), same class as 6/7/8: the
 #     leviathan-index@.timer runs every 15 minutes, so the config must exist
 #     before the PR that ships the units merges (a git merge refuses a clone
 #     with untracked files in the way, so no unit may read its config from the
@@ -105,7 +106,7 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
 # 2e. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
-#     edits to it. The install is a user-scope COPY, same class as 2b/2c/6/7:
+#     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
 #     the timer runs every 15 minutes and must not read its list out of the
 #     deploy clone. The timer is enabled on every deploy like 2a, unlike 2e,
 #     because a timer that is silently off is the failure this ships to fix
@@ -141,6 +142,37 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     beacon-hermes-poll.service was never linked (fleet-ops#9967).
 ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2j. The six Tincan wake services (fleet-ops#10133) were hand-placed regular
+#     files under ~/.config/systemd/user with no repo copy, so a git pull carried
+#     no edit to them and the unit-key test could not read them. Each is linked
+#     here the way 2h links its pair: a regular file, or a link to anywhere else,
+#     blocks `link`, so it is removed first. The default.target.wants links already
+#     point at these paths, so no `enable` runs here and a hand `systemctl --user
+#     disable --now` stays off. Off switch: delete this step and the six names in
+#     it, then `systemctl --user disable --now` each unit and `systemctl --user
+#     unlink` it by hand. A unit edit applies at that unit's next restart, so no
+#     restart line runs here: these listeners are woken by work and a restart
+#     drops whatever wake is in flight. The Cua desk daemon is not here: it lives
+#     in rootfs/etc/systemd/user/ and step 2k retires its hand-placed copy.
+ExecStart=/bin/sh -c 'for f in tincan-listen-command-code.service tincan-listen-cursor-vps.service tincan-listen-devin-vps.service tincan-listen-fleet-worker.service tincan-listen-opencode.service tincan-listen-pi.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-command-code.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-cursor-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-devin-vps.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-fleet-worker.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-opencode.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-pi.service
+# 2k. One file fleet-host-config.service installs as root into /etc/systemd/user
+#     (fleet-ops#10140): the Cua desk daemon unit. The gpg-agent OOM drop-in that
+#     used to be retired here is #10138's own delivery: ansible/host.yml lists it
+#     in `retired` and fleet-host-config.service deletes it as root, so this step
+#     would only repeat that. ~/.config/systemd/user shadows /etc/systemd/user,
+#     so the hand-placed copy has to go once the installed one exists, or the repo
+#     copy stays inert. The `test -e` guard keeps this a no-op until then, and the
+#     daemon-reload below makes the user manager read the installed one. The desk
+#     default.target.wants link is an absolute link to the hand copy (`systemctl
+#     enable` writes the path it resolved), so it is repointed at the installed
+#     file before the copy goes: `rm` alone would leave it dangling, and
+#     LINK-GUARD (step 9) fails the unit on any dead link. The repoint runs only
+#     while the link still names the hand copy, so a hand `disable` (no link)
+#     stays off. The leading `-` matters: without it the step fails every deploy
+#     until fleet-host-config has run, and a failed step is a page. Off switch:
+#     delete this step and remove the hand-placed copy by hand.
+ExecStart=-/bin/sh -c 'w=%h/.config/systemd/user/default.target.wants/cua-desk-daemon.service; test -e /etc/systemd/user/cua-desk-daemon.service && { test "$$(readlink $$w)" = %h/.config/systemd/user/cua-desk-daemon.service && ln -sfn /etc/systemd/user/cua-desk-daemon.service $$w; rm -f %h/.config/systemd/user/cua-desk-daemon.service; }'
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
@@ -198,6 +230,12 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -type l ( -lname *worktrees/* -o -lname */agent-state/* -o -lname */tmp/* ) -printf "[fleet-sync] LINK-GUARD live symlink -> throwaway target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -path %h/.pi/agent/skills -prune -o -xtype l -printf "[fleet-sync] LINK-GUARD live symlink -> dead target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill link dead (skill gone from its source, link left in place): %%p -> %%l\n"
+# 10. STUB-GUARD (fleet-ops#10525): on 2026-10-28 a worker with sudo overwrote ten
+#    launch paths with /bin/true so `systemd-analyze verify` would pass; every agent
+#    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
+#    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
+#    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/cursor-agent %h/.local/bin/devin %h/.local/bin/opencode %h/.local/bin/command-code %h/.local/bin/tincan %h/.local/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes %h/.amp/bin/amp; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

@@ -24,10 +24,15 @@ contactPoints:
 
 # File provisioning never deletes a rule that merely leaves the file: Grafana keeps the
 # provisioned copy and keeps evaluating it. ppi-pareto left with Pareto (fleet-ops#10040,
-# #10065) but stayed live and fired "Pareto idle" from 2026-10-23 (fleet-ops#10198).
+# #10065) but stayed live and fired "Pareto idle" from 2026-10-23 (fleet-ops#10198);
+# ppi-ollama and ppi-cline did the same after fleet-ops#10068 (fleet-ops#10206).
 deleteRules:
   - orgId: 1
     uid: ppi-pareto
+  - orgId: 1
+    uid: ppi-ollama
+  - orgId: 1
+    uid: ppi-cline
 
 groups:
   - orgId: 1
@@ -92,20 +97,22 @@ groups:
           plan: commandcode
           quota_wall: '{{ with index $$values "B" }}{{ if gt .Value 0.0 }}true{{ else }}false{{ end }}{{ else }}false{{ end }}'
         isPaused: false
+      # 72 h window (fleet-ops#10431): MiniMax gets ~4% of simple-shuffle picks (weight 1 of ~46 per worker group), so a quiet fleet leaves it
+      # with zero picks for a day while the key and rows are fine (probe 200, 2026-10-27).
       - uid: ppi-minimax
         title: MiniMax idle
         condition: C
         data:
           - refId: A
-            relativeTimeRange: {from: 86400, to: 0}
+            relativeTimeRange: {from: 259200, to: 0}
             datasourceUid: fleet-prometheus
             model:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: |-
-                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0)
+                (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0)
                 or
-                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])
+                absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -142,7 +149,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: MiniMax served zero fleet calls for 24 hours (or vanished from the router).
+          summary: MiniMax served zero fleet calls for 72 hours (or vanished from the router).
           description: '{{ with index $values "B" }}{{ if gt .Value 0.0 }}Used to the max (quota wall), not idle.{{ else }}Idle or missing from the router.{{ end }}{{ else }}Idle or missing from the router.{{ end }}'
         labels:
           severity: critical

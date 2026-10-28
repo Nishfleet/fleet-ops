@@ -75,6 +75,15 @@ def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
 
 
+def test_one_plain_number_caps_the_opencode_and_devin_lanes():
+    text = AGENT.read_text()
+    for lane in ("opencode", "devin"):
+        caps = {m.group(1) for m in re.finditer(rf'live {lane}\)"\s+-lt\s+(\S+)', text)}
+        assert len(caps) == 1, f"the {lane} lane has {len(caps)} caps, so the Gate and the Worker fall-through can drift apart: {sorted(caps)}"
+        cap = caps.pop()
+        assert cap.isdigit(), f"the {lane} cap is a switch, not a fixed number: {cap}"
+
+
 def permissions_block(block, where):
     assert block is None or isinstance(block, dict), f"{where} uses the '{block}' shorthand; write the scopes out so this gate can read them"
     return block or {}
@@ -119,3 +128,37 @@ def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
         "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
         + "; ".join(shortfalls)
     )
+
+
+def test_hand_summons_reaches_the_review_job():
+    cfg = yaml_json(AGENT)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("review_pr", "review_sha"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent.yml cannot be dispatched with {name}"
+        assert name in cfg["on"]["workflow_call"]["inputs"], f"{name} is not on the workflow_call surface"
+    review = cfg["jobs"]["review"]
+    assert "inputs.review_pr" in review["if"] and "inputs.review_sha" in review["if"], (
+        "the review job's if: does not read the dispatch inputs, so a hand summons reaches nothing"
+    )
+    main_only = "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+    for job in ("review", "arm"):
+        cond = cfg["jobs"][job]["if"].replace("${{", "").replace("}}", "").strip()
+        assert f"&& {main_only}" in cond, (
+            f"the {job} job can be dispatched from any branch: a pushed branch with an edited {job} job "
+            "would approve or arm under the bot identity the merge gate trusts"
+        )
+    assert review["env"]["PR"] == "${{ inputs.review_pr }}"
+    assert review["env"]["SHA"] == "${{ inputs.review_sha }}"
+    assert "!inputs.review_pr" in cfg["jobs"]["inish-daily"]["if"], (
+        "inish-daily's if: does not exclude review_pr, so a review summons would also publish an edition"
+    )
+
+
+def test_hand_summons_reaches_the_orchestrate_job():
+    cfg = yaml_json(DISPATCH)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("task", "issue"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent-dispatch cannot be dispatched with {name}"
+    orchestrate = cfg["jobs"]["orchestrate"]["if"]
+    assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
+    assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
