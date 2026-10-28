@@ -1555,17 +1555,16 @@ jobs:
           # The refspec maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a
           # heads->heads refspec deletes the local branch holding a hand-off that died
           # before its push (proven live). It also gives the worktree a real origin/main.
-          # The age-out that deleted HEAD also removed old objects, so the same
-          # mirror can fail the fetch with "unresolved deltas" (fleet-ops#9526).
-          # The mirror is a cache of origin: when the fetch fails AND the object
-          # store does not pass a connectivity check, set it aside and fetch
-          # fresh. It is moved, not deleted, because it can hold local-only
-          # hand-off branches (a hand-off that died before its push); the aside
-          # copy sits beside the worktrees, where the 3-day age-out reaps it, so
-          # there is a window to salvage from it. A fetch that fails on an intact
-          # mirror (network, credential, a repo the login cannot read) is not
-          # rebuilt: it stays a loud failure. The lock above is held by this
-          # step alone, but a session live in a worktree of the old mirror loses its registration.
+          fetch_mirror() {
+            env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          }
+          # The age-out that deleted HEAD also removed old objects, so the fetch can fail with
+          # "unresolved deltas" (fleet-ops#9526). The mirror is a cache of origin: when the
+          # fetch fails AND the object store fails a connectivity check, set it aside (not
+          # deleted: it can hold a hand-off branch that died before its push; the 3-day age-out
+          # reaps it) and fetch fresh. A fetch failing on an intact mirror (network,
+          # credential) stays a loud failure. A session live in the old mirror's worktree
+          # loses its registration.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
