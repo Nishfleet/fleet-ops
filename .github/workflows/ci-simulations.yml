@@ -180,7 +180,7 @@ jobs:
           set -euo pipefail
           t=$RUNNER_TEMP/review-mock
           rm -rf "$t"
-          mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats"
+          mkdir -p "$t/bin" "$t/home/.config/fleet-ops/seats" # gitleaks:allow
           : > "$t/home/.config/fleet-ops/seats/typesafe-jev.env" # gitleaks:allow (an empty mock file)
           : > "$t/home/AGENTS.md"
           mkdir -p "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts"
