@@ -29,6 +29,6 @@ def test_app_token_fails_loud_with_no_permission():
 
 
 def test_no_workflow_keeps_its_own_key_or_mint_step():
-    for f in map(ROOT.joinpath, (".github/workflows/agent.yml", ".github/workflows/agent-dispatch.yml")):
+    for f in (ROOT / ".github/workflows").glob("agent*.yml"):
         text = f.read_text()
         assert KEY not in text and "create-github-app-token" not in text, f"{f.name} bypasses the app-token action"

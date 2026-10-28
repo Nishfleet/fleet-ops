@@ -38,7 +38,7 @@ runs:
         while IFS= read -r line || [ -n "$line" ]; do
           [ -n "$line" ] && echo "::add-mask::$line"
         done < "$keyfile"
-        { printf 'pem<<KEY_END\n'; cat "$keyfile"; printf 'KEY_END\n'; } >> "$GITHUB_OUTPUT"
+        { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
     - id: mint
       uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       with:
