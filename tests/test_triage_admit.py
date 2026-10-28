@@ -239,7 +239,6 @@ def test_bot_labeller_never_admits(tmp_path, actor):
     [{"event": "labeled", "label": {"name": "needs-triage"}, "actor": None, "created_at": "2026-10-10T10:00:00Z"}],
 ])
 def test_empty_actor_is_never_trusted(tmp_path, events):
-    # TRUSTED_LOGINS ends with a blank line; an empty actor must not match it (fleet-ops#10687).
     r, w, calls = _run(tmp_path, events=events, resp=_answer(0.99))
     assert r.returncode == 0 and w == "" and calls == 0
     assert "not applied by a trusted login" in r.stdout
