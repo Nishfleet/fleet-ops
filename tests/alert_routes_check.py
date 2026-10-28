@@ -167,6 +167,9 @@ def selftest():
     assert unguarded_refs('{{ $labels.resource }}') == ["labels.resource"]
     assert unguarded_refs('{{ with $labels.a }}{{ $labels.b }}{{ end }}') == ["labels.b"]
     assert unguarded_refs('{{ $values.B.Value }} then {{ $labels.c }}') == ["values.B", "labels.c"]
+    assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else if $labels.b }}{{ . }}{{ end }}') == []
+    assert unguarded_refs('{{ range $labels }}{{ $labels.b }}{{ end }}') == ["labels.b"]
 
 
 def dead_row_shape(rules, points, bad):
@@ -201,7 +204,7 @@ LABEL_FIELD = re.compile(r"\$labels\.([A-Za-z_]\w*)")
 VALUE_INDEX = re.compile(r'index\s+\$values\s+"([^"]+)"')
 BARE_VALUE = re.compile(r"\$values(?![.\w])")
 BARE_LABEL = re.compile(r"\$labels(?![.\w])")
-OPENERS = ("with", "if", "range")
+SCOPES = ("with", "if")
 
 
 def _refs(body):
@@ -233,12 +236,19 @@ def unguarded_refs(annotation):
         words = action.split()
         if not words:
             continue
-        if words[0] in OPENERS:
+        if words[0] in SCOPES:
             stack.append(_guards(action))
+            continue
+        if words[0] == "range":
+            stack.append(set())
             continue
         if words[0] == "end":
             if stack:
                 stack.pop()
+            continue
+        if words[0] == "else":
+            if stack:
+                stack[-1] = _guards(" ".join(words[1:])) if words[1:2] == ["if"] else set()
             continue
         covered = set().union(*stack) if stack else set()
         bad += [f"{kind}.{name}" if name else kind
