@@ -307,6 +307,17 @@ def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() ->
     assert _last(keys, "Restart") == "on-failure", "a clean exit must stay exited, not loop"
     assert _last(keys, "RestartSec") == "10"
     assert _last(keys, "RestartPreventExitStatus") == "78", "the config-error exit must not restart"
+    unit_section = unit.read_text().split("[Service]", 1)[0]
+    assert "StartLimitIntervalSec=" in unit_section and "StartLimitBurst=" in unit_section, (
+        "the StartLimit* keys are [Unit] settings; in any other section systemd ignores them and the budget silently disappears"
+    )
+    interval = _last(keys, "StartLimitIntervalSec")
+    assert interval.endswith("min"), "a zero or unbounded interval disables the start limit, so a bind-failure loop never reaches failed"
+    minutes = int(interval.removesuffix("min"))
+    assert minutes > 0
+    burst = int(_last(keys, "StartLimitBurst"))
+    assert burst > 0
+    assert burst * int(_last(keys, "RestartSec")) < minutes * 60, "the start limit must be reachable inside its interval, or the bind-failure loop never reaches failed (fleet-ops#10584)"
 
 
 def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
