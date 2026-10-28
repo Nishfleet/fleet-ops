@@ -17,6 +17,9 @@ rules:
         # The probe runs from main, like agent.yml, so one definition serves every
         # job and repo (fleet-ops#9983).
         Nishfleet/fleet-ops/.github/actions/runner-probe: ref-pin
+        # agent.yml's per-job steps live in actions from main, so every agent.yml job
+        # runs one definition and parallel PRs edit disjoint files (fleet-ops#10723).
+        Nishfleet/fleet-ops/.github/actions/stuck: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:
