@@ -32,6 +32,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MORNING = ROOT / "config/hermes/digest-morning.md"
@@ -73,7 +74,7 @@ def test_shipped_count_has_no_command_substitution_in_its_loop():
 
 
 def test_host_yml_applies_the_prompts_to_the_live_jobs():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "config/hermes/" in text
     assert "digest-morning" in text and "digest-evening" in text
     assert "- cron" in text and "- edit" in text and "- --prompt" in text
@@ -472,7 +473,7 @@ CRON_KEPT = [
 
 
 def _retired_ids():
-    lines = HOST.read_text().splitlines()
+    lines = ansible_host.text().splitlines()
     out = []
     for line in lines[lines.index("    hermes_retired_jobs:") + 1 :]:
         if line.startswith("      #"):
@@ -484,7 +485,7 @@ def _retired_ids():
 
 
 def _task_text(name):
-    lines = HOST.read_text().splitlines()
+    lines = ansible_host.text().splitlines()
     start = lines.index(f"    - name: {name}")
     end = start + 1
     while end < len(lines) and not lines[end].startswith("    - "):
