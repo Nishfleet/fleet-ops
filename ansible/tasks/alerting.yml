@@ -265,14 +265,32 @@
   register: alertmanager_unauth
   when: alertmanager_auth_ready | default(false) | bool
 
+# no_log keeps the credential out of the deploy log, and failed_when: false hands
+# the answer to the assert below, which names the status code no_log would have
+# hidden. The username comes from the prometheus config this block already read.
 - name: Check that alertmanager answers the credential Prometheus sends
   ansible.builtin.uri:
     url: http://127.0.0.1:9093/-/ready
-    url_username: "{{ (lookup('ansible.builtin.file', rootfs ~ '/etc/prometheus/prometheus.yml') | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"
+    url_username: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"
     url_password: "{{ (alertmanager_client_password.content | b64decode).strip() }}"
     status_code: 200
   retries: 10
   delay: 2
   until: alertmanager_ready.status == 200
   register: alertmanager_ready
+  failed_when: false
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: The alertmanager credential probe must answer 200
+  ansible.builtin.assert:
+    that: alertmanager_ready.status == 200
+    fail_msg: >-
+      alertmanager answered {{ 'no connection' if (alertmanager_ready.status | default(-1)) == -1 else alertmanager_ready.status }}
+      on 127.0.0.1:9093/-/ready after 10 tries with the credential prometheus.yml
+      sends. A 401 means the hash in /etc/alertmanager/web.yml is not the bcrypt
+      of the password in /etc/prometheus/alertmanager_password, or the username
+      is not the one prometheus.yml sends. A connection error means alertmanager
+      is not up on the new options yet.
+    quiet: true
   when: alertmanager_auth_ready | default(false) | bool
