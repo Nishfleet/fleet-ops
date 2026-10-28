@@ -14,9 +14,9 @@ It also fails when a rule or a dashboard panel reads a data source this repo doe
 not provision, or an owner this repo's GitHub App has no installation for: that
 read is blind, and a rule that reads nothing turns into a DatasourceError alert
 nobody can act on (fleet-ops#9803). It also fails when an annotation interpolates
-$values.X or $labels.Y outside a with/if that scopes it: a DatasourceError alert
-carries no values, so the bare form renders %!f(<nil>) and [no value] instead of a
-number (fleet-ops#9810, #9822).
+$values.X, $labels.Y or the .Value of a struct a $values guard bound outside the
+with/if that scopes it: a DatasourceError alert carries no values, so the bare
+form renders %!f(<nil>) and [no value] instead of a number (fleet-ops#9810, #9822).
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
@@ -160,16 +160,22 @@ def selftest():
                        "f: data source gone is not provisioned in provisioning/datasources"], planted
     guarded = 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}unknown row{{ end }} answered {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times'
     assert unguarded_refs(guarded) == []
-    assert unguarded_refs('{{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }}') == []
+    assert unguarded_refs('{{ with $values.B }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}') == []
     assert unguarded_refs('{{ if $values }}live{{ else }}blind{{ end }}') == []
     assert unguarded_refs('{{ $$labels.a }}') == []
-    assert unguarded_refs('{{ $values.D.Value | printf "%.0f" }}') == ["values.D"]
+    assert unguarded_refs('{{ $values.D.Value | printf "%.0f" }}') == [".Value", "values.D"]
     assert unguarded_refs('{{ $labels.resource }}') == ["labels.resource"]
     assert unguarded_refs('{{ with $labels.a }}{{ $labels.b }}{{ end }}') == ["labels.b"]
-    assert unguarded_refs('{{ $values.B.Value }} then {{ $labels.c }}') == ["values.B", "labels.c"]
+    assert unguarded_refs('{{ $values.B.Value }} then {{ $labels.c }}') == [".Value", "values.B", "labels.c"]
     assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else }}{{ $labels.b }}{{ end }}') == ["labels.b"]
     assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else if $labels.b }}{{ . }}{{ end }}') == []
     assert unguarded_refs('{{ range $labels }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ with $values }}{{ $values.D.Value }}{{ end }}') == [".Value", "values.D"]
+    assert unguarded_refs('{{ with index $values "D" }}{{ .Value | printf "%.0f" }}{{ end }}') == [".Value"]
+    assert unguarded_refs('{{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }}') == [".Value"]
+    assert unguarded_refs('{{- with $labels.a -}} for {{ . }}{{ end }}') == []
+    assert unguarded_refs('{{ if gt .Value 0.0 }}maxed{{ else }}idle{{ end }}') == []
+    assert unguarded_refs('{{ printf "%v %v" $values $values.D }}') == ["values", "values.D"]
 
 
 def dead_row_shape(rules, points, bad):
@@ -204,11 +210,13 @@ LABEL_FIELD = re.compile(r"\$labels\.([A-Za-z_]\w*)")
 VALUE_INDEX = re.compile(r'index\s+\$values\s+"([^"]+)"')
 BARE_VALUE = re.compile(r"\$values(?![.\w])")
 BARE_LABEL = re.compile(r"\$labels(?![.\w])")
+DOT_VALUE = re.compile(r"\.Value\b")
 SCOPES = ("with", "if")
 
 
 def _refs(body):
-    """The $values.X / $labels.Y references one template action interpolates."""
+    """The interpolations one template action reads: $values.X, $labels.Y, a bare
+    $values or $labels map, and the .Value field of a struct a $values guard bound."""
     out = set()
     for name in VALUE_FIELD.findall(body):
         out.add(("values", name))
@@ -218,22 +226,31 @@ def _refs(body):
         out.add(("values", None))
     if BARE_LABEL.search(body):
         out.add(("labels", None))
+    if DOT_VALUE.search(body):
+        out.add(("dot", "Value"))
     return out
 
 
 def _guards(body):
-    """The references a with/if argument scopes: the whole map for a bare
-    $values, one field for index $values "A", $values.A or $labels.A."""
-    return _refs(body) | {("values", name) for name in VALUE_INDEX.findall(body)}
+    """The interpolations a with/if argument scopes: one field for index $values
+    "A", $values.A or $labels.A, and .Value for an if/with on .Value itself. A bare
+    $values scopes nothing: it rebinds the dot, while $values.D still resolves
+    against the map, so a map without D still formats a nil."""
+    return {ref for ref in _refs(body) if ref[1] is not None}
+
+
+def _name(ref):
+    kind, name = ref
+    return f".{name}" if kind == "dot" else (f"{kind}.{name}" if name else kind)
 
 
 def unguarded_refs(annotation):
-    """Every $values.X / $labels.Y interpolated outside a with/if that scopes it.
-    A DatasourceError alert carries no values, so the bare form formats a nil and
-    the annotation reads %!f(<nil>) or [no value] (fleet-ops#9810, #9822)."""
+    """Every interpolation outside the with/if that scopes it. A DatasourceError
+    alert carries no values, so a bare one formats a nil and the annotation reads
+    %!f(<nil>) or [no value] (fleet-ops#9810, #9822)."""
     stack, bad = [], []
     for action in ACTION.findall(re.sub(r"\$\$", "\x00", annotation)):
-        words = action.split()
+        words = re.sub(r"^-|-", "", action.strip()).split()
         if not words:
             continue
         if words[0] in SCOPES:
@@ -251,14 +268,14 @@ def unguarded_refs(annotation):
                 stack[-1] = _guards(" ".join(words[1:])) if words[1:2] == ["if"] else set()
             continue
         covered = set().union(*stack) if stack else set()
-        bad += [f"{kind}.{name}" if name else kind
-                for kind, name in sorted(_refs(action)) if (kind, name) not in covered]
+        bad += [_name(ref) for ref in sorted(_refs(action), key=lambda r: (r[0], r[1] or ""))
+                if ref not in covered]
     return bad
 
 
 def annotation_guards(rules, bad):
-    """Fail any annotation that interpolates $values/$labels with no guard, so the
-    next unguarded rule cannot ship the %!f(<nil>) body #9810 fixed."""
+    """Fail any annotation that interpolates $values/$labels/.Value with no guard, so
+    the next unguarded rule cannot ship the %!f(<nil>) body #9810 fixed."""
     checked, found = 0, 0
     for r in rules:
         for key, value in (r.get("annotations") or {}).items():
@@ -269,7 +286,7 @@ def annotation_guards(rules, bad):
                 bad.append(f"{r.get('title')}: annotation {key} interpolates {', '.join(missing)} with no "
                            f"with/if guard, so a DatasourceError renders %!f(<nil>) and [no value] (fleet-ops#9822)")
     if not found:
-        print(f"annotations: {checked} checked, every $values/$labels interpolation sits inside a with/if guard")
+        print(f"annotations: {checked} checked, every $values/$labels/.Value interpolation sits inside a with/if guard")
 
 
 def provisioned_uids(provisioning):
