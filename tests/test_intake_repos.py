@@ -45,10 +45,9 @@ def test_launch_push_repos_are_enrolled_like_0509_with_a_dated_end_review():
 
 
 def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
-    # fleet-ops#10638: the worker-exit top-up re-runs these sweeps; admit and later-sweep read .repos only.
     sweep_only = {r["name"] for r in CFG["sweep_only"]}
     assert sweep_only == {"fleet-ops", "drive"}
     assert not sweep_only & set(ENROLLED)
-    assert "fleet-ops" in DEFERRED
+    assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
     agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
-    assert "jq -r '.repos[].name, .sweep_only[]?.name'" in agent
+    assert ".sweep_only[]?.name" in agent

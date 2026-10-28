@@ -49,7 +49,7 @@
   "sweep_only": [
     {
       "name": "fleet-ops",
-      "reason": "Nish, fleet-ops#10638: an agent-ready item labelled while lanes were full waited for GitHub's delayed cron. agent.yml's worker-exit top-up re-runs this repo's agent-dispatch sweep, which retries the admit of items already labelled agent-ready. It is not intake: admit, scout, later-sweep and self-admission stay off (deferred entry below, fleet-ops#8304)."
+      "reason": "Nish, fleet-ops#10638: agent.yml's worker-exit top-up re-runs this repo's sweep, a retry of items already labelled agent-ready. Admit, scout and later-sweep read .repos only and stay off (deferred entry below)."
     },
     {
       "name": "drive",
