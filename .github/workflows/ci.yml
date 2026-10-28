@@ -602,7 +602,7 @@ jobs:
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
               want_runner=$(jq -r '.want_runner // empty' <<<"$c")
               [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
-              [ -f "$d/failpost" ] || [ -s "$d/posted" ] || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
+              [ -f "$d/failpost" ] || grep -qxF 'issue comment 5 -R o/r --body orchestrator hand-off started: https://github.com/o/r/actions/runs/1' "$d/posted" 2>/dev/null || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
               [ "$(jq -r '.want_unreadable // false' <<<"$c")" = false ] || grep -q 'count unreadable' <<<"$log" || { echo "cap case $id: no unreadable warning: $log"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
