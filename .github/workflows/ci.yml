@@ -228,6 +228,13 @@ jobs:
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+      - name: The Mac's daily topgrade job runs from mac/, with no home path (fleet-ops#10508)
+        # The job was hand-written and lived in no repo, so a changed schedule or
+        # argument reached the Mac unseen. Parses mac/ with plistlib and tomllib and
+        # pins the schedule, the arguments, the steps and the absence of home paths
+        # (launchd does not expand `~`).
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_mac_topgrade.py
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.

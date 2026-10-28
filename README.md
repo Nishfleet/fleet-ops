@@ -22,6 +22,10 @@ script, or prompt lands unseen.
 - `ansible/update.yml` — the daily safe full update of the box (see
   [Daily update](#daily-update)). `fleet-update.service` runs it as root
   (`ansible-pull`).
+- `mac/` — the Mac's daily `topgrade` job: `com.nish.topgrade.plist` (the
+  launchd agent) and `topgrade.toml` (the steps it runs, see
+  [Mac daily update](#mac-daily-update)). `tests/test_mac_topgrade.py` pins
+  both.
 - `infra/cloudflare-tokens/` — OpenTofu config that makes one narrow Cloudflare
   token per repo and writes it into that repo's GitHub Actions secret, replaced
   every 30 days. Its README says how to apply, rotate and delete it.
@@ -676,6 +680,36 @@ number after the restart is the real test.
   In an emergency: `sudo systemctl disable --now fleet-update.timer`.
 - Delete it: remove `ansible/update.yml`, the two `fleet-update` units and
   `50-fleet.conf`, and add their `/etc` paths to `retired` in `ansible/host.yml`.
+
+## Mac daily update
+
+`mac/` is the Mac counterpart of [Daily update](#daily-update), owned by Nish.
+A launchd agent runs `topgrade` once a day at 04:30 local time, at low priority
+and with no prompts, and reads the config installed with it. Homebrew formulae
+and casks are left to `brew autoupdate`, so the steps the job does run are the
+`disable` and `commands` lists in `mac/topgrade.toml`. Neither file carries an
+absolute home path: launchd does not expand `~`, so the plist names only system
+paths, and `~` appears only in the custom commands, which topgrade runs through
+a shell. `tests/test_mac_topgrade.py` fails if the schedule, the arguments, the
+steps or that rule changes.
+
+It keeps the label the hand-written job used, so loading it replaces that job.
+
+- Install it, or push a change to it:
+  1. `mkdir -p ~/.config ~/Library/LaunchAgents`
+  2. `install -m 0644 mac/topgrade.toml ~/.config/topgrade.toml`
+  3. `install -m 0644 mac/com.nish.topgrade.plist ~/Library/LaunchAgents/com.nish.topgrade.plist`
+  4. `launchctl bootout gui/$(id -u)/com.nish.topgrade 2>/dev/null` then
+     `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nish.topgrade.plist`
+     (bootout first: launchd reads a plist once, on load)
+- Run it now: `launchctl kickstart -p gui/$(id -u)/com.nish.topgrade` prints the
+  pid and exits 0, and `launchctl print gui/$(id -u)/com.nish.topgrade` shows the
+  loaded job. The run's output goes to the system log, because the plist sets no
+  log file: `log show --predicate 'process == "topgrade"' --last 1d`.
+- Switch it off: `launchctl bootout gui/$(id -u)/com.nish.topgrade` stops it and
+  leaves it unloaded until the next install.
+- Delete it: `launchctl bootout gui/$(id -u)/com.nish.topgrade`, then
+  `rm ~/Library/LaunchAgents/com.nish.topgrade.plist ~/.config/topgrade.toml`.
 
 ## Tether: our own always-on agent (fleet-ops#9980)
 
