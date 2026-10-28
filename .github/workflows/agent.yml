@@ -969,7 +969,7 @@ jobs:
           SECOND_SEAT: senior
           SECOND_FAMILY: GLM
           # Seconds slept before each retry of an extra reviewer that failed for infrastructure reasons.
-          REVIEW_BACKOFF: "30 60 120"
+          REVIEW_BACKOFF: "30 60 120 240 480"
           THIRD_SEAT: judge
           THIRD_FAMILY: Qwen
         run: |
@@ -1085,13 +1085,13 @@ jobs:
             *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *) echo "family_of: unknown row id '$1'" >&2 ;;
           esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
-          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why
+          seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
             for d in 0 ${REVIEW_BACKOFF:-30 60 120}; do
               sleep "$d"; rc=0; ask_row "$seat" "$pre" || rc=$?
               if [ "$rc" != 0 ] || ! content=$(jq -r '.choices[0].message.content // ""' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null); then why="the call failed or its answer was not JSON (curl exit $rc)"
               else
-                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served")
-                if [ -z "$fam" ] || { [ -n "$want" ] && [ "$fam" != "$want" ]; }; then why="answered by ${served:-no row id} (${fam:-no known non-Claude family}), not the ${want:-a} family"
+                served=$(grep -i '^x-litellm-model-id:' "$RUNNER_TEMP/$pre-headers.txt" 2>/dev/null | head -n 1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true); fam=$(family_of "$served"); rerr=$(jq -r '(.error | if type == "object" then .message else . end) // empty' "$RUNNER_TEMP/$pre-body.json" 2>/dev/null | head -c 200)
+                if [ -z "$fam" ] || { [ -n "$want" ] && [ "$fam" != "$want" ]; }; then why="answered by ${served:-no row id${rerr:+, the router said: $rerr}} (${fam:-no known non-Claude family}), not the ${want:-a} family"
                 elif [ -z "$want" ] && case " $used " in *" $fam "*) true ;; *) false ;; esac; then why="answered by $served ($fam), a family that already reviewed this head"
                 elif [ "$(jq -r '.choices[0].finish_reason // ""' "$RUNNER_TEMP/$pre-body.json")" = length ] || [ -z "${content//[[:space:]]/}" ]; then why="the answer was cut at its token limit or empty"
                 else printf '%s' "$content" > "$RUNNER_TEMP/$pre.txt"; printf '%s' "$served" > "$RUNNER_TEMP/$pre-row"; return 0; fi
