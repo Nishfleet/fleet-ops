@@ -135,9 +135,9 @@ sha256 checked) into `~/.local/bin/tofu`.
 
     cd infra/cloudflare-tokens
     set -a; . ~/.config/cloudflare/token-minter.env; set +a
-    GITHUB_TOKEN=$(gh auth token) tofu init
-    GITHUB_TOKEN=$(gh auth token) tofu plan
-    GITHUB_TOKEN=$(gh auth token) tofu apply
+    export GITHUB_APP_ID=5509997 GITHUB_APP_INSTALLATION_ID=176168389
+    export GITHUB_APP_PEM_FILE="$(cat ~/.config/fleet-secrets-app/nishfleet-secrets.private-key.pem)"
+    tofu init && tofu plan && tofu apply
 
 Run it from an interactive session of the admin login, not from a jailed worker:
 the worker jail hides both `~/.config/cloudflare` and `~/.config/gh` on purpose
@@ -198,9 +198,10 @@ right trigger (not an event).
 Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
 for three weeks, then replaces them, and two missed weeks still leave slack.
 
-- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
-  file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
-  `gh auth token` (the `~/.config/gh/hosts.yml` login). That login needs admin on each repo.
+- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env` for Cloudflare. GitHub
+  secrets are written by the `nishfleet-secrets` GitHub App (Secrets and Environments write only,
+  installed on the repos in `main.tf`); its key is `~/.config/fleet-secrets-app/`, mode 0600.
+  When a repo is added to `main.tf`, add it to the App's installation too.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to

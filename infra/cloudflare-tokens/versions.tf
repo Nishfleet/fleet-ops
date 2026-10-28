@@ -30,7 +30,10 @@ terraform {
 # never a Terraform variable, so it cannot land in a plan file or in state.
 provider "cloudflare" {}
 
-# The GitHub login that writes the secrets is read from GITHUB_TOKEN.
+# The secrets are written by the nishfleet-secrets GitHub App (Secrets and Environments write, metadata read,
+# installed only on the repos below), never a person's login (fleet-ops#10601). app_auth reads GITHUB_APP_ID,
+# GITHUB_APP_INSTALLATION_ID and GITHUB_APP_PEM_FILE (the key's contents) from the environment, set by the unit.
 provider "github" {
   owner = var.github_owner
+  app_auth {}
 }
