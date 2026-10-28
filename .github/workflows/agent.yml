@@ -1043,12 +1043,15 @@ jobs:
           # A Claude usage limit is not a non-answer: claude prints one line such as "You've hit your 5-hour limit · resets 11pm"
           # and exits 1 until the window resets. The head is held with no verdict and no red run; the stuck-review sweep asks
           # again each hour, and a held ask does not count toward its three tries (#10743).
+          hold_at_limit() { # $1 = claude's stderr and failed stdout, $2 = which review, $3 = model; the file is logged either way
+            cat "$1" >&2 || true
+            lim=$(grep -m 1 -iE "^[[:space:]]*(you.{0,3}ve hit your [a-z0-9 -]*limit|claude ai usage limit reached)" "$1" | cut -c 1-200 || true)
+            [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe %s (%s) is at its Claude usage limit (%s). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.' "$SHA" "$2" "$3" "$lim")"; exit 0; }; }
           rc=0; review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" 2> "$RUNNER_TEMP/first.err") || rc=$?
-          if [ "$rc" != 0 ] || [ "$(grep -c . <<<"$review")" -le 1 ]; then
-            lim=$(cat "$RUNNER_TEMP/first.err" - <<<"$review" | grep -m 1 -iE "hit your [a-z0-9 -]*limit|usage limit reached" | head -c 200 || true)
-            [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe first review (%s) is at its Claude usage limit (%s). Nothing was approved or blocked; the stuck-review sweep asks again after the limit resets.' "$SHA" "$first_model" "$lim")"; exit 0; }
-            [ "$rc" = 0 ] || review=
-          fi
+          # claude's limit answer is one line; a real review never is, so a longer answer that exits 0 is never read as a limit.
+          if [ "$rc" != 0 ] || [ "$(grep -c . <<<"$review")" -le 1 ]; then printf '%s\n' "$review" >> "$RUNNER_TEMP/first.err"; fi
+          hold_at_limit "$RUNNER_TEMP/first.err" "first review" "$first_model"
+          [ "$rc" = 0 ] || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
@@ -1109,9 +1112,9 @@ jobs:
             [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
             say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
             exit 1; }
-          { r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt") && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row"; } & p2=$!
+          { r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt" 2> "$RUNNER_TEMP/second.err") && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row" || { printf '%s\n' "$r2" >> "$RUNNER_TEMP/second.err"; false; }; } & p2=$!
           seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
-          [ "$rc_second" = 0 ] || retry "the second review ($SECOND_MODEL) gave no answer"
+          [ "$rc_second" = 0 ] || { hold_at_limit "$RUNNER_TEMP/second.err" "second review" "$SECOND_MODEL"; retry "the second review ($SECOND_MODEL) gave no answer"; }
           [ "$rc_third" = 0 ] || { [ "$rc_third" = 1 ] && [ -e "$RUNNER_TEMP/third-why" ]; } || give_up "reviewer process crashed: the third reviewer exited $rc_third with no reason written" # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
           # Qwen with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy.
           used="$JUDGE_FAMILY $SECOND_FAMILY"
