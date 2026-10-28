@@ -518,6 +518,11 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+- The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
+  is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
+  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
+  address (fleet-ops#10541). Edit it there, never by hand.
 
 ## Rebuild the box from nothing
 
