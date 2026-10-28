@@ -245,8 +245,11 @@
 # The restart the options install queued has to have happened already: an
 # Alertmanager still on the old loopback-only options answers without a
 # credential, so the probes below would pass without testing anything.
+# The guard keeps it to what this block queued: the reload the chat-id and
+# credential-file tasks notify runs at the end of the play, as it did before.
 - name: Apply pending handlers before the alertmanager credential is probed
   ansible.builtin.meta: flush_handlers
+  when: alertmanager_auth_ready | default(false) | bool
 
 # The one thing no local file can prove: that the hash in the web config really
 # is the bcrypt of the password Prometheus sends. A mismatch stops every alert
