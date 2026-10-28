@@ -306,6 +306,17 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
+    - name: Restart ssh.socket
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        state: restarted
+
+    - name: Restart pilot runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
+
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
       ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host daemon-reload
