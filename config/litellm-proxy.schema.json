@@ -11,7 +11,7 @@
   "$defs": {
     "rowCooldown": { "type": "integer", "minimum": 1, "maximum": 86400 },
     "seniorRow": {
-      "$comment": "fleet-ops#10040: the one senior row, GLM-5.3-Flash on Synthetic's own key (the Pareto rows were removed, Nish 2026-10-22). Pinned so a weaker model or another provider cannot take the senior seat unreviewed.",
+      "$comment": "fleet-ops#10040, widened 2026-10-28: a senior row is GLM-5.3-Flash on one of the two paid plans that serve it (Synthetic, the z.ai Coding Plan; Command Code's prepaid balance is empty, fleet-ops#9879). One one-slot row queued every workflow-edit review behind it, and Synthetic ends 2026-11-12 (fleet-ops#10530). Pinned so a weaker model or another provider cannot take the senior seat unreviewed.",
       "type": "object",
       "required": ["model_name", "litellm_params"],
       "properties": {
@@ -19,11 +19,10 @@
         "litellm_params": {
           "type": "object",
           "required": ["model", "api_base", "api_key"],
-          "properties": {
-            "model": { "const": "openai/hf:zai-org/GLM-5.3-Flash" },
-            "api_base": { "const": "https://api.synthetic.new/openai/v1" },
-            "api_key": { "const": "os.environ/SYNTHETIC_API_KEY" }
-          }
+          "anyOf": [
+            { "properties": { "model": { "const": "openai/hf:zai-org/GLM-5.3-Flash" }, "api_base": { "const": "https://api.synthetic.new/openai/v1" }, "api_key": { "const": "os.environ/SYNTHETIC_API_KEY" } } },
+            { "properties": { "model": { "const": "openai/glm-5.3-flash" }, "api_base": { "const": "https://api.z.ai/api/coding/paas/v4" }, "api_key": { "const": "os.environ/ZAI_API_KEY" } } }
+          ]
         }
       }
     },
@@ -175,10 +174,10 @@
       "minItems": 1,
       "allOf": [
         {
-          "$comment": "fleet-ops#10040: exactly one senior row exists and it is GLM-5.3-Flash on Synthetic. A missing row, a second row or a weaker model fails here.",
+          "$comment": "fleet-ops#10040: one or two senior rows, every one a seniorRow (GLM-5.3-Flash on a paid plan). A missing row, a third row or a weaker model fails here.",
           "allOf": [
-            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior" } } }, "minContains": 1, "maxContains": 1 },
-            { "contains": { "$ref": "#/$defs/seniorRow" }, "minContains": 1 }
+            { "contains": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior" } } }, "minContains": 1, "maxContains": 2 },
+            { "items": { "if": { "type": "object", "required": ["model_name"], "properties": { "model_name": { "const": "senior" } } }, "then": { "$ref": "#/$defs/seniorRow" } } }
           ]
         },
         {

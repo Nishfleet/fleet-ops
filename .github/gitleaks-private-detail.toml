@@ -54,6 +54,13 @@ regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
 condition = "AND"
 
 [[allowlists]]
+description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
+regexes = ['''^home/nish/\.config/fleet-worker/nishfleet-worker\.private-key\.pem$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The Hermes sandbox drop-in must name the paths its ReadWritePaths= grants (the unit file has no %h for a system unit, and no inline comment to carry gitleaks:allow); the line is re-added whenever a path is added to it"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-\.service\.d/sandbox\.conf$''']
@@ -148,8 +155,39 @@ regexes = ['''^100\.64\.0\.0$''']
 condition = "AND"
 
 [[allowlists]]
+description = "The two Claude Code plugin drop-ins name the directory each marketplace is read from: a marketplace registration is a path, and a JSON file has no comment line to carry gitleaks:allow. Only these two directories are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10518"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.d/(60-nish-mods|80-inbox)\.json$''']
+regexes = [
+  '''^home/nish/workspaces/tooling/claude-mods$''',
+  '''^home/nish/workspaces/tooling/claude-code-mods-petekp-inbox$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The seo-fix-kit D1 backup retirement names three user-unit paths the host deploy stops, disables and deletes (fleet-ops#10145). An earlier commit of that PR wrote them as literals; the play now renders them from nish_home and the test asserts that form, and a PR scan reads every commit while history cannot be rewritten on an open PR. Only these three paths, in the two files that carry the retirement"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)(ansible/host\.yml|tests/test_systemd_unit_keys\.py)$''']
 regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit-d1-backup\.(service|timer)''']
+condition = "AND"
+
+[[allowlists]]
+description = "The Hermes backend unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names its program, its environment file and its PATH entries, and the tailnet address it binds; moved byte for byte from /etc/systemd/system, fleet-ops#10542. Only paths under its own .hermes tree, .local/bin, and the one address that unit binds are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/hermes-serve\.service$''']
+regexes = [
+  '''^home/nish/\.hermes(/.*)?$''',
+  '''^home/nish/\.local/bin$''',
+  '''^100\.108\.184\.97$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test reads the Hermes backend unit back, so it spells out that unit's pinned program path and the tailnet address it binds (fleet-ops#10542). Only those two literals are allowed"
+targetRules = ["private-home-path", "private-tailscale-ipv4"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = [
+  '''^home/nish/\.hermes/hermes-agent/\.hermes/bin/hermes$''',
+  '''^100\.108\.184\.97$''',
+]
 condition = "AND"
