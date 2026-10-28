@@ -229,7 +229,7 @@ jobs:
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
+        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_host_config_drift.py
       - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
