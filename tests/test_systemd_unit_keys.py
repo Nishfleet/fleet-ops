@@ -11,6 +11,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 import pytest
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED = ROOT / "rootfs/etc/systemd/system"
@@ -262,7 +263,7 @@ def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
         assert len(vault) == 1, f"{unit}: the vault drop is missing: {writable}"
         assert {home / ".hermes", home / ".local/state/hermes"} <= writable, (unit, writable)
         rest = writable - {home / ".hermes", home / ".local/state/hermes"} - vault
-        assert rest <= {home / ".config/gh"}, f"{unit}: an unmeasured grant: {rest}"
+        assert not rest, f"{unit}: an unmeasured grant (gh config stays read-only, fleet-ops#10184): {rest}"
         assert all(entry.startswith("-") for entry in raw if "nish-vault" in entry), f"{unit}: the vault drop may not exist yet, so it needs the - prefix"
         for key in ("NoNewPrivileges", "PrivateTmp", "PrivateDevices", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock"):
             assert _last(keys, key) in {"yes", "true", "1"}, (unit, key)
@@ -307,6 +308,17 @@ def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() ->
     assert _last(keys, "Restart") == "on-failure", "a clean exit must stay exited, not loop"
     assert _last(keys, "RestartSec") == "10"
     assert _last(keys, "RestartPreventExitStatus") == "78", "the config-error exit must not restart"
+    unit_section = unit.read_text().split("[Service]", 1)[0]
+    assert "StartLimitIntervalSec=" in unit_section and "StartLimitBurst=" in unit_section, (
+        "the StartLimit* keys are [Unit] settings; in any other section systemd ignores them and the budget silently disappears"
+    )
+    interval = _last(keys, "StartLimitIntervalSec")
+    assert interval.endswith("min"), "a zero or unbounded interval disables the start limit, so a bind-failure loop never reaches failed"
+    minutes = int(interval.removesuffix("min"))
+    assert minutes > 0
+    burst = int(_last(keys, "StartLimitBurst"))
+    assert burst > 0
+    assert burst * int(_last(keys, "RestartSec")) < minutes * 60, "the start limit must be reachable inside its interval, or the bind-failure loop never reaches failed (fleet-ops#10584)"
 
 
 def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
@@ -413,7 +425,7 @@ TETHER_NEVER_RUN = {
 def _play_tasks() -> list[dict]:
     if shutil.which("yq") is None:
         pytest.skip("yq is not installed")
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]["tasks"]
 
 
@@ -423,6 +435,18 @@ def _tether_task_names() -> list[str]:
         if "tether" in (task.get("tags") or []):
             names += [task["name"]] + [inner["name"] for key in ("block", "rescue") for inner in task.get(key, [])]
     return names
+
+
+def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
+    """A find that catches a -journal/-wal/-shm file fails the chmod loop when SQLite removes it (fleet-ops#10390)."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
+    assert not scan.get("use_regex")
+    assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
+    assert {"sessions.db*", "pi.db*", "claude.db*", "opencode.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert "failed_when" not in tasks["Keep the agent session databases private"]
+    kept_private = tasks["Look for the agent state directories"]["loop"]
+    assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
@@ -462,7 +486,7 @@ HOST_YML = ROOT / "ansible/host.yml"
 
 
 def _tether_blocks() -> list[str]:
-    blocks = re.split(r"\n    - name: ", HOST_YML.read_text())
+    blocks = re.split(r"\n    - name: ", ansible_host.text())
     return [block for block in blocks if "tags: [tether" in block]
 
 
@@ -471,7 +495,7 @@ def _tether_module_blocks(module: str) -> list[str]:
 
 
 def _host_var(name: str) -> str:
-    match = re.search(rf"^    {name}: \"?([^\"\n]+)\"?$", HOST_YML.read_text(), re.MULTILINE)
+    match = re.search(rf"^    {name}: \"?([^\"\n]+)\"?$", ansible_host.text(), re.MULTILINE)
     assert match, name
     return match.group(1)
 
@@ -482,7 +506,7 @@ def _node_dir() -> str:
 
 def test_tether_has_no_apt_nodejs_pin() -> None:
     assert not [block for block in _tether_module_blocks("apt") if "nodejs" in block]
-    assert "nodejs=" not in HOST_YML.read_text()
+    assert "nodejs=" not in ansible_host.text()
 
 
 def test_tether_node_download_is_pinned_by_sha256() -> None:
@@ -518,7 +542,7 @@ def _release_tasks() -> dict[str, dict]:
 def test_tether_release_is_pinned_once_and_keyed_by_version_and_hash() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", _host_var("tether_version"))
     assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_sha256"))
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     assert text.count("tether_sha256:") == 1 and text.count("tether_version:") == 1, "pin the release in one place"
     assert _host_var("tether_sha256") not in text.replace(f"tether_sha256: {_host_var('tether_sha256')}", "")
     assert _host_var("tether_release_key") == "{{ tether_version }}-{{ tether_sha256[:12] }}"
@@ -591,7 +615,7 @@ def test_tether_release_is_verified_staged_and_renamed_into_place() -> None:
 
 
 def test_tether_release_modes_are_checked_with_the_find_module_and_a_bad_dir_goes_last() -> None:
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     assert "/usr/bin/find" not in text, "use ansible.builtin.find, not a command"
     tasks = _release_tasks()
     for name in ("Scan this tether release for writable or non-root files", "Scan the staged tether release for writable or non-root files"):
@@ -629,7 +653,7 @@ def test_tether_release_download_runs_as_nish_after_a_login_check() -> None:
     assert names.index(check["name"]) < names.index(gate["name"]) < names.index(download["name"])
     text = json.dumps(_release_block())
     assert "/" + "home" + "/" not in text, "no literal home path"
-    assert not re.search(r"GH_TOKEN|GITHUB_TOKEN|Authorization|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", HOST_YML.read_text())
+    assert not re.search(r"GH_TOKEN|GITHUB_TOKEN|Authorization|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", ansible_host.text())
 
 
 def test_tether_release_prunes_to_the_new_and_the_previous_release() -> None:
@@ -696,7 +720,7 @@ def test_tether_calendar_env_task_waits_for_the_file(tmp_path: Path) -> None:
 
 
 def test_host_run_never_enables_or_starts_tether() -> None:
-    blocks = re.split(r"\n    - name: ", (ROOT / "ansible/host.yml").read_text())
+    blocks = re.split(r"\n    - name: ", ansible_host.text())
     tether = [block for block in blocks if "name: tether-agent.service" in block]
     assert tether, "the marker task is gone"
     restart = [block for block in tether if "state: restarted" in block]
@@ -710,7 +734,7 @@ def test_host_run_never_enables_or_starts_tether() -> None:
 
 
 def test_tether_release_change_restarts_an_enabled_agent() -> None:
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     link = [block for block in re.split(r"\n        - name: ", text) if block.startswith("Point tether current at the verified release")]
     assert len(link) == 1
     assert "notify: Restart tether-agent after its release changed" in link[0]
@@ -861,7 +885,7 @@ CUA_DROPIN_DIR = "etc/systemd/user/cua-desk-daemon.service.d"
 
 def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_config() -> None:
     assert not (ROOT / "rootfs" / CUA_DROPIN_DIR).exists(), "the fixed-port drop-in is gone from the repo"
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     update = (ROOT / "ansible/update.yml").read_text()
     assert f"- /{CUA_DROPIN_DIR}\n" in host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0], "host.yml deletes it on the host"
     assert "cua_daemon_port" not in host + update + (ROOT / "ansible/templates/tether.nft.j2").read_text()
@@ -878,7 +902,7 @@ SEOFIXKIT_UNITS = (
 
 
 def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     for path in SEOFIXKIT_UNITS:
@@ -906,7 +930,7 @@ GLUE_AUDIT_HOST_LEFTOVERS = (
 
 
 def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     for path in GLUE_AUDIT_HOST_LEFTOVERS:
@@ -940,13 +964,13 @@ def test_alertmanager_reads_the_repo_installed_config() -> None:
         "the service loads the config the repo installs, not the retired copy"
     )
     assert "/etc/prometheus/alertmanager.yml" not in options
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert 'src: "{{ rootfs }}/etc/default/prometheus-alertmanager"' in host
     assert "dest: /etc/default/prometheus-alertmanager" in host
 
 
 def test_prometheus_config_installs_world_readable() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     task = re.split(r"^ *- name: ", host.split("- name: Install prometheus and blackbox exporter config", 1)[1], maxsplit=1, flags=re.M)[0]
     assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
     assert re.search(r'^ +mode: "0644"$', task, re.M)
@@ -994,7 +1018,7 @@ def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() ->
 
 
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
-    blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
+    blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", ansible_host.text())}
     by_path = {
         "/etc/fleet-ops/cua-daemon-token": "Remove the retired Cua daemon token file",
         '{{ nish_config }}/fleet-ops/cua/daemon.env': "Remove the retired Cua daemon env file",
@@ -1076,7 +1100,7 @@ def test_stage_one_is_the_canary_only() -> None:
 
 
 def test_host_yml_installs_the_rules_with_a_check_validate() -> None:
-    text = (ROOT / "ansible/host.yml").read_text()
+    text = ansible_host.text()
     block = text[text.index("- name: Install the runner egress rule"):]
     block = block[: block.index("\n    - name:", 10)]
     assert "dest: /etc/nftables.d/runners.nft" in block
@@ -1265,13 +1289,34 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     keys = effective_directives(GPG_AGENT_UNIT)
     assert _last(keys, "ManagedOOMPreference") == "omit", "systemd-oomd would select the credential cache"
     assert _last(keys, "MemoryMax") == "512m", "the ceiling the senior auditor set is gone"
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "README.md").read_text(), "the README names the unit this tunes"
+    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "docs/layout.md names the unit this tunes"
+
+
+TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
+TINCAN_RELAY_DIST_DROPIN = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
+TINCAN_RELAY_DIST_DROPIN_DIR = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"
+
+
+def test_tincan_relay_ships_dist_and_the_temporary_dropin_is_retired() -> None:
+    exec_start = [line for line in TINCAN_RELAY_UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    assert len(exec_start) == 1, "tincan-relay.service must have exactly one ExecStart"
+    assert "--dist %S/tincan-relay/dist" in exec_start[0], "relay-upgrade --from-github 404s without --dist"
+    assert "--release-url https://github.com/mvanhorn/agent-tincan/releases/download" in exec_start[0], (
+        "relay-upgrade --from-github needs the release URL"
+    )
+    retired = json.loads(
+        subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
+    )
+    assert TINCAN_RELAY_DIST_DROPIN in retired, "the hand-placed --dist drop-in restates the shipped unit and must be deleted"
+    assert TINCAN_RELAY_DIST_DROPIN_DIR not in retired, "retire the file, not the directory: a later drop-in there must survive"
+    for base in (ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"):
+        assert not (base / "tincan-relay.service.d/dist-temp.conf").exists(), f"{base} must not ship the temporary drop-in"
 
 
 def test_the_two_access_path_dropins_stay_out_of_the_repo() -> None:
@@ -1325,6 +1370,9 @@ WAKE_UNITS = (
     "systemd/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
+# Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
+# fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
+# claude-vps is the one narrowed unit because it had permissions.ask rules to honour (#9502). Revisit per vendor, units and pins together.
 WAKE_AGENT = {
     "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
     "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
@@ -1411,8 +1459,8 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
 
 
 def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "README.md").read_text()
-    assert "systemctl --user start <unit>" in readme, "the README lost the run line"
+    readme = (ROOT / "docs" / "layout.md").read_text()
+    assert "systemctl --user start <unit>" in readme, "docs/layout.md lost the run line"
     for relative in WAKE_UNITS:
         unit = relative.split("/")[-1]
         assert f"systemctl --user disable --now {unit}" in readme
@@ -1434,7 +1482,7 @@ def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> 
 
 
 def test_the_root_copy_installs_the_desk_daemon() -> None:
-    host = (ROOT / "ansible/host.yml").read_text()
+    host = ansible_host.text()
     assert 'src: "{{ rootfs }}/etc/systemd/user/"' in host and "dest: /etc/systemd/user/" in host, (
         "step 2k is inert unless the root copy installs the whole rootfs/etc/systemd/user/ tree, "
         "and an enumerated file list would miss the next file added there"

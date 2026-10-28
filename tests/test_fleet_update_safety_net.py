@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
@@ -16,7 +17,7 @@ INNER = {t["name"]: t for t in BLOCK["block"]}
 NAMES = [t["name"] for t in BLOCK["block"]]
 ASSERT = next(t for t in BLOCK["always"] if t["name"] == "Fail loudly if any step or check went wrong")
 UNIT = (ROOT / "rootfs/etc/systemd/system/fleet-update.service").read_text()
-HOST = json.loads(subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout)[0]
+HOST = json.loads(subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout)[0]
 HOST_TASKS = {t["name"]: t for t in HOST["tasks"]}
 BACKUP = INNER["Back the box up before anything changes"]
 BACKUP_STEPS = {t["name"]: t for t in BACKUP.get("block", [])}

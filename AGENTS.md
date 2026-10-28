@@ -116,17 +116,21 @@ worker jail in `agent.yml` mounts an empty tmpfs over `~/.config/cloudflare` and
 `~/.config/gh`, because a worker reads outsider comments and a fooled model must
 not reach Nish's admin GitHub login or a no-expiry deploy token. A jailed worker's
 GitHub access is `GH_TOKEN`, the App token, and nothing else; ci.yml fails if the
-jail line, run against planted files, can read either path. Credential parity still holds for
-sessions outside the jail (the orchestrator hand-off, interactive sessions).
+jail line, run against planted files, can read either path. Credential parity holds only for
+interactive host sessions. The orchestrator hand-off runs on a runner unit, and
+`20-lockdown.conf` masks `~/.config/cloudflare` for every runner, so the hand-off
+cannot read these files either (fleet-ops#10352); a packet that needs a
+Cloudflare token it cannot mint stays owner-gated.
 Jailed workers cannot mint (the minter file is hidden from them too), so a worker
 packet whose acceptance needs the Cloudflare API still parks with
-`blocked-on: orchestrator`. An unjailed session that needs a Cloudflare token for a
-job mints its own short-lived one under the gate in "Minting Cloudflare tokens"
-below; a long-lived or wider token goes through a reviewed PR to
-`infra/cloudflare-tokens`, not through ad-hoc minting. (Before the minter existed,
-2026-10-05, no VPS token could mint and every new token was Nish's to create in
-the dashboard; that no longer holds.) Outside the jail, read the token from the
-file, never print it, never copy it into a repo, PR or issue:
+`blocked-on: orchestrator`. An interactive host session that needs a Cloudflare
+token for a job mints its own short-lived one under the gate in "Minting
+Cloudflare tokens" below; a long-lived or wider token goes through a reviewed PR
+to `infra/cloudflare-tokens`, not through ad-hoc minting. (Before the minter
+existed, 2026-10-05, no VPS token could mint and every new token was Nish's to
+create in the dashboard; that no longer holds.) An interactive host session reads
+the token from the file, never prints it, and never copies it into a repo, PR or
+issue:
 
 - `~/.config/cloudflare/deploy-ci.env` — user token, no expiry: Workers scripts,
   D1, KV, Zone read, GraphQL analytics (proven 2026-09-22: workers list, D1 list,
@@ -154,8 +158,13 @@ deletes tokens and nothing else: never use it for work, never source it into a l
 process. It is a user token, not account-owned, because an account-owned token creator can only
 grant a subset of its own permissions (Cloudflare docs). It is IP-locked to this VPS
 (`<vps-ip>/32`, `<vps-ipv6>/128`; outbound API calls leave over
-IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274), so only unjailed
-sessions can mint. The minter exists (2026-10-09): Cloudflare token name "fleet key-maker (VPS
+IPv6). Jailed workers get an empty tmpfs over `~/.config/cloudflare` (#9274) and
+`20-lockdown.conf` masks the same path for every runner (fleet-ops#10352), so only
+an interactive host session can mint. The gate's unjailed-session carve-out does
+not reach a runner job — the orchestrator hand-off, and every `agent.yml` job —
+which sits outside the worker's bwrap jail and still cannot read
+`~/.config/cloudflare`, so it cannot mint either. The minter exists (2026-10-09):
+Cloudflare token name "fleet key-maker (VPS
 only)", permission "API Tokens Write" (User), no expiry. It was rolled once on 2026-10-09
 because the original value was pasted in chat. If it is ever exposed again, roll it with
 `PUT /user/tokens/<id>/value` (look the id up in the dashboard, My Profile > API Tokens) and
@@ -163,7 +172,7 @@ pipe the response straight into the env file with jq, never print it. Account id
 `infra/cloudflare-tokens/variables.tf` (an identifier, not a credential).
 
 **The gate.** The minter can create a token with any permission Nish's user holds, so it is not
-a free pass. Ad-hoc mints by an unjailed session are allowed ONLY when all of these hold:
+a free pass. Ad-hoc mints by an interactive host session are allowed ONLY when all of these hold:
 
 1. Name `job-<task>-<UTC stamp>` (for example `job-fleet-1234-20261009T120000Z`).
 2. `--expires-on` at most 24h from now (UTC RFC3339).

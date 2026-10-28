@@ -1,0 +1,162 @@
+- name: Install systemd user-manager drop-ins
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/user/"
+    dest: /etc/systemd/user/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Reload nish's user manager
+
+- name: Install systemd-oomd config
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/oomd.conf.d/"
+    dest: /etc/systemd/oomd.conf.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart systemd-oomd
+
+- name: Install journald config
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/journald.conf.d/"
+    dest: /etc/systemd/journald.conf.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart journald
+
+# A plaintext git credential file at this path makes the tmpfiles `d` line
+# fail and leaves the secrets in place. Nothing here deletes or moves it: a
+# person does that, then reruns.
+- name: Look for a plaintext git credential file in nish's home
+  ansible.builtin.stat:
+    path: "{{ nish_home }}/.git-credentials"
+    follow: false
+  register: git_credential_stat
+
+- name: Fail the run when a plaintext git credential file is in the way
+  ansible.builtin.assert:
+    that: not (git_credential_stat.stat.exists and not git_credential_stat.stat.isdir)
+    fail_msg: "{{ nish_home }}/.git-credentials exists and is not a directory. Run mkdir -p /root/quarantine, mv it there, then rerun. Nothing deletes it for you; tmpfiles needs a directory there."
+    quiet: true
+
+- name: Install tmpfiles.d entries
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/tmpfiles.d/"
+    dest: /etc/tmpfiles.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Create tmpfiles
+
+# The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
+# config instead of the host's /etc/docker/daemon.json, which sets the runsc
+# runtime. rootlesskit comes from apt: the unit runs dockerd under it.
+- name: Create the fleet-ops config directory
+  ansible.builtin.file:
+    path: /etc/fleet-ops
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the rootless Docker engine's config
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/fleet-ops/dockerd-eval.json"
+    dest: /etc/fleet-ops/dockerd-eval.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install rootlesskit, slirp4netns and uidmap for the rootless Docker engine
+  ansible.builtin.apt:
+    name:
+      - rootlesskit
+      - slirp4netns
+      - uidmap
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+- name: Install sysctl settings
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/sysctl.d/
+    owner: root
+    group: root
+    mode: preserve
+  loop: "{{ query('ansible.builtin.fileglob', rootfs ~ '/etc/sysctl.d/*.conf') }}"
+  register: sysctl_files
+
+# Applies only the file that changed. `sysctl --system` would also re-apply
+# the provider image's files, which README keeps a Nish-only action.
+- name: Apply a changed sysctl file
+  ansible.builtin.command: /usr/sbin/sysctl -p /etc/sysctl.d/{{ item.item | basename }}
+  loop: "{{ sysctl_files.results | selectattr('changed') | list }}"
+  loop_control:
+    label: "{{ item.item | basename }}"
+
+- name: Install audit rules
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/audit/rules.d/"
+    dest: /etc/audit/rules.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Load audit rules
+
+- name: Install the nftables ruleset
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/nftables.conf"
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: preserve
+  notify: Reload nftables
+
+# The drive eval engine's egress limit (fleet-ops#9983): its own table, loaded
+# by nftables.service through the nftables.d include. Installed before the
+# queued handlers run, so the table and its set exist when dockerd-eval.service
+# starts and systemd adds the engine's cgroup to the set.
+- name: Create the nftables drop-in directory for the eval engine's rule
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the eval engine's egress rule
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/nftables.d/evalnet.nft"
+    dest: /etc/nftables.d/evalnet.nft
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+# The postgres account is a package leftover with no login use: set its shell
+# to nologin. Only when the account exists; this never creates it.
+- name: Look up the postgres account
+  ansible.builtin.getent:
+    database: passwd
+    key: postgres
+    fail_key: false
+  register: postgres_passwd
+
+- name: Set the postgres account shell to nologin
+  ansible.builtin.user:
+    name: postgres
+    shell: /usr/sbin/nologin
+  when: postgres_passwd.ansible_facts.getent_passwd.postgres is not none
+
+- name: Install the htpdate options
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/default/htpdate"
+    dest: /etc/default/htpdate
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart htpdate
