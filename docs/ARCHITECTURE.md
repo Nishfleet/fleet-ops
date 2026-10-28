@@ -166,6 +166,15 @@ The rules still in force:
   is now redundant on fleet-ops and stays only until 0509 and drive have the
   check: their `agent-dispatch.yml` stubs call this shared workflow and their
   rulesets require no `coordinator-approval`.
+  The `review` and `arm` jobs run on `[self-hosted, review]`: runners
+  `netcup-agent-9` (seat a) and `netcup-agent-10` (seat b) carry the labels
+  `self-hosted, review` and not `agent`, so no build can take them and a review
+  never waits behind a multi-hour build (fleet-ops#10587). With `agent` kept,
+  GitHub hands a queued build to any idle runner that matches, so builds would
+  starve reviews again. The labels live at GitHub, not in ansible:
+  `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
+  To switch it off, give those two runners `agent` back and set both `runs-on`
+  lines back to `[self-hosted, agent]`.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:
