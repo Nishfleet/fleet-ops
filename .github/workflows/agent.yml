@@ -598,9 +598,8 @@ jobs:
       - name: App token for arm
         id: arm-token
         if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
-        # Scoped like app-token above. Router wall comments and relabels,
-        # Arm auto-merge edits the PR body and runs gh pr merge --auto (a
-        # squash needs contents), Deliverable reads the issue and PR list.
+        # Scoped like app-token above. Router wall comments and relabels, Arm auto-merge edits the PR body
+        # and runs gh pr merge --auto (a squash needs contents), Deliverable reads the issue and PR list.
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
@@ -641,22 +640,28 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
-          # The merge closes the issue only through a closing keyword, and
-          # workers drop it often enough that merged work stayed claimed
-          # (0509 #4870 #4941 #4958 #5011 #5022 #5027 #5052, 2026-09-24).
+          # The merge closes the issue only through a closing keyword, which workers drop (0509 #4870 #5052, 2026-09-24).
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             i=${REF#claim/issue-}; i=${i%%-*}
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            # Every PR is armed; config/risky-paths.json + hold-risky gate it (fleet-ops#10621).
-            # A head whose required checks are red is not armed, the test Deliverable fails
-            # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
-            # the strike step requeues the issue and the next run arms the fixed head. Pending
-            # checks still arm (nothing re-arms a head that later goes green; the required checks
-            # hold the merge). No required checks judges all of them; an unreadable result is
-            # red. The runner user's gh login reads the checks: the App token has no checks: read.
+            # A risky PR (hold-risky's CLASSIFY on config/risky-paths.json, both from fleet-ops main; a failed read is risky)
+            # is labelled, not armed: coordinator-approval is a required check on fleet-ops only (fleet-ops#10621).
+            facts=$(gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' |
+              jq -sc --arg repo "$REPO" --argjson pr "$(gh api "repos/$REPO/pulls/$n")" '{repo: $repo, labels: [$pr.labels[].name], files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}], changed_files: $pr.changed_files}') || facts=
+            verdict=$(jq -c --argjson cfg "$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json")" --arg label needs-coordinator "$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml" | yq .jobs.hold-risky.env.CLASSIFY)" <<<"$facts") || verdict=
+            if ! jq -e '.risky == false' <<<"$verdict" >/dev/null 2>&1; then
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "risky by config/risky-paths.json: reviewed before it is armed"
+              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+              echo "claim PR #$n held for review, not armed: ${verdict:-classify failed}"; exit 0
+            fi
+            # A head whose required checks are red is not armed, the test Deliverable fails on (fleet-ops#9315). The step
+            # disarms an arm left by an earlier run and fails, so the strike step requeues the issue and the next run arms
+            # the fixed head. Pending checks still arm (the required checks hold the merge). No required checks judges all
+            # of them; an unreadable result is red. The runner user's gh login reads the checks: the App token has no checks: read.
             q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
             red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
               8) ;; # gh's pending exit: --jq still printed any red names, empty if none
@@ -678,11 +683,9 @@ jobs:
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
-        # A worker that exits 0 with no PR and no park leaves the issue claimed
-        # and this job green, so the strike step never fires on it (fleet-ops#8461).
-        # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
-        # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
-        # GitHub blocked_by dependency (4), or a PR on the claim branch.
+        # A worker that exits 0 with no PR and no park leaves the issue claimed and this job green, so the strike step never fires
+        # on it (fleet-ops#8461). Legit exit-0 paths in prompts/worker.md: closed (1b), parked with agent-blocked/needs-orchestrator/
+        # needs-nish-decision (2b, 4), a GitHub blocked_by dependency (4), or a PR on the claim branch.
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
           MISS: ${{ steps.gate.outputs.miss }}
@@ -1141,9 +1144,8 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
-  # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
-  # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
-  # itself refuse a moved head, and hold-risky checks the approval again when the arm fires auto_merge_enabled.
+  # Arms an approved head (the review job's own approval in the same run, or one the hourly sweep found: stuck-arm) as the worker App.
+  # It re-reads the PR and --match-head-commit refuses a moved head; hold-risky checks the approval again on auto_merge_enabled.
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
