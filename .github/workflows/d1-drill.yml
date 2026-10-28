@@ -1,8 +1,6 @@
 # Monthly restore drill (fleet-ops#9769): newest backups restored once into local sqlite3, rows counted. No Cloudflare API.
 name: D1 restore drill
-on:
-  schedule: [{cron: "17 4 1 * *"}]
-  workflow_dispatch: {}
+on: {schedule: [{cron: "17 4 1 * *"}], workflow_dispatch: {}}
 concurrency: {group: d1-drill, cancel-in-progress: false}
 permissions: {contents: read, issues: write}
 jobs:
