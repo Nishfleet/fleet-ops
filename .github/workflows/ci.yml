@@ -220,7 +220,9 @@ jobs:
 
   unit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The router step installs the pinned litellm into a throwaway pipx venv,
+    # which the runner image holds no cache for.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
@@ -264,6 +266,27 @@ jobs:
         # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
         if: always()
         run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py tests/test_intake_repos.py
+      - name: Every tests/test_*.py is on a pytest list, and the ones no step ran are on one now (fleet-ops#10073, #10075)
+        # ci.yml runs pytest by an explicit file list, so a test file no step names
+        # rots with no signal: tests/test_fleet_update_covers_apps.py kept asserting
+        # a step #9971 had removed and nothing went red on main (#10073). The
+        # meta-test catches the next one, and this step runs it and the 22 other
+        # files it found uncovered that belong here.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_ci_pytest_covers_tests.py tests/test_agent_runner_count.py tests/test_claude_unattended_browser_key.py tests/test_commandcode_auth.py tests/test_deploy_checkout_readable.py tests/test_design_note_gate.py tests/test_dispatch_workflow_run_branches.py tests/test_dockerd_eval.py tests/test_fleet_dashboard_product_prs.py tests/test_fleet_ops_unlabelled.py tests/test_fleet_scorecard_rule.py tests/test_fleet_sync_stub_guard.py tests/test_fleet_update_safety_net.py tests/test_host_config_umask_dropins.py tests/test_litellm_proxy_seat_keys.py tests/test_no_fable_model.py tests/test_no_plaintext_git_credentials.py tests/test_orchestrator_handoff_reserved.py tests/test_pilot_runner_key.py tests/test_queue_down_rule.py tests/test_retro_weekly_header.py tests/test_tincan_devin_hardening.py
+      - name: Router tests run on the proxy image's litellm, not the host venv's (fleet-ops#10710, #9427)
+        # The host venv and the image drift, so a router test that imports the
+        # venv's litellm measures a release the proxy never serves. The pin is
+        # read out of the quadlet image, never written here. uvx is not on the
+        # runner image (actions/runner-images Ubuntu24-Readme.md), so pipx runs
+        # the same pinned set.
+        if: always()
+        run: |
+          set -euo pipefail
+          pin=$(sed -n 's|^Image=ghcr\.io/berriai/litellm:v\([0-9][0-9.]*\)@sha256:[0-9a-f]*|\1|p' containers/quadlet/fleet-litellm-proxy.container)
+          test -n "$pin" || { echo "::error::no litellm pin in containers/quadlet/fleet-litellm-proxy.container"; exit 1; }
+          pipx run --spec pytest==8.3.5 --with "litellm==$pin" --with jsonschema --with httpx \
+            pytest -q -p no:cacheprovider tests/test_router_404_fallthrough.py tests/test_router_consumer_groups.py tests/test_router_order2_overflow.py tests/test_router_retry_policy_no_cross_seat.py tests/test_router_tether_fallback.py tests/test_router_weights.py tests/test_router_worker_public.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -1859,6 +1882,13 @@ jobs:
       - name: tofu validate
         working-directory: infra/cloudflare-tokens
         run: tofu validate
+      - name: State encryption tests (fleet-ops#9781)
+        # These run the real tofu against a throwaway local state. The one test
+        # that reads the env file the way the unit does carries its own marker for
+        # a systemd user manager, so it skips where there is none and runs where
+        # there is.
+        if: always()
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_tofu_state_encryption.py
 
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main

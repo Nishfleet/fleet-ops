@@ -17,6 +17,8 @@ ROUTER_TESTS_WITHOUT_LITELLM exempts it. Run the rest on the pin:
 
     uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx \\
         python -m pytest -q -p no:cacheprovider tests/test_router_*.py
+
+ci.yml runs the same pinned set with pipx, because the runner image ships no uvx.
 """
 
 from __future__ import annotations
