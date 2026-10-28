@@ -1549,6 +1549,7 @@ jobs:
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
+        id: session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         timeout-minutes: 50
         env:
@@ -1600,6 +1601,7 @@ jobs:
           # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
           # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
           # delete the three flags below.
+          rc=0
           env -u GH_TOKEN -u GITHUB_TOKEN "$HOME/.local/bin/claude" -p \
             "${model_args[@]}" \
             "${hook_args[@]}" \
@@ -1609,7 +1611,16 @@ jobs:
             --output-format json \
             --permission-mode bypassPermissions \
             --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+            < "$RUNNER_TEMP/orchestrator-prompt.md" | tee "$RUNNER_TEMP/orchestrator-result.json" || rc=$?
+          # A Claude usage limit did no work (61 of 72 failed sessions on 2026-10-27/28, fleet-ops#10732):
+          # it is not a failed hand-off, so it keeps needs-orchestrator and spends none of the 3 tries.
+          # The sweep re-fires the issue after 6 h idle, past the 5-hour window.
+          if [ "$rc" != 0 ] && jq -e '.api_error == "usage_limit_reached"' "$RUNNER_TEMP/orchestrator-result.json" >/dev/null 2>&1; then
+            echo "::warning::orchestrate: Claude usage limit reached; #$ISSUE_N keeps needs-orchestrator for the sweep's re-fire"
+            echo "limited=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$rc"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
@@ -1618,6 +1629,7 @@ jobs:
           # (zizmor template-injection; the same reason WORKTREE above is an
           # env var).
           GO: ${{ steps.issue.outputs.go }}
+          LIMITED: ${{ steps.session.outputs.limited }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
@@ -1671,6 +1683,10 @@ jobs:
             exit 0
           }
           [ -n "$ISSUE" ] || exit 0
+          [ "${LIMITED:-}" != true ] || {
+            echo "orchestrate: #$ISSUE hit the Claude usage limit; no park mark, the sweep re-fires it"
+            exit 0
+          }
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
           # orchestrator-tried and skips; the sweep re-queues it after 6 h, up to 3 tries.
