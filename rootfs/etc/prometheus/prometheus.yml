@@ -1,9 +1,10 @@
 # Prometheus configuration — repo-sourced (fleet-ops#1534).
 #
-# The Debian package owns /etc/prometheus/prometheus.yml; fleet-sync.service
+# The Debian package owns /etc/prometheus/prometheus.yml; ansible/tasks/alerting.yml
 # deploys this as a root-owned copy (not a symlink: prometheus cannot
 # traverse /home/nish) and reloads prometheus after the change
-# (fleet-ops#8084).
+# (fleet-ops#8084). The install is skipped until the alertmanager web config
+# and its password file are both in place (fleet-ops#10058).
 global:
   scrape_interval: 30s
   scrape_timeout: 25s
@@ -23,8 +24,9 @@ alerting:
       # Alertmanager requires basic auth on every route (see
       # rootfs/etc/default/prometheus-alertmanager). The username is not a
       # secret; the password comes from a hand-placed 0600 file that
-      # ansible/host.yml installs for the prometheus user, so it stays out of
-      # this repo. promtool does not open the file, so CI passes without it.
+      # ansible/tasks/alerting.yml keeps owned by the prometheus user, so it
+      # stays out of this repo. promtool does not open the file, so CI passes
+      # without it, and the deploy probes the pair before it installs this.
       basic_auth:
         username: fleet
         password_file: /etc/prometheus/alertmanager_password
