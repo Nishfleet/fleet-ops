@@ -24,8 +24,6 @@ Straitly is back for free credit only (Nish 2026-10-15, explicit yes recorded at
 
 MiniMax M3.1-Flash-Preview free promo ended 2026-10-07 (free for every MiniMax Code subscriber through then, Nish 2026-09-30, #9008/#9009); the four rows below are tagged prepaid again (#9414). Nish 2026-10-09: he is on the flat MiniMax Yearly Plus plan (5-hour and weekly limits, no per-token bill), so the rows carry no dollar cap and no spend alert; the plan quota is the cap (see the comment above the rows).
 
-OpenCode Go: deepseek-v4.1-flash (Cline and Ollama had it too; their rows were removed on 2026-10-23, see the removal records below). CommandCode: GLM-5.3-Flash (z-ai/glm-5.3-flash, Nish 2026-10-15, #9744). MiniMax: M3.1-Flash-Preview. StepFun: step-5-preview. Synthetic: GLM-5.3-Flash. Straitly: deepseek/deepseek-v4-1-flash (worker-public only).
-
 ## Note 2
 
 Was in `config/litellm-proxy.yaml` at line 15, before `worker-capable`.
