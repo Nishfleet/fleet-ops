@@ -455,7 +455,8 @@ line above.
 ## Unattended Claude runs (fleet-ops#9502)
 
 Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
-(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the tincan inbox drainer; its user-level copy was retired in
+fleet-ops#10125) and `claude-remote-control.service`
 (system unit, the Remote Control server). Both used to pass
 `--permission-mode bypassPermissions`, which skips every check, so the
 `permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
@@ -510,7 +511,7 @@ from the phone. A denied call is reported in the session and there is no
 prompt to tap.
 
 The tincan unit goes live after merge, when fleet-host-config has the new file and
-the root unit is reloaded (`systemctl daemon-reload && systemctl
+the root unit is reloaded (`sudo systemctl daemon-reload && sudo systemctl
 restart tincan-listen-claude-vps.service`). Remote Control stays on
 the old `ExecStart` until Nish restarts it.
 

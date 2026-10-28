@@ -119,15 +119,15 @@
   `Environment=CLAUDE_CONFIG_DIR=` line, so it needs no drop-in. The user-level
   copy and its `10-nish-seat.conf` drop-in were deleted in fleet-ops#10125
   because nothing linked or ran them.
-  - Run it now: `systemctl start tincan-listen-claude-vps.service`, then
-    `journalctl -u tincan-listen-claude-vps.service -f`.
-  - Switch it on: `systemctl enable --now tincan-listen-claude-vps.service`.
-  - Switch it off: `systemctl disable --now tincan-listen-claude-vps.service`
+  - Run it now: `sudo systemctl start tincan-listen-claude-vps.service`, then
+    `sudo journalctl -u tincan-listen-claude-vps.service -f`.
+  - Switch it on: `sudo systemctl enable --now tincan-listen-claude-vps.service`.
+  - Switch it off: `sudo systemctl disable --now tincan-listen-claude-vps.service`
     (requests to claude-vps then queue until a session checks its inbox).
   - Delete it: switch it off, delete the file here, add
     `/etc/systemd/system/tincan-listen-claude-vps.service` to the `retired`
     list in `ansible/host.yml` (that task, not the file deletion, removes the
-    installed copy on the next config run), then `systemctl daemon-reload`.
+    installed copy on the next config run), then `sudo systemctl daemon-reload`.
 - `systemd/tincan-listen-command-code.service`,
   `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
   `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,

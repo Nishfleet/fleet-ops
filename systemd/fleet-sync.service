@@ -55,13 +55,16 @@ ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops
 # 2.1 The retired weekly retro and the stale user copy of the tincan claude
 #     listener (fleet-ops#10125) left live links to deleted deploy-clone files.
 #     Stop the units first, while the links still resolve, so a Monday slot
-#     cannot start a deleted service; then rm the unit links, the timer's
-#     enable link and the drop-in link. rm -f is a no-op once they are gone,
-#     and without it LINK-GUARD fails on the dangling links. The root
-#     tincan-listen-claude-vps.service is a system unit and is not touched
-#     here. Off switch: delete this step.
+#     cannot start a deleted service; then rm the unit links and every enable
+#     link. The *.wants glob covers whichever target the [Install] section
+#     named, so no dangling link survives in a directory this list did not
+#     guess. rm -f is a no-op once they are gone, and without it LINK-GUARD
+#     fails on the dangling links. Both rm lines carry the - prefix: a link
+#     that cannot be removed is the next run's problem, not a reason to stop
+#     this deploy. The root tincan-listen-claude-vps.service is a system unit
+#     and is not touched here. Off switch: delete this step.
 ExecStart=-/usr/bin/systemctl --user stop retro-weekly.timer retro-weekly.service retro-weekly-api.socket tincan-listen-claude-vps.service
-ExecStart=/bin/rm -f %h/.config/systemd/user/retro-weekly.service %h/.config/systemd/user/retro-weekly.timer %h/.config/systemd/user/retro-weekly-api.service %h/.config/systemd/user/retro-weekly-api.socket %h/.config/systemd/user/timers.target.wants/retro-weekly.timer %h/.config/systemd/user/sockets.target.wants/retro-weekly-api.socket %h/.config/systemd/user/default.target.wants/retro-weekly.timer %h/.config/systemd/user/default.target.wants/retro-weekly-api.socket %h/.config/systemd/user/tincan-listen-claude-vps.service %h/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf %h/.config/systemd/user/default.target.wants/tincan-listen-claude-vps.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/retro-weekly.service %h/.config/systemd/user/retro-weekly.timer %h/.config/systemd/user/retro-weekly-api.service %h/.config/systemd/user/retro-weekly-api.socket %h/.config/systemd/user/*.wants/retro-weekly.timer %h/.config/systemd/user/*.wants/retro-weekly-api.socket %h/.config/systemd/user/tincan-listen-claude-vps.service %h/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf %h/.config/systemd/user/*.wants/tincan-listen-claude-vps.service
 ExecStart=-/bin/rmdir --ignore-fail-on-non-empty %h/.config/systemd/user/tincan-listen-claude-vps.service.d
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per

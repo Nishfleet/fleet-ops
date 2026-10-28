@@ -1430,7 +1430,7 @@ def fake_gh_dir(tmp_path: Path) -> Path:
 
 
 def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
-    keys = unit_directives(PR_SWEEP)
+    keys = effective_directives(PR_SWEEP)
     starts = keys["ExecStart"]
     assert len(starts) == 2, "the dispatch line plus the failure check; deleting the second line is the documented off switch"
     assert starts[0] == "/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i"
@@ -1449,7 +1449,7 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert len(stop) == 1, "one stop command: systemd reloads the EnvironmentFile for every command it spawns"
     assert "gh api -X DELETE installation/token" in stop[0], "the token is revoked as soon as the two calls end"
     assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0], "its env file is deleted with it"
-    values = " ".join(value for values in unit_directives(PR_SWEEP).values() for value in values)
+    values = " ".join(value for values in effective_directives(PR_SWEEP).values() for value in values)
     assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", values), (
         "a token literal in the unit file or in argv; the minted token reaches gh through its env file only"
     )
@@ -1630,7 +1630,7 @@ def test_remote_control_sessions_keep_what_a_session_needs_inside_the_sandbox() 
 
 
 def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> None:
-    keys = unit_directives(ROOT_TINCAN)
+    keys = effective_directives(ROOT_TINCAN)
     exec_argv = shlex.split(keys["ExecStart"][0])
     claude = shlex.split(exec_argv[exec_argv.index("--exec") + 1])
     assert claude[:3] == [BIN_CLAUDE, "-p", "--model"]

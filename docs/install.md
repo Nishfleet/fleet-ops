@@ -138,7 +138,8 @@ journal.
   `cat /var/lib/fleet-deploy/result`.
 - Switch it off: `systemctl disable --now fleet-deploy.path`. The deploy-box job
   then starts the two units itself, as it did before.
-- Delete the four units: delete `fleet-host-config.service`,
+- Delete the root deploy units: six paths go, not four. Delete
+  `fleet-host-config.service`,
   `fleet-host-config-boot.timer`, `fleet-deploy.path` and `fleet-deploy.service`
   under `rootfs/etc/systemd/`, the `fleet-host-config.service.d` drop-in
   directory and `rootfs/etc/tmpfiles.d/fleet-deploy.conf`, add those six paths
