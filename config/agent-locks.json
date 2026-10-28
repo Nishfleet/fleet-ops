@@ -36,7 +36,8 @@
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-fleet-worker": {
@@ -73,7 +74,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-amp": {
@@ -109,7 +111,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-command-code": {
@@ -146,7 +149,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-cursor-vps": {
@@ -183,7 +187,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-devin-vps": {
@@ -220,7 +225,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-opencode": {
@@ -258,7 +264,8 @@
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
         "/run/user/1000",
-        "/run/docker.sock"
+        "/run/docker.sock",
+        "~/.config/tincan/claude-vps.json"
       ]
     },
     "tincan-listen-claude-vps": {

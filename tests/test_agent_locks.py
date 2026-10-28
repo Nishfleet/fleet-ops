@@ -118,3 +118,11 @@ def test_every_gap_names_a_reason_and_a_follow_up() -> None:
     for gap in CONTRACT["gaps"]:
         assert gap.get("reason"), f"{gap['agent']} has no reason"
         assert gap.get("issue"), f"{gap['agent']} has no follow-up issue, so it would be forgotten"
+
+
+@pytest.mark.parametrize("name", sorted(AGENTS), ids=str)
+def test_every_other_relay_identity_is_hidden(name: str) -> None:
+    others = [a["relay_identity"] for n, a in AGENTS.items() if n != name and a.get("relay_identity")]
+    values = settings(ROOT / AGENTS[name]["unit"])
+    missing = [path for path in others if not hidden(values, path)]
+    assert missing == [], f"{name} does not hide the relay identities {missing}"
