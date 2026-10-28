@@ -10,6 +10,10 @@ bypass the policy tree. This reads the provisioning files, walks the policy tree
 for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
+It also fails when a rule or a dashboard panel reads a data source this repo does
+not provision, or an owner this repo's GitHub App has no installation for: that
+read is blind, and a rule that reads nothing turns into a DatasourceError alert
+nobody can act on (fleet-ops#9803).
 
 It also holds the other end of the alert path: Alertmanager's API answers only
 with basic auth, and every Prometheus client of it carries the credential
@@ -25,6 +29,7 @@ would protect nothing.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
+import json
 import re
 import sys
 import tempfile
@@ -65,6 +70,14 @@ PLAN_REPEAT = 604800
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+# A data source that was provisioned and then removed keeps its readers blind, so
+# each one names the replacement the reader must take (fleet-ops#9803).
+RETIRED_DATASOURCES = {"fleet-github-personal": "fleet-github"}
+RETIRED_OWNERS = {"nish3451": "Nishfleet"}
+# Grafana writes the built-in sources several ways: the UI names two of them, the
+# expression engine uses __expr__, and a saved expression node carries -100 (older
+# rules) or "grafana" (newer ones) as its data source uid.
+BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
 
 
 def seconds(text):
@@ -194,6 +207,24 @@ def selftest():
         (fixture / AM_OPTIONS).write_text('ARGS="--config.file=/etc/alertmanager/alertmanager.yml --web.listen-address=127.0.0.1:9093"\n')
         assert any("--web.config.file" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
         (fixture / AM_OPTIONS).write_text((repo / AM_OPTIONS).read_text())
+    refs = []
+    walk_refs({"datasource": {"uid": "x"}, "targets": [
+        {"datasource": ["a", "b"]},
+        {"datasource": {"uid": "fleet-github-personal"}, "queryType": "Issues", "owner": "nish3451"}]}, "f", refs)
+    assert ("f", "datasource", "x") in refs
+    assert ("f > targets[0]", "datasource", "a") not in refs
+    assert ("f > targets[1]", "datasource", "fleet-github-personal") in refs
+    assert ("f > targets[1]", "owner", "nish3451") in refs
+    var = []
+    walk_refs({"datasource": {"uid": "${DS}"}}, "f", var)
+    assert [v for _, k, v in var if k == "variable"] == ["${DS}"]
+    planted = ref_findings({"fleet-github"}, [
+        ("f", "datasource", "fleet-github"), ("f", "datasource", "fleet-github-personal"),
+        ("f", "owner", "nish3451"), ("f", "datasource", "gone"),
+        ("f", "datasource", "-100"), ("f", "variable", "${DS}")])
+    assert planted == ["f: data source fleet-github-personal was retired, read fleet-github instead",
+                       "f: reads owner nish3451, which this repo's App has no installation for; read Nishfleet",
+                       "f: data source gone is not provisioned in provisioning/datasources"], planted
 
 
 def dead_row_shape(rules, points, bad):
@@ -222,6 +253,84 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
 
 
+def provisioned_uids(provisioning):
+    uids = set()
+    for f in sorted((Path(provisioning) / "datasources").glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for d in doc.get("datasources") or []:
+            assert d.get("uid"), f"{f.name}: a data source without a uid cannot be referenced"
+            uids.add(d["uid"])
+    assert uids, f"no data source provisioned under {provisioning}/datasources"
+    return uids
+
+
+def walk_refs(node, where, out):
+    """Every data source uid, query owner and template variable in a rule model or
+    a dashboard panel tree, as (where, kind, value)."""
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        uid = ds.get("uid") if isinstance(ds, dict) else ds
+        if isinstance(uid, str) and uid:
+            out.append((where, "variable" if "${" in uid else "datasource", uid))
+        if node.get("datasourceUid"):
+            out.append((where, "datasource", node["datasourceUid"]))
+        if node.get("queryType") and node.get("owner"):
+            out.append((where, "owner", node["owner"]))
+        for key, value in node.items():
+            if isinstance(value, (dict, list)):
+                walk_refs(value, where if key in ("model", "options") else f"{where} > {key}", out)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            walk_refs(value, f"{where}[{i}]", out)
+
+
+def datasource_refs(root, provisioning):
+    """[(where, kind, value)] for every alert rule and dashboard panel that names one.
+    A file that carries a rule or a dashboard but names no data source at all is a
+    broken walk, not a silent pass."""
+    out, per_file = [], {}
+    for f in sorted(Path(root).glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        rules = [r for g in doc.get("groups") or [] for r in g["rules"]]
+        before = len(out)
+        for r in rules:
+            walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
+        if rules:
+            per_file[f.name] = len(out) - before
+    dash = Path(provisioning).parent / "dashboards"
+    files = sorted(dash.glob("*.json"))
+    assert files, f"no dashboard json under {dash}"
+    for f in files:
+        before = len(out)
+        walk_refs(json.loads(f.read_text()), f.name, out)
+        per_file[f.name] = len(out) - before
+    silent = sorted(k for k, n in per_file.items() if not n)
+    assert not silent, f"{silent} carry rules or a dashboard but name no data source, so the walk never reached them"
+    return out
+
+
+def ref_findings(uids, refs):
+    """Findings for every reference that reads a data source this repo does not
+    provision, or an owner its GitHub App has no installation for."""
+    bad = []
+    for where, kind, value in refs:
+        if kind == "owner" and value.lower() in RETIRED_OWNERS:
+            bad.append(f"{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value.lower()]}")
+        elif kind == "datasource" and value in RETIRED_DATASOURCES:
+            bad.append(f"{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
+        elif kind == "datasource" and value not in uids and value not in BUILTIN_DATASOURCES:
+            bad.append(f"{where}: data source {value} is not provisioned in provisioning/datasources")
+    return bad
+
+
+def check_datasource_refs(root, provisioning):
+    uids = provisioned_uids(provisioning)
+    bad = ref_findings(uids, datasource_refs(root, provisioning))
+    if not bad:
+        print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
+    return bad
+
+
 def main(root):
     selftest()
     rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
@@ -237,7 +346,11 @@ def main(root):
             contacts_doc.append(c)
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
-    bad, paging = [], {}
+    bad, paging = check_datasource_refs(root, Path(root).parent), {}
+    for c in contacts_doc:
+        for rcv in c.get("receivers") or []:
+            if ".GeneratorURL" in json.dumps(rcv):
+                bad.append(f"{c['name']}: the issue body must not interpolate .GeneratorURL, the private Grafana host, because this repo is public (fleet-ops#10763)")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():

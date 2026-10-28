@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server nftables ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
@@ -139,20 +139,20 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon cursor-agent leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
-        # Root-owned units live in rootfs/etc/systemd/system/; this covers the slices (no
-        # Exec line, so no stub), the host-config and update units and the Remote Control
-        # server. rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
-        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so awk
-        # fails the step on any verify line that names the unit. A [Install] target naming
-        # no target prints nothing, so it stays unseen.
+        # Root-owned units live in rootfs/etc/systemd/system/; the globs cover every root
+        # service, timer and path unit (the slices have no Exec line, so they need no
+        # stub). rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
+        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so the
+        # step fails on any output line from any unit (fleet-ops#10286). A [Install]
+        # target naming no target prints nothing, so it stays unseen.
         if: always()
         run: |
           shopt -s nullglob; set -o pipefail
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-deploy.service rootfs/etc/systemd/system/fleet-deploy.path rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config-boot.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer rootfs/etc/systemd/system/claude-remote-control.service 2>&1 | awk 'BEGIN { bad = 0 } /claude-remote-control[.]service:/ { bad = 1 } { print } END { exit bad }'
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which

@@ -186,6 +186,13 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
+description = "An earlier commit of the Drive pin (fleet-ops#10547) wrote the server's root as an absolute home path; the fragment now carries ~/Drive and the play renders it from nish_home, and the test asserts that form. A PR scan reads every commit while history cannot be rewritten on an open PR. Only that one path is allowed"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(config/drive-mcp\.json|tests/test_chrome_devtools_mcp\.py)$''']
+regexes = ['''^home/nish/Drive$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The machine-wide Claude Code managed-settings file denies Read on the seat and tincan secret paths and Edit on the deploy clone, so it must name them; a JSON file has no comment line to carry gitleaks:allow. Only those three home paths and the one relative seats path are allowed, so a new one still fails the scan; fleet-ops#10543"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']

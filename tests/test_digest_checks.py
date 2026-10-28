@@ -697,6 +697,8 @@ def test_the_evening_sequence_carries_the_checked_row_from_2a_into_2b(tmp_path):
 
 PRUNE = "Delete the retired jobs from Hermes' cron store"
 READ = "Read Hermes' scheduled jobs"
+REREAD = "Read Hermes' scheduled jobs again"
+GUARD = "Fail when the retired Hermes reminder job is still in the store"
 
 FAKE_CRON_STUB = """#!/usr/bin/env python3
 import json, os, sys
@@ -734,10 +736,13 @@ CRON_LIVE = [
     _job("b30761322118", "audit-claims", True, **_cron("30 8,20 * * *")),
     _job("783b31b9d5e5", "audit-urgent", True, **_cron("50 8,20 * * *")),
     _job("6362250bf181", "audit-file", True, **_cron("10 9,21 * * *")),
-    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
     _job("4231290e3e00", "sec-k3-key-renewal", True, **_once(400)),
     _job("1145b749d731", "sec-daily-summary", True, **_cron("0 21 * * *")),
     _job("33199b7bfff5", "sec-coordinator-backstop", True, **_cron("41 */6 * * *")),
+]
+
+CRON_RETIRED_REMINDER = [
+    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
 ]
 
 CRON_PROOF = [
@@ -787,7 +792,7 @@ def _task_text(name):
     return block
 
 
-def _prune(tmp_path, jobs):
+def _prune(tmp_path, jobs, guard=False, retired=None):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
     stub = tmp_path / ".local/bin/hermes"
@@ -809,7 +814,7 @@ def _prune(tmp_path, jobs):
                 "  gather_facts: false",
                 "  vars:",
                 f"    nish_home: {tmp_path}",
-                f"    hermes_retired_jobs: {json.dumps(_retired_ids())}",
+                f"    hermes_retired_jobs: {json.dumps(_retired_ids() if retired is None else retired)}",
                 "    nish_env:",
                 f"      HOME: {tmp_path}",
                 f"      PATH: {stub.parent}:/usr/local/bin:/usr/bin:/bin",
@@ -818,6 +823,8 @@ def _prune(tmp_path, jobs):
                 "  tasks:",
                 *_task_text(READ),
                 *_task_text(PRUNE),
+                *(_task_text(REREAD) if guard else []),
+                *(_task_text(GUARD) if guard else []),
                 "",
             ]
         )
@@ -830,33 +837,51 @@ def _prune(tmp_path, jobs):
         text=True,
         timeout=300,
     )
-    assert run.returncode == 0, run.stdout + run.stderr
     left = json.loads(store.read_text())["jobs"] if store.exists() else None
-    return left, log.read_text().split()
+    if not guard:
+        assert run.returncode == 0, run.stdout + run.stderr
+    return left, log.read_text().split(), run.returncode, run.stdout + run.stderr
 
 
-def test_the_host_jobs_remove_the_proof_jobs_and_the_expired_one_shots(tmp_path):
-    assert _retired_ids() == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
-    jobs, calls = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
-    assert sorted(calls) == sorted(job["id"] for job in CRON_PROOF + CRON_EXPIRED)
+def test_the_host_jobs_remove_the_retired_jobs_and_the_expired_one_shots(tmp_path):
+    retired = CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED
+    assert _retired_ids() == [job["id"] for job in retired]
+    jobs, calls, _, _ = _prune(tmp_path, CRON_LIVE + retired + CRON_KEPT)
+    assert sorted(calls) == sorted(job["id"] for job in retired)
     assert jobs == CRON_LIVE + CRON_KEPT
+
+
+def test_the_reminder_guard_passes_once_the_job_is_gone(tmp_path):
+    retired = CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED
+    jobs, calls, rc, out = _prune(tmp_path, CRON_LIVE + retired + CRON_KEPT, guard=True)
+    assert jobs == CRON_LIVE + CRON_KEPT
+    assert rc == 0, out
+
+
+def test_the_reminder_guard_fails_while_the_job_is_still_in_the_store(tmp_path):
+    wrong_id = [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
+    jobs, calls, rc, out = _prune(tmp_path, CRON_LIVE + CRON_RETIRED_REMINDER + CRON_KEPT, guard=True, retired=wrong_id)
+    assert calls == []
+    assert [job for job in jobs if job["name"] == "remind-orchestrator-app"] == CRON_RETIRED_REMINDER
+    assert rc != 0
+    assert "hermes_retired_jobs" in out
 
 
 def test_the_host_jobs_leave_a_fresh_proof_job_alone(tmp_path):
     fresh = _job("444444444444", "tmp-10600-proof", True, **_once(0))
-    jobs, calls = _prune(tmp_path, CRON_LIVE + [fresh])
+    jobs, calls, _, _ = _prune(tmp_path, CRON_LIVE + [fresh])
     assert calls == []
     assert jobs == CRON_LIVE + [fresh]
 
 
 def test_the_host_jobs_remove_nothing_on_a_second_run(tmp_path):
-    jobs, _ = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
-    again, calls = _prune(tmp_path, jobs)
+    jobs, _, _, _ = _prune(tmp_path, CRON_LIVE + CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    again, calls, _, _ = _prune(tmp_path, jobs)
     assert calls == []
     assert again == jobs
 
 
 def test_the_host_jobs_remove_nothing_without_a_store(tmp_path):
-    jobs, calls = _prune(tmp_path, None)
+    jobs, calls, _, _ = _prune(tmp_path, None)
     assert calls == []
     assert jobs is None
