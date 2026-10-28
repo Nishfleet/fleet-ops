@@ -115,7 +115,6 @@ def test_three_blocks_still_get_a_rework_round(tmp_path):
 def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
     env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs),
                     GH_LABELS="needs-orchestrator", RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
-    # `gh issue view --json state` and `--json labels` both print GH_LABELS; the step wants OPEN first.
     gh = tmp_path / "bin/gh"
     gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
     if pulls_fail:
@@ -181,7 +180,7 @@ WORKTREE_STEP = ("agent-dispatch.yml", "orchestrate", "Fresh worktree on origin/
 def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):
     home, _, _, env = _mirror(tmp_path)
     block = _block(*WORKTREE_STEP)
-    for _ in range(2):  # second run: the local branch exists already and is reset to the origin head
+    for _ in range(2):
         r = _run(block, env)
         assert r.returncode == 0, r.stderr
         wt = home / "workspaces/agent-worktrees/orch-fleet-ops-77"
