@@ -2068,6 +2068,34 @@
       when: cursor_next != cursor_now
       diff: false
 
+    # The Drive entry is stock client config: this repo owns only its package
+    # spec (config/drive-mcp.json). A config Claude Code never wrote is left alone.
+    - name: Read Claude Code's user config
+      become: true
+      become_user: nish
+      ansible.builtin.slurp:
+        src: "{{ nish_home }}/.claude.json"
+      register: claude_user_config
+      failed_when: false
+      diff: false
+
+    - name: Pin the Drive filesystem server in Claude Code's user config
+      become: true
+      become_user: nish
+      ansible.builtin.copy:
+        content: "{{ claude_next | to_nice_json(indent=2) }}\n"
+        dest: "{{ nish_home }}/.claude.json"
+        mode: "0600"
+      vars:
+        claude_now: "{{ claude_user_config.content | default('e30=', true) | b64decode | from_json }}"
+        drive_mcp_entry_file: "{{ playbook_dir }}/../config/drive-mcp.json"
+        drive_mcp_servers: "{{ (lookup('ansible.builtin.file', drive_mcp_entry_file) | from_json).mcpServers }}"
+        claude_next: "{{ claude_now | combine({'mcpServers': (claude_now.mcpServers | default({})) | combine(drive_mcp_servers)}) }}"
+      when:
+        - claude_user_config.content is defined
+        - claude_next != claude_now
+      diff: false
+
     - name: Look for Codex's config
       become: true
       become_user: nish

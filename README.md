@@ -1178,6 +1178,30 @@ credential file does not hold them back.
   every agent": the args match in every fragment, and the Cursor, Codex and
   Hermes tasks run twice against temp copies (the second run changes nothing).
 
+## Drive filesystem server
+
+Claude Code's user config, `~/.claude.json`, carries one MCP entry: the official
+filesystem server over `~/Drive`. `config/drive-mcp.json` owns that entry and
+the play merges it into `mcpServers`, keeping every other server and key. So the
+package spec is always an exact
+`@modelcontextprotocol/server-filesystem@<version>`: with no version, `npx`
+installs whatever the registry calls latest, and a bad release lands on the next
+session start. The pin is the whole change, and the version is taken at least 3
+days after its release. A `~/.claude.json` that Claude Code has never written is
+left alone.
+
+`npx` still asks the registry for the package metadata on every start. It then
+runs the pinned copy it already has in `~/.npm/_npx`, so no new version is ever
+installed. A session with no network needs that metadata request to answer, so a
+fully offline start is the local-install route Chrome DevTools MCP uses, not
+this entry.
+
+- Bump it: edit `config/drive-mcp.json` and run
+  `tests/test_chrome_devtools_mcp.py`; the play holds no copy of the version.
+- Check it: the `ci` step "Chrome DevTools MCP is pinned once and wired into
+  every agent" pins the fragment's shape and runs the two Claude Code tasks
+  twice against a temp copy (the second run changes nothing).
+
 ## CI
 
 `.github/workflows/ci.yml` splits its test work into four jobs by concern (`lint`, `systemd-verify`, `unit`, `simulations`), each with its own timeout, on every PR and every merge-queue entry. The one required check `ci` runs no tests and needs every other job. Its

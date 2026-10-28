@@ -21,6 +21,7 @@ if not shutil.which("yq"):
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
 PIN_DIR = ROOT / "config/chrome-devtools-mcp"
+DRIVE_PIN = ROOT / "config/drive-mcp.json"
 REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
 
 
@@ -90,6 +91,8 @@ def test_every_install_step_is_in_the_play():
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
         "Add the chrome-devtools entry to each agent CLI",
         "Swap Cursor's dead camofox entry for chrome-devtools",
+        "Read Claude Code's user config",
+        "Pin the Drive filesystem server in Claude Code's user config",
         "Drop Codex's dead camofox entry and its subtables",
         "Add the chrome-devtools entry under Hermes' mcp_servers",
     ):
@@ -110,6 +113,8 @@ USER_FILE_TASKS = [
     "Add the chrome-devtools entry to each agent CLI",
     "Read Cursor's MCP config",
     "Swap Cursor's dead camofox entry for chrome-devtools",
+    "Read Claude Code's user config",
+    "Pin the Drive filesystem server in Claude Code's user config",
     "Look for Codex's config",
     "Drop Codex's dead camofox entry and its subtables",
     "Read Hermes' config",
@@ -241,6 +246,46 @@ def test_cursor_swap_keeps_other_servers_and_is_idempotent(tmp_path):
     assert servers["drive"]["command"] == "npx"
     assert servers["chrome-devtools"] == {"command": f"{tmp_path}/.local/bin/chrome-devtools-mcp", "args": ARGS}
     assert "changed=0" in _run_tasks(tmp_path, names)
+
+
+CLAUDE_CONFIG_TASKS = ["Read Claude Code's user config", "Pin the Drive filesystem server in Claude Code's user config"]
+DRIVE_SUBS = {"{{ playbook_dir }}/../config": str(ROOT / "config")}
+
+
+def test_the_drive_entry_is_the_whole_pin_and_the_play_only_reads_it():
+    entry = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
+    assert entry["type"] == "stdio" and entry["command"] == "npx" and entry["env"] == {}
+    assert entry["args"][0] == "-y"
+    assert re.fullmatch(r"@modelcontextprotocol/server-filesystem@\d+\.\d+\.\d+", entry["args"][1])
+    assert entry["args"][2] == "/home/nish/Drive"
+    text = HOST.read_text()
+    assert "config/drive-mcp.json" in text and "server-filesystem" not in text
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_claude_user_config_gets_the_pinned_drive_server_and_keeps_the_rest(tmp_path):
+    cfg = tmp_path / ".claude.json"
+    pinned = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
+    cfg.write_text(json.dumps({
+        "oauthAccount": {"emailAddress": "nish@example.invalid"},
+        "projects": {"/srv/app": {"allowedTools": ["Bash"]}},
+        "mcpServers": {
+            "drive": {"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/Drive"], "env": {}},
+            "other": {"command": "other"},
+        },
+    }))
+    _run_tasks(tmp_path, CLAUDE_CONFIG_TASKS, DRIVE_SUBS)
+    whole = json.loads(cfg.read_text())
+    assert whole["mcpServers"] == {"drive": pinned, "other": {"command": "other"}}
+    assert whole["oauthAccount"] == {"emailAddress": "nish@example.invalid"} and whole["projects"] == {"/srv/app": {"allowedTools": ["Bash"]}}
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert "changed=0" in _run_tasks(tmp_path, CLAUDE_CONFIG_TASKS, DRIVE_SUBS)
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_claude_user_config_is_not_created_where_claude_never_ran(tmp_path):
+    _run_tasks(tmp_path, CLAUDE_CONFIG_TASKS, DRIVE_SUBS)
+    assert not (tmp_path / ".claude.json").exists()
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")

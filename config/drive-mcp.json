@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "drive": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2.0.1",
+        "/home/nish/Drive"
+      ],
+      "env": {}
+    }
+  }
+}
