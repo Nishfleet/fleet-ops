@@ -139,14 +139,20 @@ def test_the_run_never_resets_a_unit_so_a_fresh_failure_keeps_its_record():
     assert [a for a in argv if "--property=Transient" in a] == []
 
 
-def test_no_launch_line_in_the_runbook_leaves_a_loaded_failed_unit():
-    """A unit `systemd-run` created under the user manager stays loaded in `failed` state
-    after it stops and nothing resets it, which is the cause of the leftovers
-    (fleet-ops#10211). `--collect` is the stock flag that unloads it instead."""
+def test_no_line_of_the_runbook_launches_work_under_the_user_manager_without_collect():
+    """A unit `systemd-run` created stays loaded in `failed` state after it stops and
+    nothing unloads it, which is the cause of the leftovers (fleet-ops#10211).
+    `--collect` is the stock flag that unloads it instead. The gate reads every
+    line of the RUNBOOK, prose included, so a `sudo`-prefixed line or one wrapped
+    after the flag cannot slip past it."""
     runbook = (ROOT / "docs/RUNBOOK.md").read_text()
-    launches = [line for line in runbook.splitlines() if line.lstrip().startswith("systemd-run") and "--user" in line]
-    assert launches, "the RUNBOOK has no `systemd-run --user` launch line to check"
-    assert all("--collect" in line for line in launches), launches
+    joined = runbook.replace("\\\n", " ")
+    offenders = {
+        number: line.strip()
+        for number, line in enumerate(joined.splitlines(), start=1)
+        if "systemd-run" in line and "--user" in line and "--collect" not in line
+    }
+    assert not offenders, offenders
 
 
 def test_the_shell_startup_section_sends_work_to_the_launcher_rule_not_to_a_user_transient():
@@ -154,8 +160,9 @@ def test_the_shell_startup_section_sends_work_to_the_launcher_rule_not_to_a_user
     (fleet-ops#10211)."""
     runbook = (ROOT / "docs/RUNBOOK.md").read_text()
     section = runbook.split("### Shell startup files", 1)[1].split("\n## ", 1)[0]
-    assert "--user" not in section, section
+    joined = section.replace("\\\n", " ")
     assert 'AGENTS.md "Session-outliving work"' in section
+    assert [line for line in joined.splitlines() if "systemd-run" in line and "--user" in line] == [], joined
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible-playbook missing")
@@ -192,7 +199,6 @@ def test_a_failed_user_unit_still_fails_the_run(tmp_path):
     )
     assert result.returncode != 0, result.stdout + result.stderr
     assert "item9-pi-only-1028.service" in result.stdout
-
 
 
 def test_the_git_pin_check_asks_github_about_the_default_branch_of_every_github_pin():
