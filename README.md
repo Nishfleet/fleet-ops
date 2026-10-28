@@ -1316,6 +1316,9 @@ repos are enrolled — adding or removing a repo is a PR against that file, not 
 `systemctl enable`. This replaces the old imperative enrolment that was
 silently reverted without a record (fleet-ops#32). `later-sweep.service` reads
 this list too, so the overdue sweep follows enrolment without a second list.
+`sweep_only` names repos that are not enrolled but whose agent-ready items
+the worker-exit top-up in `agent.yml` still re-sweeps (fleet-ops and drive,
+fleet-ops#10638): a retry of items already labelled, never admit or intake.
 
 Each enrolled repo needs three preconditions:
 
