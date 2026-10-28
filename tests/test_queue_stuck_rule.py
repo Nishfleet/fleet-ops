@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/queue-stuck.yaml"
 YQ = shutil.which("yq")
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
-AGE = {"queue-stuck-pr-unmerged": 2, "queue-stuck-pr-blocked": 2, "queue-stuck-issue-no-pr": 3}
+AGE = {"queue-stuck-pr-unmerged": 2, "queue-stuck-pr-blocked": 2, "queue-stuck-issue-no-pr": 3, "queue-stuck-pr-needs-split": 2}
 
 
 def _rules():
@@ -64,7 +64,7 @@ def test_queries_use_the_org_wide_search_and_the_timefield_of_their_own_type():
 
 def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
     rules = _rules()
-    assert len({r["uid"] for r in rules.values()}) == len(rules) == 3
+    assert len({r["uid"] for r in rules.values()}) == len(rules) == 4
     for r in rules.values():
         assert r["labels"] == {"severity": "warning", "signal": "queue-stuck"}
         assert (r["for"], r["execErrState"], r["noDataState"]) == ("0s", "Error", "OK")

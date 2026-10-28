@@ -1015,7 +1015,12 @@ jobs:
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
-          [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
+          # needs-split is what the queue-stuck alert and the orchestrator lane read (fleet-ops#10514); it comes off once a head fits.
+          if [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]; then
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-split' --silent || retry "the needs-split label could not be added"
+            say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0
+          fi
+          ! jq -e 'any(.labels[].name; . == "needs-split")' <<<"$pr" >/dev/null || gh api -X DELETE "repos/$REPO/issues/$PR/labels/needs-split" --silent || retry "the needs-split label could not be removed"
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
           git -C "$bt" ls-tree -r --name-only refs/base > "$RUNNER_TEMP/tree.txt"
           { cat "$RUNNER_TEMP/files.txt"; grep -oE '[A-Za-z0-9_./@-]+\.[A-Za-z0-9]+' "$RUNNER_TEMP/diff.txt" | sort -u; } | sort -u | grep -Fxf "$RUNNER_TEMP/tree.txt" > "$RUNNER_TEMP/ctx-files.txt" || true

@@ -24,6 +24,7 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 2. If a PR already exists, do not open a second one: `gh pr list -R <owner>/<repo> --head orch/issue-<N> --state all --json number,state,url,body`. Continue it: read its review comments and failing checks (`gh run view <id> --log-failed`), fix what they name, push, and finish at step 4.
 3. If a worker's own `claim/issue-<N>` branch holds a usable patch, take it rather than rewriting it: `git fetch origin claim/issue-<N>:refs/remotes/origin/claim/issue-<N>` then `git cherry-pick <sha>` per commit, skipping any commit already in `HEAD` (`git merge-base --is-ancestor <sha> HEAD`). A patch built for the wrong base conflicts; resolve it by hand and say so in the PR body.
 4. `git merge origin/main` when main has moved. Never rebase a branch that has a PR.
+5. If the PR this issue names, or the one step 2 found, carries `needs-split` (the review job adds it when the diff is over 250 KB and reviews nothing until it fits), split it into at most three PRs, each one behaviour and under 250 KB of `git diff origin/main...HEAD`, each with its own `orch/issue-<N>-<part>` branch, delivered by step 4. The last part carries `Closes #<N>`; the others say `Part of #<N>`. Close the original PR as superseded, naming the parts. A change that cannot fit three parts is a blocker for a follow-up issue, not a fourth PR.
 
 ## 3. Build
 
