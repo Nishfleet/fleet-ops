@@ -1,15 +1,18 @@
 # The fleet's ratchet, defined once: net added code lines (blank and comment lines not counted) under
 # .github/workflows, .github/actions, scripts and bin must be 0 or fewer. A repo's job `ratchet` calls
 # this @main and requires `ratchet / ratchet`. The rule runs from main; a PR that edits that job fails.
+# The org ruleset in config/org-ruleset.json requires this file in every repo, and a workflow that a
+# ruleset rule runs must declare pull_request; merge_group runs it for a merge-queue entry too. This repo
+# already calls it from ci.yml, so the job skips the ruleset's own run here: one run per PR. The check
+# that run reports is `ratchet`, not `ratchet / ratchet`.
 name: Ratchet
-on:
-  workflow_call:
+on: [workflow_call, pull_request, merge_group]
 permissions:
   contents: read
 jobs:
   ratchet:
     name: ratchet
-    if: github.event_name != 'push'
+    if: ${{ github.repository != 'Nishfleet/fleet-ops' || !startsWith(github.workflow_ref, 'Nishfleet/fleet-ops/.github/workflows/ratchet.yml@') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

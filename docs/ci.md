@@ -45,13 +45,28 @@ A web or product repo adds a workflow with one job named `ratchet` that calls
 `uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
 and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
 the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
-Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
-403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
-`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
-only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
-ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+The organization ruleset below covers a repo with no caller file, and it covers a repo that repoints
+the caller's `uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent`
+runner group allows only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in
+the `main-merge-queue` ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
 context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
 the job alone does not switch it off: a required check that never reports blocks the PR.
+
+### One organization ruleset requires the ratchet in every repo
+
+`config/org-ruleset.json` defines the organization ruleset `org-required-workflows`: target every
+repository, the default branch, no bypass actor, and one rule, "Require workflows to pass" on
+`Nishfleet/fleet-ops` `.github/workflows/ratchet.yml` at `refs/heads/main`. A repository created later
+is covered with no file of its own, and a later check joins as one more entry in that rule once it
+runs in under 60 s. Creating a ruleset is an organization setting, so it takes org-owner access:
+`gh api --method POST orgs/Nishfleet/rulesets --input config/org-ruleset.json`. It starts at
+enforcement `evaluate`, so the check reports without blocking a merge; set it to `active` once a pull
+request in a second repo shows the check in under 60 s. A workflow that a ruleset rule runs must
+declare `pull_request`, which is why `ratchet.yml` carries it beside `workflow_call` (and `merge_group`,
+so a merge-queue entry runs it too). Its job skips the ruleset's own run in this repo, where `ci.yml`
+already calls it. That run reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that
+still has a caller file runs both. Off switch: delete the rule in the organization settings. This
+repo keeps `ratchet / ratchet` either way.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
