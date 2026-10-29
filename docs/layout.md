@@ -248,7 +248,8 @@
   `BackupStale` (the nightly off-site backup timer has not fired for
   30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
-  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
+  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours, on the rows that
+  carry a dollar budget, so the flat-plan MiniMax rows are left out) and
   `AISpendMetricMissing` (that spend metric absent for a day). Every one but
   the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
