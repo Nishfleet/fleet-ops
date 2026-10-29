@@ -8,15 +8,13 @@ on:
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
   # No input sweeps exactly like the hourly schedule.
-  # task=miss-review with issue=<N> replays a miss review on that issue
-  # (0509#6912 class) without claiming it as a builder run.
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         type: string
       task:
-        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        description: 'orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -35,8 +33,8 @@ on:
         type: string
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR has a merge
-  # conflict. Invariant: nothing in this file checks out PR code. ejected and miss-review-pr
-  # run only for same-repo heads; hold-risky only calls the API and never runs the head.
+  # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
+  # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
@@ -63,6 +61,63 @@ env:
     | [$w[] | select(.name | contains("(" + $ref + ")"))] as $mine
     | (if ($mine | length) > 0 then $mine else $w end) as $j
     | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
+  LABEL: needs-coordinator
+  CONTEXT: coordinator-approval
+  # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
+  # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
+  # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
+  # nish3451 is an optional override: a typed comment.
+  APPROVERS: nish3451 github-actions[bot]
+  RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+  # stdin: {repo, labels, files, patches, changed_files}; $cfg:
+  # risky-paths.json or null. patches is [{file, patch}] with patch null
+  # when the API sent none (large or binary). Risky is a path hit (under
+  # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
+  # added diff line matching a "diff" entry for that file, or a file such
+  # an entry covers with no patch. A list cut at 3000 files, an empty
+  # list or an unreadable path list all count as risky.
+  CLASSIFY: |
+    . as $pr
+    | (($cfg // {}).paths // null) as $p
+    | (($cfg // {}).safe // []) as $safe
+    | (($cfg // {}).diff // []) as $diff
+    | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
+    | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
+    | [$pr.files[] | . as $f
+        | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
+                 or any($own[]; . as $re | $f | test($re; "i")))] as $hits
+    | [($pr.patches // [])[] | . as $x
+        | $diff[] | . as $d
+        | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
+        | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
+          elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
+          else empty end] as $dhits
+    | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
+       + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
+       + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
+       + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
+       + ($hits | unique | .[:10] | map("path \(.)"))
+       + ($dhits | unique | .[:10])) as $why
+    | {risky: ($why | length > 0), why: $why}
+  # stdin: {sha, statuses, comments}. sha is the current head;
+  # statuses are that sha's, newest first (GitHub's order); comments are
+  # the PR's issue comments. Status path: only the newest status for
+  # CONTEXT counts, so a later failure revokes it. Comment path: an
+  # approver's comment, never edited (updated_at == created_at, so an old
+  # comment cannot be edited onto a new sha), with a line exactly
+  # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+  APPROVAL: |
+    . as $in
+    | ($who | split(" ") | map(select(length > 0))) as $approvers
+    | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
+    | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
+    | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
+    | ($full and any(($in.comments // [])[];
+        (.user.login // "") as $l
+        | any($approvers[]; . == $l)
+          and .created_at != null and .updated_at == .created_at
+          and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
+    | $by_status or $by_comment
 jobs:
   # FLEET_DISPATCH_PAUSED is true: say so once per event a dispatch job would have acted on.
   # It starts and writes nothing. Skipped work is not lost: the sweep update.yml runs after
@@ -264,64 +319,6 @@ jobs:
       contents: write
       pull-requests: write
       statuses: read
-    env:
-      LABEL: needs-coordinator
-      CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
-      RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # stdin: {repo, labels, files, patches, changed_files}; $cfg:
-      # risky-paths.json or null. patches is [{file, patch}] with patch null
-      # when the API sent none (large or binary). Risky is a path hit (under
-      # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
-      # added diff line matching a "diff" entry for that file, or a file such
-      # an entry covers with no patch. A list cut at 3000 files, an empty
-      # list or an unreadable path list all count as risky.
-      CLASSIFY: |
-        . as $pr
-        | (($cfg // {}).paths // null) as $p
-        | (($cfg // {}).safe // []) as $safe
-        | (($cfg // {}).diff // []) as $diff
-        | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
-        | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
-        | [$pr.files[] | . as $f
-            | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
-                     or any($own[]; . as $re | $f | test($re; "i")))] as $hits
-        | [($pr.patches // [])[] | . as $x
-            | $diff[] | . as $d
-            | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
-            | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
-              elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
-              else empty end] as $dhits
-        | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
-           + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
-           + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
-           + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
-           + ($hits | unique | .[:10] | map("path \(.)"))
-           + ($dhits | unique | .[:10])) as $why
-        | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
-      APPROVAL: |
-        . as $in
-        | ($who | split(" ") | map(select(length > 0))) as $approvers
-        | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
-        | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
-        | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
-        | ($full and any(($in.comments // [])[];
-            (.user.login // "") as $l
-            | any($approvers[]; . == $l)
-              and .created_at != null and .updated_at == .created_at
-              and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
@@ -486,7 +483,6 @@ jobs:
     permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
-      stalled_refs: ${{ steps.list.outputs.stalled_refs }}
     steps:
       - id: list
         env:
@@ -539,7 +535,6 @@ jobs:
             fi
             echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
           }
-          stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below and agent.yml's Gate re-check, so a split or parked issue is skipped.
             nums=$ISSUE
@@ -568,7 +563,6 @@ jobs:
               if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
                 echo "requeued #$n: claimed with no live run and no claim PR"
-                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
               fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
@@ -695,7 +689,6 @@ jobs:
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
-          echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
@@ -782,7 +775,7 @@ jobs:
       # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
       # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
       # A close by this step fires no workflow (github.token), so the list job is the way
-      # back: it requeues the issue (no live run, no open claim PR) and adds its miss-review.
+      # back: it requeues the issue (no live run, no open claim PR).
       - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
         continue-on-error: true
         with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
@@ -1106,56 +1099,6 @@ jobs:
             gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
-  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue (concurrency group);
-  # agent.yml's Gate skips a second event inside 1 h and owns the failed / agent attempt cap.
-  miss-review:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
-        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-failed') ||
-        (github.event_name == 'issues' && github.event.action == 'reopened') ||
-        (github.event_name == 'issue_comment' && github.event.action == 'created' &&
-          (startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
-          (github.event.comment.author_association == 'OWNER' ||
-           github.event.comment.author_association == 'MEMBER' ||
-           github.event.comment.author_association == 'COLLABORATOR')) ||
-        (github.event_name == 'workflow_dispatch' && inputs.task == 'miss-review' && inputs.issue != '')
-      )
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
-  miss-review-pr:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
-      github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.pull_request.merged == false && startsWith(github.event.pull_request.head.ref, 'claim/issue-')) ||
-       (github.event.pull_request.merged == true && startsWith(github.event.pull_request.title, 'Revert')))
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
-  miss-stalled:
-    needs: list
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
-      matrix:
-        ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ matrix.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ matrix.ref }}
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&

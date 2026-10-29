@@ -9,11 +9,12 @@ Events that put work on the agent queue. Repo variable AGENT_MODE:
   shadow (default) = only issues also labelled shadow-actions, no rework
   live             = every agent-ready issue, plus rework on red CI
 Repo variable MISS_REVIEW:
-  off (default, unset) = miss-review jobs never start
-  live                 = a miss event starts one different-family review
-To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
-To delete it: revert the miss-review jobs in this file and the miss-review
-path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
+  off (default, unset) = the miss-review jobs never started
+  live                 = a miss event started one different-family review
+The three miss-review jobs are deleted (fleet-ops#10986), so no dispatch event
+starts a miss review now. The variable still gates the miss path inside agent.yml
+(Gate, Worker, Arm, Deliverable, Clean), which a hand-made ref=...-miss-review
+dispatch reaches; retire it with that path.
 Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
@@ -175,4 +176,18 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 `merge_group` so a merge-queue entry reports the check. This repo already calls it from `ci.yml`,
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
+
+### coordinator-approval.yml: the merge-queue gate
+
+The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
+`merge_group`, where the job name is the single-segment check `coordinator-approval`; 0509 and
+drive call it and require `coordinator-approval / coordinator-approval`. A caller grants
+`contents: read`, `pull-requests: read` and `statuses: read` and triggers on `merge_group`
+itself: the token is the caller's, and a narrower grant fails every entry with a read error
+rather than an approval. The rules come from fleet-ops main (the base commit on fleet-ops), so a
+PR cannot loosen what judges it, and every failed read fails the check. On `pull_request` it
+passes, so the check reports and a PR can be enqueued; the queue does the rejecting. The base
+commit of this workflow's own first queue entry is main before the move, where the rules still
+sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
+a fake `gh` with each read failing.
 
