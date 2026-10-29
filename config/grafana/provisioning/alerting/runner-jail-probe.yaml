@@ -10,15 +10,32 @@
 #
 # The rule reads the same GitHub query as the Fleet scorecard failure-share rule
 # (fleet-scorecard.yaml): the workflow runs of agent.yml in Nishfleet/fleet-ops. Its SQL
-# decides "red for 6h" by itself, with no Grafana pending state, the way
-# deploy-failed-24h decides "red for a day": at least three runs failed, not one of them
-# succeeded, and the oldest of those failures is at least 6 hours old. Three failures
-# keep a single bad run from paging, and the 6h age keeps the page from arriving before
-# the fleet has had time to recover on its own. A streak that started before the 12h
-# window still reads as over 6 hours old, so the page is not missed.
+# decides "red for 6h" by itself, with no Grafana pending state, the way the
+# deploy-failed-24h group in deploy-failed.yaml decides "red for a day": at least three runs
+# failed, not one of them succeeded, and the oldest of those failures is at least 6 hours old.
+# Three failures keep a single bad run from paging, and the 6h age keeps the page from arriving
+# before the fleet has had time to recover on its own. A streak that started before the 12h
+# window still reads as over 6 hours old, so the page is not missed. for: 10m only absorbs a
+# passing read error, the way deploy-failed.yaml's own comment puts it; it is not a pending
+# state, because the SQL already holds the age.
+#
+# That SQL is a SQL expression as the condition itself, and it runs in Grafana's engine, not in
+# sqlite: tests/test_runner_jail_probe_rule.py evaluates this rule's expression in sqlite, which
+# proves what it counts, and tests/test_deploy_failed_engine.py runs the same shape (a SQL
+# expression as the condition over the stock GitHub plugin's runs) on the pinned image, which is
+# what proves the dialect. The counts are integers, and the plugin returns created_at as time and
+# conclusion as string, the field types that engine test asserts. The deploy-failed-24h group's SQL
+# already calls UNIX_TIMESTAMP(MIN(created_at)) and UNIX_TIMESTAMP() - streak_start over the same
+# query's fields, so the functions are in production, not new here.
+#
+# A failure whose run carries no created_at date leaves oldest NULL, which would read 0 and hide
+# the red. The copies join then returns two rows, which Grafana refuses for alerting, so the rule
+# shows Error and pages instead of a silent Normal: the deploy-failed-24h group holds the same
+# guard for the same reason (deploy-failed.yaml names it).
 #
 # GitHub's run data has no per-step split, so the rule cannot tell a probe failure from a
-# broken change: the annotation says which to read first. Routing as the other outage
+# broken change: it pages on a red main and on a GitHub outage too, and the annotation is what
+# keeps the responder's first read correct. Routing as the other outage
 # rules: severity critical, so it pages hermes-urgent hourly until it resolves, and the
 # catch-all route still files the fleet-ops issue.
 #
@@ -65,6 +82,7 @@ groups:
                   FROM A
                   WHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')
                 ) AS runs
+                JOIN (SELECT 1 AS k UNION ALL SELECT 2) AS copies ON copies.k = 1 OR (f > 0 AND oldest IS NULL)
         noDataState: OK
         execErrState: Error
         for: 10m
