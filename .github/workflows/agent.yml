@@ -79,15 +79,8 @@ jobs:
         run: |
           keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
       # No owner and no repositories: the action then scopes the token to
       # GITHUB_REPOSITORY, the calling repo, which every caller event sets
       # (github.event.repository is not in every event payload). The three
@@ -137,8 +130,8 @@ jobs:
           # A deliverable that edits .github/workflows/** is one no worker can ever land: the
           # worker token is minted without the workflows permission, so every push is
           # refused and two runs each burned their walls on it (fleet-ops #8877, #8861, #8902,
-          # #8990, #8995, #9211). Route it instead (fleet-ops#8900): the orchestrate job pushes as
-          # the runner user's own gh login, which CAN push workflow files. The park loop above
+          # #8990, #8995, #9211). Route it instead (fleet-ops#8900): the orchestrate job mints the
+          # App token with workflows: write (fleet-ops#10949), which CAN push them. The park loop above
           # already skipped an issue with the label, so this only re-routes one a worker claimed
           # by mistake. Substring, not a parse: a body that only mentions a workflow path in
           # prose over-matches, which costs one orchestrator run, not a wrong push. fleet-ops
@@ -479,6 +472,7 @@ jobs:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
+          permission-checks: read
           permission-issues: write
           permission-pull-requests: write
       - name: Router wall
@@ -529,13 +523,13 @@ jobs:
               # the strike step requeues the issue and the next run arms the fixed head. Pending
               # checks still arm (nothing re-arms a head that later goes green; the required checks
               # hold the merge). No required checks judges all of them; an unreadable result is
-              # red. The runner user's gh login reads the checks: the App token has no checks: read.
+              # red. The App token reads the checks (checks: read, fleet-ops#10949).
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-              red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
+              red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq still printed any red names, empty if none
                 *) case ${red,,} in
                      *"no required checks reported"*)
-                       red=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
+                       red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
                          case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
                      *"no checks reported"*) red= ;;
                      *) red="unreadable ($red)" ;;
@@ -580,7 +574,7 @@ jobs:
           # Fail it, so the strike step strikes and requeues it. Pending checks pass here. A red
           # result from the workflow named CI fires rework (agent-dispatch's workflow_run lists
           # only CI); a red check from another workflow fires nothing and holds the merge only if
-          # required (fleet-ops#9315). The runner user's gh login reads the checks (no checks: read).
+          # required (fleet-ops#9315). The App token reads the checks.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
           if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
@@ -588,12 +582,12 @@ jobs:
             exit 1
           fi
           rc=0
-          checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
+          checks=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket 2>&1) || rc=$?
           # A repo with no required checks judges all of them; no checks
           # reported yet is pending, not red. Exit 8 is gh's pending code.
           if [ "$rc" != 0 ] && [ "$rc" != 8 ]; then
             case ${checks,,} in
-              *"no required checks reported"*) rc=0; checks=$(env -u GH_TOKEN -u GITHUB_TOKEN gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
+              *"no required checks reported"*) rc=0; checks=$(gh pr checks "$n" -R "$REPO" --json name,bucket 2>&1) || rc=$? ;;
             esac
           fi
           case ${checks,,} in *"no checks reported"*) exit 0 ;; esac
@@ -703,8 +697,8 @@ jobs:
             # Router wall parity: GITHUB_TOKEN labels fire no workflow, so the
             # issue waits for the sweep or the next free worker instead of
             # re-entering the same overloaded host immediately.
-            env -u GH_TOKEN gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            env -u GH_TOKEN gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
+            GH_TOKEN=$GITHUB_TOKEN gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            GH_TOKEN=$GITHUB_TOKEN gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready --remove-label agent-in-progress
             exit 0
           fi
           # shellcheck disable=SC2016 # $v is a jq variable
@@ -715,6 +709,19 @@ jobs:
           else
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress,agent-failed
           fi
+      - name: Sweep token
+        id: sweep-token
+        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true' }}
+        # Org-scoped and holding actions: write alone: the sweep dispatches on the
+        # other enrolled repos, which the worker App token (this repo only) cannot
+        # reach, and this is the one grant the runner user's gh login carried here
+        # (fleet-ops#10949). The worker has already exited when this runs.
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet  # zizmor: ignore[github-app] actions: write alone, to start the sweep in every enrolled repo
+          permission-actions: write
       - name: Start the next ready issue
         # A builder that finishes frees a lane, and GitHub sends no event for
         # that, so ready work sat until the 6h sweep (fleet-ops#9063: drive
@@ -726,6 +733,7 @@ jobs:
         if: always() && steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
+          SWEEP_TOKEN: ${{ steps.sweep-token.outputs.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
@@ -743,11 +751,10 @@ jobs:
           # poked again: the new run displaces the waiting one in the
           # agent-<repo>-<ref> group, and GitHub cancels it (fleet-ops#9269:
           # 0509#7005 re-labeled six times in 28 min, 258 cancelled drive runs
-          # in 3 days). An issues-event run's title is the issue title. The
-          # runner user's own gh login reads runs, because the App token has
-          # no actions: read.
+          # in 3 days). An issues-event run's title is the issue title. The sweep
+          # token (actions: write) reads runs too.
           waiting=$(for s in queued pending waiting requested in_progress; do
-            env -u GH_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
+            GH_TOKEN=$SWEEP_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
           done) || { echo "::warning::could not list waiting dispatch runs"; waiting=; }
           for n in $(gh issue list -R "$REPO" -l agent-ready -L 200 --json number,labels,createdAt \
               --jq 'sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .createdAt) | .[].number'); do
@@ -769,8 +776,9 @@ jobs:
           # Nothing ready can still mean stuck work: an issue left agent-in-progress whose
           # claim PR is red or conflicting after its run ended sends no event, and only the 6h
           # sweep re-lists it (drive #106 #117 #298). Run that sweep now; it starts no worker
-          # when nothing is stuck. The runner user's gh login dispatches it (this job's App token carries no actions permission).
-          env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
+          # when nothing is stuck. The sweep token dispatches it (the worker App
+          # token carries no actions permission).
+          GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
           # Lane counts above are host-wide but the listing is this repo's
           # only: a strong-only issue waiting in another repo sat until that
           # repo's own sweep, which GitHub delays by hours. Sweep every other
@@ -781,7 +789,7 @@ jobs:
           [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
           for other in $others; do
             [ "${REPO%/*}/$other" = "$REPO" ] && continue
-            env -u GH_TOKEN gh workflow run agent-dispatch.yml -R "${REPO%/*}/$other" || echo "::warning::sweep dispatch on $other failed"
+            GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "${REPO%/*}/$other" || echo "::warning::sweep dispatch on $other failed"
           done
       - name: Clean workspace
         if: always()
@@ -1043,14 +1051,8 @@ jobs:
         run: |
           keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1131,15 +1133,8 @@ jobs:
         run: |
           keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          delim=APP_PRIVATE_KEY_END
-          {
-            printf 'pem<<%s\n' "$delim"
-            cat "$keyfile"
-            printf '%s\n' "$delim"
-          } >> "$GITHUB_OUTPUT"
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
       # Two tokens for Nishfleet/inish-site: a read-only one for the jailed
       # model (the candidate fetch calls the GitHub search API), and a
       # contents-write one minted only after the model has finished, for the
