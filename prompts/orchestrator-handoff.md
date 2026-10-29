@@ -13,10 +13,10 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 ## Time budget
 
-The step that runs this session cuts it off at 75 minutes, and a session cut at the wall is a failed run: the job labels the issue `orchestrator-tried`, comments the run URL and the week's failure share goes up (fleet-ops#11059). Plan against the wall rather than through it.
+The step that runs this session cuts it off at 75 minutes, and a session cut at the wall is a failed run: the job labels the issue `orchestrator-tried`, comments the run URL and the week's failure share goes up (fleet-ops#11059). Plan against the wall rather than through it. The step exports `ORCH_START`, the epoch second it started you, because you cannot estimate elapsed time by feel: run `echo $(( ($(date -u +%s) - $ORCH_START) / 60 ))` alongside the first tool call of each turn and read the number as minutes spent.
 
 - At 55 minutes, stop starting new work.
-- At 65 minutes, land what you have: commit, push, open the PR, write the report.
+- At 60 minutes, land what you have: commit, push, open the PR, write the report.
 
 Two things eat this wall and prove nothing: a test run wider than the change (a full run on fleet-ops is about 9 minutes and CI runs every test on the PR anyway) and a `sleep` waiting for checks (`gh pr checks` is a snapshot; the arm lands the PR once they pass).
 

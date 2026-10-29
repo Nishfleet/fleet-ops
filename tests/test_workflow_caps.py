@@ -252,17 +252,33 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
     step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
     wall = int(step["timeout-minutes"])
     text = (ROOT / "prompts/orchestrator-handoff.md").read_text()
-    booked = int(re.search(r"cuts it off at (\d+) minutes", text).group(1))
-    land = int(re.search(r"At (\d+) minutes, land what you have", text).group(1))
+    booked = re.search(r"cuts it off at (\d+) minutes", text)
+    stop = re.search(r"At (\d+) minutes, stop starting new work", text)
+    land = re.search(r"At (\d+) minutes, land what you have", text)
+    missing = [name for name, m in (("cut off", booked), ("stop", stop), ("land", land)) if not m]
+    assert not missing, f"prompts/orchestrator-handoff.md no longer states its {missing} minute: this gate is blind"
+    booked, stop, land = (int(m.group(1)) for m in (booked, stop, land))
     assert booked == wall, (
         f"prompts/orchestrator-handoff.md says the session is cut off at {booked} minutes and the step's wall "
         f"is {wall}: a session that plans against the wrong number runs into the kill (fleet-ops#11059)"
     )
-    assert int(job["timeout-minutes"]) > wall, (
-        f"the orchestrate job's {job['timeout-minutes']}-minute timeout has to cover the {wall}-minute session "
-        "step and the cleanup after it, or the job kills the run where the always() cleanup never runs"
+    assert 0 < stop < land < wall, (
+        f"the budget reads stop={stop}, land={land}, wall={wall}: the session has to stop starting work, then "
+        "land it, then be cut off, in that order"
     )
-    assert wall - land >= 10, (
-        f"the session lands at {land} minutes of a {wall}-minute wall: under 10 minutes is not enough for the "
-        "commit, the push, the PR body and the report"
+    assert wall - land == 15, (
+        f"the session lands at {land} minutes of a {wall}-minute wall: the landing window is 15 minutes, so a "
+        "change of wall moves the landing line with it"
+    )
+    assert int(job["timeout-minutes"]) - wall >= 10, (
+        f"the orchestrate job's {job['timeout-minutes']}-minute timeout leaves {int(job['timeout-minutes']) - wall} "
+        f"minutes around a {wall}-minute session step and its cleanup (9 s before the step and 4 s after it on "
+        "40942864011): at under 10 the job kills a run where the always() cleanup never runs"
+    )
+    assert "export ORCH_START" in DISPATCH.read_text(), (
+        "agent-dispatch.yml no longer exports ORCH_START, so the budget the prompt states has no clock to read"
+    )
+    assert "$ORCH_START" in text, (
+        "prompts/orchestrator-handoff.md no longer tells the session to read ORCH_START, so its minute lines "
+        "are unmeasurable and the extra wall only lengthens a run that cannot land"
     )
