@@ -72,8 +72,6 @@ GENERIC_SINK = "fleet-alert-dispatch"
 ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
 TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
 AUDIENCE_SINKS = {"nish": "nish-ask-dispatch"}
-# A rule that reads one of these boards gets 404 from every worker lane and its issue parks
-# (fleet-ops#10881).
 WORKER_UNREADABLE = {"nish-vault"}
 SEAT_REPEAT = 86400
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
