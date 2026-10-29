@@ -125,6 +125,15 @@ def test_the_rule_searches_the_three_days_its_two_windows_divide():
     assert {json.dumps(d["relativeTimeRange"], sort_keys=True) for d in targets} == {json.dumps({"from": 259200, "to": 0})}
 
 
+def test_every_prometheus_range_query_stays_under_the_11000_points_prometheus_allows():
+    queries = [(r["uid"], d) for r in _rules().values() for d in r["data"] if d["model"].get("range")]
+    assert queries
+    for uid, d in queries:
+        span = d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]
+        step = max(d["model"]["intervalMs"] / 1000, span / d["model"]["maxDataPoints"])
+        assert span / step <= 11000, uid
+
+
 def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
     line = next(l for l in CONTAINER.read_text().splitlines() if l.startswith("Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT="))
     scale = {"s": 1, "m": 60, "h": 3600}
