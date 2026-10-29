@@ -1565,8 +1565,8 @@ jobs:
           fi
           # A killed run can leave the worktree registered, and a bare repo
           # refuses to check one branch out in two worktrees at once. Remove it
-          # through git first, so the registration goes with the directory; the
-          # final prune clears any stale registration the remove could not.
+          # through git first, so the registration goes with the directory.
+          git -C "$mirror" worktree prune
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
@@ -1706,10 +1706,7 @@ jobs:
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
           # work, so it does not park the issue.
-          [ "$GO" = true ] || {
-            echo "orchestrate: nothing was built on this run; no park mark"
-            exit 0
-          }
+          [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
