@@ -1024,13 +1024,7 @@ jobs:
       # user has none (fleet-ops#10950). A PR from a fork never reaches here at all.
       - name: Read App private key for the rework label
         id: rework-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       - name: App token for the rework label
         id: rework-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1072,13 +1066,8 @@ jobs:
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          grep . "$keyfile" | sed 's/^/::add-mask::/'
-          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+      - id: app-key
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1153,14 +1142,9 @@ jobs:
           pushed=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://raw.githubusercontent.com/Nishfleet/inish-site/main/data/editions/$today.json" || true)
           echo "today=$today live=${live:-unknown} pushed=$pushed"
           if [ "$live" = "$today" ] || [ "$pushed" = 200 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Read App private key
-        if: steps.live.outputs.done != 'true'
+      - if: steps.live.outputs.done != 'true'
         id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          grep . "$keyfile" | sed 's/^/::add-mask::/'
-          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       # Two tokens for Nishfleet/inish-site: a read-only one for the jailed
       # model (the candidate fetch calls the GitHub search API), and a
       # contents-write one minted only after the model has finished, for the
