@@ -25,6 +25,10 @@ Description=Agent Tincan relay (tincan relay, own tailnet node)
 Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service
 OnFailure=fleet-unit-failed@%N.service
+# A crash loop must reach `failed` for the hook above to run: the default
+# 5 starts in 10 s is never spent at RestartSec=10 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Service]
 Environment=FLEET_TASK_ID=tincan-relay
