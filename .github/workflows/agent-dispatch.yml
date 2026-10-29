@@ -935,8 +935,7 @@ jobs:
             | ([$all[] | select((.createdAt | fromdateiso8601) > $now - 86400)] | length) as $recent
             | ($in.run // {}) as $run
             | ([$open[] | select(([.labels[]?.name] | index("agent-in-progress")) == null) | .number]) as $idle
-            | if ($in.trig | any(IN("push", "schedule", "workflow_run"))) | not then
-                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "no trigger that runs on the default branch", msg: "\($in.file) has no trigger that runs on the default branch, so it can never be green there"} else {action: "none", issues: [], reason: "no trigger that runs on the default branch"} end
+            | if $in.gone then if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "the file is gone from the default branch", msg: "\($in.file) is no longer on the default branch, so it cannot be red there"} else {action: "none", issues: [], reason: "the file is gone from the default branch"} end
               elif $run.conclusion == "success" then
                 if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "main is green again", msg: "\($in.file) is green on the default branch again: \($run.url)"} else {action: "none", issues: [], reason: "green, nothing open"} end
               elif $run.conclusion == "failure" then
@@ -951,6 +950,8 @@ jobs:
                     elif ($now - $last) < 86400 then {action: "none", issues: [$i.number], reason: "reported within a day"}
                     else {action: "comment", issues: [$i.number], reason: "new failing run"} end
                 end
+              elif ($in.trig | any(IN("push", "schedule", "workflow_run"))) | not then
+                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "no trigger that runs on the default branch", msg: "\($in.file) has no trigger that runs on the default branch, so it cannot be green there on its own"} else {action: "none", issues: [], reason: "no trigger that runs on the default branch"} end
               else {action: "none", issues: [], reason: "no finished run on the default branch"} end
         run: |
           set -euo pipefail
@@ -967,12 +968,12 @@ jobs:
             if ! run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$id/runs?branch=$branch&status=completed&per_page=10" --jq '[.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY and (.event | IN("push", "schedule", "workflow_dispatch", "workflow_run")) and (.conclusion | IN("success", "failure", "timed_out", "startup_failure")))] | first // empty | {id, conclusion: (if .conclusion == "success" then "success" else "failure" end), url: .html_url, at: .run_started_at}'); then
               echo "::warning::$name: runs unreadable, skipped"; errs=$((errs + 1)); continue
             fi
-            wf=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$name?ref=$branch" 2>&1) || { case $wf in *404*) wf= ;; *) echo "::warning::$name: file unreadable, skipped"; errs=$((errs + 1)); continue ;; esac; }
+            gone=false
+            if ! wf=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$name?ref=$branch" 2>&1); then case $wf in *404*) wf='' gone=true ;; *) echo "::warning::$name: file unreadable, skipped"; errs=$((errs + 1)); continue ;; esac; fi
             trig=$(yq -o=json -I=0 '[.on | (select(kind == "map") | keys) // (select(kind == "seq")) // [.] | .[]]' <<<"$wf" 2>/dev/null) || { echo "::warning::$name: on: block unreadable, skipped"; errs=$((errs + 1)); continue; }
-            v=$(jq -nc --arg f "$name" --argjson run "${run:-null}" --argjson trig "$trig" --slurpfile issues "$RUNNER_TEMP/red-main-issues.json" '{file: $f, run: $run, trig: $trig, issues: $issues[0]}' | jq -c --argjson now "$(date +%s)" "$RED_MAIN") ||
+            v=$(jq -nc --arg f "$name" --argjson run "${run:-null}" --argjson trig "$trig" --argjson gone "${gone:-false}" --slurpfile issues "$RUNNER_TEMP/red-main-issues.json" '{file: $f, run: $run, trig: $trig, gone: $gone, issues: $issues[0]}' | jq -c --argjson now "$(date +%s)" "$RED_MAIN") ||
               { echo "::warning::$name: verdict failed, skipped"; errs=$((errs + 1)); continue; }
-            action=$(jq -r .action <<<"$v")
-            echo "$name: $action, $(jq -r .reason <<<"$v")"; [ "$action" != none ] || continue
+            action=$(jq -r .action <<<"$v"); echo "$name: $action, $(jq -r .reason <<<"$v")"; [ "$action" != none ] || continue
             rid=$(jq -r .id <<<"$run") url=$(jq -r .url <<<"$run") first=$(jq -r '.issues[0] // empty' <<<"$v")
             if [ "$action" != close ]; then
               step=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs?per_page=100" --jq '[.jobs[] | select(.conclusion | IN("failure", "timed_out")) | {job: .name, step: ([.steps[]? | select(.conclusion | IN("failure", "timed_out")) | .name] | first // "")}] | first
@@ -989,8 +990,7 @@ jobs:
                 for n in $(jq -r '.issues[]' <<<"$v"); do gh issue close "$n" -R "$GITHUB_REPOSITORY" -r completed -c "$(jq -r .msg <<<"$v")"; done ;;
             esac
           done <<<"$workflows"
-          echo "workflows: $seen, unreadable: $errs"
-          [ "$errs" = 0 ] || { echo "::error::$errs of $seen workflows errored and were skipped"; exit 1; }
+          echo "workflows: $seen, unreadable: $errs"; [ "$errs" = 0 ] || { echo "::error::$errs of $seen workflows errored and were skipped"; exit 1; }
   # A claim PR outlives its issue. Nothing closed the PR when the issue closed
   # not-by-merge (0509 09-23: #4297 #4268 #4212 #4211 sat open until hand-closed),
   # so those PRs blocked the queue noise for days. Close the open claim PR and

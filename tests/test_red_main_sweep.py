@@ -23,8 +23,8 @@ def _iso(ts):
     return subprocess.run(["date", "-u", "-d", f"@{ts}", "+%Y-%m-%dT%H:%M:%SZ"], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def decide(file, run, issues, trig=("push",)):
-    payload = json.dumps({"file": file, "run": run, "trig": list(trig), "issues": issues})
+def decide(file, run, issues, trig=("push",), gone=False):
+    payload = json.dumps({"file": file, "run": run, "trig": list(trig), "gone": gone, "issues": issues})
     out = subprocess.run(
         ["jq", "-c", "--argjson", "now", str(NOW), _y(f"{FIND} | .env.RED_MAIN")],
         input=payload, check=True, capture_output=True, text=True,
@@ -143,7 +143,7 @@ def test_no_finished_run_does_nothing():
 def test_no_finished_run_and_no_default_branch_trigger_closes_its_open_issue():
     v = decide("hand.yml", None, [issue(5, file="hand.yml")], trig=("workflow_dispatch",))
     assert v == {"action": "close", "issues": [5], "reason": "no trigger that runs on the default branch",
-                 "msg": "hand.yml has no trigger that runs on the default branch, so it can never be green there"}
+                 "msg": "hand.yml has no trigger that runs on the default branch, so it cannot be green there on its own"}
 
 
 def test_no_finished_run_and_no_default_branch_trigger_leaves_a_claimed_issue_alone():
@@ -151,13 +151,27 @@ def test_no_finished_run_and_no_default_branch_trigger_leaves_a_claimed_issue_al
     assert v == {"action": "none", "issues": [], "reason": "no trigger that runs on the default branch"}
 
 
+def test_a_gone_file_closes_its_open_issue_over_a_stale_red_run():
+    v = decide("hand.yml", red(), [issue(5, file="hand.yml")], trig=(), gone=True)
+    assert v == {"action": "close", "issues": [5], "reason": "the file is gone from the default branch",
+                 "msg": "hand.yml is no longer on the default branch, so it cannot be red there"}
+
+
+def test_a_green_run_of_a_workflow_that_cannot_run_on_the_default_branch_closes_its_issue():
+    v = decide("hand.yml", green(), [issue(5, file="hand.yml")], trig=("workflow_dispatch",))
+    assert v == {"action": "close", "issues": [5], "reason": "main is green again",
+                 "msg": "hand.yml is green on the default branch again: https://example.invalid/runs/101"}
+
+
+def test_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch_is_still_reported():
+    assert decide("hand.yml", red(), [], trig=("workflow_dispatch",))["action"] == "create"
+    v = decide("hand.yml", red(200), [issue(5, file="hand.yml", run_id=100, age=3 * DAY)], trig=("workflow_dispatch",))
+    assert v == {"action": "comment", "issues": [5], "reason": "new failing run"}
+
+
 def test_workflow_call_is_not_a_default_branch_trigger():
     assert decide("hand.yml", None, [issue(5, file="hand.yml")], trig=("workflow_call", "workflow_dispatch"))["action"] == "close"
     assert decide("deploy.yml", red(), [], trig=("push", "workflow_dispatch"))["action"] == "create"
-
-
-def test_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch_still_closes_its_issue():
-    assert decide("hand.yml", red(), [issue(5, file="hand.yml")], trig=("workflow_dispatch",))["action"] == "close"
 
 
 FAKE_GH = r"""#!/usr/bin/env bash
@@ -375,8 +389,15 @@ def test_sweep_fails_when_the_workflow_list_is_unreadable(tmp_path):
     assert log == []
 
 
-def test_sweep_skips_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
+def test_sweep_files_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
     files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(log) == 1 and "--title Main is red: hand.yml " in log[0]
+
+
+def test_sweep_skips_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
     r, log = _sweep(tmp_path, files, [])
     assert r.returncode == 0, r.stdout + r.stderr
     assert log == []
@@ -384,36 +405,40 @@ def test_sweep_skips_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
 
 
 def test_sweep_closes_an_issue_for_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
-    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
     r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it can never be green there"]
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it cannot be green there on its own"]
 
 
 def test_sweep_closes_an_issue_for_a_workflow_whose_file_is_gone(tmp_path):
     r, log = _sweep(tmp_path, deploy(), [issue(5)], drop=["on-deploy.yml"])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c deploy.yml has no trigger that runs on the default branch, so it can never be green there"]
+    assert log == ["issue close 5 -R o/r -r completed -c deploy.yml is no longer on the default branch, so it cannot be red there"]
 
 
 def test_sweep_reads_the_on_block_past_a_comment_through_a_flow_list_and_a_quoted_key(tmp_path):
     files = {
-        1: (".github/workflows/commented.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on: # push and schedule come later\n  workflow_dispatch:\n"),
-        2: (".github/workflows/flow.yml", "active", [_api_run(20, "failure")], FAILED_JOBS, None, "on: [schedule, workflow_dispatch]\n"),
-        3: ('.github/workflows/quoted.yml', "active", [_api_run(30, "failure")], FAILED_JOBS, None, '"on":\n  push:\n'),
-        4: (".github/workflows/scalar.yml", "active", [_api_run(40, "failure")], FAILED_JOBS, None, "on: push\n"),
-        5: (".github/workflows/empty.yml", "active", [_api_run(50, "failure")], FAILED_JOBS, None, "on:\n"),
+        1: (".github/workflows/commented.yml", "active", [], FAILED_JOBS, None, "on: # push and schedule come later\n  workflow_dispatch:\n"),
+        2: (".github/workflows/flow.yml", "active", [], FAILED_JOBS, None, "on: [schedule, workflow_dispatch]\n"),
+        3: ('.github/workflows/quoted.yml', "active", [], FAILED_JOBS, None, '"on":\n  push:\n'),
+        4: (".github/workflows/scalar.yml", "active", [], FAILED_JOBS, None, "on: push\n"),
+        5: (".github/workflows/empty.yml", "active", [], FAILED_JOBS, None, "on:\n"),
     }
-    r, log = _sweep(tmp_path, files, [])
+    issues = [issue(n, file=f) for n, f in [(1, "commented.yml"), (2, "flow.yml"), (3, "quoted.yml"), (4, "scalar.yml"), (5, "empty.yml")]]
+    r, log = _sweep(tmp_path, files, issues)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert [l.split("--title Main is red: ")[1].split(" --body")[0] for l in log] == ["flow.yml", "quoted.yml", "scalar.yml"]
+    assert log == [
+        "issue close 1 -R o/r -r completed -c commented.yml has no trigger that runs on the default branch, so it cannot be green there on its own",
+        "issue close 5 -R o/r -r completed -c empty.yml has no trigger that runs on the default branch, so it cannot be green there on its own",
+    ]
 
 
 def test_sweep_closes_an_issue_for_a_workflow_that_has_no_finished_run_at_all(tmp_path):
     files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
     r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it can never be green there"]
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it cannot be green there on its own"]
 
 
 def test_sweep_closes_an_issue_for_a_workflow_whose_on_block_is_not_yaml(tmp_path):
