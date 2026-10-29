@@ -306,6 +306,18 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert tail in bound, tail
 
 
+FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
+
+
+def fleet_config_read_names(text: str) -> set[str]:
+    """Names a text reads under the fleet config dir, with no absolute path spelled out.
+
+    A pattern match on purpose, not a parser: it covers the reads this repo makes and it does not
+    follow a `cd` or a repo script, so a read no pattern matches is a gap for the run's own tests.
+    """
+    return set(FLEET_CONFIG_READ.findall(text))
+
+
 def fleet_config_bind_names(dirs: list[Path]) -> set[str]:
     """Names the runner binds under the fleet config dir, with no absolute path spelled out."""
     names: set[str] = set()
@@ -318,23 +330,55 @@ def fleet_config_bind_names(dirs: list[Path]) -> set[str]:
     return names
 
 
+def runner_workflows() -> dict[str, str]:
+    """Workflow name -> text, for the workflows whose jobs run on the runners.
+
+    The other workflows run on GitHub's own runners, where no fleet config dir exists, and ci.yml
+    plants a path under a simulated home to prove the engine jail hides it.
+    """
+    out = {}
+    for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+        lines = path.read_text().splitlines()
+        if any("self-hosted" in line for line in lines if line.lstrip().startswith("runs-on:")):
+            out[path.name] = "\n".join(lines)
+    return out
+
+
+def same_branch(a: str, b: str) -> bool:
+    """True when two names sit on one path branch, so a narrower bind and a wider read match."""
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
 def test_the_agent_pool_binds_no_fleet_config_path_no_job_reads() -> None:
     """A runner bind with no reader is exposure for nothing (fleet-ops#10826).
 
     A path under the fleet config dir is bound because a job reads it before the engine jail
-    starts, so the names the drop-in binds and the names the workflows read are one set. The
-    eval pool's one bind is not checked: the drive eval container reads it, not a step, and
-    cutting it needs a credential moved (#10957).
+    starts. The eval pool's one bind is not checked: the drive eval container reads it, not a
+    step, and cutting it needs a credential moved (#10957).
     """
     readers: set[str] = set()
-    workflows = sorted((ROOT / ".github").rglob("*.yml")) + sorted((ROOT / ".github").rglob("*.yaml"))
-    for path in workflows:
-        readers |= set(re.findall(r"(?:\$HOME|%h|~|/home/[^/\" ]+)/\.config/fleet-ops/([A-Za-z0-9_.*-]+)", path.read_text()))
+    for path in sorted((ROOT / ".github").rglob("*.yml")) + sorted((ROOT / ".github").rglob("*.yaml")):
+        readers |= fleet_config_read_names(path.read_text())
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
-    assert bound <= readers, f"bound with no job reading it: {sorted(bound - readers)}"
+    unread = sorted(name for name in bound if not any(same_branch(name, reader) for reader in readers))
+    assert not unread, f"bound with no job reading it: {unread}"
 
 
-def test_the_agent_pool_reads_a_repo_config_from_the_clone_it_binds() -> None:
+def test_no_runner_job_reads_a_fleet_config_path_the_agent_pool_does_not_bind() -> None:
+    """A read of a path the jail does not bind fails the job when it runs, not here (fleet-ops#10826).
+
+    The three places that count router slots read config/litellm-proxy.yaml from the deploy clone,
+    which the jail binds whole. Reading the host copy instead names a path the jail no longer
+    carries, and the job dies on "No such file or directory" on a runner, so the read side needs
+    its own tripwire: this is the check a revert of that move fails.
+    """
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    for name, text in runner_workflows().items():
+        unbound = sorted(read for read in fleet_config_read_names(text) if not any(same_branch(read, b) for b in bound))
+        assert not unbound, f"{name} reads a fleet config path the agent pool does not bind: {unbound}"
+
+
+def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     """A file the repo ships is read from the deploy clone, not from the host config dir (fleet-ops#10826).
 
     The clone is bound whole, so a job that needs config/litellm-proxy.yaml or config/intake-repos.json
