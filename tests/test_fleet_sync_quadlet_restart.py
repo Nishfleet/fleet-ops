@@ -11,7 +11,7 @@ CLONE = "workspaces/tooling/fleet-ops-deploy-clone"
 QUADLET = "containers/quadlet/fleet-grafana.container"
 MARKER = ".config/fleet-ops/grafana-quadlet.container"
 DAEMON_RELOAD = "/usr/bin/systemctl --user daemon-reload"
-MERGE = f"/usr/bin/git -C {HOME}/{CLONE} merge --ff-only refs/remotes/origin/main"
+MERGE_TAIL = "merge --ff-only refs/remotes/origin/main"
 QUADLET_BYTES = b"Image=grafana/grafana:13.2.3@sha256:b28bae15\nSecret=grafana-postgres-password,type=mount\n"
 
 
@@ -31,6 +31,10 @@ def steps(home: Path) -> list[str]:
 
 def is_quadlet_step(step: str) -> bool:
     return "cmp -s" in step and "grafana-quadlet.container" in step
+
+
+def is_merge_step(step: str) -> bool:
+    return step.endswith(MERGE_TAIL) and CLONE in step
 
 
 def quadlet_step(home: Path, systemctl: str) -> list[str]:
@@ -132,7 +136,7 @@ def test_the_step_never_starts_a_grafana_stopped_on_purpose() -> None:
 
 def test_the_step_runs_after_the_merge_and_the_daemon_reload_that_carry_the_edit() -> None:
     found = steps(HOME)
-    merge_at = found.index(MERGE)
+    merge_at = next(i for i, s in enumerate(found) if is_merge_step(s))
     reload_at = found.index(DAEMON_RELOAD)
     step_at = next(i for i, s in enumerate(found) if is_quadlet_step(s))
     assert merge_at < reload_at < step_at, "the restart must apply the unit the merge landed and daemon-reload regenerated"
