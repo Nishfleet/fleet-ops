@@ -104,12 +104,15 @@ environment secret slots before 2026-10-09. The retirement is decided
 - Retired: the hand-made VPS `deploy-ci` token (analytics from the VPS), replaced
   by `vps-grafana` in `main.tf` (fleet-ops#10169). It was a user token with no
   expiry, no IP lock, and Workers, D1, KV and Zone read permissions for a
-  consumer that needs one read-only group. Its value still sits in
-  `~/.config/cloudflare/deploy-ci.env` until the first apply rewrites that file
-  with the minted token; the old token itself is deleted in the Cloudflare
-dashboard by the owner, the same way as the per-repo tokens. A preview upload or
-  an analytics query from a hand session takes a 24-hour `job-*` token from the
-  mint gate (`docs/cloudflare-credentials.md`), not a standing one.
+  consumer that needs one read-only group. **Not yet revoked**: its value still
+  sits in `~/.config/cloudflare/deploy-ci.env` until the first apply rewrites
+  that file with the minted token, and the old token stays valid in Cloudflare
+  until the owner deletes it in the dashboard, the same way as the per-repo
+  tokens. Until that delete, a leaked copy of the old value still works, so the
+  revocation is the last step of the rotation and is not implied by this PR. A
+  preview upload or an analytics query from a hand session takes a 24-hour
+  `job-*` token from the mint gate (`docs/cloudflare-credentials.md`), not a
+  standing one.
 - Retired: the disabled account-admin token from 2026-09-25, deleted the same
   way. The expired token that used to live in the VPS `deploy.env` file died on
   its expiry date; only the file was ever deleted.
@@ -214,15 +217,23 @@ and `wrangler` config, not by running them.
 ## VPS-only tokens
 
 `vps_cidrs` defaults to `[]` (the addresses are not kept in git). `vps-grafana`
-sets `vps_only = true`, so **the apply fails until the addresses are supplied**
-to every `tofu` run, including the weekly `cloudflare-tokens-apply.service`, for
-example `TF_VAR_vps_cidrs='["<ipv4>/32","<ipv6>/128"]'` in that unit's
-environment, or a gitignored `*.tfvars` file. Read the addresses on the box with
-`curl -4 -s ifconfig.me` and `curl -6 -s ifconfig.me`. The `precondition` on the
-token resource stays: with `vps_only = true` and an empty `vps_cidrs`, the plan
-fails (fail-closed) instead of minting an unlocked token, and while it fails no
-token is renewed at all, so supply them before the first apply that includes
-`vps-grafana`.
+sets `vps_only = true`, so the apply needs the addresses on every run. They live
+in the gitignored `~/.config/cloudflare/vps-cidrs.tfvars`, which
+`cloudflare-tokens-apply.service` passes with `-var-file=`, so the weekly
+rotation supplies them with no hand step. The file holds one line:
+
+```hcl
+vps_cidrs = ["<ipv4>/32", "<ipv6>/128"]
+```
+
+Read the addresses on the box with `curl -4 -s ifconfig.me` and
+`curl -6 -s ifconfig.me`. Place the file before the first apply that includes
+`vps-grafana`. The `precondition` on the token resource stays: with `vps_only =
+true` and an empty `vps_cidrs`, the plan fails (fail-closed) instead of minting
+an unlocked token. That failure stops the whole apply, so no other token is
+renewed either; it is loud (the unit's `OnFailure=` fires the healthchecks fail
+ping) and the tokens keep working until 45 days after their last rotation, which
+leaves about two weeks to place the file after the first failed weekly run.
 
 ## Rotation
 
@@ -234,6 +245,16 @@ next `tofu apply` replaces the `time_rotating` resource, which replaces the toke
 secret is rewritten (`create_before_destroy`), so a running deploy never sees a
 dead token. Token names end in the creation date, so the old and new tokens can
 coexist.
+
+`vps-grafana` has a second consumer that a rewritten file does not reach:
+Grafana mounts a **copy** of the file as the `grafana-cloudflare-api-token`
+Podman secret, and `ansible/tasks/secrets.yml` recreates that copy on a
+host-config run. So the apply republishes it itself, in an `ExecStartPost`: it
+replaces the secret only when the value changed, and restarts
+`fleet-grafana.service` only then. Without that step the window between a
+rotation and the next host-config run would leave Grafana holding a token the
+apply had just deleted, and the Cloudflare spend watch (fleet-ops#9355) would
+read nothing meanwhile.
 
 Rotation happens only when `tofu apply` runs. If no apply happens within 45
 days of the last one, the tokens expire and the deploys that read them fail. The
@@ -289,8 +310,10 @@ then keep working until their expiry date (at most 45 days after the last apply)
 ## Switch it off and delete it
 
 1. `tofu destroy` (same environment as apply). It deletes every Cloudflare token
-   this config made and every GitHub secret it wrote. The VPS file
-   `~/.config/cloudflare/deploy-ci.env` is left in place; delete it by hand.
+   this config made and every GitHub secret it wrote, and it deletes the VPS
+   file `~/.config/cloudflare/deploy-ci.env` too, because that file is a
+   resource of this config (`local_sensitive_file.token`). Delete
+   `~/.config/cloudflare/vps-cidrs.tfvars` by hand.
 2. The workflows then read nothing (or fall back to the org secret). Recreate
    whichever secrets you still want by hand.
 3. Remove `infra/cloudflare-tokens/`, the renewal units in `systemd/`, the

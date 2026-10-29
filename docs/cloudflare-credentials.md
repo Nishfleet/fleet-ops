@@ -31,12 +31,20 @@ into a repo, PR or issue.
 IPs, minted and rotated by `infra/cloudflare-tokens` (token key `vps-grafana`,
 45-day expiry, weekly apply). The file is written 0600 by that config and read
 by `ansible/host.yml` into the `grafana-cloudflare-api-token` Podman secret, so
-Grafana's Cloudflare data source is the only consumer.
+Grafana's Cloudflare data source is the only consumer. The apply republishes
+that secret itself when the value changes, so a rotation does not wait for the
+next host-config run.
 
 It replaced the hand-made `deploy-ci` user token (Workers scripts, D1, KV, Zone
 read, GraphQL analytics, no expiry, no IP lock), which Nish approved retiring on
 2026-10-23 (fleet-ops#10169). A preview upload or an analytics query from a hand
 session takes a 24-hour `job-*` token from the mint gate below.
+
+The old hand-made token is **not yet revoked**: it stays valid in Cloudflare
+until the owner deletes it in the dashboard, because the key-maker token may not
+delete a standing token and no runner lane can reach the token list. Until that
+delete, a copy of the old value still works from this host, so "the old token is
+invalid" is a step of the rotation, not a result of the merge.
 
 **Never use it for restore drills or any other D1 create, import, execute-write or
 delete.** A restore drill imports a backup into a local SQLite file (`sqlite3`) and

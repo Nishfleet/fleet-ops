@@ -128,7 +128,8 @@ locals {
     # The only consumer that is not a GitHub Actions job (fleet-ops#10169):
     # Grafana's Cloudflare data source reads this token from the 0600 env file
     # below, which ansible/host.yml renders into the grafana-cloudflare-api-token
-    # Podman secret. It replaces the hand-made deploy-ci user token, which has no
+    # Podman secret (the apply republishes it on each rotation). It replaces the
+    # hand-made deploy-ci user token, which has no
     # expiry, is not IP-locked and is wider than the one read-only group the
     # spend watch needs. The value never enters a GitHub secret and never enters
     # argv: OpenTofu writes it straight to the file, mode 0600.
@@ -174,8 +175,11 @@ resource "cloudflare_api_token" "token" {
   for_each = local.tokens
 
   # The date keeps names unique, so the new token can exist beside the old one
-  # while the secret is rewritten (create_before_destroy).
-  name       = "gha-${each.key}-${formatdate("YYYYMMDD", time_rotating.token[each.key].rfc3339)}"
+  # while the secret is rewritten (create_before_destroy). `gha-` marks a token
+  # this config writes into a GitHub Actions secret, so the README's lost-state
+  # cleanup matches exactly those and never the host-only one, which keeps its
+  # own `vps-` key name.
+  name       = "${each.value.file == null ? "gha-" : ""}${each.key}-${formatdate("YYYYMMDD", time_rotating.token[each.key].rfc3339)}"
   expires_on = timeadd(time_rotating.token[each.key].rfc3339, "${var.expiry_days * 24}h")
 
   policies = concat(
