@@ -1,0 +1,26 @@
+# gh comes from the vendor's apt repository, so the daily dist-upgrade in
+# update.yml keeps it current. The unit files that name nish's
+# ~/.local/bin/gh keep working through the link further down.
+- name: Install the GitHub CLI apt key
+  ansible.builtin.get_url:
+    url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    dest: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    mode: "0644"
+
+- name: Add the GitHub CLI apt repository
+  ansible.builtin.deb822_repository:
+    name: github-cli
+    types: deb
+    uris: https://cli.github.com/packages
+    suites: stable
+    components: main
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+
+- name: Install gh from the GitHub CLI repository
+  ansible.builtin.apt:
+    name: gh
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300

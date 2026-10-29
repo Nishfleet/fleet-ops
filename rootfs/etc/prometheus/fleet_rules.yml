@@ -43,6 +43,42 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
+      - alert: DiskWillFill
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }} will fill within 24 hours"
+          description: "At the rate of the last 6 hours, {{ $labels.mountpoint }} ({{ $labels.device }}) runs out of space within 24 hours."
+
+      - alert: MemoryPressure
+        expr: rate(node_pressure_memory_waiting_seconds_total[5m]) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasks are stalled waiting for memory"
+          description: "Memory pressure (PSI) has stayed above 10% for 15 minutes, so the host is likely thrashing and timeouts may not be agent bugs."
+
+      # fleet-ops#10452: swap sat at ~90% with no alert. Visible, not paged.
+      - alert: SwapLow
+        expr: node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Swap is over 80% used"
+          description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
+
+      - alert: OOMKill
+        expr: increase(node_vmstat_oom_kill[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The kernel OOM killer ran"
+          description: "node_vmstat_oom_kill rose in the last 15 minutes: the kernel killed a process for lack of memory."
+
   - name: fleet_hermes
     rules:
       # Not active for 5 minutes. max_over_time rather than `for:` so a crash
@@ -96,6 +132,35 @@ groups:
         annotations:
           summary: "Alertmanager rejected its last config reload"
           description: "alertmanager_config_last_reload_successful is 0: the running config is not the installed one."
+
+  # The self-repair loop's own health (fleet-ops#10306): alert -> Grafana ->
+  # GitHub issue -> Claude-lane worker. Grafana files the issues, so when it is
+  # down or cannot deliver, no issue and no worker follows and nothing else
+  # reports it. These two go to Telegram at once (alertmanager.yml, own route
+  # with group_wait 0s), outside the 2 hour wait. The queue-stuck half is not
+  # a rule: see the comment on fleet-ops#10306.
+  - name: fleet_loop_health
+    rules:
+      # absent() covers the scrape job vanishing from prometheus.yml.
+      - alert: GrafanaDown
+        expr: up{job="grafana"} == 0 or absent(up{job="grafana"})
+        for: 5m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Grafana is down, so no alert can file a fleet issue"
+          description: "up{job=\"grafana\"} has been 0 or missing for 5 minutes."
+
+      # Any integration, any reason: a webhook 401 from an expired GitHub App
+      # token is the case this was written for (fleet-grafana-github-token.timer).
+      # The series appears with the first failure, so a healthy Grafana is silent.
+      - alert: GrafanaNotificationsFailing
+        expr: sum(increase(grafana_alerting_notifications_failed_total[15m])) > 0
+        labels:
+          severity: nish
+        annotations:
+          summary: "Grafana failed to deliver alert notifications in the last 15 minutes"
+          description: "grafana_alerting_notifications_failed_total rose in the last 15 minutes: check the Grafana log and fleet-grafana-github-token.service."
 
   - name: fleet_backup
     rules:
@@ -204,31 +269,6 @@ groups:
           summary: "worker-capable has no row that answers"
           description: "No worker-capable row is at litellm_deployment_state 0 and answering calls, for 5 minutes while the group is being called."
 
-      # The senior tier (fleet-ops#9054): one row, no fallback, sparse traffic (16
-      # calls in 24 h on 2026-10-12). A dead-model 400 has no peer row to escape to
-      # and v1.98.0 does not cool a 400 by default; the per-row
-      # BadRequestErrorAllowedFails 1 parks it for cooldown_time (60 s) on every
-      # call, so litellm_deployment_state reads 0 again each cycle and a state-only
-      # alert would flap. Same caller-facing signal as RouterStrongGroupFailing,
-      # scaled to the traffic: no call to senior is answered while at least 2 fail
-      # in 6 h (senior has no fallback, so every failed pick reaches the caller).
-      # One transient 502, the thing that parked the row on 2026-10-12, cannot
-      # cross the 2.
-      - alert: RouterSeniorFailing
-        expr: |
-          sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
-          and sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
-            == sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
-          and sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
-          and on() (up{job="litellm"} == 1)
-        for: 5m
-        labels:
-          severity: nish
-          group: senior
-        annotations:
-          summary: "senior has no row that answers"
-          description: "Every senior call in the last 6 hours failed (2 or more calls) for 5 minutes. The senior group has one row and no fallback, so every call dies on it: fix or remove the dead row in config/litellm-proxy.yaml."
-
       # Caller-facing failures on the strong group: more than 5% of its chat calls fail for 10 minutes.
       # litellm_proxy_failed_requests_metric_total counts only calls that reached the caller, so a
       # fallback that answered the call does not count (0 in the 24 h to 2026-10-22). Both halves carry
@@ -245,6 +285,41 @@ groups:
         annotations:
           summary: "More than 5% of worker-capable calls are failing"
           description: "worker-capable chat calls are reaching the caller as errors. Compare litellm_deployment_failure_responses_total by model_id for the row that keeps failing."
+
+      # A model group whose requests nearly all fail for 10 minutes (fleet-ops#10694): the signature of leaked
+      # max_parallel_requests slots, which jammed the senior rows on 2026-10-28 until a router restart. The proxy-level
+      # counters are used because the router's own "all slots in use" rejection never reaches a deployment, so it has no
+      # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
+      # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
+      # requested_model="other" is the proxy's bucket for calls that name no model group, such as /jev with a bad key;
+      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788); RouterOtherBucketFailing below watches that bucket.
+      - alert: RouterGroupJammed
+        expr: |
+          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total{requested_model!="other"}[10m]))
+            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 0.9)
+          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 3)
+        for: 10m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Router group {{ $labels.requested_model }} fails nearly every call"
+          description: "90% or more of the calls to {{ $labels.requested_model }} failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+      # The calls RouterGroupJammed skips: the proxy files calls that name no model group (/jev, a bad key, a rejected
+      # master key) under requested_model="other". A one-off burst ends inside the hour, as the 50 curl 401s on /jev
+      # did on 2026-10-28 (fleet-ops#10788); a stale key or auth fault on a fleet component keeps failing, so the
+      # 30 minute hold separates the two.
+      - alert: RouterOtherBucketFailing
+        expr: |
+          (sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="other"}[10m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 0.9)
+          and (sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 3)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Router calls outside any model group keep failing"
+          description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
 
   - name: fleet_router_downgrade
     interval: 5m
