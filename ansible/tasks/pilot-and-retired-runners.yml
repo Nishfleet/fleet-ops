@@ -96,3 +96,24 @@
     state: absent
   loop: "{{ agent_runner_retired_ids }}"
   notify: Reload systemd
+
+# The directory holds the only credentials that can deregister the runner, so it
+# stays until the registration is gone: deleting it first strands an offline
+# runner at GitHub with nothing left on the box to remove it with, and that needs
+# an org-owner token this host does not carry (fleet-ops#10632). A successful
+# `config.sh remove` deletes .runner and .credentials, so their absence is the
+# local proof that no registration is left to strand.
+- name: Read which retired runner directories still hold a registration
+  ansible.builtin.find:
+    paths: "{{ agent_runner_retired_ids | map('regex_replace', '^', nish_home ~ '/.local/share/agent-runner/') | list }}"
+    patterns: [.runner, .credentials]
+    hidden: true
+    recurse: false
+  register: retired_runner_registrations
+
+- name: Remove the directory of a retired runner whose registration is gone
+  ansible.builtin.file:
+    path: "{{ nish_home }}/.local/share/agent-runner/{{ item }}"
+    state: absent
+  loop: "{{ agent_runner_retired_ids }}"
+  when: item | string not in (retired_runner_registrations.files | map(attribute='path') | map('dirname') | map('basename') | list)

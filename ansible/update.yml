@@ -87,6 +87,12 @@
       HOME: /home/nish
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # One directory per agent runner. A runner updates itself in place: it
+    # unpacks bin.<version>/ and externals.<version> beside the pair it runs from
+    # and repoints the bin and externals symlinks at them, and it never removes
+    # the pair it moved off, so this tree grows by about 680 MB per runner per
+    # update with nothing to stop it (fleet-ops#10632: 60 stale pairs, 20.3 GB).
+    agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
     # tincan has no default relay: it reads one from a config file named by
     # this variable. Any joined agent's config carries the same relay.
     tincan_env_config: "{{ nish_env.HOME }}/.config/tincan/claude-vps.json"
@@ -395,6 +401,50 @@
               ansible.builtin.command:
                 argv: [uv, cache, prune]
               changed_when: false
+
+            - name: List the runner version each runner's bin and externals symlink points at
+              ansible.builtin.find:
+                paths: ["{{ agent_runner_root }}"]
+                patterns: [bin, externals]
+                file_type: link
+                recurse: true
+                depth: 2
+              register: runner_version_links
+
+            # stat resolves a link to an absolute path, so a relative link and an
+            # absolute one land on the same kept path below.
+            - name: Read the version directory each of those symlinks points at
+              ansible.builtin.stat:
+                path: "{{ item }}"
+              loop: "{{ runner_version_links.files | map(attribute='path') | list }}"
+              register: runner_version_targets
+
+            # age=1h is the guard on the window a self-update opens: the new
+            # version is unpacked before the symlink moves, so a directory that
+            # appeared in the last hour may be the one the link is about to
+            # point at, and it survives this run.
+            - name: List the runner version directories older than a self-update
+              ansible.builtin.find:
+                paths: ["{{ agent_runner_root }}"]
+                patterns: ["bin.*", "externals.*"]
+                file_type: directory
+                recurse: true
+                depth: 2
+                age: 1h
+              register: runner_version_dirs
+
+            # Every link's target is kept, not just bin's: bin and externals name
+            # the same version in two directories, so keeping only the bin target
+            # would delete the version externals runs from.
+            - name: Remove the runner version directories no runner points at
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: absent
+              loop: >-
+                {{ runner_version_dirs.files | map(attribute='path')
+                   | reject('in', runner_version_targets.results | map(attribute='stat.lnk_source') | list)
+                   | list }}
+              register: runner_version_prune
 
         - name: Upgrade every Ubuntu package (security and regular updates)
           ansible.builtin.apt:
@@ -1303,6 +1353,8 @@
                 containers: "{{ (prune_containers | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 images: "{{ (prune_images | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+              # Which runner version directories the prune removed, one path per line.
+              runner_version_dirs_removed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('changed') | map(attribute='item') | list }}"
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
