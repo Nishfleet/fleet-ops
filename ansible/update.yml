@@ -91,12 +91,7 @@
     # this variable. Any joined agent's config carries the same relay.
     tincan_env_config: "{{ nish_env.HOME }}/.config/tincan/claude-vps.json"
     # Each runs as nish with its own stdin; a failure is reported at the end,
-    # never skipped quietly. devin is updated by its official installer, the
-    # same script that installed it (the version dir's `distribution` file
-    # says curl-bash): `devin update` asks for confirmation on a terminal and
-    # exits 130 without one, even with "y" on stdin. The installer verifies
-    # the bundle's sha256 and needs no terminal. Every updater here ignores
-    # stdin.
+    # never skipped quietly. Every updater here ignores stdin.
     tool_updates:
       - argv: [npm, update, --global]
         stdin: ""
@@ -105,10 +100,6 @@
       - argv: [claude, update]
         stdin: ""
       - argv: [claude, plugin, marketplace, update]
-        stdin: ""
-      - argv: [cursor-agent, update]
-        stdin: ""
-      - argv: [bash, -o, pipefail, -c, "curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
         stdin: ""
       - argv: [uv, self, update]
         stdin: ""
@@ -141,7 +132,7 @@
     # Hermes's own install dir keeps a driver the owner declined; an update or
     # an install must never bring it back.
     hermes_banned_tool_glob: "cua-driver-*"
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, syncthing]
+    version_checks: [claude, node, npm, gh, uv, bun, rclone, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
@@ -419,7 +410,7 @@
         # npm leaves two kinds of hidden dir behind: `.name-stage-*` while it
         # installs and `.name-old-*` (the retired copy) when a self-update stops
         # between the swap and the cleanup. The second failed the 2026-10-28 run.
-        # No age filter: a dir younger than a minute (command-code self-updates
+        # No age filter: a dir younger than a minute (a tool that self-updates
         # on start) failed the run on 2026-10-21. Instead, when staging dirs exist,
         # fail loud if an npm install, update or ci runs as nish, so a live npm's
         # dir is never removed. `npm exec` is not that activity: the long-lived MCP

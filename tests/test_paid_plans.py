@@ -38,7 +38,13 @@ def _bases(rows, prepaid_only=False):
 
 def test_every_live_paid_plan_keeps_a_router_row():
     bases = _bases(_router_rows())
-    gone = [p["name"] for p in _plans() if not p.get("rows_pending") and not any(b.startswith(p["api_base"]) for b in bases)]
+    pi = json.loads((ROOT / "config/pi-models.json").read_text())
+    pi_bases = [p.get("baseUrl", "") for p in pi["providers"].values()]
+    gone = [
+        p["name"] for p in _plans()
+        if not p.get("rows_pending")
+        and not any(b.startswith(p["api_base"]) for b in (bases if not p.get("via") == "pi-provider" else pi_bases))
+    ]
     assert not gone, f"paid plans with no router row: {gone}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
