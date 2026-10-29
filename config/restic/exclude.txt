@@ -25,8 +25,7 @@
 /home/nish/.config/opencode
 
 # Session transcripts and logs. The durable memory is the vault
-# (_system/agent-memory) and the searchable index is leviathan's, both of
-# which are kept; the transcripts are derived data.
+# (_system/agent-memory), which is kept; the transcripts are derived data.
 /home/nish/.pi/agent/sessions
 
 # Pi agent's own npm cache.

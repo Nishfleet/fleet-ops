@@ -1,0 +1,73 @@
+# LiteLLM Postgres data source for the session-hop rule (fleet-ops#9475).
+# Stock Grafana only, no scripts.
+#
+# Why a new data source: the session id and the answering row both live only
+# in PostgreSQL (LiteLLM_SpendLogs.session_id, model_id). LiteLLM's Prometheus
+# metrics carry model id, alias and token counts and no session id at all, so
+# #9357's prompt-cache-hit.yaml (Prometheus) cannot express "the same
+# session's previous call". #9361's dedicated Grafana data source does.
+#
+# Why not the router's own login: the router connects as `litellm`, which is
+# the login LiteLLM runs its write path with (INSERT on every request). A
+# dashboard data source must not share a read-write login, so this data source
+# connects as `grafana_ro`, a SELECT-only role (fleet-ops#9475 acceptance).
+#
+# The `grafana_ro` role and the one view it can read (created on the host,
+# outside this repo, where a dashboard's reach must end):
+#   CREATE ROLE grafana_ro LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+#   GRANT CONNECT ON DATABASE litellm TO grafana_ro;
+#   GRANT USAGE ON SCHEMA public TO grafana_ro;
+#   SET ROLE litellm;
+#   CREATE VIEW public.session_hop_logs AS
+#     SELECT session_id, model_id, "startTime", call_type, status
+#     FROM "LiteLLM_SpendLogs"
+#     WHERE session_id IS NOT NULL AND model_id IS NOT NULL AND model_id <> '';
+#   RESET ROLE;
+#   GRANT SELECT ON public.session_hop_logs TO grafana_ro;
+#
+# The view is the whole grant. A Grafana OSS viewer can run SQL on every data
+# source it can reach, and this Grafana serves anonymous Viewer access on the
+# tailnet, so the role's grant surface is the security boundary, not Grafana
+# auth: no SELECT on any base table, nothing on tables added later, and the
+# SpendLogs columns that hold customer content (messages, response,
+# proxy_server_request) plus the key and config tables are not in the view.
+# What the view does expose is fleet routing metadata only: session ids,
+# answering row keys, timestamps, call types, statuses.
+#
+# The two filters keep the partition the rule groups by honest: a NULL
+# session_id would drop every session-less call into one window, and an empty
+# model_id would count as a hop. If LiteLLM ever drops or renames a SpendLogs
+# column the view depends on, the view breaks, the rule turns DatasourceError
+# and pages (execErrState: Error in session-hop.yaml).
+#
+# Verified on the live database 2026-10-29 as grafana_ro: SELECT on
+# LiteLLM_SpendLogs, LiteLLM_VerificationToken, LiteLLM_Config and
+# LiteLLM_ProxyModelTable all denied, the view readable (495k rows), the
+# rule's SQL in session-hop.yaml runs in ~4 ms (EXPLAIN ANALYZE).
+#
+# The password lives in the Podman secret `grafana-postgres-password`
+# (ansible/host.yml's grafana_secrets list and ansible/tasks/secrets.yml mint
+# it from the 0600 env file ~/.config/fleet-ops/grafana-postgres-password.env
+# before the Grafana restart handler runs, and ansible/tasks/final-checks.yml
+# fails the play naming the source or key when either is missing or empty, so
+# Grafana never boots on a silently empty password), never in this file.
+apiVersion: 1
+
+datasources:
+  - name: LiteLLM Postgres
+    uid: fleet-litellm-postgres
+    type: postgres
+    access: proxy
+    url: 127.0.0.1:5432
+    user: grafana_ro
+    database: litellm
+    jsonData:
+      postgresVersion: 1500
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 5
+      connMaxLifetime: 14400
+      timeInterval: 1h
+    secureJsonData:
+      password: $__file{/run/secrets/grafana-postgres-password}
+    editable: false

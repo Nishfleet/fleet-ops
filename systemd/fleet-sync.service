@@ -49,14 +49,9 @@ ExecStart=/usr/bin/git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone m
 #    line now prints DEPLOY-BLOCKED, the branch and head it found, the commits that
 #    are not on main, and the fix.
 ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at %h/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; if git merge-base --is-ancestor refs/remotes/origin/main HEAD && git merge-base --is-ancestor HEAD refs/remotes/origin/main; then exit 0; fi; echo "DEPLOY-BLOCKED: the deploy clone is not at origin/main, so no unit or config was updated."; echo "  branch $$(git rev-parse --abbrev-ref HEAD), head $$(git rev-parse --short HEAD), origin/main $$(git rev-parse --short refs/remotes/origin/main)"; git log --oneline -n 20 refs/remotes/origin/main..HEAD | sed "s/^/  not-on-main: /"; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then work from a worktree, not the deploy clone"; exit 1'
-# 2. Link the OnFailure handler, drop the retired prometheus-reload live
-#    links, then re-read unit files. Link first so daemon-reload loads
-#    fleet-unit-failed@.service (fleet-ops#9033). The pull above deleted
-#    fleet-prometheus-reload.path/.service (fleet-ops#9088); README
-#    "Retiring a unit" is `rm` of the live path. rm -f is a no-op once
-#    they are gone, and without it LINK-GUARD fails on the dangling links.
+# 2. Link the OnFailure handler, then re-read unit files. Link first so
+#    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
-ExecStart=/bin/rm -f /home/nish/.config/systemd/user/fleet-prometheus-reload.path /home/nish/.config/systemd/user/fleet-prometheus-reload.service /home/nish/.config/systemd/user/default.target.wants/fleet-prometheus-reload.path
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
 #     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
@@ -68,33 +63,20 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     instance in with Requires= (AGENTS.md "Session-outliving work"). Off switch:
 #     delete this step and `systemctl --user unlink` it by hand.
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-worker-github-token@.service
-# 2a'. Retired blacksmith-flip (fleet-ops#9670): a daemon-reload does not stop a loaded
-#     timer, so it is stopped first (`-` ignores the exit once it is gone); the two rm
-#     lines then drop its live links and installed prompt dir. Delete these three lines
-#     once every host has deployed this (the checklist is Nishfleet/fleet-ops#9703).
-ExecStart=-/usr/bin/systemctl --user stop blacksmith-flip.timer blacksmith-flip.service
-ExecStart=/bin/rm -f %h/.config/systemd/user/blacksmith-flip.service %h/.config/systemd/user/blacksmith-flip.timer %h/.config/systemd/user/timers.target.wants/blacksmith-flip.timer
-ExecStart=/bin/rm -rf %h/.local/share/blacksmith-flip
 # 2b. Retired the Grok client-version pin (fleet-ops#9223): pi-grok 0.13 does
 #     its own lookup of https://x.ai/cli/stable, so the file and its install
 #     line are gone, and this rm drops the copy earlier hosts still carry.
 #     Delete this step once every host has synced it.
 ExecStart=/bin/rm -f %h/.config/environment.d/60-pi-xai-client-version.conf
-# 2c. The leviathan index units, their configs and the tmpfiles rule are
-#     user-scope COPYs (fleet-ops#9313), same class as 6/7/8: the
-#     leviathan-index@.timer runs every 15 minutes, so the config must exist
-#     before the PR that ships the units merges (a git merge refuses a clone
-#     with untracked files in the way, so no unit may read its config from the
-#     deploy clone). Live links are hand-set once into ~/.local/share/leviathan/
-#     and ~/.config/systemd/user (a stable tree, so LINK-GUARD passes); the
-#     installs here keep the bytes on main, before the daemon-reload so an
-#     edited unit reloads in this run. systemd-tmpfiles (step 5) then enforces
-#     the index dir's 0700 mode on every sync.
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.service /home/nish/.local/share/leviathan/leviathan-index@.service
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/leviathan-index@.timer /home/nish/.local/share/leviathan/leviathan-index@.timer
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/claude.toml /home/nish/.local/share/leviathan/claude.toml
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/leviathan/pi.toml /home/nish/.local/share/leviathan/pi.toml
-ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/leviathan.conf /home/nish/.config/user-tmpfiles.d/leviathan.conf
+# 2c. Retired the Executor hub (fleet-ops#10625): its live unit is a hand link
+#     into this clone and its drop-in lives there too, so moving the clone would
+#     leave both dangling and LINK-GUARD (step 9) would fail before
+#     fleet-host-config could delete them. The leviathan links point into
+#     ~/.local/share/leviathan and go with that directory in host.yml's retired
+#     list. `-` keeps a host that already ran host config quiet.
+#     Delete this step once every host has synced it.
+ExecStart=-/bin/rm -f %h/.config/systemd/user/executor.service %h/.config/systemd/user/default.target.wants/executor.service
+ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 # 2d. The helper and scout subagents (the only lanes model-lanes allows) are
 #     COPYs of config/claude-agents/, same class as 6/7/8: they lived only as
 #     hand-placed files. Remote Control runs on the Max config dir
@@ -239,6 +221,12 @@ ExecStart=/bin/sh -c 'cmp -s /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -type l ( -lname *worktrees/* -o -lname */agent-state/* -o -lname */tmp/* ) -printf "[fleet-sync] LINK-GUARD live symlink -> throwaway target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.config/systemd/user %h/.local/bin %h/.pi/agent %h/workspaces/tooling/nish-vault -path %h/.pi/agent/skills -prune -o -xtype l -printf "[fleet-sync] LINK-GUARD live symlink -> dead target: %%p -> %%l\n" -exec /bin/false {} +
 ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill link dead (skill gone from its source, link left in place): %%p -> %%l\n"
+# 10. STUB-GUARD (fleet-ops#10525): on 2026-10-28 a worker with sudo overwrote ten
+#    launch paths with /bin/true so `systemd-analyze verify` would pass; every agent
+#    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
+#    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
+#    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/cursor-agent %h/.local/bin/devin %h/.local/bin/opencode %h/.local/bin/command-code %h/.local/bin/tincan %h/.local/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

@@ -14,6 +14,7 @@ import subprocess
 import tomllib
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
@@ -21,11 +22,12 @@ if not shutil.which("yq"):
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
 PIN_DIR = ROOT / "config/chrome-devtools-mcp"
+DRIVE_PIN = ROOT / "config/drive-mcp.json"
 REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
 
 
 def _play():
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]
 
 
@@ -68,18 +70,13 @@ def test_install_is_an_ansible_core_module_from_the_lockfile():
 
 
 def test_no_runtime_fetch():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "@latest" not in text and "npx" not in text
 
 
 def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
     assert ARGS[: len(REQUIRED)] == REQUIRED
     assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
-
-
-def test_claude_drop_in_enables_the_plugin():
-    drop_in = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json").read_text())
-    assert drop_in == {"enabledPlugins": {"chrome-devtools@nish-mods": True}}
 
 
 def test_every_install_step_is_in_the_play():
@@ -90,6 +87,9 @@ def test_every_install_step_is_in_the_play():
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
         "Add the chrome-devtools entry to each agent CLI",
         "Swap Cursor's dead camofox entry for chrome-devtools",
+        "Read Claude Code's drive entry",
+        "Drop a stale drive entry",
+        "Pin the Drive filesystem server in Claude Code's user config",
         "Drop Codex's dead camofox entry and its subtables",
         "Add the chrome-devtools entry under Hermes' mcp_servers",
     ):
@@ -110,11 +110,15 @@ USER_FILE_TASKS = [
     "Add the chrome-devtools entry to each agent CLI",
     "Read Cursor's MCP config",
     "Swap Cursor's dead camofox entry for chrome-devtools",
+    "Read Claude Code's drive entry",
+    "Drop a stale drive entry",
+    "Pin the Drive filesystem server in Claude Code's user config",
     "Look for Codex's config",
     "Drop Codex's dead camofox entry and its subtables",
     "Read Hermes' config",
     "Add the chrome-devtools entry under Hermes' mcp_servers",
     "Read Hermes' scheduled jobs",
+    "Delete the retired jobs from Hermes' cron store",
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
     "Link the packaged gh into nish's ~/.local/bin",
@@ -164,7 +168,7 @@ def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_asse
 
 
 def test_agent_cli_tasks_are_bounded():
-    for name in ("Read each agent CLI's chrome-devtools entry", "Drop a stale chrome-devtools entry", "Add the chrome-devtools entry to each agent CLI"):
+    for name in ("Read each agent CLI's chrome-devtools entry", "Drop a stale chrome-devtools entry", "Add the chrome-devtools entry to each agent CLI", "Read Claude Code's drive entry", "Drop a stale drive entry", "Pin the Drive filesystem server in Claude Code's user config"):
         assert TASKS[name]["timeout"] <= 120, name
 
 
@@ -192,7 +196,10 @@ def _run_tasks(tmp_path, names, subs=None):
                 if isinstance(module, dict):
                     module.pop(key, None)
         tasks.append(task)
-    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**VARS, "nish_home": str(tmp_path)}, "tasks": tasks}
+    vars_text = json.dumps(VARS)
+    for old, new in subs.items():
+        vars_text = vars_text.replace(old, new)
+    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**json.loads(vars_text), "nish_home": str(tmp_path)}, "tasks": tasks}
     book = tmp_path / "play.json"
     book.write_text(json.dumps([play]))
     result = subprocess.run(
@@ -235,12 +242,44 @@ def test_cursor_swap_keeps_other_servers_and_is_idempotent(tmp_path):
         "drive": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/Drive"]},
     }}))
     names = ["Read Cursor's MCP config", "Swap Cursor's dead camofox entry for chrome-devtools"]
-    _run_tasks(tmp_path, names)
+    subs = {"playbook_dir ~ '/../config/drive-mcp.json'": f"'{ROOT}/config/drive-mcp.json'"}
+    _run_tasks(tmp_path, names, subs)
     servers = json.loads(cfg.read_text())["mcpServers"]
     assert set(servers) == {"drive", "chrome-devtools"}
+    assert servers["drive"]["args"][1] == pinned_spec()
+    assert servers["drive"]["args"][2] == f"{tmp_path}/Drive"
     assert servers["drive"]["command"] == "npx"
     assert servers["chrome-devtools"] == {"command": f"{tmp_path}/.local/bin/chrome-devtools-mcp", "args": ARGS}
-    assert "changed=0" in _run_tasks(tmp_path, names)
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)
+
+
+def pinned_spec():
+    return json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]["args"][1]
+
+
+def test_the_drive_entry_is_one_exact_pin_and_nothing_else():
+    entry = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
+    assert entry["type"] == "stdio" and entry["command"] == "npx" and entry["env"] == {}
+    assert entry["args"][0] == "-y"
+    assert re.fullmatch(r"@modelcontextprotocol/server-filesystem@\d+\.\d+\.\d+", entry["args"][1])
+    assert entry["args"][2] == "~/Drive"
+    text = HOST.read_text()
+    assert "config/drive-mcp.json" in text and "server-filesystem" not in text and "npx" not in text
+
+
+def test_the_play_writes_the_drive_entry_with_claudes_own_mcp_command():
+    assert "drive_mcp_words: \"{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}\"" in HOST.read_text()
+    read = TASKS["Read Claude Code's drive entry"]
+    assert read["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "get", "drive"]
+    assert read["changed_when"] is False and read["failed_when"] is False
+    drop = TASKS["Drop a stale drive entry"]
+    assert drop["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "remove", "drive", "--scope", "user"]
+    assert "drive_entry.rc == 0" in drop["when"]
+    add = TASKS["Pin the Drive filesystem server in Claude Code's user config"]
+    assert add["ansible.builtin.command"]["argv"] == "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
+    assert "drive_entry.rc != 0" in add["when"]
+    for task in (read, drop, add):
+        assert task["timeout"] <= 120, task["name"]
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
@@ -434,3 +473,16 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     (src / "runsvc.sh").write_text("changed upstream")
     assert "changed=0" in _run_tasks(tmp_path, names, subs)
     assert (dest / "runsvc.sh").read_text() == "live state"
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    env = dest / ".env"
+    env.write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\nLANG=C.UTF-8\nCLAUDE_CONFIG_DIR=/home/nish/.claude-a\n")
+    names = ["Give the pilot runner its own HOME in the runner environment", "Drop nish's runtime paths from the pilot runner environment"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)

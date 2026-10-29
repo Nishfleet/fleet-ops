@@ -1,0 +1,185 @@
+{
+  "uid": "fleet-scorecard",
+  "title": "Fleet scorecard",
+  "description": "Is the fleet beating a pro team: merged per day and run failure share, 14 days.",
+  "tags": [
+    "fleet"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "1h",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "schemaVersion": 41,
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "text",
+      "id": 1,
+      "title": "Scorecard status, 2026-10-28",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Fleet-ops#10711. Two of the six numbers have a data source today and are on this page: **merged PRs per day, products versus fleet-ops**, and **failed share of agent runs**. The failed share counts every non-success finished run, not only infra failures, because the GitHub data source has no infra-versus-test split.\n\nNo data source yet (follow-up issue): idle runners while an unblocked item waits, pushed head to review verdict, approval to merge, Claude limit per merged PR. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+      }
+    },
+    {
+      "type": "table",
+      "id": 2,
+      "title": "Merged per day, products versus fleet-ops, last 14 days",
+      "description": "Target: products ahead of fleet-ops. Alert: scorecard-products-behind.",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTR(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTR(closed_at, 1, 10), 'products' FROM B) AS merged\nGROUP BY d ORDER BY d"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 3,
+      "title": "Failed share of agent runs per day, last 14 days",
+      "description": "agent.yml and agent-dispatch.yml in fleet-ops, finished runs. Target: under 2%. Alert: scorecard-run-failure-share.",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent.yml"
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent-dispatch.yml"
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTR(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTR(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
