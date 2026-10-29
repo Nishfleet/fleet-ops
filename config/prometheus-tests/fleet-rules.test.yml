@@ -248,6 +248,40 @@ tests:
               summary: "off-site backup has not run for over 30 hours"
               description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
 
+  # RestoreDrillStale: the monthly drill at 34 days is fine; past 35 days and
+  # still short 15 minutes later, it fires. A missing timer series fires too.
+  - interval: 12h
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-drill.timer"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 34d
+        alertname: RestoreDrillStale
+        exp_alerts: []
+      - eval_time: 36d
+        alertname: RestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: restic-r2-restore-drill.timer
+            exp_annotations:
+              summary: "monthly restore drill has not run for over 35 days"
+              description: "restic-r2-restore-drill.timer last triggered more than 35 days ago, or its series is missing."
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="other.timer"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: restic-r2-restore-drill.timer
+            exp_annotations:
+              summary: "monthly restore drill has not run for over 35 days"
+              description: "restic-r2-restore-drill.timer last triggered more than 35 days ago, or its series is missing."
+
   # BackupFailed: a one-off failure that recovers within the hour is silent;
   # a unit that stays failed for an hour pages.
   - interval: 5m

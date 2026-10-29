@@ -486,8 +486,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service

@@ -40,6 +40,22 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The monthly full restore drill (fleet-ops#9770). Its units are shipped under
+# rootfs/, so the copy above installed them; this starts the timer once.
+# Persistent=true catches up an elapse that passed while the timer was not
+# running, so the first drill can run at this deploy rather than waiting for the
+# 1st. It takes the restic lock like every other restic job, so a drill that
+# collides with the nightly backup waits up to 15 minutes and then fails, which
+# pages: the drill never delays the backup, and the backup never waits on it
+# longer than its own lock timeout.
+- name: Enable the monthly restore drill
+  ansible.builtin.systemd_service:
+    name: restic-r2-restore-drill.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
 # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
 # once; a later edit to the unit file is staged until the next restart. It

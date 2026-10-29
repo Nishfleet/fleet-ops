@@ -1,0 +1,20 @@
+# Monthly full restore drill (fleet-ops#9770), first of the month at 10:00 IST.
+# Not `monthly`, which means 00:00: the drill holds the one restic lock for the
+# length of a full restore, and 00:00 is three and a half hours before the
+# nightly backup starts at 03:30. 10:00 sits between the 06:15 locked copy and
+# the next day's 03:27 verify, nothing else runs, and a run that overruns still
+# finishes before the afternoon jobs.
+#
+# Persistent=true catches a month that the box spent switched off: a missed
+# drill runs at the next boot rather than skipping to the month after.
+# RestoreDrillStale (fleet_rules.yml) fires at 35 days without a trigger, so a
+# drill that stops silently does not stay silent.
+[Unit]
+Description=Monthly full restore drill from the R2 restic repo
+
+[Timer]
+OnCalendar=*-*-01 10:00:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

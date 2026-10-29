@@ -181,6 +181,23 @@ groups:
         annotations:
           summary: "off-site backup has not run for over 30 hours"
           description: "restic-r2-backup.timer last triggered more than 30 hours ago, or its series is missing."
+      # The monthly full restore drill has not started for 35 days (one missed
+      # month plus slack), or its timer series vanished. A backup nobody ever
+      # restores is a hope, so a drill that quietly stopped is worth seeing.
+      # Warning, not nish: the backup still runs and the data is still on R2, so
+      # this is readiness, not an outage. A run that fails is seen the same way
+      # as any other failed unit, through SystemUnitFailed.
+      - alert: RestoreDrillStale
+        expr: |
+          (time() - max_over_time(node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-drill.timer"}[36d])) > 35 * 24 * 3600
+          or
+          absent(node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-drill.timer"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "monthly restore drill has not run for over 35 days"
+          description: "restic-r2-restore-drill.timer last triggered more than 35 days ago, or its series is missing."
       # A backup, locked copy or size guard that failed and stayed failed for
       # an hour (not a one-off retry): the snapshot did not reach R2.
       - alert: BackupFailed

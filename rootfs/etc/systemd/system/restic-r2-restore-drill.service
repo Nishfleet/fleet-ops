@@ -1,0 +1,74 @@
+# Monthly full restore drill (fleet-ops#9770). The restore test next door checks
+# two files; this one restores the whole snapshot and checks it against the live
+# box, which is the only thing that proves a rebuild works before one is needed.
+#
+# Never over a live path: the target is /var/tmp/restic-restore-drill, and
+# PrivateTmp=true makes that a private tmpfs, so the decrypted copies of ~/.ssh
+# and ~/.config live in RAM and are gone the moment the unit ends. There is no
+# free-space check because there is nothing to fill: the workspace is memory.
+#
+# The workspace is bounded by the backup side rather than by a knob of its own.
+# restic-r2-size-guard.service refuses a snapshot that would restore to more than
+# 4 GiB, and MemoryMax=6G below is that 4 GiB plus restic's own buffers. Raise
+# the two together, or a bigger snapshot is killed mid-restore. TimeoutStartSec
+# is 30min, the same ceiling the weekly verify pass uses: a full restore plus
+# --verify moves about twice the snapshot's bytes, and a drill that hangs holds
+# the one restic lock that the nightly backup needs.
+#
+# --verify re-reads every restored byte against the snapshot, so the restore
+# itself is not trusted to have written what it read. The ExecStartPost then
+# compares one file per path in /etc/restic/include.txt with the live copy: that
+# is what catches a snapshot that restores cleanly and holds the wrong data.
+# Only a file older than 7 days is chosen, because a file rewritten since the
+# snapshot (the nightly litellm.dump, a -wal) is expected to differ and would
+# report a false mismatch. A path with no such file is logged and skipped, and
+# a path whose live copy was deleted since the snapshot is skipped too, so the
+# run fails on a real mismatch or on nothing being compared, never on churn.
+#
+# Scheduled at 10:00 on the 1st (the .timer): the nightly backup is 03:30, the
+# verify pass Wednesday 03:27, the locked copy 06:15, maintenance Sunday 06:23.
+# The drill takes the one restic lock like every other job, so an hour of work
+# here would otherwise block the backup: the quiet window is the point of the
+# schedule, not a preference. Anything that does collide waits 15 minutes and
+# exits 75, which is a failed drill and pages.
+[Unit]
+Description=Restic restore drill: restore the whole latest snapshot and compare it with the live files
+Documentation=https://github.com/Nishfleet/fleet-ops/blob/main/config/restic/README.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/restic/netcup-r2.env
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic/netcup-r2.env
+Environment=RESTIC_CACHE_DIR=/var/cache/restic-live
+Environment=DRILL_DIR=/var/tmp/restic-restore-drill
+# touch and stat rather than `date +%s`: systemd expands a % as a unit specifier
+# before the shell sees it, so every % below is doubled, and every shell $ is
+# written $$ so systemd un-escapes it instead of reading a variable (fleet-ops#8382,
+# as fleet-d1-restore-drill.service does).
+ExecStartPre=/usr/bin/touch /var/cache/restic-live/restore-drill.started
+ExecStartPre=/usr/bin/rm -rf ${DRILL_DIR}
+# A run killed mid-restore leaves a restic lock behind; every other restic unit
+# on the box clears a stale one first, and this one would otherwise fail its
+# next month instead of restoring.
+ExecStartPre=/usr/bin/restic unlock
+ExecStart=/usr/bin/flock -E 75 -w 900 /run/lock/restic-r2-backup.lock /usr/bin/restic restore latest --host netcup-rs2000 --target ${DRILL_DIR} --verify
+ExecStartPost=/bin/sh -c 'd=$$DRILL_DIR; ok=0; bad=0; skip=0; while IFS= read -r p; do case "$$p" in ""|"#"*) continue;; esac; r="$$d$$p"; if [ -f "$$r" ]; then rf="$$r"; lf="$$p"; else rel=$$(find "$$r" -type f -size -1048576c -mtime +7 -printf %%P -quit 2>/dev/null); if [ -z "$$rel" ]; then echo "restore drill: skip $$p (no unchanged file under 1 MiB)"; skip=$$((skip+1)); continue; fi; rf="$$r/$$rel"; lf="$$p/$$rel"; fi; if cmp -s "$$rf" "$$lf"; then echo "restore drill: ok $$lf"; ok=$$((ok+1)); elif [ -e "$$lf" ]; then echo "restore drill: MISMATCH $$lf"; bad=$$((bad+1)); else echo "restore drill: skip $$lf (gone from the live host)"; skip=$$((skip+1)); fi; done < /etc/restic/include.txt; echo "restore drill: $$ok compared, $$skip skipped, $$bad mismatched, $$(du -sb "$$d" | cut -f1) bytes restored, $$(( $$(date +%%s) - $$(stat -c %%Y /var/cache/restic-live/restore-drill.started) ))s wall"; [ "$$bad" -eq 0 ] && [ "$$ok" -gt 0 ]'
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectHome=read-only
+MemoryMax=6G
+TimeoutStartSec=30min
+ReadWritePaths=/var/cache/restic-live /run/lock /var/tmp
