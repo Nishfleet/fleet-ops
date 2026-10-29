@@ -8,15 +8,13 @@ on:
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
   # No input sweeps exactly like the hourly schedule.
-  # task=miss-review with issue=<N> replays a miss review on that issue
-  # (0509#6912 class) without claiming it as a builder run.
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         type: string
       task:
-        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        description: 'orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -35,8 +33,8 @@ on:
         type: string
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR has a merge
-  # conflict. Invariant: nothing in this file checks out PR code. ejected and miss-review-pr
-  # run only for same-repo heads; hold-risky only calls the API and never runs the head.
+  # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
+  # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
@@ -63,6 +61,63 @@ env:
     | [$w[] | select(.name | contains("(" + $ref + ")"))] as $mine
     | (if ($mine | length) > 0 then $mine else $w end) as $j
     | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
+  LABEL: needs-coordinator
+  CONTEXT: coordinator-approval
+  # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
+  # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
+  # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
+  # nish3451 is an optional override: a typed comment.
+  APPROVERS: nish3451 github-actions[bot]
+  RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+  # stdin: {repo, labels, files, patches, changed_files}; $cfg:
+  # risky-paths.json or null. patches is [{file, patch}] with patch null
+  # when the API sent none (large or binary). Risky is a path hit (under
+  # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
+  # added diff line matching a "diff" entry for that file, or a file such
+  # an entry covers with no patch. A list cut at 3000 files, an empty
+  # list or an unreadable path list all count as risky.
+  CLASSIFY: |
+    . as $pr
+    | (($cfg // {}).paths // null) as $p
+    | (($cfg // {}).safe // []) as $safe
+    | (($cfg // {}).diff // []) as $diff
+    | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
+    | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
+    | [$pr.files[] | . as $f
+        | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
+                 or any($own[]; . as $re | $f | test($re; "i")))] as $hits
+    | [($pr.patches // [])[] | . as $x
+        | $diff[] | . as $d
+        | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
+        | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
+          elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
+          else empty end] as $dhits
+    | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
+       + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
+       + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
+       + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
+       + ($hits | unique | .[:10] | map("path \(.)"))
+       + ($dhits | unique | .[:10])) as $why
+    | {risky: ($why | length > 0), why: $why}
+  # stdin: {sha, statuses, comments}. sha is the current head;
+  # statuses are that sha's, newest first (GitHub's order); comments are
+  # the PR's issue comments. Status path: only the newest status for
+  # CONTEXT counts, so a later failure revokes it. Comment path: an
+  # approver's comment, never edited (updated_at == created_at, so an old
+  # comment cannot be edited onto a new sha), with a line exactly
+  # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+  APPROVAL: |
+    . as $in
+    | ($who | split(" ") | map(select(length > 0))) as $approvers
+    | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
+    | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
+    | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
+    | ($full and any(($in.comments // [])[];
+        (.user.login // "") as $l
+        | any($approvers[]; . == $l)
+          and .created_at != null and .updated_at == .created_at
+          and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
+    | $by_status or $by_comment
 jobs:
   # FLEET_DISPATCH_PAUSED is true: say so once per event a dispatch job would have acted on.
   # It starts and writes nothing. Skipped work is not lost: the sweep update.yml runs after
@@ -264,64 +319,6 @@ jobs:
       contents: write
       pull-requests: write
       statuses: read
-    env:
-      LABEL: needs-coordinator
-      CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
-      RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # stdin: {repo, labels, files, patches, changed_files}; $cfg:
-      # risky-paths.json or null. patches is [{file, patch}] with patch null
-      # when the API sent none (large or binary). Risky is a path hit (under
-      # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
-      # added diff line matching a "diff" entry for that file, or a file such
-      # an entry covers with no patch. A list cut at 3000 files, an empty
-      # list or an unreadable path list all count as risky.
-      CLASSIFY: |
-        . as $pr
-        | (($cfg // {}).paths // null) as $p
-        | (($cfg // {}).safe // []) as $safe
-        | (($cfg // {}).diff // []) as $diff
-        | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
-        | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
-        | [$pr.files[] | . as $f
-            | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
-                     or any($own[]; . as $re | $f | test($re; "i")))] as $hits
-        | [($pr.patches // [])[] | . as $x
-            | $diff[] | . as $d
-            | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
-            | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
-              elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
-              else empty end] as $dhits
-        | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
-           + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
-           + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
-           + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
-           + ($hits | unique | .[:10] | map("path \(.)"))
-           + ($dhits | unique | .[:10])) as $why
-        | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
-      APPROVAL: |
-        . as $in
-        | ($who | split(" ") | map(select(length > 0))) as $approvers
-        | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
-        | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
-        | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
-        | ($full and any(($in.comments // [])[];
-            (.user.login // "") as $l
-            | any($approvers[]; . == $l)
-              and .created_at != null and .updated_at == .created_at
-              and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
@@ -486,7 +483,6 @@ jobs:
     permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
-      stalled_refs: ${{ steps.list.outputs.stalled_refs }}
     steps:
       - id: list
         env:
@@ -539,7 +535,6 @@ jobs:
             fi
             echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
           }
-          stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below and agent.yml's Gate re-check, so a split or parked issue is skipped.
             nums=$ISSUE
@@ -568,7 +563,6 @@ jobs:
               if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
                 echo "requeued #$n: claimed with no live run and no claim PR"
-                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
               fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
@@ -695,7 +689,6 @@ jobs:
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
-          echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
@@ -780,7 +773,7 @@ jobs:
       # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
       # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
       # A close by this step fires no workflow (github.token), so the list job is the way
-      # back: it requeues the issue (no live run, no open claim PR) and adds its miss-review.
+      # back: it requeues the issue (no live run, no open claim PR).
       - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
         continue-on-error: true
         with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
@@ -1104,56 +1097,6 @@ jobs:
             gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
-  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue (concurrency group);
-  # agent.yml's Gate skips a second event inside 1 h and owns the failed / agent attempt cap.
-  miss-review:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
-        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-failed') ||
-        (github.event_name == 'issues' && github.event.action == 'reopened') ||
-        (github.event_name == 'issue_comment' && github.event.action == 'created' &&
-          (startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
-          (github.event.comment.author_association == 'OWNER' ||
-           github.event.comment.author_association == 'MEMBER' ||
-           github.event.comment.author_association == 'COLLABORATOR')) ||
-        (github.event_name == 'workflow_dispatch' && inputs.task == 'miss-review' && inputs.issue != '')
-      )
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
-  miss-review-pr:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
-      github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.pull_request.merged == false && startsWith(github.event.pull_request.head.ref, 'claim/issue-')) ||
-       (github.event.pull_request.merged == true && startsWith(github.event.pull_request.title, 'Revert')))
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
-  miss-stalled:
-    needs: list
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
-      matrix:
-        ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ matrix.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ matrix.ref }}
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -1367,11 +1310,7 @@ jobs:
   # token, bwrap jail, one claim branch), and this is the hand-off (runner
   # login, plain worktree, branch orch/issue-<N>).
   orchestrate:
-    # A bot sender alone is not trust: any GitHub App in the org can label an
-    # issue and would start a session with bypassPermissions. The login must be
-    # Nish, or the fleet App / github-actions (the Gate's workflow-path route
-    # and agent.yml's attempt-cap park label). workflow_dispatch needs no sender
-    # test: it is already write-access only.
+    # A bot sender alone is not trust; workflow_dispatch is already write-only.
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
       vars.ORCHESTRATE != 'off' && (
@@ -1381,29 +1320,20 @@ jobs:
             (github.event.sender.login == 'nishfleet-worker[bot]' || github.event.sender.login == 'github-actions[bot]')))) ||
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != '')
       )
-    # Per issue: GitHub keeps one pending run per group, so a per-repo group dropped
-    # queued hand-offs (fleet-ops#9700). Mirror writers take a file lock instead.
+    # Per issue: a per-repo group dropped queued hand-offs (fleet-ops#9700).
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 60
-    # issues: read is the whole grant: the steps read the issue, and the
-    # orchestrator session does its own writes as the runner login. The GITHUB_TOKEN
-    # is never handed to claude (step work unsets GH_TOKEN and GITHUB_TOKEN), so
-    # this token cannot reach the session that pushes workflow files.
+    # issues: read is the whole grant; the session writes as the runner login.
     permissions:
-      # issues: read for the issue steps; contents: read for git refs and PR lists
-      # through the API; pull-requests: read because on a private repo the cleanup
-      # step's PR list fails without it and a failed list reads as "no PR" (drive
-      # while it was private).
       issues: read
       contents: read
       pull-requests: read
     env:
       REPO: ${{ github.repository }}
-      # An issues.labeled event has no inputs.issue, so a 0509 stub that calls
-      # this file for a label-only trigger passes '' and the event number is read.
+      # A label-only trigger from a 0509 stub passes no input; read the event.
       ISSUE: ${{ github.event.issue.number || inputs.issue }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
@@ -1421,26 +1351,21 @@ jobs:
           labels=,$(gh issue view "$ISSUE" -R "$REPO" --json labels --jq '[.labels[].name]|join(",")'),
           [ "$state" = OPEN ] || { echo "orchestrate: #$ISSUE is $state; skip"; exit 0; }
           [ "$(gh api "repos/$REPO/issues/$ISSUE" --jq '.issue_dependencies_summary.blocked_by // 0')" = 0 ] || { echo "orchestrate: #$ISSUE is blocked by an open issue; skip"; exit 0; }
-          # Relabelled back to agent-ready (someone picked it up), or a previous
-          # hand-off already ran and produced no PR: both end the loop here
-          # rather than in the always() step, so nothing is built.
+          # Picked up again, or a previous hand-off produced no PR: end here, not in
+          # the always() step, so nothing is built.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,handoff-ended,*) echo "orchestrate: #$ISSUE already has handoff-ended; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: park it on agent-blocked, because a session cannot push to an ended branch (fleet-ops#10211: three sessions of about 50 minutes each, and its one PR had already merged) and because a bare skip leaves it parked on needs-orchestrator with no PR, so the queue-stuck rule counts it as stuck and it never leaves the queue (fleet-ops#10843). The label swap also ends this path, since the check above leaves the issue alone once needs-orchestrator is gone. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
+          # An open PR is a blocked review sent back (fleet-ops#10435); no PR at all is
+          # a run that died before opening one; a closed or merged one ended the
+          # branch, so park it agent-blocked (fleet-ops#10211, #10843).
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
             ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then "open" elif length == 0 then "none" else "newest #\([.[].number] | max // "unknown")" end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
-            # The two writes below need issues: write, and this job holds issues: read (its own token reads the issue and the PR list above). They go as the runner user's own gh login, the credential every other write in this job uses (the mark-tried step below, and the session's push), so `env -u` is what hands gh that login, not a way to strip its only credential.
+            # These writes need issues: write; `env -u` hands gh the runner login.
             if [ "$ended" != open ] && [ "$ended" != none ]; then env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator; env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator: $branch has only closed or merged pull requests ($ended), so no hand-off can continue it. Parked agent-blocked for the open-or-close decision; a fresh branch needs a new claim."; echo "orchestrate: $branch has only closed or merged PRs; parked #$ISSUE agent-blocked"; exit 0; fi
           fi
-          # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
-          # used ~31% of Nish's weekly Claude limit. It counts today's (IST)
-          # "orchestrator hand-off started:" comments, which this step posts on
-          # every admitted run below, from members only. Counting this
-          # workflow's runs held every hand-off on a day of 400+ dispatch runs
-          # (fleet-ops#10641), so the count must not grow with dispatch traffic.
-          # An unreadable count admits with a warning: the cap stops a runaway
-          # loop, and a GitHub 5xx is not one.
+          # Daily cap (fleet-ops#9351): counts today's (IST) hand-off-started
+          # comments, never this workflow's runs (fleet-ops#10641).
           DAILY_MAX=${DAILY_MAX:-10}
           case $DAILY_MAX in
             ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
@@ -1461,18 +1386,15 @@ jobs:
           else
             echo "orchestrate: daily cap off (ORCHESTRATE_DAILY_MAX=0)"
           fi
-          # Sonnet for every hand-off: Opus, Fable and Qwen are reviewer and judge
-          # models only, and a bare `claude -p` would run the Opus default (#10750).
+          # Sonnet for every hand-off; a bare `claude -p` would run Opus (#10750).
           { echo "model=claude-sonnet-5-5"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
-          # Pi on a LiteLLM seat unless ORCHESTRATE_RUNNER is claude
-          # (fleet-ops#9407: Claude burn).
+          # Pi on a LiteLLM seat unless ORCHESTRATE_RUNNER is claude (fleet-ops#9407).
           if [ "${RUNNER_VAR:-pi}" = claude ]; then
             echo "runner=claude" >> "$GITHUB_OUTPUT"
           else
             echo "runner=pi" >> "$GITHUB_OUTPUT"
           fi
-          # The daily cap's count. Posted as the runner login (this job's token
-          # is issues: read); a failed post only undercounts, so it warns.
+          # Feeds the daily cap; posted as the runner login, so a failure only warns.
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off started: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" ||
             echo "::warning::orchestrate: the hand-off-started comment failed; today's daily cap count misses this run"
           echo "go=true" >> "$GITHUB_OUTPUT"
@@ -1482,7 +1404,7 @@ jobs:
         # No GH_TOKEN: every git call here authenticates as the runner user.
         run: |
           set -euo pipefail
-          # The mirror sits beside the worker worktrees, never in /tmp or the deploy clone: a checkout a session can re-clone is not a base. A bare repo needs no checkout; `git worktree add` works from it (git 2.43 proven).
+          # Never in /tmp or the deploy clone: a checkout a session can re-clone is no base.
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
@@ -1490,7 +1412,8 @@ jobs:
           mkdir -p "${mirror%/*}"
           exec 9>"${mirror%.git}.lock"
           flock 9
-          # Test for a repository, not a directory: a mirror that lost its HEAD file (fleet-ops#9526) is a directory git no longer recognises. `git init` recreates HEAD and keeps objects, refs and config.
+          # Test for a repository, not a directory: a mirror that lost HEAD
+          # (fleet-ops#9526) is one git no longer recognises.
           init_mirror() {
             if [ "$(git -C "$mirror" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
               mkdir -p "$mirror"
@@ -1500,12 +1423,16 @@ jobs:
               git -C "$mirror" remote add origin "https://github.com/$REPO.git"
           }
           init_mirror
-          # No GH_TOKEN on the fetch: the runner user's own gh login is the credential (~/.gitconfig -> gh auth git-credential) because the App token cannot read a private repo and has no workflows scope, and a repo it cannot read fails loudly.
-          # The refspec maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a heads->heads refspec deletes local branches not on origin, such as a hand-off that died before its push (proven live). It also gives the worktree a real origin/main for the prompt's reuse step.
+          # No GH_TOKEN: git authenticates as the runner user, whose login can read a
+          # private repo and push workflows, which the App token cannot. The refspec
+          # maps into refs/remotes/origin/*, NOT refs/heads/*: with prune, a
+          # heads->heads refspec deletes local branches not on origin (proven live).
           fetch_mirror() {
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*'
           }
-          # The age-out also removed old objects, so the fetch can fail with "unresolved deltas" (fleet-ops#9526). When the fetch fails AND the object store fails a connectivity check, set the mirror aside (it can hold local-only hand-off branches; the 3-day age-out reaps the copy) and fetch fresh. A failed fetch on an intact mirror (network, credential) stays a loud failure. A session live in a worktree of the old mirror loses its registration.
+          # The age-out also removed old objects, so the fetch can fail with
+          # "unresolved deltas" (fleet-ops#9526): set the mirror aside only when the
+          # object store also fails a connectivity check.
           if ! fetch_mirror; then
             if git -C "$mirror" fsck --connectivity-only --no-dangling >/dev/null 2>&1; then
               echo "::error::orchestrate: fetch failed on an intact mirror; not rebuilding it"
@@ -1517,10 +1444,8 @@ jobs:
             init_mirror
             fetch_mirror
           fi
-          # A killed run can leave the worktree registered, and a bare repo
-          # refuses to check one branch out in two worktrees at once. Remove it
-          # through git first, so the registration goes with the directory.
-          # A detached build unit (orch-<repo>-<N>-build) can hold this tree as WorkingDirectory: removing the tree under it is the #9377 CHDIR loss, so refuse and let the age-out reap it. No user manager means no such unit.
+          # A killed run can leave the worktree registered; a detached build unit can
+          # hold it as WorkingDirectory, and removing it is the #9377 CHDIR loss.
           if units=$(systemctl --user list-units --type=service --state=active 'orch-*' --plain --no-legend --no-pager 2>/dev/null); then
             while read -r unit _; do [ "$(systemctl --user show -p WorkingDirectory --value "$unit" 2>/dev/null)" = "$wt" ] && { echo "::error::orchestrate: $unit is building in $wt; keeping the tree (fleet-ops#9377)"; exit 1; }; done <<<"$units"
           fi
@@ -1532,8 +1457,7 @@ jobs:
           start=refs/remotes/origin/orch/issue-$ISSUE
           git -C "$mirror" show-ref --verify --quiet "$start" || start=
           if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
-            # A hand-off that died before its push: its branch holds its commits,
-            # so start from it instead of failing on "branch already exists".
+            # A hand-off that died before its push holds its commits on this branch.
             while IFS= read -r line; do
               case $line in
                 "worktree "*) wdir=${line#worktree } ;;
@@ -1542,7 +1466,7 @@ jobs:
                   git -C "$mirror" worktree prune ;;
               esac
             done < <(git -C "$mirror" worktree list --porcelain)
-            # A rework resets this branch to the origin head, so a hand-off that committed and died before its push would drop it: keep the tip under a name the log names.
+            # A rework resets this branch to origin's head, so keep the tip.
             if [ -n "$start" ] && ! git -C "$mirror" merge-base --is-ancestor "$branch_ref" "$start" 2>/dev/null; then git -C "$mirror" branch -f "orch/issue-$ISSUE-unpushed" "$branch_ref"; echo "::warning::orchestrate: orch/issue-$ISSUE had unpushed commits, kept on orch/issue-$ISSUE-unpushed"; fi
             env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree add -q ${start:+-B "orch/issue-$ISSUE"} "$wt" "${start:-$branch_ref}"
           else
@@ -1553,8 +1477,7 @@ jobs:
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         timeout-minutes: 50
         env:
-          # The prompt is a file, not a ${{ }} inline: zizmor's
-          # template-injection rule fails the workflow otherwise.
+          # Through env: zizmor's template-injection rule fails the workflow otherwise.
           ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
           REPO_NAME: ${{ github.repository }}
           WORKTREE: ${{ steps.worktree.outputs.worktree }}
@@ -1566,41 +1489,30 @@ jobs:
         run: |
           set -euo pipefail
           cd "$WORKTREE"
-          # The prompt is the file from THIS checkout (origin/main of the repo
-          # under hand-off). A hand-off on a repo that has no such file falls
-          # back to the fleet's live copy, never a stale branch copy.
+          # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then
             echo "::warning::$REPO_NAME@main has no $prompt; using the fleet copy"
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Sonnet for every hand-off; there is no empty-model path, which would
-          # run the session default (Opus, fleet-ops#9351, #10750). --output-format
-          # json puts modelUsage in the log, the proof of which model ran. GH_TOKEN
-          # and GITHUB_TOKEN are unset so the session authenticates as the runner
-          # user, whose gh login can push .github/workflows/**. The prompt goes on
-          # stdin: it opens with `---` front matter, which as an argument the CLI
-          # parses as an option.
+          # Sonnet always, never the session default (Opus, #10750). GH_TOKEN and
+          # GITHUB_TOKEN are unset so the session pushes as the runner user. The prompt
+          # goes on stdin: its `---` front matter parses as an option as an argument.
           if [ "$ORCH_RUNNER" = pi ]; then
-            # Pi on a LiteLLM seat: no Claude spend, no turn cap; the step's timeout-minutes is the wall
-            # (fleet-ops#10349). The litellm provider reads FLEET_TASK_ID and exits 1 without it.
-            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude.
+            # No Claude spend and no turn cap: the step's timeout-minutes is the wall
+            # (fleet-ops#10349).
             env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
               "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
           fi
-          # The repo's hooks are for interactive and worker sessions; here they
-          # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
+          # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
           hook_args=(--settings '{"disableAllHooks":true}')
           [ "$HOOKS" != on ] || hook_args=()
-          # Start-up trim (measured on the VPS, bare "OK" prompt, cold cache: 51,407 input
-          # tokens and $0.334 untrimmed, 36,440 and $0.146 trimmed): no MCP servers, no
-          # skills, no user settings (drops the user Stop agent hook, user plugins, user env).
-          # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
-          # delete the three flags below.
+          # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
+          # $0.146 trimmed (VPS, bare prompt, cold cache).
           env -u GH_TOKEN -u GITHUB_TOKEN "$HOME/.local/bin/claude" -p \
             --model "$MODEL" \
             "${hook_args[@]}" \
@@ -1615,9 +1527,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          # steps.* goes through env, never into the run block directly
-          # (zizmor template-injection; the same reason WORKTREE above is an
-          # env var).
+          # Through env: zizmor template-injection, as with WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
         run: |
           set -euo pipefail
@@ -1625,21 +1535,13 @@ jobs:
           repo=${REPO#*/}
           mirror="$HOME/workspaces/agent-worktrees/.orch-mirror/$repo.git"
           wt="$HOME/workspaces/agent-worktrees/orch-$repo-$ISSUE"
-          # Worktree removal first and unconditional: a session cut at the job
-          # wall can leave the worktree, and a leftover checkout costs the next
-          # hand-off a clone. remove --force is how a dirty tree goes, and this
-          # is never a pgrep-kill of anything (a wrong pattern there can take a
-          # worker's process with it, fleet-ops#7743).
-          # Skip the removal while a running user unit has this worktree as its
-          # WorkingDirectory: the session hands its build to a detached unit
-          # (orch-<repo>-<N>-build) that outlives it, and removing the tree
-          # under that unit killed orch-drive-642-build on 2026-10-07
-          # (status=200/CHDIR, uncommitted edits lost, fleet-ops#9377). If the
-          # unit list cannot be read, keep the tree too: systemd-tmpfiles ages
-          # it out after 3 days and the next hand-off rebuilds it anyway.
-          # No user runtime directory (a runner with no user systemd instance)
-          # means no user manager and so no running unit that could use the
-          # tree: skip the check and remove as before.
+          # Removal first and unconditional: a session cut at the job wall leaves the
+          # worktree, and a leftover checkout costs the next hand-off a clone.
+          # Skip it while a running user unit has this worktree as its
+          # WorkingDirectory: removing the tree under that unit killed
+          # orch-drive-642-build on 2026-10-07 (status=200/CHDIR, edits lost,
+          # fleet-ops#9377). An unreadable unit list keeps the tree too, and
+          # systemd-tmpfiles ages it out after 3 days.
           busy=0
           XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
           export XDG_RUNTIME_DIR
@@ -1665,31 +1567,24 @@ jobs:
             flock "$lock" env -u GH_TOKEN -u GITHUB_TOKEN git -C "$mirror" worktree prune || true
           fi
           # Nothing was built: the session step was skipped or the issue check
-          # bailed. No PR exists and none is coming, but this run never started
-          # work, so it does not park the issue.
+          # bailed, so no PR is coming and this run does not park the issue.
           [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
-          # No PR for this head: mark it, so the label loop stops. The next
-          # orchestrate event (a re-label, or a replay dispatch) sees
-          # handoff-ended and skips; the sweep re-queues it after 6 h, up to 3 tries.
+          # No PR for this head: mark it so the label loop stops. The sweep re-queues
+          # it after 6 h, up to 3 tries.
           if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
           fi
-          # A PR on any other branch (gate/*, claim/*) that closes the issue is
-          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
-          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
-          # Open and merged PRs count (default includeClosedPrs=false); a closed
-          # unmerged one does not. Fail closed: a read that fails or prints no
-          # count marks nothing.
+          # A PR on another branch (gate/*, claim/*) that closes the issue is GitHub's
+          # own link, so the issue is not a dead end (fleet-ops#9278 item 4). Open and
+          # merged PRs count; a closed unmerged one does not. Fail closed: a read that
+          # fails or prints no count marks nothing.
           # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
           [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
-          # The writes need issues: write, which this job deliberately does not
-          # hold: the orchestrator session, not this job, owns pushing. So the
-          # mark is posted as the runner user's own login (gh's stored host
-          # credential, the same one the session pushes with).
-          # --force makes the label idempotent, so a newly stubbed repo without
-          # it does not fail the mark (drive#199, 2026-10-04).
+          # These writes need issues: write, which this job deliberately does not hold:
+          # they go as the runner user's own login, the one the session pushes with.
+          # --force makes the label idempotent on a newly stubbed repo (drive#199).
           env -u GH_TOKEN -u GITHUB_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h"
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label handoff-ended --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
