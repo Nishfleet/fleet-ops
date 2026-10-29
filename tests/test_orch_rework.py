@@ -1,8 +1,8 @@
 """fleet-ops#10435: a coordinator PR (orch/issue-N) whose review blocked goes back to the orchestrator.
 
 Runs the real `run:` blocks (read out with yq) against a stub `gh` and a real git mirror:
-the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR
-instead of skipping) and its worktree step (start from the PR head)."""
+the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR, or on a branch with no PR at all,
+instead of skipping) and its worktree step (start from the branch head)."""
 import json
 import os
 import pathlib
@@ -20,7 +20,7 @@ case "$*" in
   "issue view"*) echo "$GH_LABELS" ;;
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
   "api repos/"*"/issues/"*) echo 0 ;;
-  "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; echo "$GH_OPEN_PRS" ;;
+  "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PULLS" ;;
 esac
 exit 0
 """
@@ -113,9 +113,9 @@ def test_three_blocks_still_get_a_rework_round(tmp_path):
     assert "--add-label needs-orchestrator" in log.read_text()
 
 
-def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
-    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs),
-                    GH_LABELS="needs-orchestrator", RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
+def _issue_env(tmp_path, exists, pulls, pulls_fail=False):
+    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_PULLS=json.dumps([{"state": x} for x in pulls]),
+                    GH_LABELS="needs-orchestrator", GITHUB_RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
     gh = tmp_path / "bin/gh"
     gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
     if pulls_fail:
@@ -126,9 +126,15 @@ def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
 ISSUE_STEP = ("agent-dispatch.yml", "orchestrate", "Check the issue is still parked")
 
 
-@pytest.mark.parametrize("exists,open_prs,go", [(True, 1, True), (True, 0, False), (False, 0, True)])
-def test_issue_step_continues_on_a_branch_with_an_open_pr_and_skips_one_without(tmp_path, exists, open_prs, go):
-    env, _ = _issue_env(tmp_path, exists, open_prs)
+@pytest.mark.parametrize("exists,pulls,go", [
+    (True, ["open"], True),             # a blocked review sent back
+    (True, [], True),                   # a hand-off whose run died before its PR
+    (True, ["closed"], False),          # closed or merged: that branch is over
+    (True, ["closed", "open"], True),   # a new PR on a branch that had a closed one
+    (False, [], True),
+])
+def test_issue_step_continues_a_branch_with_an_open_pr_or_none_and_skips_an_ended_one(tmp_path, exists, pulls, go):
+    env, _ = _issue_env(tmp_path, exists, pulls)
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
     out = (tmp_path / "out").read_text() if (tmp_path / "out").exists() else ""
@@ -136,7 +142,7 @@ def test_issue_step_continues_on_a_branch_with_an_open_pr_and_skips_one_without(
 
 
 def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
-    env, log = _issue_env(tmp_path, True, 1, pulls_fail=True)
+    env, log = _issue_env(tmp_path, True, ["open"], pulls_fail=True)
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
     out = tmp_path / "out"
@@ -145,9 +151,9 @@ def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
 
 
 def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
-    env, log = _issue_env(tmp_path, True, 1)
+    env, log = _issue_env(tmp_path, True, ["open"])
     assert _run(_block(*ISSUE_STEP), env).returncode == 0
-    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=open" in log.read_text()
+    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=all" in log.read_text()
 
 
 def _git(*args, cwd):

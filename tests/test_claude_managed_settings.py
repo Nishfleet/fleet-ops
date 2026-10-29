@@ -9,6 +9,10 @@ in `extraKnownMarketplaces` or because the box already registered it. When the
 marketplace's directory is on disk (this box, or a runner with the checkout) the
 plugin name is read out of that marketplace's own manifest, so an id no
 marketplace lists fails here instead of at Claude Code start-up.
+
+An id set to `false` is a switch-off, not an enable: it overrides an entry the
+box already has at user scope, so it needs no marketplace of its own and is not
+held to the manifest check.
 """
 import json
 import pathlib
@@ -16,6 +20,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
@@ -47,9 +52,19 @@ def _known_marketplaces():
 def _enabled():
     enabled = {}
     for path in _dropins():
-        for plugin_id in _load(path).get("enabledPlugins", {}):
-            enabled[plugin_id] = path.name
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value:
+                enabled[plugin_id] = path.name
     return enabled
+
+
+def _switched_off():
+    off = {}
+    for path in _dropins():
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value is False:
+                off.setdefault(plugin_id, []).append(path.name)
+    return off
 
 
 def test_the_repo_ships_at_least_one_drop_in():
@@ -59,6 +74,20 @@ def test_the_repo_ships_at_least_one_drop_in():
 @pytest.mark.parametrize("path", _dropins(), ids=lambda p: p.name)
 def test_every_drop_in_is_a_json_object(path):
     _load(path)
+
+
+def test_the_playwright_plugin_is_switched_off():
+    off = _switched_off()
+    assert "playwright@claude-plugins-official" in off, (
+        "no drop-in sets playwright@claude-plugins-official to false (fleet-ops#10529: Chrome DevTools is the one browser tool)"
+    )
+    assert off["playwright@claude-plugins-official"] == ["85-no-playwright.json"], off
+    assert "playwright@claude-plugins-official" not in _enabled()
+
+
+def test_every_switched_off_plugin_is_off_in_exactly_one_drop_in():
+    twice = {plugin_id: files for plugin_id, files in _switched_off().items() if len(files) > 1}
+    assert not twice, f"switched off in more than one drop-in: {twice}"
 
 
 def test_every_enabled_plugin_names_a_known_marketplace():
@@ -89,10 +118,14 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
 
 
 def _managed_copies():
-    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     tasks = [task for play in json.loads(out) for task in play.get("tasks", [])]
     copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
     return tasks, copies
+
+
+def test_the_connector_drop_in_keeps_the_claude_ai_connectors_off():
+    assert _load(DROPINS / "80-claudeai-connectors.json")["disableClaudeAiConnectors"] is True
 
 
 @NEEDS_YQ
@@ -122,3 +155,32 @@ def test_the_box_wide_defaults_file_is_installed_as_itself():
     assert task, "no task installs the box-wide managed-settings.json"
     assert task["ansible.builtin.copy"]["src"] == "{{ rootfs }}/etc/claude-code/managed-settings.json"
     assert task["ansible.builtin.copy"]["dest"] == "/etc/claude-code/managed-settings.json"
+
+
+def test_force_with_lease_is_allowed_off_main_and_plain_force_still_asks() -> None:
+    """Nish 2026-10-28 ("Yes, allow it"): --force-with-lease on a non-default branch needs no prompt;
+    plain --force and -f, a lease push to main or master in any order or refspec form,
+    and a +refspec force push to main or master, still ask. fnmatch's * matches any run of
+    characters, as a Claude Code permission rule's * does."""
+    import fnmatch
+    ask = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.json").read_text())["permissions"]["ask"]
+    pats = [a[len("Bash("):-1] for a in ask if a.startswith("Bash(")]
+    asks = lambda cmd: any(fnmatch.fnmatchcase(cmd, p) for p in pats)
+    assert not asks("git push --force-with-lease origin claim/issue-1")
+    assert not asks("git push -u origin feature --force-with-lease")
+    assert asks("git push --force origin feature")
+    assert asks("git push origin feature --force")
+    assert asks("git push -f origin feature")
+    for cmd in [
+        "git push --force-with-lease origin main",
+        "git push origin main --force-with-lease",
+        "git push --force-with-lease origin HEAD:main",
+        "git push --force-with-lease origin feature:main",
+        "git push --force-with-lease=main origin main",
+        "git push --force-with-lease origin main --force-if-includes",
+        "git push origin --force-with-lease master",
+        "git push origin master --force-with-lease",
+        "git push origin +main",
+        "git push origin +HEAD:master",
+    ]:
+        assert asks(cmd), cmd

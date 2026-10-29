@@ -15,7 +15,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "infra/cloudflare-tokens/state-encryption.env.example"
-FAKE = "ghs_" + "TESTFAKE0123456789abcdefghijklmnop"
+FAKE = "ghs_TESTFAKE0123456789abcdefghijklmnop"
 PASSPHRASE = "pytest-passphrase-0123456789-abcdefghij"
 PLACEHOLDER = "PASTE_THE_GENERATED_PASSPHRASE_HERE"
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))

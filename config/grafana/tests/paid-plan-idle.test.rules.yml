@@ -1,23 +1,46 @@
-# The deployed ppi-alibaba rule's A expression, inlined verbatim from
-# paid-plan-idle.yaml, wrapped in `> 0`.
+# The deployed ppi-alibaba, ppi-commandcode and ppi-minimax A expressions,
+# inlined from paid-plan-idle.yaml, each wrapped in `(...) > 0`.
 #
-# The wrapper reproduces Grafana's C threshold (`> 0` over A) the same way
-# prompt-cache-hit.test.rules.yml does for its rule: a case that fires here is
-# a case Grafana calls Alerting, and a quiet day that reads 0 is dropped here
-# exactly as it is Normal there.
+# These three carry the behaviour cases below. tests/test_grafana_fixture_drift.py
+# holds each expr here to that rule's deployed A expression, and
+# tests/test_paid_plans.py pins every plan's window (24h for the worker rows,
+# 72h for MiniMax, 7d for Alibaba) and the number its alert message names, so a
+# rule with no case here is still locked against a narrowed window or a mistyped
+# api_base regex.
 #
-# The A expression unions the 24-hour absence branch (first: absent_over_time
-# returns a series only when absent, so leading with it keeps a vanished row
-# paging after 24h even when the counter moved within 7d; with the idle branch
-# first, `or` would shadow the absent 1 under the idle 0) with the 7-day idle
-# branch; both are aggregations with no labels, so the union is one {} series.
+# The wrapper reproduces Grafana's C threshold the way
+# prompt-cache-hit.test.rules.yml does: the closing paren sits directly after
+# the union's last branch, because a comparison binds tighter than `or`, so an
+# unwrapped `A or B > 0` would parse as `A or (B > 0)` and let the idle
+# branch's raw 0 reach the engine.
+#
+# The union joins its branches with `*`, not `and`: `and` keeps the left
+# element whenever the right side has a series with matching labels, whatever
+# that series' value, so `and` pages on a counter a restart moved. `*`
+# multiplies the two 0/1 conditions instead.
+# https://prometheus.io/docs/prometheus/latest/querying/operators/
+#
+# absent_over_time still leads: `or` prefers the left element, so with the idle
+# branch first a vanished row's 1 would be shadowed by the idle branch's 0.
 groups:
 - interval: 1h
   name: paid-plan-idle
   rules:
   - alert: AlibabaTokenPlanSgIdle
-    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"}[24h])\nor\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"}[7d])) == bool 0))\n> 0"
+    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"}[24h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"}[7d])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*\"} offset 7d) or vector(0)))\n))\n> 0"
     labels:
       grafana_folder: fleet
       plan: alibaba-token-plan-sg
+      severity: critical
+  - alert: CommandCodeIdle
+    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://api.commandcode.ai/provider/v1.*\"}[24h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://api.commandcode.ai/provider/v1.*\"}[24h])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://api.commandcode.ai/provider/v1.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://api.commandcode.ai/provider/v1.*\"} offset 24h) or vector(0)))\n))\n> 0"
+    labels:
+      grafana_folder: fleet
+      plan: commandcode
+      severity: critical
+  - alert: MiniMaxIdle
+    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[72h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[72h])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"} offset 72h) or vector(0)))\n))\n> 0"
+    labels:
+      grafana_folder: fleet
+      plan: minimax
       severity: critical

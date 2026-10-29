@@ -129,8 +129,9 @@ describe("message_end", () => {
     expect(out.message.content[1].text).toBe(`I read ${REDACTED_PREFIX}store-github-token]`);
   });
 
-  it("redacts a toolCall argument and its parse error text", () => {
+  it("redacts a toolCall parse error text and leaves its arguments alone", () => {
     const handlers = load();
+    const toolArgs = { command: `echo ${NPM}` };
     const out = handlers.message_end[0](
       messageEndEvent({
         role: "assistant",
@@ -139,15 +140,27 @@ describe("message_end", () => {
             type: "toolCall",
             id: "call-1",
             name: "bash",
-            arguments: { command: `echo ${NPM}` },
+            arguments: toolArgs,
             argumentsError: `the model sent ${GITHUB}`,
           },
         ],
       }),
     ) as { message: { content: Record<string, unknown>[] } };
     const call = out.message.content[0];
-    expect(JSON.stringify(call.arguments)).not.toContain(NPM);
+    expect(call.arguments).toBe(toolArgs);
     expect(call.argumentsError).toBe(`the model sent ${REDACTED_PREFIX}store-github-token]`);
+  });
+
+  it("leaves a toolCall with parseable arguments untouched", () => {
+    const handlers = load();
+    const toolArgs = { command: `echo ${GITHUB}` };
+    const out = handlers.message_end[0](
+      messageEndEvent({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: toolArgs }],
+      }),
+    ) as { message: { content: Record<string, unknown>[] } } | undefined;
+    expect(out).toBeUndefined();
   });
 
   it("redacts a toolResult message", () => {

@@ -41,7 +41,7 @@ export const TOKEN_SHAPES: readonly TokenShape[] = [
     id: "store-slack-token",
     label: "Slack token",
     keywords: ["xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-"],
-    token: "xox[baprs]-[A-Za-z0-9-]{10,}",
+    token: "xox[baprs]-[A-Za-z0-9_-]{10,}",
     chars: "A-Za-z0-9_-",
   },
   {
@@ -60,9 +60,15 @@ interface CompiledShape {
   readonly regex: RegExp;
 }
 
+export const shapeRegex = (shape: TokenShape): RegExp =>
+  new RegExp(
+    `(?:(?<![${shape.chars}])|(?<=\\\\[ntrbfu]))(${shape.token})(?![${shape.chars}])`,
+    "g",
+  );
+
 const COMPILED: readonly CompiledShape[] = TOKEN_SHAPES.map((shape) => ({
   id: shape.id,
-  regex: new RegExp(`(?<![${shape.chars}])(${shape.token})(?![${shape.chars}])`, "g"),
+  regex: shapeRegex(shape),
 }));
 
 export const redactText = (text: string): string => {

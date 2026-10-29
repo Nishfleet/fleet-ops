@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_PREFIX, TOKEN_SHAPES, TOKEN_SHAPE_IDS, redactJson, redactText } from "../src/shapes.ts";
+import {
+  REDACTED_PREFIX,
+  TOKEN_SHAPES,
+  TOKEN_SHAPE_IDS,
+  redactJson,
+  redactText,
+  shapeRegex,
+} from "../src/shapes.ts";
 
 const FAKE = {
   github: "ghp_" + "CANARYNOTREAL0000000000",
@@ -28,7 +35,7 @@ describe("token shapes", () => {
       expect(shape.keywords.length).toBeGreaterThan(0);
       expect(shape.token).not.toMatch(/[()\\]/);
       expect(shape.chars).not.toMatch(/[()\\]/);
-      expect(new RegExp(`(?<![${shape.chars}])(${shape.token})(?![${shape.chars}])`).test("")).toBe(false);
+      expect(shapeRegex(shape).test("")).toBe(false);
     }
   });
 
@@ -73,6 +80,18 @@ describe("redactText", () => {
   it("redacts a token that starts the string", () => {
     const out = redactText(FAKE.github);
     expect(out).toBe(`${REDACTED_PREFIX}store-github-token]`);
+  });
+
+  it("redacts a token a JSONL escape puts in front of another character", () => {
+    const line = JSON.stringify({ text: `first line\n${FAKE.github}` });
+    expect(line).toContain(`\\n${FAKE.github}`);
+    expect(redactText(line)).not.toContain(FAKE.github);
+  });
+
+  it("redacts a slack token an underscore follows", () => {
+    const out = redactText(`${FAKE.slack}_tail`);
+    expect(out).not.toContain(FAKE.slack);
+    expect(out).toBe(`${REDACTED_PREFIX}store-slack-token]`);
   });
 
   it("redacts two tokens that sit next to each other with no separator", () => {

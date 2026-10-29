@@ -27,15 +27,8 @@ const redactBlock = (block: unknown): unknown => {
   if (block.type === "thinking" && typeof block.thinking === "string") {
     return { ...block, thinking: redactText(block.thinking) };
   }
-  if (block.type === "toolCall") {
-    const out: Block = { ...block };
-    if (isBlock(out.arguments)) {
-      out.arguments = redactJson(out.arguments) as Block;
-    }
-    if (typeof out.argumentsError === "string") {
-      out.argumentsError = redactText(out.argumentsError);
-    }
-    return out;
+  if (block.type === "toolCall" && typeof block.argumentsError === "string") {
+    return { ...block, argumentsError: redactText(block.argumentsError) };
   }
   return block;
 };

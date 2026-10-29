@@ -269,31 +269,6 @@ groups:
           summary: "worker-capable has no row that answers"
           description: "No worker-capable row is at litellm_deployment_state 0 and answering calls, for 5 minutes while the group is being called."
 
-      # The senior tier (fleet-ops#9054): one row, no fallback, sparse traffic (16
-      # calls in 24 h on 2026-10-12). A dead-model 400 has no peer row to escape to
-      # and v1.98.0 does not cool a 400 by default; the per-row
-      # BadRequestErrorAllowedFails 1 parks it for cooldown_time (60 s) on every
-      # call, so litellm_deployment_state reads 0 again each cycle and a state-only
-      # alert would flap. Same caller-facing signal as RouterStrongGroupFailing,
-      # scaled to the traffic: no call to senior is answered while at least 2 fail
-      # in 6 h (senior has no fallback, so every failed pick reaches the caller).
-      # One transient 502, the thing that parked the row on 2026-10-12, cannot
-      # cross the 2.
-      - alert: RouterSeniorFailing
-        expr: |
-          sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
-          and sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
-            == sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h]))
-          and sum(increase(litellm_proxy_total_requests_metric_total{requested_model="senior",route=~".*chat/completions"}[6h])) >= 2
-          and on() (up{job="litellm"} == 1)
-        for: 5m
-        labels:
-          severity: nish
-          group: senior
-        annotations:
-          summary: "senior has no row that answers"
-          description: "Every senior call in the last 6 hours failed (2 or more calls) for 5 minutes. The senior group has one row and no fallback, so every call dies on it: fix or remove the dead row in config/litellm-proxy.yaml."
-
       # Caller-facing failures on the strong group: more than 5% of its chat calls fail for 10 minutes.
       # litellm_proxy_failed_requests_metric_total counts only calls that reached the caller, so a
       # fallback that answered the call does not count (0 in the 24 h to 2026-10-22). Both halves carry
@@ -310,6 +285,41 @@ groups:
         annotations:
           summary: "More than 5% of worker-capable calls are failing"
           description: "worker-capable chat calls are reaching the caller as errors. Compare litellm_deployment_failure_responses_total by model_id for the row that keeps failing."
+
+      # A model group whose requests nearly all fail for 10 minutes (fleet-ops#10694): the signature of leaked
+      # max_parallel_requests slots, which jammed the senior rows on 2026-10-28 until a router restart. The proxy-level
+      # counters are used because the router's own "all slots in use" rejection never reaches a deployment, so it has no
+      # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
+      # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
+      # requested_model="other" is the proxy's bucket for calls that name no model group, such as /jev with a bad key;
+      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788); RouterOtherBucketFailing below watches that bucket.
+      - alert: RouterGroupJammed
+        expr: |
+          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total{requested_model!="other"}[10m]))
+            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 0.9)
+          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 3)
+        for: 10m
+        labels:
+          severity: nish
+        annotations:
+          summary: "Router group {{ $labels.requested_model }} fails nearly every call"
+          description: "90% or more of the calls to {{ $labels.requested_model }} failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+      # The calls RouterGroupJammed skips: the proxy files calls that name no model group (/jev, a bad key, a rejected
+      # master key) under requested_model="other". A one-off burst ends inside the hour, as the 50 curl 401s on /jev
+      # did on 2026-10-28 (fleet-ops#10788); a stale key or auth fault on a fleet component keeps failing, so the
+      # 30 minute hold separates the two.
+      - alert: RouterOtherBucketFailing
+        expr: |
+          (sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="other"}[10m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 0.9)
+          and (sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 3)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Router calls outside any model group keep failing"
+          description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
 
   - name: fleet_router_downgrade
     interval: 5m
