@@ -821,11 +821,6 @@ jobs:
                   { echo "guard job $j starts a worker"; bad=1; }
                 continue ;;
             esac
-            if [ "$j" = paused ]; then
-              [[ $cond == "vars.FLEET_DISPATCH_PAUSED == 'true' && "* ]] || { echo "paused job runs unpaused: $cond"; bad=1; }
-              [ "$(yq '.jobs.paused.permissions | length' "$f")" = 0 ] || { echo "paused job has permissions"; bad=1; }
-              continue
-            fi
             echo "job $j is not classed as dispatch or guard in this check"; bad=1
           done
           u=ansible/update.yml
