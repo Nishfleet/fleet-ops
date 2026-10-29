@@ -40,7 +40,7 @@ def _missed(uid, tables, columns):
 
 
 def _runs(good_new, bad_new, good_prev, bad_prev):
-    return [(1, "success")] * good_new + [(2, "failure")] * bad_new, [(25, "success")] * good_prev + [(26, "failure")] * bad_prev
+    return [(0.5, "success")] * good_new + [(0.75, "failure")] * bad_new, [(24.5, "success")] * good_prev + [(24.75, "failure")] * bad_prev
 
 
 @pytest.mark.parametrize("new,prev,missed", [((90, 5), (90, 5), 1), ((100, 0), (90, 5), 0), ((90, 5), (100, 0), 0), ((0, 0), (0, 0), 0), ((90, 5), (0, 0), 0)])
@@ -51,7 +51,7 @@ def test_failure_share_fires_only_when_both_windows_miss(new, prev, missed):
 
 def test_failure_share_ignores_cancelled_and_skipped():
     now_rows, day_ago_rows = _runs(98, 2, 98, 2)
-    rows = now_rows + [(1, "cancelled")] * 50 + day_ago_rows + [(25, "skipped")] * 50
+    rows = now_rows + [(0.5, "cancelled")] * 50 + day_ago_rows + [(24.5, "skipped")] * 50
     assert _missed("scorecard-run-failure-share", {"A": rows, "B": [], "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == 0
 
 
@@ -133,8 +133,14 @@ def _failure_share_reads():
 
 def test_the_failure_share_reads_each_window_with_its_own_target():
     _, reads = _failure_share_reads()
-    now, day_ago = json.dumps({"from": 10800, "to": 0}), json.dumps({"from": 97200, "to": 86400})
+    now, day_ago = json.dumps({"from": 3600, "to": 0}), json.dumps({"from": 90000, "to": 86400})
     assert sorted(json.dumps(d["relativeTimeRange"], sort_keys=True) for d in reads) == sorted([now, now, day_ago, day_ago])
+
+
+def test_the_failure_share_windows_stay_under_githubs_1000_row_cap():
+    # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+    _, reads = _failure_share_reads()
+    assert {d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"] for d in reads} == {3600}
 
 
 def test_the_failure_share_expression_windows_match_the_ranges_its_targets_read():
