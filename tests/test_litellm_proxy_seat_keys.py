@@ -32,6 +32,18 @@ def test_the_container_is_passed_no_var_the_router_config_does_not_read():
     )
 
 
+IMAGE_VARS = {"LITELLM_LOG", "PYTHONPYCACHEPREFIX"}
+
+
+def test_the_container_environment_sets_no_var_the_router_config_does_not_read():
+    set_vars = set(re.findall(r"^Environment=([A-Z0-9_]+)=", QUADLET, re.M))
+    used = set(re.findall(r"os\.environ/([A-Z0-9_]+)", CONFIG))
+    assert set_vars - IMAGE_VARS <= used, (
+        f"the container sets {sorted(set_vars - IMAGE_VARS - used)} in its own environment but no row in "
+        "config/litellm-proxy.yaml reads it, so the variable outlives the row that needed it"
+    )
+
+
 SEAT_FILE = {
     "ALIBABA_CODING_API_KEY": "alibaba-coding",
     "ANTHROPIC_API_KEY": "anthropic-api",
