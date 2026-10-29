@@ -1053,23 +1053,25 @@ jobs:
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
       # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
-      # and a PR from a fork never reaches here at all.
+      # set with this job's GITHUB_TOKEN (issues: write, fleet-ops#10447), so no runner login is read, and a PR
+      # from a fork never reaches here at all.
       - name: Send a blocked orch PR back to the orchestrator
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
           [ "$n" != "$ref" ] || exit 0
           rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
           rounds=$(grep -c . <<<"$rev")
           if [ "$rounds" -gt 3 ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+            gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+            gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
@@ -1088,8 +1090,6 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.arm_pr || inputs.review_pr }}
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
-      # The head this run's own review job approved; empty on an arm_pr dispatch.
-      REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Read App private key
@@ -1113,6 +1113,8 @@ jobs:
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
           permission-pull-requests: write
+          # A PR that edits .github/workflows/** can only be armed by a token that may write them (fleet-ops#10949).
+          permission-workflows: write
       - name: Arm the approved head
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1123,20 +1125,10 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
-          # This job's App token is minted without the workflows permission, so GitHub refuses its arm on a PR that edits
-          # .github/workflows/**. For such a PR the arm uses the runner user's gh login
-          # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
-          # run's review job just approved this exact head (REVIEWED). No comment or dispatch
-          # input switches it on, any other arm keeps the App token, and a failed file-list read
-          # fails the step instead of falling to the wider login.
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
-            echo "armed #$PR at $SHA (workflow edit, runner login)"
-          else
-            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-            echo "armed #$PR at $SHA"
-          fi
+          # The token carries the workflows permission, so a PR that edits .github/workflows/** arms the same way as
+          # any other: no gh login of the runner user, and no file listing to decide it (fleet-ops#10949, #10950).
+          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
+          echo "armed #$PR at $SHA"
   # Files one orchestrator issue for a PR that has waited over an hour and that no worker
   # owns: a session's own branch, or a claim PR whose issue is closed or deleted (40 of 53
   # waiting fleet PRs on 2026-10-11). The App token files it so the needs-orchestrator label

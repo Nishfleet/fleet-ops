@@ -1337,13 +1337,12 @@ jobs:
           gen_none_rows)
           # The arm job's step: arms the exact approved head, and does nothing for a
           # stale head (a push after the approval), a draft, an armed PR or a closed one.
-          # A PR that edits .github/workflows/** is armed with the runner's own login
-          # (GH_TOKEN unset), because the App lacks the workflows permission, only
-          # when this run's review job approved the head (REVIEWED equals SHA; an
-          # arm_pr dispatch leaves it empty). Every other arm uses the App token. A
-          # failed file listing arms nothing.
+          # The App token carries the workflows permission, so a PR that edits
+          # .github/workflows/** arms like any other, with no runner gh login and no
+          # file listing. The files and REVIEWED columns stay in the table to prove
+          # neither one changes the arm any more (fleet-ops#10949).
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345
-          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (1 = workflow edit, rename, fail)|REVIEWED (sha, other or empty)|want armed|want token|want exit
+          # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (unused)|REVIEWED (unused)|want armed|want token|want exit
           while IFS='|' read -r name head draft armed closed wf reviewed want tok code; do
             export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf REVIEWED=
             case $reviewed in sha) export REVIEWED=$SHA ;; other) export REVIEWED=0000000000000000000000000000000000000001 ;; esac
@@ -1362,11 +1361,11 @@ jobs:
           done <<'CASES'
           approved-head||||||sha|yes|set|
           approved-head-in-an-arm-dispatch|||||||yes|set|
-          workflow-edit-reviewed-uses-runner-login|||||1|sha|yes|unset|
-          workflow-rename-reviewed-uses-runner-login|||||rename|sha|yes|unset|
-          workflow-edit-arm-dispatch-keeps-app-token|||||1||yes|set|
-          workflow-edit-other-sha-reviewed-keeps-app-token|||||1|other|yes|set|
-          workflow-edit-file-list-fails|||||fail|sha|no||1
+          workflow-edit-arms-with-app-token|||||1|sha|yes|set|
+          workflow-rename-arms-with-app-token|||||rename|sha|yes|set|
+          workflow-edit-arm-dispatch-arms-with-app-token|||||1||yes|set|
+          workflow-edit-other-sha-arms-with-app-token|||||1|other|yes|set|
+          workflow-edit-needs-no-file-listing|||||fail|sha|yes|set|
           workflow-edit-stale-sha|0000000000000000000000000000000000000001||||1|sha|no||
           workflow-edit-draft||1|||1|sha|no||
           workflow-edit-already-armed|||1||1|sha|no||
