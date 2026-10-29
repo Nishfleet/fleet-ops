@@ -148,7 +148,7 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path)
-    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "senior=$senior"\necho "engine=$engine model=$claude_model"\n'
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -272,15 +272,7 @@ def test_there_is_no_claude_cap(tmp_path):
     assert _route(tmp_path, ("judgment", "0.95"), live={"claude": 40})[0].startswith("engine=claude ")
 
 
-def test_only_strong_only_is_senior(tmp_path):
-    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,")
-    assert last == "engine=claude model=claude-sonnet-5-5" and "senior=false" in out
-    d = tmp_path / "b"
-    d.mkdir()
-    assert "senior=true" in _route(d, labels=",strong-only,")[2]
-
-
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -317,7 +309,6 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "REPO": "o/r",
         "CLAUDE_MODEL": model,
         "CLAUDE_MAX_TURNS": "200",
-        "SENIOR": senior,
         "CLAUDE_RC": str(claude_rc),
         "CLAUDE_OUT": claude_out,
         "CLAUDE_ERR": claude_err,
@@ -451,7 +442,7 @@ def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, i
 
 
 def test_both_logins_missing_sends_non_senior_work_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", senior="false", login_a=None, login_b=None)
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", login_a=None, login_b=None)
     assert r.returncode == 0, r.stderr
     assert "fallthrough: pi (claude login missing)" in r.stdout
     assert claude == "" and ran == ["pi"]
@@ -536,7 +527,7 @@ def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
     lines = _step("work", "Worker").splitlines()
     a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a_dir="))
     b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
-    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    prog = "live() { echo 0; }\nENGINE=claude fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": str(seat_a_dir), "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     seat, cfg = r.stdout.splitlines()[-1].split()
@@ -736,7 +727,7 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
 
 
 def test_judgment_job_rate_limited_falls_through_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit", senior="false")
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit")
     assert r.returncode == 0, r.stderr
     assert "claude -p" in claude and ran == ["claude", "pi"]
 
@@ -763,7 +754,7 @@ def test_token_file_is_parsed_not_run_and_defines_nothing_else(tmp_path):
     # A token file is read, never sourced: its other lines run no code and export nothing.
     marker = tmp_path / "ran-as-shell"
     raw = f"RAW:OTHER=1\ntouch {marker}\nCLAUDE_CODE_OAUTH_TOKEN={_tok_env('a')}\n"
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", senior="false", tok_a=raw)
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=raw)
     assert r.returncode == 0, r.stderr
     assert f"TOK={_tok_env('a')}" in claude and "auth=token" in r.stdout
     assert not marker.exists()
@@ -824,7 +815,7 @@ def test_both_tokens_revoked_fails_once_each_and_does_not_fall_through(tmp_path)
 
 
 def test_rate_limit_is_not_an_auth_failure_and_does_not_retry(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert _tokens_tried(claude) == [_tok_env("a")] and "retrying" not in r.stdout and ran == ["claude", "pi"]
 
