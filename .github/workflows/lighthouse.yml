@@ -41,6 +41,6 @@ jobs:
         if: steps.audit.outcome == 'failure'
         env: {URLS: "${{ steps.reach.outputs.urls }}"}
         run: |
-          if [ -f .lighthouseci/assertion-results.json ]; then jq -r '.[] | select(.passed == false and .level == "error") | (.auditProperty // "") as $p | "::error::\(.url // "the page") breached \(.auditId)\(if $p == "" then "" else "." + $p end): expected \(.operator) \(.expected), found \(.actual)"' .lighthouseci/assertion-results.json; echo "the audit reached a verdict, so its failure stands"; exit 1; fi
+          if [ -f .lighthouseci/assertion-results.json ]; then jq -r '.[] | select(.passed == false and .level == "error") | (.auditProperty // "") as $p | "::error::\(.url // "the page") breached \(.auditId)\(if $p == "" then "" else "." + $p end): expected \(.operator) \(.expected), found \(.actual)"' .lighthouseci/assertion-results.json; echo "the audit reached a verdict and no assertion at error level failed, so the audit step failed after its assertions"; exit 1; fi
           while IFS= read -r u; do [ -n "$u" ] || continue; jq -se --arg u "$u" 'any(.[]; .requestedUrl == $u)' .lighthouseci/lhr-*.json >/dev/null 2>&1 || { echo "::warning::$u recorded no trace, so it is audited once more"; npx -y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url="$u" --config=./config/lighthouserc.json || { echo "::error::$u recorded no trace in two audits, so there is no verdict for it"; exit 1; }; }; done <<<"$URLS"
           npx -y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json

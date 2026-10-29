@@ -221,8 +221,9 @@ def test_a_lost_trace_is_decided_on_the_runs_that_recorded():
 
 def test_a_page_that_recorded_nothing_gets_one_more_collect_before_the_verdict():
     lhr = json.dumps({"requestedUrl": "http://s/a"})
-    code, _logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n")
+    code, logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n")
     assert code == 0
+    assert "::warning::http://s/b recorded no trace, so it is audited once more" in logged
     assert calls.splitlines() == [
         "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url=http://s/b --config=./config/lighthouserc.json",
         "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json",
@@ -234,3 +235,30 @@ def test_a_page_that_records_nothing_twice_fails_the_run():
     code, logged, _calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n", npx_rc=1)
     assert code != 0
     assert "::error::http://s/b recorded no trace in two audits, so there is no verdict for it" in logged
+
+
+def test_a_verdict_that_failed_no_assertion_still_fails_the_run_and_says_why():
+    results = json.dumps(
+        [{
+            "passed": True,
+            "level": "error",
+            "url": "http://s/a",
+            "auditId": "largest-contentful-paint",
+            "operator": "<=",
+            "expected": 1500,
+            "actual": 1200,
+        }]
+    )
+    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
+    assert code != 0
+    assert "no assertion at error level failed" in logged
+    assert "recorded no trace" not in logged
+    assert calls == ""
+
+
+def test_a_lost_trace_whose_rerecord_verdict_fails_still_fails_the_run():
+    lhr = json.dumps({"requestedUrl": "http://s/a"})
+    code, logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\n", npx_rc=1)
+    assert code != 0
+    assert calls == "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json\n"
+    assert "recorded no trace in two audits" not in logged
