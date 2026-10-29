@@ -1,6 +1,6 @@
-# Review runners (fleet-ops#10950): runners 9 and 10 run as the no-sudo service user
-# fleet-reviewer. Their drop-ins are rootfs/etc/systemd/system/
-# actions.runner.Nishfleet.netcup-agent-{9,10}.service.d/30-review-user.conf, and the
+# Review runners (fleet-ops#10950, four since #11069): runners 9 to 12 run as the no-sudo
+# service user fleet-reviewer. Their drop-ins are rootfs/etc/systemd/system/
+# actions.runner.Nishfleet.netcup-agent-{9,10,11,12}.service.d/30-review-user.conf, and the
 # review and arm jobs read the credentials those drop-ins hand over: the reviewer App key
 # and the worker App key from the credential store, the router key and one Claude seat
 # token as systemd credentials, and the tools, the deploy clone and AGENTS.md as
@@ -25,7 +25,7 @@
     group: fleet-reviewer
     mode: preserve
     directory_mode: '0750'
-  loop: [9, 10]
+  loop: [9, 10, 11, 12]
   when:
     - (nish_home ~ '/.local/share/agent-runner/' ~ item ~ '/runsvc.sh') is exists
     - ('/var/lib/fleet-reviewer/' ~ item ~ '/runsvc.sh') is not exists
@@ -39,7 +39,7 @@
 - name: Read the review runner links
   ansible.builtin.stat:
     path: "/var/lib/fleet-reviewer/{{ item.0 }}/{{ item.1 }}"
-  loop: "{{ [9, 10] | product(['bin', 'externals']) | list }}"
+  loop: "{{ [9, 10, 11, 12] | product(['bin', 'externals']) | list }}"
   register: review_links
 
 - name: Point the review runner links at the copy
@@ -64,7 +64,7 @@
     regexp: '^HOME='
     line: HOME=/var/lib/fleet-reviewer
     insertbefore: BOF
-  loop: [9, 10]
+  loop: [9, 10, 11, 12]
   when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.env') is exists
 
 - name: Drop nish's runtime paths from the review runner environment
@@ -72,7 +72,7 @@
     path: "/var/lib/fleet-reviewer/{{ item }}/.env"
     regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
     state: absent
-  loop: [9, 10]
+  loop: [9, 10, 11, 12]
   when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.env') is exists
 
 # The runner's `.path` puts nish's tool directories first, and fleet-reviewer cannot
@@ -83,7 +83,7 @@
     path: "/var/lib/fleet-reviewer/{{ item }}/.path"
     regexp: "{{ nish_home }}/"
     replace: /var/lib/fleet-reviewer/
-  loop: [9, 10]
+  loop: [9, 10, 11, 12]
   when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.path') is exists
 
 # The seat dir the drop-in names. Empty on purpose: the seat token arrives as
