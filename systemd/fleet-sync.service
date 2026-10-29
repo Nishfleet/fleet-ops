@@ -304,7 +304,7 @@ ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.
 #    $SERVICE_RESULT is systemd's own verdict, so a timeout and a signal count as
 #    failures too. The leading `-` keeps a metric write that cannot happen (a host
 #    without the tmpfiles line) from becoming a second failure.
-ExecStopPost=-/bin/sh -c 'd=/var/lib/prometheus/node-exporter; test -d "$$d" || exit 0; r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "# TYPE fleet_sync_failed gauge"; echo "fleet_sync_failed $$r"; } > "$$d/.fleet-sync.prom.$$$$" && mv "$$d/.fleet-sync.prom.$$$$" "$$d/fleet-sync.prom"'
+ExecStopPost=-/bin/sh -c 'umask 022; d=/var/lib/prometheus/node-exporter; test -d "$$d" || exit 0; r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "# TYPE fleet_sync_failed gauge"; echo "fleet_sync_failed $$r"; } > "$$d/.fleet-sync.prom.$$$$" && mv "$$d/.fleet-sync.prom.$$$$" "$$d/fleet-sync.prom"'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

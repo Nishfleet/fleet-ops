@@ -141,10 +141,11 @@ def test_the_hook_rejects_every_ref_update_that_puts_a_branch_in_the_clone(tmp_p
     assert git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
 
-def test_the_hook_blocks_the_fetch_that_created_the_branch(tmp_path: Path) -> None:
+def test_the_hook_blocks_a_fetch_that_creates_a_branch(tmp_path: Path) -> None:
     # The 2026-10-08 shape (fleet-ops#9437): the session fetched the PR head into
-    # a local branch, then checked it out here. The fetch is the part git routes
-    # through the hook, and blocking it leaves no branch to check out.
+    # a local branch, then checked it out here. git 2.43 runs this hook for a
+    # fetch from a local path (the test's remote) and not for a fetch over https,
+    # which is why fleet-sync.service step 0a is the layer that catches that one.
     remote = tmp_path / "remote"
     remote.mkdir()
     git(remote, "init", "--bare", "-b", "main")

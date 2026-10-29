@@ -6,28 +6,23 @@
 # put a branch or a detached HEAD into this clone fails before it happens.
 # fleet-sync.service sets core.hooksPath to this directory on every sync, so an
 # install needs no root and no hand step, and the hook is always the copy main
-# carries. It covers what git lets a hook see:
+# carries. git 2.43 on this box runs it for `git update-ref`, `git checkout -b`,
+# `git switch --detach`, `git worktree add -b` and a fetch from a local path, so
+# those fail before they happen. It does NOT run it for a fetch over https or for
+# `git checkout <a branch that already exists>`, which is the 2026-10-08 shape
+# exactly: git rewrites HEAD's symref without a ref transaction, and githooks(5)
+# has no hook that can abort that. fleet-sync.service step 0a is the layer for it:
+# it runs before the fetch on every sync and fails the deploy while HEAD is off
+# main, so an off-main clone is a loud failed deploy that pages instead of 11
+# minutes of live files from an unmerged branch.
 #
-#   git fetch origin pull/9426/head:pr-9426   creates refs/heads/pr-9426  blocked
-#   git checkout -b zz                        creates refs/heads/zz        blocked
-#   git switch --detach / git checkout --detach moves HEAD to a sha       blocked
-#   git worktree add -b x ../x origin/main    creates refs/heads/x        blocked
-#   git fetch ... :refs/remotes/origin/main, git merge --ff-only,
-#   git merge-base --is-ancestor, git checkout main                     allowed
-#
-# What git 2.54 on this box does NOT route through a ref transaction, so this
-# hook cannot see: `git checkout <a branch that already exists>` and
-# `git switch <a branch that already exists>`, which rewrite HEAD's symref
-# directly. That is the 2026-10-08 shape (`git checkout pr-9426` after a fetch
-# that created the branch), and the fetch half of it is blocked above, so a
-# branch that arrives any other way is caught by fleet-sync.service step 0a,
-# which fails the deploy with DEPLOY-BLOCKED while HEAD is off main.
+# Allowed: `git fetch ... :refs/remotes/origin/main`, `git merge --ff-only`,
+# `git merge-base --is-ancestor`, `git checkout main`.
 #
 # It is a guard against accidents, not against a deliberate bypass: `git -c
-# core.hooksPath=...`, a fetch that lands the branch while the hook is unset, and
-# any process that writes .git/refs behind git's back are not covered. A linked
-# worktree of this clone keeps its own HEAD and is skipped, and a worktree of any
-# other repo never loads this file at all.
+# core.hooksPath=...`, and any process that writes .git/refs behind git's back
+# are not covered. A linked worktree of this clone keeps its own HEAD and is
+# skipped, and a worktree of any other repo never loads this file at all.
 [ "$1" = prepared ] || exit 0
 [ "$(git rev-parse --absolute-git-dir)" = "$(git rev-parse --path-format=absolute --git-common-dir)" ] || exit 0
 while read -r old new ref; do
