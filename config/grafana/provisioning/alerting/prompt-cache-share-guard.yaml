@@ -8,8 +8,9 @@
 # report the count (fleet-ops#9385 point 2).
 #
 # The bar: no vendor in use may fall more than 2 points below the share it read
-# in the 48h after the bump (opencodego and synthetic excepted, below). That reading was taken on this box at
-# 2026-10-25T08:12Z, and the floors below are it minus 0.02, except those two:
+# in the 48h after the bump (opencodego, synthetic, commandcode and minimax
+# excepted, below). That reading was taken on this box at 2026-10-25T08:12Z,
+# and the floors below are it minus 0.02, except those four:
 #
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.7700
 #   minimax      0.9459 -> 0.8968      straitly    0.8431 -> 0.8231
