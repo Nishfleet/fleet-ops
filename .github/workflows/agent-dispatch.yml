@@ -448,13 +448,13 @@ jobs:
           permission-actions: write
       # The claim-PR re-dispatch (fleet-ops#9368): its own step, so a read fault here cannot abort
       # the sweep pick. It feeds the pick, so it runs first; continue-on-error keeps the pick
-      # alive with no claim-PR append for this run only. The gate is the shell condition the block
-      # used to sit behind (ISSUE and CLOSED both empty), so it covers every trigger that
+      # alive with no claim-PR append for this run only. The gate states the shell condition the
+      # block used to sit behind (ISSUE and CLOSED both empty), so it covers every trigger that
       # re-dispatched before — schedule, workflow_run, workflow_call with no issue,
       # pull_request_target — and not the issue events or a single-issue dispatch.
       - id: redispatch
         continue-on-error: true
-        if: ${{ inputs.issue == '' && github.event.issue.number == '' }}
+        if: ${{ !inputs.issue && !github.event.issue }}
         env:
           GH_TOKEN: ${{ github.token }}
           # jq defs shared by the missing-checks and red-PR cases below.

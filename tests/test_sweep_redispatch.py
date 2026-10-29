@@ -30,7 +30,7 @@ def test_redispatch_is_a_continue_on_error_step_before_the_pick():
     assert ids.index("redispatch") < ids.index("list")
     step = _steps()[ids.index("redispatch")]
     assert step["continue-on-error"] is True
-    assert step["if"] == "${{ inputs.issue == '' && github.event.issue.number == '' }}"
+    assert step["if"] == "${{ !inputs.issue && !github.event.issue }}"
     assert "prs=${prs:-[]}" in step["run"]
 
 
