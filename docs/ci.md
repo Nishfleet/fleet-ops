@@ -116,5 +116,5 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
+`with: urls:` (one page URL per line); callers cannot change the assertions. A run that cannot record a trace (a NO_NAVSTART flake, fleet-ops#9546) no longer fails the audit: the verdict step re-collects a page that recorded nothing once, then decides on the runs that did record with the same assertions, and a page that records nothing in two audits still fails. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 

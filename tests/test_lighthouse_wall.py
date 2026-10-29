@@ -1,7 +1,9 @@
 import http.server
+import json
 import os
 import pathlib
 import subprocess
+import tempfile
 import threading
 
 import pytest
@@ -11,6 +13,7 @@ WORKFLOW = ROOT / ".github/workflows/lighthouse.yml"
 WALL = "https://nish345.cloudflareaccess.com/cdn-cgi/access/login/0509.io?kid=5dcfc647"
 STEP = '.jobs.lighthouse.steps[] | select(.id == "reach")'
 AUDIT = '.jobs.lighthouse.steps[] | select(has("uses")) | select(.with.configPath)'
+VERDICT = '.jobs.lighthouse.steps[] | select(.name | test("^Verdict on a failed audit"))'
 
 
 def _y(expr):
@@ -115,3 +118,119 @@ def test_the_skip_step_passes_the_urls_through_env_not_into_the_run_block():
 def test_the_fail_switch_is_off_unless_the_caller_asks():
     assert _y(".on.workflow_call.inputs.require_audit.default") == "false"
     assert _y(".on.workflow_call.inputs.require_audit.type") == "boolean"
+
+
+def test_the_audit_step_may_fail_without_failing_the_job():
+    assert _y(f'{AUDIT} | ."continue-on-error"') == "true"
+
+
+def test_the_verdict_step_runs_only_after_a_failed_audit_and_reads_the_urls_through_env():
+    assert _y(f"{VERDICT} | .if") == "steps.audit.outcome == 'failure'"
+    assert _y(f"{VERDICT} | .env.URLS") == "${{ steps.reach.outputs.urls }}"
+    assert "${{" not in _y(f"{VERDICT} | .run")
+
+
+def _run_verdict(files, urls, npx_rc=0):
+    script = _y(f"{VERDICT} | .run")
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = pathlib.Path(tmp) / "npx"
+        stub.write_text(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' "$*" >> "$NPX_LOG"\n'
+            'if [ "$NPX_RC" = 0 ] && [ "$3" = collect ]; then\n'
+            '  for a in "$@"; do case $a in --url=*) u=${a#--url=};; esac; done\n'
+            '  n=$(ls .lighthouseci/lhr-*.json 2>/dev/null | wc -l)\n'
+            '  printf \'{"requestedUrl": "%s"}\\n\' "$u" > ".lighthouseci/lhr-$((n+1)).json"\n'
+            'fi\n'
+            'exit "$NPX_RC"\n'
+        )
+        stub.chmod(0o755)
+        lhci = pathlib.Path(tmp) / ".lighthouseci"
+        lhci.mkdir()
+        for name, body in files.items():
+            (lhci / name).write_text(body)
+        done = subprocess.run(
+            ["bash", "-e", "-c", script],
+            cwd=tmp,
+            env=dict(
+                os.environ,
+                URLS=urls,
+                NPX_LOG=str(pathlib.Path(tmp) / "npx.log"),
+                NPX_RC=str(npx_rc),
+                PATH=f"{tmp}{os.pathsep}{os.environ['PATH']}",
+            ),
+            capture_output=True,
+            text=True,
+        )
+        log = pathlib.Path(tmp) / "npx.log"
+        calls = log.read_text() if log.exists() else ""
+        return done.returncode, done.stdout + done.stderr, calls
+
+
+def test_a_breached_verdict_still_fails_the_run_and_names_the_assertion():
+    results = json.dumps(
+        [{
+            "passed": False,
+            "level": "error",
+            "url": "http://s/a",
+            "auditId": "largest-contentful-paint",
+            "auditProperty": "",
+            "operator": "<=",
+            "expected": 1500,
+            "actual": 3200,
+        }]
+    )
+    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
+    assert code != 0
+    assert "::error::http://s/a breached largest-contentful-paint: expected <= 1500, found 3200" in logged
+    assert calls == ""
+
+
+def test_the_breach_line_names_the_audit_property():
+    results = json.dumps(
+        [{
+            "passed": False,
+            "level": "error",
+            "url": "http://s/a",
+            "auditId": "resource-summary",
+            "auditProperty": "script:size",
+            "operator": "<=",
+            "expected": 153600,
+            "actual": 200000,
+        }]
+    )
+    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
+    assert code != 0
+    assert "::error::http://s/a breached resource-summary.script:size: expected <= 153600, found 200000" in logged
+    assert calls == ""
+
+
+def test_a_failed_audit_that_never_reached_a_verdict_fails_when_nothing_is_recorded():
+    code, logged, _calls = _run_verdict({}, "http://s/a\n", npx_rc=1)
+    assert code != 0
+    assert "::error::http://s/a recorded no trace in two audits, so there is no verdict for it" in logged
+
+
+def test_a_lost_trace_is_decided_on_the_runs_that_recorded():
+    lhr = json.dumps({"requestedUrl": "http://s/a"})
+    code, logged, calls = _run_verdict({"lhr-1.json": lhr, "lhr-2.json": lhr}, "http://s/a\n")
+    assert code == 0
+    assert "::error::" not in logged
+    assert calls == "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json\n"
+
+
+def test_a_page_that_recorded_nothing_gets_one_more_collect_before_the_verdict():
+    lhr = json.dumps({"requestedUrl": "http://s/a"})
+    code, _logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n")
+    assert code == 0
+    assert calls.splitlines() == [
+        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url=http://s/b --config=./config/lighthouserc.json",
+        "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json",
+    ]
+
+
+def test_a_page_that_records_nothing_twice_fails_the_run():
+    lhr = json.dumps({"requestedUrl": "http://s/a"})
+    code, logged, _calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n", npx_rc=1)
+    assert code != 0
+    assert "::error::http://s/b recorded no trace in two audits, so there is no verdict for it" in logged

@@ -18,11 +18,7 @@ jobs:
     steps:
       - name: Fetch the Lighthouse config from fleet-ops main, because a called ref is invisible to a reusable workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Nishfleet/fleet-ops
-          ref: main
-          sparse-checkout: config/lighthouserc.json
-          persist-credentials: false
+        with: {repository: Nishfleet/fleet-ops, ref: main, sparse-checkout: config/lighthouserc.json, persist-credentials: false}
       - name: Skip a URL that answers the Cloudflare Access login, and name it
         id: reach
         env: {URLS: "${{ inputs.urls }}", REQUIRE: "${{ inputs.require_audit }}"}
@@ -31,11 +27,20 @@ jobs:
           [ -n "$ok" ] || [ "$REQUIRE" != true ] || { echo "::error::every URL answers the Cloudflare Access login, so nothing was audited"; exit 1; }
           { echo 'urls<<END'; printf %s "$ok"; echo END; } >> "$GITHUB_OUTPUT"
       - name: Audit the URLs against the assertions
+        id: audit
         if: steps.reach.outputs.urls != ''
+        continue-on-error: true
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
-        with:
-          urls: ${{ steps.reach.outputs.urls }}
-          runs: 5
-          configPath: ./config/lighthouserc.json
-          uploadArtifacts: ${{ inputs.upload_reports }}
-          temporaryPublicStorage: false
+        with: {urls: "${{ steps.reach.outputs.urls }}", runs: 5, configPath: ./config/lighthouserc.json, uploadArtifacts: "${{ inputs.upload_reports }}", temporaryPublicStorage: false}
+      # A run whose trace cannot be recorded (NO_NAVSTART) aborts lhci's whole collect after its own
+      # retries, keeping the runs that did record, and the action then throws before assert writes its
+      # verdict file (https://github.com/treosh/lighthouse-ci-action/blob/v12/src/index.js). So a failed
+      # audit cannot tell a lost trace from a breached budget, and this step is what tells them apart.
+      # The CLI version is the action's own pin: https://github.com/treosh/lighthouse-ci-action/blob/v12/package.json
+      - name: "Verdict on a failed audit: a lost trace is tolerated, a breached budget is not"
+        if: steps.audit.outcome == 'failure'
+        env: {URLS: "${{ steps.reach.outputs.urls }}"}
+        run: |
+          if [ -f .lighthouseci/assertion-results.json ]; then jq -r '.[] | select(.passed == false and .level == "error") | (.auditProperty // "") as $p | "::error::\(.url // "the page") breached \(.auditId)\(if $p == "" then "" else "." + $p end): expected \(.operator) \(.expected), found \(.actual)"' .lighthouseci/assertion-results.json; echo "the audit reached a verdict, so its failure stands"; exit 1; fi
+          while IFS= read -r u; do [ -n "$u" ] || continue; jq -se --arg u "$u" 'any(.[]; .requestedUrl == $u)' .lighthouseci/lhr-*.json >/dev/null 2>&1 || { echo "::warning::$u recorded no trace, so it is audited once more"; npx -y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url="$u" --config=./config/lighthouserc.json || { echo "::error::$u recorded no trace in two audits, so there is no verdict for it"; exit 1; }; }; done <<<"$URLS"
+          npx -y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json
