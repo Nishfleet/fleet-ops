@@ -8,7 +8,8 @@ Issue: #10804.
 ## Why
 
 `.github/workflows/agent-dispatch.yml` (1,687 lines, 53% of them a `run:` block)
-and `.github/workflows/agent.yml` (1,433 lines, 70%) are the fleet's dispatcher.
+and `.github/workflows/agent.yml` (1,433 lines, 70%), measured at `origin/main`
+`fa9a6445a`, are the fleet's dispatcher.
 They work, and they have grown one workaround at a time: a mirror with a file
 lock, a comment ledger that counts retries, a label that stands in for "a worker
 is on this", a relabel dance that starts the next issue, three jobs that stay
@@ -45,8 +46,8 @@ why).
 | fire on CI failure, on a branch push, on a merged PR | `workflow_run`, `workflow_run` on `claim/issue-*`, `pull_request_target` | stock |
 | the claim branch's own cleanup after a merge | `delete_branch_on_merge` | stock |
 | retry a run | `gh run rerun --failed` and `run_attempt` | cut (row 5) |
-| a checkout per hand-off | `actions/checkout` | cut (row 6) |
-| `agent-in-progress` | the issue's live runs | cut (row 7) |
+| a checkout per hand-off | `actions/checkout` | cut (row 7) |
+| `agent-in-progress` | the issue's live runs | cut (row 6) |
 | `miss-review`, `miss-review-pr`, `miss-stalled` | none needed: the sweep's `red` class covers the fact | cut (row 1) |
 | `conflicts` and `remerge` | none needed: `stuck-prs`'s CONFLICTING class covers the fact | cut (row 2) |
 | log excerpt inside a rework comment | `gh run view --log-failed` | cut (row 3) |
@@ -83,8 +84,8 @@ ledgers and the checkout cache, because A reads them as the sweep's memory.
 Shape: 198 lines leave, 131 of `agent-dispatch.yml` (to 1,556) and 67 of
 `agent.yml` (to 1,366). One shape, one place to debug, worst-case latency the
 sweep interval. Its weakness is that a *store* is not a *path*, so rows 5, 6 and
-7 stay by construction: the infra retry count, the checkout cache and
-`agent-in-progress` are all in A. That is where the fleet's silent failures
+7 stay by construction: the infra retry count, `agent-in-progress` and the
+checkout cache are all in A. That is where the fleet's silent failures
 live: a label left behind by a killed run looks like work in progress
 (fleet-ops#9063), and an infra death counted in comments cannot be counted
 exactly. A leaves the sweep to grow a class for each.
@@ -95,11 +96,17 @@ Every durable fact lives in a GitHub object, and the dispatcher holds only the
 adapters: an event that maps to work, and a retry authority for the classes
 GitHub cannot express. Delete every loop whose only job is to remember or
 re-derive a fact GitHub already stores — the infra retry count (a run's
-`run_attempt`, row 5), the hand-off's checkout cache (a per-job workspace, row
-6), "a worker is on this issue" (the issue's live runs, row 7) — and every job
+`run_attempt`, row 5), "a worker is on this issue" (the issue's live runs, row
+6), the hand-off's checkout cache (a per-job workspace, row 7) — and every job
 that duplicates a class the sweep already owns (rows 1 to 4).
 
-Shape: 347 lines leave, and the *state* surface halves: no `agent-in-progress`,
+Rows 1 and 6 remove two of the sweep's seven classes (stalled refs, and the
+orphan class, which exists only because the label can be left behind). The five
+that remain are in "Kept" below, and B's rule for each is the same as for a
+store: a class that is a repair moves into a stock object, and a class that is a
+policy stays where it is.
+
+Shape: 346 lines leave, and the *state* surface halves: no `agent-in-progress`,
 no infra comment ledger, no mirror, no worktree registration. Its weakness is
 that a fact not yet in an object has no home, so the migration is per-fact, not
 per-file, and one wrong move turns a silent retry into a parked issue.
@@ -124,10 +131,10 @@ carrying seven classes (triage labelling, missing check, unarmed, orphan
 plan to stop it growing.
 
 Why B is safe to start now: every row is independently revertible, is a single
-PR, and removes code whose replacement is a stock call the fleet already makes,
-with one exception stated under row 5. `actions/checkout` is what every other job
-in the fleet uses, and `list`'s run reads are the same API the sweep already
-calls.
+PR, and removes code whose replacement is a stock call the fleet already makes.
+`actions/checkout` is what every other job in the fleet uses, `list`'s run reads
+are the same API the sweep already calls, and `gh run rerun` is new: no workflow
+in the fleet calls it today, so row 5 is the one row that adds a command.
 
 ## Delete list, ordered by lines removed per hour of work
 
@@ -143,12 +150,18 @@ fewer hours, then by more lines.
 | 3 | log excerpt in `rework-note` (#10808) | dispatch | 20 | 0.5 | **40** | the comment names the run, not the log lines |
 | 4 | `Start the next ready issue` becomes one dispatch (#10809) | agent.yml | 67 | 2 | **34** | a freed lane waits up to the sweep interval |
 | 5 | infra retry ledger becomes `run_attempt` plus `gh run rerun` (#10810) | agent.yml | 30 | 1.5 | **20** | a retry stays on the same engine by design |
-| 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config | 60 | 3 | **20** | the Gate and the sweep read runs, not a label |
-| 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | a hand-off that died unpushed loses those commits |
+| 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
+| 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | a hand-off that died unpushed loses those commits, so its prompt's push-as-soon-as-checks-pass rule is the precondition, not a preference |
 
-Total: 347 lines and 11.5 hours, 30 lines per hour on average. That is 210 lines
-of `agent-dispatch.yml` (12% of it) and 132 of `agent.yml` (9%), plus 5 label
-names in two config files and two docs.
+Total: 346 lines and 11.5 hours, 30 lines per hour on average. That is 210 lines
+of `agent-dispatch.yml` (12% of it), 132 of `agent.yml` (9%), and 4 occurrences
+of the one label name `agent-in-progress` in `config/intake-repos.json`,
+`config/orchestrate-events.json`, `docs/intake-enrolment.md` and
+`docs/red-main-issues.md`, all counted in row 6. Rows 1 and 2 delete jobs and
+repo variables, not labels, so they carry no config lines.
+
+Issue numbers are creation order, not row order: row 6's issue was filed after
+row 7's, so #10814 comes before #10811 in the list.
 
 Stop after row 4 if the goal is the cheapest behaviour change: 4 hours for 198
 lines, and it removes the failure class that cost 258 cancelled runs
@@ -172,6 +185,11 @@ delete.
 - **`stuck-prs` (168).** The single retry authority. GitHub has no "PR with no
   verdict for 15 minutes" event, and this job is where every such class
   converges.
+- **`list`'s five remaining classes.** Triage labelling, a required check that
+  never reported, an unarmed PR, a red claim PR, and a deleted issue. Each is a
+  fact no stock object stores (a variable, a check that never ran, a missing
+  arm, a red head, a 410), and the sweep is the only mover that reads state
+  rather than events.
 - **`red-main` (85).** Files one issue per red workflow and closes it when the
   workflow is green. Nothing stock files and closes issues.
 - **`close-claim` (32).** `delete_branch_on_merge` cleans a merged claim
