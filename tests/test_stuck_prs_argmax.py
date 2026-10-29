@@ -67,7 +67,7 @@ def pr(number):
 
 def approval(number):
     return {
-        "user": {"login": "github-actions[bot]"}, "body": f"coordinator-approval: {number:040x}",
+        "user": {"login": "nishfleet-reviewer[bot]"}, "body": f"coordinator-approval: {number:040x}",
         "created_at": OLD, "updated_at": OLD, "html_url": f"https://example.invalid/{number}",
     }
 

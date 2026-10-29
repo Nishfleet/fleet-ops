@@ -109,6 +109,16 @@ def review_jobs() -> list[tuple[str, str, str]]:
     return found
 
 
+def job_text(job: dict) -> str:
+    """Every string a job's steps can read the reviewer key from: run text, env values and a step's with:."""
+    parts = []
+    for step in job.get("steps") or []:
+        parts.append(str(step.get("run", "")))
+        parts += [f"{k}={v}" for k, v in (step.get("env") or {}).items()]
+        parts += [f"{k}={v}" for k, v in (step.get("with") or {}).items() if isinstance(v, str)]
+    return "\n".join(parts + [f"{k}={v}" for k, v in (job.get("env") or {}).items()])
+
+
 def test_the_review_jobs_read_the_router_key_from_the_credential_first() -> None:
     """These jobs run as fleet-reviewer, whose HOME holds no seat file, so the credential is the only copy."""
     jobs = review_jobs()
@@ -119,3 +129,51 @@ def test_the_review_jobs_read_the_router_key_from_the_credential_first() -> None
             reads += 1
             assert f"{SEATS}/typesafe-jev.env" in line, f"{workflow}:{job_id}: " + line
     assert reads, "no review-runner job reads the router key"
+
+
+def reads_reviewer_key(text: str) -> bool:
+    """A line that names the key next to the credential store reads it; a name in a grep or a comment does not."""
+    return any(
+        REVIEW_KEY in line and ("CREDENTIALS_DIRECTORY" in line or "/etc/credstore" in line)
+        for line in text.splitlines()
+    )
+
+
+def test_no_worker_can_read_the_reviewer_key_or_the_owner_login() -> None:
+    """A worker that read the reviewer key could approve its own PR (fleet-ops#9521).
+
+    The key posts the approval line APPROVERS counts, so it may be in reach of no job a PR can reach: only the
+    review job reads it, only agent.yml asks for the review runners, and agent.yml declares no pull_request or
+    push trigger, so a branch's own copy of it never runs. The runners' org group lists agent.yml@main alone,
+    which is what keeps a workflow a PR adds off those two units. The owner login half lives in
+    tests/test_no_runner_gh_login.py, and the credential store's own units and binds are held above."""
+    readers = []
+    for workflow in WORKFLOWS:
+        jobs = yaml.safe_load(workflow.read_text()).get("jobs") or {}
+        for job_id, job in jobs.items():
+            if not reads_reviewer_key(job_text(job)):
+                continue
+            labels = job.get("runs-on")
+            labels = labels if isinstance(labels, list) else [labels or ""]
+            readers.append((workflow.name, job_id, labels))
+            assert any("review" in label for label in labels), (
+                f"{workflow.name}:{job_id} reads the reviewer App key off the review runners"
+            )
+    assert readers == [("agent.yml", "review", ["self-hosted", "review"])], readers
+    assert {name for name, _, _ in review_jobs()} == {"agent.yml"}, "a job off agent.yml asks for the review runners"
+    on = yaml.safe_load((ROOT / ".github/workflows/agent.yml").read_text())[True]
+    assert not on.keys() & {"pull_request", "pull_request_target", "push"}, (
+        "agent.yml runs on a branch event, so a PR's own copy of it could read the key: " + str(sorted(on.keys()))
+    )
+
+
+def test_the_review_job_posts_the_approval_as_the_reviewer_app() -> None:
+    """The approval line is only worth the identity behind it (fleet-ops#9521)."""
+    name, steps = {job_id: (n, s) for n, job_id, s in review_jobs()}["review"]
+    text = job_text(yaml.safe_load((ROOT / ".github/workflows/agent.yml").read_text())["jobs"]["review"])
+    assert REVIEW_KEY in text, f"{name}: the review job does not read the reviewer App key"
+    assert "GH_TOKEN=$REVIEWER_TOKEN gh pr comment" in steps, f"{name}: the approval comment is not posted as the reviewer App"
+    # The login the approval goes out as is the login APPROVERS counts, or nothing counts it.
+    approvers = yaml.safe_load((ROOT / ".github/workflows/agent-dispatch.yml").read_text())["env"]["APPROVERS"].split()
+    login = next(v for k, v in (line.split("=", 1) for line in text.splitlines() if line.startswith("REVIEWER_LOGIN=")))
+    assert login in approvers, f"{name}: {login} is not in APPROVERS {approvers}"

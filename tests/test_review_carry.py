@@ -94,7 +94,10 @@ def repo(tmp_path):
     return r, c
 
 
-def approval(sha, login="github-actions[bot]", edited=False):
+REVIEWER_LOGIN = "nishfleet-reviewer[bot]"  # the App whose key only the review runners load (fleet-ops#9521)
+
+
+def approval(sha, login=REVIEWER_LOGIN, edited=False):
     return {"user": {"login": login}, "created_at": "t", "updated_at": "t2" if edited else "t",
             "body": f"coordinator-approval: {sha}\n\nreviewer: {sha} approved."}
 
@@ -103,14 +106,14 @@ def bot_review(sha, state="APPROVED", login="github-actions[bot]"):
     return {"user": {"login": login}, "commit_id": sha, "state": state, "body": f"reviewer: {sha} approved."}
 
 
-def review(tmp_path, repo, base, head, comments, cfg=CFG, reviews=None):
+def review(tmp_path, repo, base, head, comments, cfg=CFG, reviews=None, reviewer_login=REVIEWER_LOGIN):
     origin, _ = repo
     bt, temp = tmp_path / "bt", tmp_path / "temp"
     temp.mkdir()
     if reviews is None:
         # the review approve() writes for each approval comment; a test that wants the comment alone passes []
         reviews = [bot_review(c["body"].split("\n")[0].split(": ")[1]) for c in comments
-                   if c.get("user", {}).get("login") == "github-actions[bot]" and c["body"].startswith("coordinator-approval: ")]
+                   if c.get("user", {}).get("login") == reviewer_login and c["body"].startswith("coordinator-approval: ")]
     git(tmp_path, "init", "-q", str(bt))
     git(bt, "fetch", "-q", str(origin), f"{base}:refs/base", f"{head}:refs/head")
     (temp / "diff.txt").write_text(git(bt, "diff", "--no-color", "refs/base...refs/head") + "\n")
@@ -125,6 +128,7 @@ def review(tmp_path, repo, base, head, comments, cfg=CFG, reviews=None):
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ORIGIN": str(origin), "COMMENTS": json.dumps(comments), "SHA": head,
            "REVIEWS": json.dumps(reviews),
            "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt),
+           "REVIEWER_LOGIN": reviewer_login,
            "cfg": json.dumps(cfg)}
     p = subprocess.run(["bash", "-c", stubs + block() + 'echo "scope=$scope note=$note"\n'], env=env, capture_output=True, text=True)
     read = lambda n: (temp / n).read_text() if (temp / n).exists() else ""
@@ -216,6 +220,19 @@ def test_a_line_moved_to_another_place_shows_as_the_interdiff(tmp_path, repo, he
 
 def verdict(line):
     return {"user": {"login": "github-actions[bot]"}, "created_at": "t", "updated_at": "t", "body": line}
+
+
+@pytest.mark.parametrize("login,carries", [(REVIEWER_LOGIN, True), ("github-actions[bot]", False)], ids=["reviewer-app", "actions-bot"])
+def test_only_the_reviewer_apps_approval_carries(tmp_path, repo, login, carries):
+    # fleet-ops#9521: the approval line now comes from the App whose key only the review runners load, and
+    # the same line as github-actions[bot] (which any workflow on any branch posts as) carries nothing.
+    c = repo[1]
+    comments = [approval(c["old"], login=login)]
+    r, said, out, _ = review(tmp_path, repo, c["b1"], c["keep"], comments, reviews=[bot_review(c["old"])])
+    if carries:
+        assert carried(r, said, out, c["old"], c["keep"]), r.stdout + r.stderr
+    else:
+        assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout, r.stdout + r.stderr
 
 
 @pytest.mark.parametrize("comments", [

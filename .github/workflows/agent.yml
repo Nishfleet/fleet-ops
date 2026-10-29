@@ -805,9 +805,11 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
-    # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
-    # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
-    # same bot, so one that touches money, secrets, data, .github/ or the review rules (the guard list) needs three independent reviews. Arming is the arm job's.
+    # The approval is a PR comment posted as the review-only nishfleet-reviewer App, whose private key only the two
+    # review runners load, as a credential, so no workflow a PR adds can post that line (fleet-ops#9521). Every other
+    # comment and the Approve review go out as github-actions[bot] on the job's own GITHUB_TOKEN. This job runs from
+    # agent.yml@main, so the PR cannot change its reviewer. A PR that touches money, secrets, data, .github/ or the review
+    # rules (the guard list) needs three independent reviews. Arming is the arm job's.
     permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
@@ -818,15 +820,34 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
+      # The login APPROVERS counts an approval from: a token minted from the reviewer App key, which only the two
+      # review runners load, so a PR's own workflow cannot post it (fleet-ops#9521).
+      REVIEWER_LOGIN: nishfleet-reviewer[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      # The approval is only worth the identity behind it, so the key that posts it is loaded by these two units and by
+      # nothing else (tests/test_review_runner_key.py). The key stays on the runner, is masked, and goes only to
+      # create-github-app-token; the token it returns reaches the one command that posts an approval.
+      - name: Read the reviewer App private key
+        id: reviewer-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-}/nishfleet-reviewer.private-key.pem"
+          [ -n "${CREDENTIALS_DIRECTORY:-}" ] && [ -s "$keyfile" ] || { echo "::error::the reviewer App key is a credential of the two review runners and is not loaded here"; exit 1; }
+          grep . "$keyfile" | sed 's/^/::add-mask::/'
+          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+      - name: Reviewer App token for the approval
+        id: reviewer-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with: {app-id: "5526765", private-key: "${{ steps.reviewer-key.outputs.pem }}", permission-issues: write}
       - name: Review the held head
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
+          # The only token that may post an approval: minted from the reviewer App key (fleet-ops#9521).
+          REVIEWER_TOKEN: ${{ steps.reviewer-token.outputs.token }}
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10). Fable is not a default
           # reviewer (44% of a seat's weekly limit in ~2 days); it is the second reviewer of guard heads only (Nish 2026-10-28, #10608).
@@ -850,8 +871,8 @@ jobs:
             case $rc in 0) printf '%s\n' "$1" ;; 2) jq -er '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$j" | awk 'NR == FNR { b[$1] = 1; next } FNR in b { if (!p) print "[a line was withheld: it matched a private-detail rule]"; p = 1; next } { p = 0; print }' - <(printf '%s\n' "$1") ;; *) return 1 ;; esac; }
           scan_failed() { echo "::error::the private-detail scan could not run, so nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not read its rules or run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
           say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
-          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; gh pr comment "$PR" -R "$REPO" --body "$out"; }
-          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; GH_TOKEN=$REVIEWER_TOKEN gh pr comment "$PR" -R "$REPO" --body "$out"; }  # the approval comment goes out as the reviewer App, the only bot APPROVERS counts (fleet-ops#9521)
+          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the job token posts this review, because the reviewer App carries no write on pull requests; a push dismisses it, so it goes before the verdict comment and a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
           # Blocker lines: a line starting with blocker(s), with or without markup (not the echoed header "blocker/risk/nit"),
@@ -866,10 +887,10 @@ jobs:
           cut_text() { t=$(printf '%s' "$1" | head -c 3500); b=$(printf '%s' "$1" | wc -c); [ "$b" -le 3500 ] || t=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$b" "$(blockers_of "$1")" "$t"); printf '%s' "$t"; }
           pr=$(gh api "repos/$REPO/pulls/$PR"); [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review
-          # per head. Each phrase must START a line of a github-actions[bot] comment: the hold comment quotes the approval line.
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
+          # per head. Each phrase must START a line of a comment this job or the reviewer App posted: the hold comment quotes the approval line.
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" --arg who "$REVIEWER_LOGIN" '
             def blockers: [.[] | select(test($blk; "i"))];
-            [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
+            [.[][] | select(.user.login == "github-actions[bot]" or .user.login == $who) | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
               | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
@@ -889,17 +910,19 @@ jobs:
           # the branch merged main, its output is the same whether the conflict resolution kept the PR's own line
           # or changed it (tests/test_review_carry.py holds that case). Anything else is a full review, including
           # any error below. A guard or workflow head is a full review on both sides of the comparison: a workflow
-          # a PR adds could post the approval as the same bot (see the job comment), so a later head that dropped
+          # a PR adds could post the verdict comments as github-actions[bot], so a later head that dropped
           # it would inherit a forged approval.
           guard_hits() { jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length'; }
           guard=false; [ "$(guard_hits < "$RUNNER_TEMP/files.txt")" = 0 ] || guard=true
-          # The newest verdict this bot posted decides, and only an approval of another head can carry. Only a line
+          # The newest verdict decides, and only the reviewer App's approval of another head can carry. Only a line
           # that STARTS an unedited body counts, so a hold comment quoting an approval, or a review quoting a diff
-          # line, is not one. A comment is not proof by itself: any workflow on a branch of this repo posts as the
-          # same bot, so the approval must also be the review approve() wrote on that head, whose commit_id is that
-          # head (a push can dismiss it, so DISMISSED counts too). Without that review, or when the read fails, the
-          # head gets a full review; so does an approved head that no longer exists, since carry()'s fetch fails.
-          prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at) | .body | split("\n")[0] | select(test("^coordinator-approval: [0-9a-f]{40}$|^reviewer: [0-9a-f]{40} (blocked|not approved)\\."))] | last // "" | (capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s // empty) | select(. != $sha)') || prior=; [ -z "$prior" ] || gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" | jq -e -s --arg sha "$prior" 'any(.[][]; .user.login == "github-actions[bot]" and .commit_id == $sha and (.state == "APPROVED" or .state == "DISMISSED") and ((.body // "") | startswith("reviewer: " + $sha + " approved.")))' >/dev/null || prior=
+          # line, is not one. An approval line from any other login counts for nothing, because every workflow on any
+          # branch of this repo posts as github-actions[bot] (fleet-ops#9521): the newest verdict line from either login
+          # is read, and it carries only when the reviewer App wrote it. That App's approval must also be the review
+          # approve() wrote on that head, whose commit_id is that head (a push can dismiss it, so DISMISSED counts too).
+          # Without that review, or when the read fails, the head gets a full review; so does an approved head that no
+          # longer exists, since carry()'s fetch fails.
+          prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" --arg who "$REVIEWER_LOGIN" '[.[][] | select((.user.login == "github-actions[bot]" or .user.login == $who) and .created_at == .updated_at) | {who: .user.login, line: (.body | split("\n")[0])} | select(.line | test("^coordinator-approval: [0-9a-f]{40}$|^reviewer: [0-9a-f]{40} (blocked|not approved)[.]"))] | last // {line: ""} | select(.who == $who and (.line | startswith("coordinator-approval: "))) | .line | capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s | select(. != $sha)') || prior=; [ -z "$prior" ] || gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" | jq -e -s --arg sha "$prior" 'any(.[][]; .user.login == "github-actions[bot]" and .commit_id == $sha and (.state == "APPROVED" or .state == "DISMISSED") and ((.body // "") | startswith("reviewer: " + $sha + " approved.")))' >/dev/null || prior=
           # A head's own diff: merge-base to head, with no blob id, which differs after a rebase. The carry test
           # compares two of them with the hunk header dropped, so the same change at another line still matches, and
           # the interdiff keeps the header, so a line that moved shows there as a change. Compared as text, which is
