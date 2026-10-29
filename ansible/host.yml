@@ -289,6 +289,10 @@
       # The OpenCode managed config: it set chrome-devtools for the opencode CLI
       # (agent-policy.yml no longer writes it), and no reader is left.
       - /etc/opencode/opencode.json
+      - /etc/opencode/opencode.json
+      # Retired: the unit runs the packaged /usr/bin/syncthing now, and this
+      # copy comes first on PATH (#10844).
+      - "{{ nish_home }}/.local/bin/syncthing"
     # The retired paths that are git working trees of their own, so deleting one
     # takes commits, a stash or an edit that this box may be the only place still
     # holding. "Remove retired host files" deletes a path blindly, so the tasks
@@ -387,6 +391,8 @@
     - ansible.builtin.import_tasks: tasks/tether.yml
 
     - ansible.builtin.import_tasks: tasks/services.yml
+
+    - ansible.builtin.import_tasks: tasks/syncthing.yml
 
     - ansible.builtin.import_tasks: tasks/gh-cli.yml
 

@@ -139,7 +139,7 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /usr/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
@@ -575,7 +575,7 @@ jobs:
             [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
-              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
               [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }

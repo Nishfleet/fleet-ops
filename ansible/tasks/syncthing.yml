@@ -1,0 +1,35 @@
+# syncthing comes from Syncthing's own apt repository, so the daily dist-upgrade
+# in update.yml keeps it current: the packaged build has no upgrader, and the
+# unit runs /usr/bin/syncthing (#10844). The channel is stable-v1, not stable:
+# 2.x converts the index database one way on its first start.
+- name: Install the Syncthing apt key
+  ansible.builtin.get_url:
+    url: https://syncthing.net/release-key.gpg
+    dest: /etc/apt/keyrings/syncthing-archive-keyring.gpg
+    checksum: sha256:c38853d2ccb890ae428e1fbf05d8c8fe0ba6f560bd050e161fb4e5324cdb4a9b
+    mode: "0644"
+
+- name: Add the Syncthing apt repository
+  ansible.builtin.deb822_repository:
+    name: syncthing
+    types: deb
+    uris: https://apt.syncthing.net/
+    suites: syncthing
+    components: stable-v1
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/syncthing-archive-keyring.gpg
+
+- name: Install syncthing from the Syncthing repository
+  ansible.builtin.apt:
+    name: syncthing
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  register: syncthing_package
+
+# The unit names the package path, so start it here: a restart on the deploy
+# that only rewrites the unit file would find no /usr/bin/syncthing.
+- name: Start syncthing on the packaged binary
+  ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host restart syncthing.service
+  when: syncthing_package is changed

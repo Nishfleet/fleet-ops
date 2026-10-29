@@ -2472,3 +2472,158 @@ def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None
     token = _unit_keys(GRAFANA_TOKEN)
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
     assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+
+
+RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}
+
+DESIGNED_FLAPPERS = {
+    "rootfs/etc/systemd/system/tailscaled.service": (
+        "SSH is tailnet-only, so the lifeline keeps coming back",
+        None,
+    ),
+    "rootfs/etc/systemd/system/claude-remote-control.service": (
+        "50-alert-on-stop.conf pages on every exit through ExecStopPost=",
+        (
+            "rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf",
+            "fleet-unit-failed@%N.service",
+        ),
+    ),
+    "rootfs/etc/systemd/system/hermes-gateway.service": (
+        "HermesGatewayDown pages a 5-minute window with no active state",
+        ("rootfs/etc/prometheus/fleet_rules.yml", "alert: HermesGatewayDown"),
+    ),
+}
+
+# systemd's own defaults for an unset key (systemd.unit):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=
+DEFAULT_START_INTERVAL_SEC = 10.0
+DEFAULT_START_BURST = 5
+DEFAULT_RESTART_SEC = 0.1
+
+SPAN_SECONDS = {"": 1.0, "s": 1.0, "min": 60.0, "h": 3600.0}
+
+
+def _seconds(key: str, value: str) -> float:
+    """A span in seconds, read with the time units this repo's units use."""
+    if value.strip() == "infinity":
+        return float("inf")
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]*)", value.strip())
+    assert match, f"{key}={value} is not a number with a time unit"
+    number, unit = match.groups()
+    assert unit in SPAN_SECONDS, f"{key}={value}: this gate reads only the units {sorted(SPAN_SECONDS)}; add {unit!r} to SPAN_SECONDS"
+    return float(number) * SPAN_SECONDS[unit]
+
+
+def unit_sources() -> dict[str, list[Path]]:
+    """Unit path to every file that layers onto it, in systemd's apply order.
+
+    The key is the path, because the same unit name ships twice here: a linked
+    user unit in systemd/ and a root-owned one in rootfs/etc/systemd are
+    different units with different failure readers. A drop-in directory names a
+    unit even when its base is not in this repo: the self-hosted runners and
+    tailscaled ship their base from the vendor, and that drop-in carries the
+    whole restart policy. A quadlet is a source too: podman generates the unit
+    from it and passes its [Unit] keys through.
+    """
+    sources: dict[str, list[Path]] = {}
+    for pattern in (
+        "systemd/*.service",
+        "rootfs/etc/systemd/system/*.service",
+        "rootfs/etc/systemd/user/*.service",
+        "containers/quadlet/*.container",
+    ):
+        for path in sorted(ROOT.glob(pattern)):
+            key = f"{path.parent.relative_to(ROOT)}/{path.name}"
+            sources[key] = [path, *sorted(path.parent.glob(f"{path.name}.d/*.conf"))]
+    for dropin_dir in sorted(
+        [*ROOT.glob("systemd/*.d"), *ROOT.glob("rootfs/etc/systemd/system/*.d"), *ROOT.glob("rootfs/etc/systemd/user/*.d")]
+    ):
+        key = f"{dropin_dir.parent.relative_to(ROOT)}/{dropin_dir.name[: -len('.d')]}"
+        sources.setdefault(key, sorted(dropin_dir.glob("*.conf")))
+    return sources
+
+
+def effective_values(name: str) -> dict[str, list[str]]:
+    """Every value each key takes across the unit's layers, the last one effective."""
+    values: dict[str, list[str]] = {}
+    for layer in unit_sources()[name]:
+        for key, layer_values in _unit_keys(layer).items():
+            values.setdefault(key, []).extend(layer_values)
+    return values
+
+
+def restarting_units() -> list[str]:
+    return sorted(
+        name
+        for name in unit_sources()
+        if (effective_values(name).get("Restart", [None])[-1] or "").lower() in RESTART_POLICIES
+    )
+
+
+def test_every_restart_surface_is_covered() -> None:
+    units = restarting_units()
+    assert units, "no unit with a Restart= policy was found"
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    missing = [surface for surface in surfaces if not any(name.startswith(f"{surface}/") for name in units)]
+    assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
+
+
+def test_designed_flappers_are_restarting_units() -> None:
+    stale = sorted(set(DESIGNED_FLAPPERS) - set(restarting_units()))
+    assert not stale, f"DESIGNED_FLAPPERS lists units that ship no restart policy: {stale}"
+
+
+def test_every_designed_flapper_cites_the_page_that_replaces_the_failed_state() -> None:
+    """The exemption is only sound while the page its reason names is shipped."""
+    unpageable = sorted(name for name, (_, pager) in DESIGNED_FLAPPERS.items() if pager is None)
+    assert unpageable == ["rootfs/etc/systemd/system/tailscaled.service"], (
+        f"only the tailnet lifeline may sit outside the gate with no page behind it: {unpageable}"
+    )
+    for name, (reason, pager) in DESIGNED_FLAPPERS.items():
+        if pager is None:
+            continue
+        path, needle = pager
+        assert needle in (ROOT / path).read_text(), (
+            f"{name} is exempt from the start-limit gate because {reason}, but {path} no longer carries {needle!r}, "
+            f"so a crash loop there would be silent and paged to nobody"
+        )
+
+
+@pytest.mark.parametrize("name", restarting_units())
+def test_a_crash_loop_reaches_failed_before_its_start_limit_hides_it(name: str) -> None:
+    """A restart loop must reach `failed`, the state its failure reader polls.
+
+    systemd's default budget is 5 starts in 10 s. A unit that restarts slower
+    than that never spends it, so nothing fires and the loop runs unseen
+    (fleet-ops#10253). The reader per unit, and the whole reason, are in
+    docs/ARCHITECTURE.md and the fleet map.
+    """
+    values = effective_values(name)
+    interval_text = values["StartLimitIntervalSec"][-1].strip() if "StartLimitIntervalSec" in values else ""
+    if name in DESIGNED_FLAPPERS:
+        assert interval_text and _seconds("StartLimitIntervalSec", interval_text) == 0, (
+            f"{name} no longer disables the start limit; drop it from DESIGNED_FLAPPERS"
+        )
+        return
+    restart_text = values["RestartSec"][-1].strip() if "RestartSec" in values else ""
+    restart = _seconds("RestartSec", restart_text) if restart_text else DEFAULT_RESTART_SEC
+    assert restart != float("inf"), (
+        f"{name}: RestartSec=infinity schedules no restart after an exit, so a crashed unit never comes back; set a finite RestartSec"
+    )
+    assert interval_text != "infinity", (
+        f"{name}: StartLimitIntervalSec=infinity never lets the budget expire, so the first crash loop benches the unit for good; set 10min"
+    )
+    interval = _seconds("StartLimitIntervalSec", interval_text) if interval_text else DEFAULT_START_INTERVAL_SEC
+    burst_text = values["StartLimitBurst"][-1].strip() if "StartLimitBurst" in values else str(DEFAULT_START_BURST)
+    assert burst_text.isdigit() and int(burst_text) >= 1, (
+        f"{name}: StartLimitBurst={burst_text} must be a whole number of starts and at least 1, because 0 disables the limit"
+    )
+    burst = int(burst_text)
+    spent = burst * restart
+    assert spent < interval, (
+        f"{name}: Restart={values['Restart'][-1]} RestartSec={restart:g}s spends its start budget at "
+        f"{burst:g} x {restart:g}s = {spent:g}s, which never fills inside StartLimitIntervalSec={interval:g}s, "
+        f"so a crash loop restarts for ever and never reaches `failed`, the state its failure reader polls "
+        f"(fleet-ops#10253). Raise StartLimitIntervalSec above that spend, or list the unit in "
+        f"DESIGNED_FLAPPERS with the page that replaces the failed state."
+    )

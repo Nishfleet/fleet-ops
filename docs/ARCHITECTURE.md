@@ -89,9 +89,10 @@ The rules still in force:
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi. `strong-only` (senior) issues go to Claude
-  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the issue number's parity
-  (fleet-ops#9696): in the claude lane
+  Code first (`claude-sonnet-5-5`, the only worker model: Opus, Fable and Qwen
+  are reviewer and judge models only, fleet-ops#10750). A packet that failed
+  twice escalates to the worker-capable pool, never to Opus. The seat is set by
+  the issue number's parity (fleet-ops#9696): in the claude lane
   step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
   keeps seat a. The seat follows the issue, not the runner, so a retry of the
@@ -119,7 +120,7 @@ The rules still in force:
   title and body: does completing this need engineering judgment (a design
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
-  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
+  the issue goes to the claude lane (Sonnet); at 0.1
   or less it goes to the free pi lane. Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
   pi lane; `strong-only` always goes to claude. The decision is written as
@@ -232,9 +233,13 @@ Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
 `Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
-owner fits, open a design proposal through the senior-conference channel — do
-not build by fiat.
+or Pi's stock dispatch (`.github/workflows/agent.yml`). Set the start limit so
+the restart cadence can spend it. A unit whose cadence never fills the budget
+restarts for ever and never becomes `failed`, so its one reader (an `OnFailure=`
+hook, the `node_systemd_unit_state` gauge on a system unit, or the manager's
+failed list) sees nothing, and `tests/test_systemd_unit_keys.py` gates this. If
+no existing owner fits, open a design proposal through the senior-conference
+channel — do not build by fiat.
 
 ## CI standard (the parts that stay)
 
