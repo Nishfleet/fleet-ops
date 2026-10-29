@@ -424,6 +424,74 @@ def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_is_the_labelled_backlog_not_the_rows_it_printed(prompt, tmp_path):
+    labelled, stored = 68, 46
+    issues = {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in range(1, labelled + 1)}
+    store = {f"wait:alpha#{n}": "open|needs-nish-decision" for n in range(1, stored + 1)}
+    gh = {"repos": ["alpha"], "issues": issues, "runs": {"Nishfleet/alpha": []}}
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps(store))
+    assert lines[:2] == [f"WAITING_TOTAL {labelled}", f"WAITING_MORE {labelled - 2}"], lines[:2]
+    assert len([l for l in lines if " NEW " in l]) == labelled - stored
+    assert f"UNCHANGED_TOTAL {stored}" in lines
+    assert len(saved) == labelled
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_carries_no_overflow_when_the_whole_backlog_fits(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {
+            "Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
+        },
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert lines[0] == "WAITING_TOTAL 2", lines
+    assert not any(l.startswith("WAITING_MORE") for l in lines), lines
+    assert len(saved) == 2
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_fails_loudly_when_a_repository_could_not_be_read(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "faillist": ["beta"],
+        "issues": {"Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING_COUNT FAILED" in lines, lines
+    assert not any(l.startswith("WAITING_TOTAL") or l.startswith("WAITING_MORE") for l in lines), lines
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#1 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#1": "open|needs-nish-decision"}
+
+
+def test_the_reply_copies_the_printed_waiting_count():
+    for prompt in (MORNING, EVENING):
+        text = prompt.read_text()
+        step = next(l for l in text.splitlines() if l.startswith("3 WAITING ON NISH"))
+        assert "copied exactly from that WAITING_MORE line" in step, prompt.name
+        assert "never count the ROW lines" in step, prompt.name
+        assert "never write the WAITING_TOTAL number" in step, prompt.name
+        assert "WAITING_COUNT FAILED" in step, prompt.name
+        assert "Never show the count of labelled issues" not in text, prompt.name
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_the_waiting_counts_never_reach_the_stored_object(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in (1, 2, 3)},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING_TOTAL 3" in lines, lines
+    assert not set(saved) & {"waiting", "wfail"}, saved
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
 def test_waiting_discovery_names_a_stored_issue_once(prompt, tmp_path):
     gh = {
         "repos": ["alpha"],
@@ -683,7 +751,7 @@ def test_site_check_reports_the_page_result_even_when_the_store_was_not_read(tmp
 def test_the_evening_sequence_carries_the_checked_row_from_2a_into_2b(tmp_path):
     gh = {"repos": [], "issues": {}, "runs": {}}
     two_a, stored_after_2a = _run_2a(EVENING, tmp_path, gh, "{}")
-    assert two_a == ["UNCHANGED_TOTAL 0", "STORED-SAVED"], two_a
+    assert two_a == ["WAITING_TOTAL 0", "UNCHANGED_TOTAL 0", "STORED-SAVED"], two_a
     assert stored_after_2a == {}
     (tmp_path / "bin/curl").write_text(FAKE_CURL)
     (tmp_path / "bin/curl").chmod(0o755)

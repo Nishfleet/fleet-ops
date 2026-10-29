@@ -1124,6 +1124,18 @@ def test_glue_sweep_user_config_debris_is_retired() -> None:
     assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
 
 
+GLUE_SWEEP_CHECKOUT_CACHES = (
+    "{{ nish_home }}/workspaces/tooling/last30days-skill/.pytest_cache",
+)
+
+
+def test_glue_sweep_checkout_caches_are_retired() -> None:
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
+    assert not missing, f"host.yml does not delete these checkout caches: {missing}"
+
+
 def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
     """A user unit deleted while the user manager holds it stays listed by
     list-unit-files until that manager reloads, which is half of #10544's check."""
@@ -1721,7 +1733,7 @@ number=""
 status=${FAKE_GH_EDIT_STATUS:-0}
 while [ $# -gt 0 ]; do
     case "$1" in
-        list|edit) sub=$1 ;;
+        list|edit|workflow) sub=$1 ;;
         -R) repo=$2; shift ;;
         --jq) prog=$2; shift ;;
         --add-label) shift ;;
@@ -1732,6 +1744,7 @@ while [ $# -gt 0 ]; do
 done
 case $sub in
     list) printf '%s' "$FAKE_GH_PAYLOAD" | jq -r "$prog" ;;
+    workflow) [ -z "$FAKE_GH_DISPATCH" ] || { echo "$FAKE_GH_DISPATCH" >&2; exit 1; } ;;
     edit) if [ "$status" -eq 0 ]; then printf '%s#%s\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"
           else printf '%s#%s FAILED\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"; fi
           exit "$status" ;;
@@ -1751,11 +1764,13 @@ def fake_gh_dir(tmp_path: Path) -> Path:
 def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
     keys = effective_directives(PR_SWEEP)
     starts = keys["ExecStart"]
-    assert len(starts) == 2, "the dispatch line plus the failure check; deleting the second line is the documented off switch"
-    assert starts[0] == "/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i"
-    assert "gh run list" in starts[1] and "-w agent-dispatch.yml" in starts[1]
-    assert "-s completed -L 1" in starts[1], "the newest completed run only, so the previous cycle's startup_failure is caught"
-    assert "conclusion,url" in starts[1]
+    assert len(starts) == 1, (
+        "one line, because a skipped dispatch must not run the failure check either, and systemd skips the rest of a multi-command ExecStart only on failure; deleting it is the documented off switch"
+    )
+    assert "gh workflow run agent-dispatch.yml -R Nishfleet/%i" in starts[0]
+    assert "gh run list" in starts[0] and "-w agent-dispatch.yml" in starts[0]
+    assert "-s completed -L 1" in starts[0], "the newest completed run only, so the previous cycle's startup_failure is caught"
+    assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
     assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
@@ -1779,7 +1794,7 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
 
 
 def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
-    command = specifier_expanded(unit_directives(PR_SWEEP)["ExecStart"][1], tmp_path)
+    command = sh_script(PR_SWEEP, tmp_path).replace("%i", "fleet-ops")
     env = {**os.environ, "PATH": f"{fake_gh_dir(tmp_path)}{os.pathsep}{os.environ['PATH']}"}
     url = "https://github.com/Nishfleet/fleet-ops/actions/runs/1"
 
@@ -1799,6 +1814,48 @@ def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: 
         assert check(json.dumps([{"conclusion": conclusion, "url": url}])).returncode == 0, conclusion
     assert check("[]").returncode == 0, "a repo with no completed run yet passes"
     assert check("null").returncode == 0
+
+
+DISABLED_WORKFLOW = (
+    "could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow "
+    "(https://api.github.com/repos/Nishfleet/drive/actions/workflows/1/dispatches)"
+)
+
+
+def sweep_dispatch(tmp_path: Path, failure: str) -> subprocess.CompletedProcess:
+    """The unit's one ExecStart, with a fake gh that fails the dispatch when asked."""
+    bindir = fake_gh_dir(tmp_path)
+    return subprocess.run(
+        ["/bin/sh", "-c", sh_script(PR_SWEEP, tmp_path).replace("%i", "drive")],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_DISPATCH": failure,
+            "FAKE_GH_PAYLOAD": json.dumps(
+                [{"conclusion": "startup_failure", "url": "https://github.com/Nishfleet/drive/actions/runs/1"}]
+            ),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_fleet_pr_sweep_skips_a_repo_whose_agent_dispatch_is_disabled(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, DISABLED_WORKFLOW)
+    assert proc.returncode == 0, (
+        "a disabled workflow never fixes itself, so the hourly timer would page for ever (fleet-ops#9631); "
+        "the fake's newest run is a startup_failure, so a pass also proves the failure check was skipped"
+    )
+    assert proc.stdout.splitlines() == [
+        "skip: Nishfleet/drive disabled agent-dispatch (HTTP 422), so there is no sweep to start"
+    ]
+    assert proc.stderr == "", "one journal line, not the 422 text"
+
+
+def test_fleet_pr_sweep_keeps_every_other_dispatch_failure_loud(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, "could not create workflow dispatch event: HTTP 500: Internal Server Error")
+    assert proc.returncode != 0, "only the disabled-workflow answer is a permanent state; anything else retries and pages"
+    assert "HTTP 500: Internal Server Error" in proc.stdout
 
 
 def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status: int = 0) -> tuple[int, list[str], list[str]]:

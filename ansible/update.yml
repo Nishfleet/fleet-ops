@@ -24,9 +24,11 @@
 #              services restarted, tincan with its idle listeners restarted,
 #              the npm and uv tools (yt-dlp is a uv tool and must never
 #              self-update: that replaced its running binary and broke it,
-#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)). Stale npm
-#              staging dirs go first, so one interrupted self-update cannot
-#              fail `npm update`.
+#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and
+#              `podman auto-update`, which finds nothing to move because every
+#              quadlet image is digest-pinned (tests/test_quadlet_hardening.py).
+#              Stale npm staging dirs go first, so
+#              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
 #              restart the timers it stopped, sweep each queue. A run killed
@@ -44,17 +46,15 @@
 # chat (rootfs/etc/needrestart/conf.d/50-fleet.conf). Its new libraries and a
 # new Claude version take effect at the next reboot.
 #
-# Container images change only by PR. Every quadlet pins its image by digest
-# (fleet-ops#10098, tests/test_quadlet_hardening.py), and that covers postgres
-# (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd, so a
-# rollback would only catch a start failure), the proxy, grafana and aiostreams.
-# No quadlet carries AutoUpdate=registry, so nothing here moves an image and no
-# container needs a restart to pick a label up (fleet-ops#9257). A new digest
-# reaches a running container at that unit's next start: fleet-sync restarts
-# Grafana when its quadlet changes, and nothing restarts the other three
-# (fleet-ops#10820).
-# Skipped on purpose: GitHub runners (they update themselves) and the raw
-# binaries in ~/.local/bin that have no updater.
+# Container images move one way: a digest changes in a PR, and that covers
+# postgres (it holds the LiteLLM keys and spend, and no quadlet has a HealthCmd,
+# so a rollback would only catch a start failure), the proxy, grafana,
+# aiostreams and redis. No quadlet carries AutoUpdate=registry, because every
+# image is pinned by a digest and tests/test_quadlet_hardening.py fails a pinned
+# image that does, so `podman auto-update` below finds nothing to move. It stays
+# for a quadlet that floats later, which the same test then requires to carry the
+# label, once its digest rule relaxes. Skipped on purpose: GitHub runners (they
+# update themselves) and the raw binaries in ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -837,10 +837,9 @@
               ansible.builtin.set_fact:
                 cua_update_failed: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stderr | default('') }}"
 
-        # podman and `systemctl --user` both talk to the user manager on
-        # /run/user/<uid>/systemd/private. On 2026-10-21 that socket file stayed
-        # with no listener (connect refused), and every podman call after this
-        # point failed. A daemon-reexec of the user manager
+        # podman talks to the user manager on /run/user/<uid>/systemd/private. On
+        # 2026-10-21 that socket file stayed with no listener (connect refused),
+        # and every podman auto-update failed. A daemon-reexec of the user manager
         # restores the listener and restarts no unit. It runs only when the probe
         # below meets that refusal, so a healthy box is not touched.
         - name: Probe the user systemd socket podman needs
@@ -861,6 +860,55 @@
             argv: [systemctl, --user, daemon-reexec]
           when: podman_socket_probe.stderr is search('connection refused')
           changed_when: true
+
+        # No quadlet carries AutoUpdate=registry, because every image is pinned
+        # by a digest and tests/test_quadlet_hardening.py fails a pinned image
+        # that carries the label, so this reports nothing to do; it stays for a
+        # quadlet that floats later, which the same test then requires to carry
+        # the label, once its digest rule relaxes. A unit that fails to start is
+        # rolled back, and podman
+        # auto-update then exits non-zero (the assert at the end of the run
+        # fails loud on it). A unit that starts but is broken is not rolled
+        # back: no quadlet has a HealthCmd. As nish, because the quadlets are
+        # systemd user units. The dry-run on either side shows the pending
+        # updates in the report; the real check runs on the box, not in a
+        # workspace harness where newuidmap is blocked (fleet-ops#9254).
+        - name: Record container images podman can auto-update, before
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_before
+          changed_when: false
+          # A recording probe: a transient registry outage must not abort the
+          # update block before the tools and plugin steps run. The real task
+          # below is the gate.
+          failed_when: false
+
+        - name: Update the redis container image
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update]
+          register: podman_autoupdate
+          # No image moved when every row reads `registry false`; a moved row
+          # reads `registry true`. A failed restart reads `registry failed`
+          # and the assert below fails loud on it.
+          changed_when: "podman_autoupdate.stdout is search('registry\\s+(true|failed)')"
+          ignore_errors: true
+          timeout: 900
+
+        - name: Record container images podman can auto-update, after
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.command:
+            argv: [podman, auto-update, --dry-run]
+          register: podman_autoupdate_after
+          changed_when: false
+          failed_when: false
 
         # No --yes: a plugin whose update needs a new marketplace command
         # fails here (and in the final assert) instead of being accepted blind.
@@ -904,9 +952,10 @@
           changed_when: false
           ignore_errors: true
 
-        # The smoke call cannot pass while the router is still starting, and a
-        # call in that window fails on the connection, not on pi. Wait for the
-        # router first, bounded so a genuinely dead router still fails the run
+        # The smoke call cannot pass while the router is still starting: `podman
+        # auto-update` above restarts the redis cache the proxy's readiness reads,
+        # and a call in that window fails on the connection, not on pi. Wait for
+        # the router first, bounded so a genuinely dead router still fails the run
         # (60 x (10 s + 5 s timeout) = about 15 min, then recorded as a failure).
         - name: Wait for the model router to answer before the smoke call
           ansible.builtin.uri:
@@ -1252,6 +1301,9 @@
                 containers: "{{ (prune_containers | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 images: "{{ (prune_images | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+              podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
+              podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
               versions_before: "{{ (versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
               versions_after: "{{ (versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | list }}"
               app_versions_before: "{{ (app_versions_before | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | map('trim') | list }}"
@@ -1278,6 +1330,7 @@
             quiet: true
             that:
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
+              - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
@@ -1318,6 +1371,7 @@
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
               git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) if off_branch_pins is defined else 'not run, an earlier step in the block failed' }};
               Cua Spaces update: {{ cua_update_failed | default('ok') }};
+              podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};
               sweeps: {{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }};
               Remote Control: {{ rc_state.stdout }}
