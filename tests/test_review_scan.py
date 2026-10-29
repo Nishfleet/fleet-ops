@@ -50,17 +50,21 @@ def _scanner(run):
     return "\n".join(lines[start:end + 1])
 
 
-def _post(tmp_path, text, function="say", rules=RULES):
+def _post(tmp_path, text, function="say", rules=RULES, binary=True, extra=None):
     state = tmp_path / "state"
     state.mkdir()
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     for name in ("gh", "curl"):
         (stub_dir / name).write_text(STUB)
-        (stub_dir / name).chmod(0o755)
+    for name, body in (extra or {}).items():
+        (stub_dir / name).write_text(body)
+    for path in stub_dir.iterdir():
+        path.chmod(0o755)
+    dirs = [p for p in os.environ["PATH"].split(":") if p and (binary or not os.access(f"{p}/gitleaks", os.X_OK))]
     env = {
         **os.environ,
-        "PATH": f"{stub_dir}:{os.environ['PATH']}",
+        "PATH": ":".join([str(stub_dir), *dirs]),
         "HOME": str(tmp_path / "home"),
         "RUNNER_TEMP": str(tmp_path / "temp"),
         "STATE": str(state),
@@ -132,12 +136,48 @@ def test_a_hit_that_spans_two_lines_is_withheld_as_one_note(tmp_path):
 
 
 def test_unreadable_rules_post_no_review_text(tmp_path):
-    text = "No blockers.\nchecked: db1.fake-tailnet.ts.net\nAPPROVE"  # gitleaks:allow
+    text = "blocker: reads /home/nish/fleet-ops/seats.env\nBLOCK"  # gitleaks:allow
     r, bodies, _ = _post(tmp_path, text, rules=None)
     assert r.returncode == 1
     assert "::error::the private-detail scan could not run" in r.stdout
     assert bodies, "the author must be told why no review was posted"
-    assert "fake-tailnet" not in bodies[0] and "No blockers." not in bodies[0]
+    assert "/home/nish" not in bodies[0] and "BLOCK" not in bodies[0]
+
+
+def test_a_long_review_reports_the_line_it_actually_matched(tmp_path):
+    lines = [f"checked {i}: no private detail here" for i in range(3000)]
+    lines[2999] = "checked: db1.fake-tailnet.ts.net answers on the private network"  # gitleaks:allow
+    text = "\n".join(lines)
+    assert len(text) > 100_000
+    r, bodies, _ = _post(tmp_path, text)
+    assert r.returncode == 0, r.stderr
+    posted = bodies[0].splitlines()
+    assert len(posted) == len(lines), "the scan must not shift or drop lines"
+    assert posted[:2999] == lines[:2999]
+    assert posted[2999] == WITHHELD
+
+
+def test_the_install_cannot_print_on_the_comment_body(tmp_path):
+    text = "No blockers.\nAPPROVE"
+    r, bodies, _ = _post(tmp_path, text, binary=False)
+    assert r.returncode == 1
+    assert ".tgz" not in r.stdout and "OK" not in r.stdout and "FAILED" not in r.stdout, (
+        "whatever the install prints would be the first line of a public comment"
+    )
+    assert bodies and "No blockers." not in bodies[0]
+
+
+INSTALL = {
+    "sha256sum": '#!/bin/sh\nprintf "%s: OK\\n" "$*"\nexit 0\n',
+    "tar": '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -C ] && d=$2; shift; done\nprintf "#!/bin/sh\\nexit 0\\n" > "$d/gitleaks"\nchmod +x "$d/gitleaks"\n',
+}
+
+
+def test_a_fresh_install_does_not_leak_its_own_output_into_the_comment(tmp_path):
+    text = "No blockers.\nAPPROVE"
+    r, bodies, _ = _post(tmp_path, text, binary=False, extra=INSTALL)
+    assert r.returncode == 0, r.stderr
+    assert bodies == [text], "the install's own output must never reach the comment body"
 
 
 def test_approval_waits_for_the_scan(tmp_path):
@@ -168,6 +208,9 @@ def test_both_posting_paths_scan_before_they_post():
     assert run.count("out=$(scan \"$1\") || scan_failed") == 2, "say and approve_say must both scan"
     assert "https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml" in run, (
         "the scan must read the shared rule file the PR scan uses"
+    )
+    assert "sha256sum --check --strict --status -" in run and "} >&2" in run, (
+        "the install must not print on the stdout that becomes the comment body"
     )
 
 
