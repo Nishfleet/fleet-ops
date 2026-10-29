@@ -141,7 +141,12 @@ def test_every_paid_plan_idle_rule_reads_the_window_its_message_names():
         }
         if shape != wanted:
             wrong[uid] = (shape, wanted)
-    assert not wrong, f"an idle rule and the alert message it sends disagree (MiniMax 72h is fleet-ops#10431, Alibaba 7d idle is fleet-ops#9865): {wrong}"
+    assert not wrong, (
+        "an idle rule and the alert message it sends disagree (MiniMax 72h is fleet-ops#10431, "
+        f"Alibaba 7d idle is fleet-ops#9865). {wrong}. Their summaries read "
+        f"{[rules[uid]['annotations']['summary'] for uid in wrong]}, and _named_windows reads "
+        "'for N hours/days' out of that text."
+    )
 
 
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():

@@ -97,25 +97,6 @@ tests:
     exp_samples:
     - labels: '{}'
       value: 1
-# Last sample exactly 24h before the eval. A promtool whose range selectors
-# include their left edge, as 2.x does and apt installs, still holds that
-# sample, and with one sample alone in the window there is no rate to
-# extrapolate, so the idle branch returns nothing and the absence branch is
-# quiet. Prometheus 3.0 made range selectors left-open, a sample at the lower
-# limit being excluded (prometheus/prometheus#13904), so on 3.x this row is
-# already absent at 44h and this case fires. It pins 2.x.
-- interval: 1h
-  input_series:
-  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
-    values: '100+0x20'
-  alert_rule_test:
-  - alertname: CommandCodeIdle
-    eval_time: 44h
-    exp_alerts: []
-  promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
-    eval_time: 44h
-    exp_samples: []
 # MiniMax (#10431): a call 25h back sits inside MiniMax's 72h window and
 # outside a 24h one, so the plan is not idle. Old 24h expression: Alerting.
 - interval: 1h
