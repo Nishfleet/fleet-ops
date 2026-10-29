@@ -256,11 +256,13 @@ def selftest():
     assert unguarded_refs('{{ printf "%v %v" $values $values.D }}') == ["values", "values.D"]
     repo = Path(__file__).resolve().parents[1]
     assert TITLE_PRINTF.search('{{ coll.Dict "title" (printf "cost alarm: %s %s" .Labels.a) }}').group(1) == "cost alarm: "
-    assert TITLE_PRINTF.search('{{ $$row = printf "%s (proxy-level)" .Labels.b }}{{ coll.Dict "title" (printf "router dead row: %s" $$row) }}').group(1) == "router dead row: "
+    assert TITLE_PRINTF.search('{{ printf "a body fragment" }}{{ $$row = printf "%s (proxy-level)" .Labels.b }}{{ coll.Dict "title" (printf "router dead row: %s" $$row) }}').group(1) == "router dead row: "
     filing = {"settings": {"url": "https://api.github.com/repos/o/r/issues", "payload": {"template": '{{ coll.Dict "title" (printf "alert: %s" .A) }}'}}}
-    assert issue_title_prefixes({"filing": {"receivers": [filing]}, "telegram": {"receivers": [{"settings": {"url": "https://telegram.example/send", "payload": {"template": "no title"}}}]}}) == {"filing": "alert: "}
-    assert issue_title_prefixes({"filing": {"receivers": [{**filing, "settings": {**filing["settings"], "payload": {"template": "no title printf"}}}]}}) == {"filing": None}
-    assert gate_titles(repo)[1] is None, gate_titles(repo)[1]
+    assert issue_title_prefixes({"filing": {"receivers": [filing]}, "telegram": {"receivers": [{"settings": {"url": "https://telegram.example/send", "payload": {"template": "no title"}}}]}}) == {"filing": {"alert: "}}
+    assert issue_title_prefixes({"filing": {"receivers": [{**filing, "settings": {**filing["settings"], "payload": {"template": "no title printf"}}}]}}) == {"filing": set()}
+    titles, why = gate_titles(repo)
+    assert why is None, why
+    assert titles, "the live gate names no title prefix at all"
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / AGENT_GATE).parent.mkdir(parents=True)
@@ -304,23 +306,31 @@ def dead_row_shape(rules, points, bad):
 
 
 AGENT_GATE = ".github/workflows/agent.yml"
-TITLE_PRINTF = re.compile(r'printf "([^"%]+)')
+# Anchored on the title dict: a template that formats a body fragment with a
+# literal printf before it builds the title would otherwise hand over the wrong
+# prefix, and the gate would be judged against a string no title starts with.
+TITLE_PRINTF = re.compile(r'"title" \(printf "([^"%]+)')
 
 
 def issue_title_prefixes(points):
-    """{contact point: the prefix its issue title starts with} for every contact
-    point that files a GitHub issue. A contact point whose title printf is gone
-    maps to None: a title the twin check cannot match files a duplicate on every
-    firing (fleet-ops#11086)."""
+    """{contact point: the prefixes its issue titles start with} for every contact
+    point that files a GitHub issue. A point that files but writes no literal
+    'x: ' title prefix maps to an empty set: a title built from a label value
+    cannot be prefix-matched, so the twin check never closes its duplicate
+    (fleet-ops#11086)."""
     out = {}
     for name, point in sorted(points.items()):
+        prefixes, files = set(), False
         for rcv in point.get("receivers") or []:
             settings = rcv.get("settings") or {}
             if "/issues" not in str(settings.get("url", "")):
                 continue
-            template = (settings.get("payload") or {}).get("template", "")
-            found = TITLE_PRINTF.search(template)
-            out[name] = found.group(1) if found and found.group(1).endswith(": ") else None
+            files = True
+            found = TITLE_PRINTF.search((settings.get("payload") or {}).get("template", ""))
+            if found:
+                prefixes.add(found.group(1))
+        if files:
+            out[name] = prefixes
     return out
 
 
@@ -331,7 +341,8 @@ def gate_titles(repo):
     text = (repo / AGENT_GATE).read_text()
     found = re.search(r"^ *if jq -e --argjson titles '(\[[^']*\])'", text, re.M)
     if not found:
-        return None, f"{AGENT_GATE}: the dispatch gate's twin check no longer names its alert title prefixes in one --argjson titles list"
+        return None, (f"{AGENT_GATE}: the dispatch gate's twin check no longer names its alert title prefixes in one "
+                      f"--argjson titles list, or that line was reformatted")
     try:
         return json.loads(found.group(1)), None
     except json.JSONDecodeError as e:
@@ -345,14 +356,18 @@ def alert_titles_agree(points, repo, bad):
     gate, why = gate_titles(repo)
     findings = [why] if why else []
     if not findings:
-        for name, prefix in sorted(written.items()):
-            if prefix is None:
+        if not written:
+            findings.append("no contact point under the scanned provisioning dir files a GitHub issue, "
+                            "so the gate's twin list is checked against nothing")
+        for name, prefixes in sorted(written.items()):
+            if not prefixes:
                 findings.append(f"{name} files an issue whose title carries no 'x: ' printf prefix, so the twin check can never match it")
-            elif prefix not in gate:
+            for prefix in sorted(prefixes - set(gate)):
                 findings.append(f"{name} files issues titled {prefix!r}, which the dispatch gate's twin check does not list, "
                                 f"so a repeated alert files one issue per firing and nothing closes the older twin (fleet-ops#11086)")
+        listed = {prefix for prefixes in written.values() for prefix in prefixes}
         for prefix in gate:
-            if prefix not in written.values():
+            if prefix not in listed:
                 findings.append(f"the dispatch gate's twin list holds {prefix!r}, which no issue-filing contact point writes")
     if findings:
         bad += findings
