@@ -169,16 +169,29 @@ def test_hand_summons_reaches_the_orchestrate_job():
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
-def test_the_started_comment_arm_suffix_has_one_format_and_both_readers_strip_it():
+def test_the_started_comment_arm_suffix_has_one_format_and_every_reader_strips_it():
     text = AGENT.read_text()
     strip = 'sub(" · arm: menu=(on|off) desk=(on|off)$"; "")'
     assert text.count(strip) == 2, (
-        "both readers of the started comment must strip the arm suffix before comparing: the attempt cap "
-        "(fleet-ops#9330 would otherwise count arm runs as unstarted) and the strike probe (a suffix breaks its "
-        f"endswith). Found {text.count(strip)} strippers."
+        "both readers of the started comment in agent.yml must strip the arm suffix before comparing: the attempt "
+        "cap (fleet-ops#9330 would otherwise count arm runs as unstarted) and the strike probe (a suffix breaks "
+        f"its endswith). Found {text.count(strip)} strippers."
     )
+    assert DISPATCH.read_text().count(strip) == 1, (
+        "the sweep's RED_REWORK program (agent-dispatch.yml) reads the same started comment and compares it with "
+        "the infra-failed bodies, so a suffix on an armed start stops that start from matching its own infra "
+        "failure and the sweep answers run-after-failure instead of go (config/sweep-rework-cases.json pins both "
+        "directions: infra-failed-arm-suffixed-run-after-failure-retries, armed-run-started-after-the-failure)"
+    )
+    for path in (AGENT, DISPATCH):
+        for line in path.read_text().splitlines():
+            if 'ltrimstr("agent run started: ")' in line:
+                assert strip in line, (
+                    f"{path.name} reads the started comment on a line that does not strip the arm suffix, so the "
+                    f"comparison it feeds sees the suffix: {line.strip()}"
+                )
     assert 'arm=" · arm: menu=$arm_menu desk=$arm_desk"' in text, (
-        "the started comment's arm suffix changed shape; update the two strippers with it"
+        "the started comment's arm suffix changed shape; update the strippers with it"
     )
     assert "actions/runs/$GITHUB_RUN_ID$arm" in text, "the started comment no longer appends the arm suffix it records"
     assert re.search(r'if \[ "\$miss" = false \] && \[ "\$engine" = pi \]; then', text), (

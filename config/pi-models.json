@@ -58,7 +58,7 @@
         },
         {
           "id": "worker-capable-desk",
-          "name": "LiteLLM worker-capable-desk (alias of worker-capable, earlier compaction; fleet-ops#9330 trial)",
+          "name": "LiteLLM worker-capable-desk (alias of worker-capable; fleet-ops#9330 desk arm)",
           "contextWindow": 140000,
           "maxTokens": 32768
         },
@@ -70,7 +70,7 @@
         },
         {
           "id": "worker-public-desk",
-          "name": "LiteLLM worker-public-desk (alias of worker-public, earlier compaction; fleet-ops#9330 trial)",
+          "name": "LiteLLM worker-public-desk (alias of worker-public; fleet-ops#9330 desk arm)",
           "contextWindow": 140000,
           "maxTokens": 32768
         }

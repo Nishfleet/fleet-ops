@@ -1,10 +1,12 @@
 # fleet-ops#9330: the desk aliases are pinned to the two worker groups a Pi job can
 # pick, so an alias that renames another seat (or a group that does not exist) is a
-# rejected config rather than a second name for a paid lane.
+# rejected config rather than a second name for a paid lane. The rejects loop only
+# requires a nonzero exit, so other schema rules (the model_list counts) also fire here.
 model_list:
 - model_name: worker-cheap
   litellm_params:
     model: openai/x
+    weight: 1
   model_info:
     supports_prompt_caching: true
     cache_proof: 'fixture row: only the rule named in this file is under test (fleet-ops#9330).'
