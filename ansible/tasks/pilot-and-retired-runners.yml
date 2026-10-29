@@ -68,6 +68,23 @@
     state: absent
   when: "'/var/lib/fleet-runner/1/.env' is exists"
 
+# No runner environment picks a Claude seat any more (fleet-ops#10741): the two seats are named in
+# .github/workflows/agent.yml, and the work lane and the review lane each pick one by issue or PR
+# parity. A pin left in a runner's .env made that runner's work jobs and reviews die on one seat's
+# usage limit while the other seat idled, so the line is dropped from every agent runner. The
+# hand-off lane (agent-dispatch.yml) names no seat here and keeps the default login until #10794
+# gives it the same parity pick; it starts a fresh session each run, so it resumes no session that
+# the pin used to point at.
+- name: Drop the Claude seat pin from every agent runner environment
+  ansible.builtin.lineinfile:
+    path: "{{ nish_home }}/.local/share/agent-runner/{{ item }}/.env"
+    regexp: '^CLAUDE_CONFIG_DIR='
+    state: absent
+  loop: "{{ range(1, 31) | list }}"
+  become: true
+  become_user: nish
+  when: "(nish_home ~ '/.local/share/agent-runner/' ~ item ~ '/.env') is exists"
+
 # Runner 1 is still registered with the `agent` label, so a running unit takes production
 # jobs it cannot run (42 failed on 2026-10-28, fleet-ops#10706). Until it is re-registered
 # with a pilot-only label and passes its own test job, a deploy leaves it stopped and
