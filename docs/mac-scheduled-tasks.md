@@ -18,7 +18,7 @@ database export, is retired too, by the product repo itself: that repo deleted
 the export script and its scheduler on 2026-10-23 and moved its restore path to
 stock D1 Time Travel. The one question that path leaves open belongs to that
 repo and is Nish's, so fleet-ops#9527's hand-off is superseded rather than
-built.
+built, and that issue closes as superseded when this lands.
 
 ## The two backup tasks
 
@@ -166,9 +166,11 @@ commands and their output:
 - `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`
   → the page, whose only restore path is D1 Time Travel, and which records the
   2026-06-12 `SQLITE_TOOBIG` rehearsal
-- `sed -n '/"seo-fix-kit" = {/,/}/p' infra/cloudflare-tokens/main.tf` → the
+- `rg -n -A 6 '"seo-fix-kit" = \{' infra/cloudflare-tokens/main.tf` → the
   `account` list is `Workers Scripts Write`, `D1 Write`, `Queues Write`,
   `Account Settings Read`, with no R2 group
+- `gh issue view 304 -R Nishfleet/seo-fix-kit --json state,stateReason` →
+  `CLOSED COMPLETED`
 - `gh pr view 307 -R Nishfleet/seo-fix-kit --json state,mergedAt,mergeCommit` →
   `MERGED`, `mergedAt=2026-10-23T12:36:29Z`, squash
   `5e978e0da0fdec692bdc938c58349a66797ed081`; `gh pr view 305 -R
