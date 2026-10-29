@@ -27,9 +27,9 @@ case "$*" in
   "pr list"*"--head claim/issue-"*) printf '%s' "$FAKE_CLAIM_PR" | jq -r "$q" ;;
   "pr list"*) echo '[]' | jq -r "$q" ;;
   "issue view"*) jq -r "$q" <<<"$FAKE_COMMENTS" ;;
-  "run view"*) jq -r "$q" <<<"$FAKE_RUN" ;;
+  "run view"*) [ -z "$FAIL_RUN" ] || exit 1; jq -r "$q" <<<"$FAKE_RUN" ;;
   "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | jq -r "$q" ;;
-  "api repos/o/r/issues/"*"/events"*) jq -r "$q" <<<"$FAKE_EVENTS" ;;
+  "api repos/o/r/issues/"*"/events"*) [ -z "$FAIL_EVENTS" ] || exit 1; jq -r "$q" <<<"$FAKE_EVENTS" ;;
   "api repos/o/r/issues/"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -40,7 +40,7 @@ def _y(expr):
     return subprocess.run(["yq", expr, WF], check=True, capture_output=True, text=True).stdout
 
 
-def sweep(tmp_path, *, events, comments=None, run=None, claim_pr="[]", inprog="7"):
+def sweep(tmp_path, *, events, comments=None, run=None, claim_pr="[]", inprog="7", fail_run="", fail_events=""):
     gh = tmp_path / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
@@ -53,7 +53,8 @@ def sweep(tmp_path, *, events, comments=None, run=None, claim_pr="[]", inprog="7
            "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": _y(f"{STEP_ENV}.CHECK_DEFS"), "RUN_LIVE_JQ": _y(".env.RUN_LIVE_JQ"),
            "FAKE_COMMENTS": comments or '{"comments":[]}',
            "FAKE_EVENTS": json.dumps(events), "FAKE_RUN": run or '{"status":"completed","jobs":[]}',
-           "FAKE_CLAIM_PR": claim_pr, "FAKE_INPROG": inprog}
+           "FAKE_CLAIM_PR": claim_pr, "FAKE_INPROG": inprog,
+           "FAIL_RUN": fail_run, "FAIL_EVENTS": fail_events}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -70,7 +71,7 @@ def labelled(seconds_ago):
 
 def run_comment(status="completed"):
     body = f"agent run started: https://github.com/o/r/actions/runs/99"
-    return json.dumps({"comments": [{"body": body}]}), json.dumps(
+    return json.dumps({"comments": [{"body": body}, {"body": "ready for review"}]}), json.dumps(
         {"status": status, "jobs": [{"name": "x / work (claim/issue-7)", "status": status}]})
 
 
@@ -109,4 +110,17 @@ def test_an_open_claim_pr_is_left_alone(tmp_path):
 def test_no_label_event_at_all_is_skipped(tmp_path):
     log, writes, _ = sweep(tmp_path, events=[])
     assert "no agent-in-progress label event, skip" in log
+    assert writes == []
+
+
+def test_a_failed_run_read_is_not_proof_the_run_died(tmp_path):
+    comments, _ = run_comment("in_progress")
+    log, writes, _ = sweep(tmp_path, events=labelled(86400), comments=comments, fail_run="1")
+    assert "run read failed, skip" in log
+    assert writes == []
+
+
+def test_a_failed_label_event_read_is_not_proof_the_run_died(tmp_path):
+    log, writes, _ = sweep(tmp_path, events=labelled(86400), fail_events="1")
+    assert "label event read failed, skip" in log
     assert writes == []
