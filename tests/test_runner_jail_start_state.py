@@ -299,7 +299,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M", "/home/nish/.config/cloudflare:ro"]  # the empty mount point the worker jail masks (#10934)
+    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M", "/home/nish/.config/cloudflare:ro", "/home/nish/.config/gh:ro"]  # the empty mount points the worker jail masks (#10934, #11007)
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree, the App key dir and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
@@ -435,3 +435,49 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
+
+
+def masked_home_paths(jail_text: str) -> list[str]:
+    """Every home path a bwrap jail in a workflow masks with `--tmpfs $HOME/...`, as an absolute path."""
+    return sorted("/home/nish" + p for p in set(re.findall(r"--tmpfs \$HOME(/\S*)", jail_text)))
+
+
+def uncreated_masked_paths(dirs: list[Path], jail_text: str) -> list[str]:
+    """Masked home paths that no drop-in line of this pool creates or binds."""
+    present = []
+    for key in ("TemporaryFileSystem", "BindPaths", "BindReadOnlyPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                path = token.lstrip("-+").split(":", 1)[0]
+                if path.startswith("/"):
+                    present.append(path)
+    return [p for p in masked_home_paths(jail_text) if not any(q == p or q.startswith(p + "/") for q in present)]
+
+
+def test_every_home_path_the_job_jail_masks_exists_when_the_runner_starts() -> None:
+    """bwrap mounts a tmpfs only on a path that exists, and this pool cannot create one under $HOME/.config.
+
+    That directory is a mount point the drop-in itself makes and owns as nobody, so a masked path the
+    drop-in does not name fails the jail with `Can't mkdir ...: Permission denied`. Every job on the
+    pool then dies in seconds and leaves no PR, which is what parked the issue behind this one
+    (fleet-ops#10934, #11007).
+    """
+    agent = runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    masked = masked_home_paths((ROOT / ".github/workflows/agent.yml").read_text())
+    assert len(masked) >= 2, f"the jail lines were not found: {masked}"
+    assert uncreated_masked_paths(agent, (ROOT / ".github/workflows/agent.yml").read_text()) == []
+
+
+def test_the_detector_fails_when_a_masked_path_is_not_created(tmp_path: Path) -> None:
+    own = tmp_path / "actions.runner.Nishfleet.netcup-agent-.service.d"
+    own.mkdir()
+    jail = "bwrap --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare\n"
+    (own / "20-lockdown.conf").write_text("[Service]\nTemporaryFileSystem=/home/nish/.config/cloudflare:ro\n")
+    assert uncreated_masked_paths([own], jail) == ["/home/nish/.config/gh"]
+    (own / "20-lockdown.conf").write_text(
+        "[Service]\nTemporaryFileSystem=/home/nish/.config/cloudflare:ro\nTemporaryFileSystem=/home/nish/.config/gh:ro\n"
+    )
+    assert uncreated_masked_paths([own], jail) == []
+    # A bind of the path itself, or of anything below it, also puts it there.
+    (own / "20-lockdown.conf").write_text("[Service]\nBindReadOnlyPaths=-/home/nish/.config/cloudflare -/home/nish/.config/gh/seats\n")
+    assert uncreated_masked_paths([own], jail) == []
