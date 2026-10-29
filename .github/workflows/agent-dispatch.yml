@@ -147,71 +147,6 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.workflow_run.head_branch }}
-  # main moved (a pull request merged into the default branch; ci.yml's
-  # pull_request and merge_group runs both finish before the merge lands): a claim PR it
-  # left CONFLICTING sends no event of its own, so its issue sat
-  # agent-in-progress with no run (fleet-ops#9063: drive #136 / PR #174).
-  # Requeue each one with a "merge main" note, the same way red CI is.
-  # Skipped while that issue's newest agent run is still live: the run in
-  # flight will see the conflict itself.
-  conflicts:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' &&
-      (inputs.agent_mode || vars.AGENT_MODE) == 'live' && github.event_name == 'pull_request_target' &&
-      github.event.action == 'closed' && github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == github.event.repository.default_branch
-    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
-    permissions:
-      actions: read
-      issues: write
-      pull-requests: read
-    outputs:
-      refs: ${{ steps.find.outputs.refs }}
-    steps:
-      - id: find
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          refs='[]'
-          # Only PRs the bulk list does not call MERGEABLE are re-read: the
-          # bulk list says UNKNOWN until GitHub recomputes a PR after a push
-          # to main, and a per-PR read triggers that (fleet-ops#8557).
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,isDraft,mergeable \
-            --jq '.[] | select((.headRefName | test("^claim/issue-[0-9]+$")) and (.isDraft | not) and .mergeable != "MERGEABLE") | .number')
-          for pr in $prs; do
-            for _ in 1 2 3; do
-              v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
-              [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
-              sleep 10
-            done
-            [ "$(jq -r .mergeable <<<"$v")" = CONFLICTING ] || continue
-            ref=$(jq -r .headRefName <<<"$v"); i=${ref#claim/issue-}
-            # Same skips as the Gate: closed, blocked or parked work gets no note.
-            gh api "repos/$GITHUB_REPOSITORY/issues/$i" --jq '.state == "open" and (.issue_dependencies_summary.blocked_by // 0) == 0 and
-              (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
-            body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-            if [[ $body =~ actions/runs/([0-9]+) ]]; then
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$i: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$i: run live, skip"; continue; fi
-            fi
-            gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: claim PR #$pr conflicts with main. Merge main: git merge origin/main into $ref, resolve the conflicts, run the checks, push."
-            echo "requeue #$i: PR #$pr is CONFLICTING"
-            refs=$(jq -nc --argjson r "$refs" --arg x "$ref" '$r + [$x]')
-          done
-          echo "refs=$refs" >> "$GITHUB_OUTPUT"
-  remerge:
-    needs: conflicts
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.conflicts.outputs.refs != '' && needs.conflicts.outputs.refs != '[]'
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
-      matrix:
-        ref: ${{ fromJSON(needs.conflicts.outputs.refs) }}
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ matrix.ref }}
   # The merge queue ejected a claim PR (failed checks or a conflict): send the
   # worker back to it. dequeued only: auto_merge_disabled is what hold-risky
   # (or the coordinator) does on purpose, and the other pull_request_target
@@ -636,7 +571,7 @@ jobs:
               # the PR alone; a rare overlap with the rework event is
               # serialised by agent.yml's concurrency. The verdict is the
               # RED_REWORK program above; liveness is `gh run view` on its
-              # newest counted run. A DIRTY PR is the conflicts job's. A PR at
+              # newest counted run. A DIRTY PR is the sweep's conflicted case. A PR at
               # the 3-run cap is sent on so the Gate parks it.
               red=$(
                 set -o pipefail
