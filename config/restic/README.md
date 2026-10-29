@@ -324,39 +324,51 @@ It runs `restic restore latest --host netcup-rs2000 --target
 snapshot, and `--verify` re-reads every restored byte against the snapshot, so
 a clean exit means the repository still holds what it wrote.
 
-The restore never lands on a live path. `PrivateTmp=true` makes `/var/tmp` a
-private tmpfs, so the decrypted copies of `~/.ssh` and `~/.config` exist only in
-RAM while the unit runs and are gone when it ends. The workspace is bounded by
-the backup side: `restic-r2-size-guard` refuses a snapshot that would restore
-past 4 GiB, and `MemoryMax=6G` is that cap plus restic's own buffers. Raise the
-two together, or a bigger snapshot is killed mid-restore.
+The restore never lands on a live path. `TemporaryFileSystem=/var/tmp:size=5G`
+makes the workspace a 5 GiB tmpfs inside the unit's own namespace, so the
+decrypted copies of `~/.ssh` and `~/.config` exist only in RAM while the unit
+runs and are gone when it ends, and a crash or power loss mid-drill leaves
+nothing on disk. The cap also bounds the blast radius: a restore that outgrows
+it fails inside the mount instead of filling the root disk. The workspace is
+bounded by the backup side: `restic-r2-size-guard` refuses a snapshot that
+would restore past 4 GiB, the tmpfs gets 5G (that cap plus slack), and
+`MemoryMax=6G` is that 5G plus restic's own buffers, because tmpfs pages count
+against the unit's cgroup. Raise the three together, or a bigger snapshot is
+killed mid-restore.
 
 The drill then compares one file per path in `include.txt` with the live copy
 (`cmp`), and fails on a mismatch or on nothing being compared. The file it picks
 is older than 7 days and smaller than 1 MiB, because a file rewritten since the
 snapshot (the nightly `litellm.dump`, a `-wal`) is expected to differ and would
-report a false mismatch. A path with no such file, or one whose live copy was
-deleted since the snapshot, is logged and skipped. The result is one journal
-line, `ok compared, skip skipped, bad mismatched, bytes restored, seconds wall`,
-with the counts in front of it.
+report a false mismatch. restic keeps mtimes, so the restored copy carries the
+file's mtime at snapshot time: a live copy newer than that was edited after the
+snapshot and is skipped as churn, and a live copy that is gone is skipped too.
+A mismatch therefore means the content differs at the same or an older mtime.
+The journal keeps restic's own summary, `Summary: Restored N files/dirs
+(X B) in M:SS` — the size and duration the drill exists to record — followed by
+the drill's counts line, `ok compared, skip skipped, bad mismatched`, with each
+file's own `ok`/`MISMATCH`/`skip` line ahead of it. The unit's own start and
+finish lines in the same journal give the wall time of the whole drill.
 
-The schedule is the 1st at 10:00 IST, with `Persistent=true` so a month the box
-spent switched off is caught up at the next boot. 10:00 sits between the 06:15
-locked copy and the next day's 03:27 verify, so the drill's hold on the one
-restic lock is nowhere near a backup.
+The schedule is the 1st at 10:00 IST. The first drill runs at the first 1st
+after install, because a timer with no stored trigger replays nothing;
+`Persistent=true` replays a month the box spent switched off at the next boot
+once a trigger is stored. 10:00 sits between the 06:15 locked copy and the next
+day's 03:27 verify, so the drill's hold on the one restic lock is nowhere near
+a backup.
 
 Read the last runs, or start one now:
 
 ```
-journalctl -u restic-r2-restore-drill | grep 'restore drill:'
+journalctl -u restic-r2-restore-drill | grep -E 'Summary:|restore drill:'
 sudo systemctl start restic-r2-restore-drill.service   # holds the restic lock for the run
 ```
 
-A failed drill pages through `OnFailure=fleet-unit-failed@%N.service`, the same
-path the backup takes. A drill that stops running at all fires
-`RestoreDrillStale` after 35 days, as a warning: visible in Alertmanager and
-Grafana but no page, because the backup itself is still running and the data is
-still on R2.
+A failed drill is not a page. It is visible as a failed unit
+(`SystemUnitFailed`, a warning) and, if it stops running at all,
+`RestoreDrillStale` fires after 35 days past its last real trigger, also a
+warning: the backup itself is still running and the data is still on R2, so
+this is readiness, not an outage.
 
 This proves the data, not the box. How to rebuild the host from nothing is the
 rebuild plan in the private vault playbooks, rehearsed once on a scratch VM.
@@ -427,5 +439,6 @@ is the intended signal that a root-owned file changed by hand, and the merge
 is what stops it: `fleet-host-config.service` runs on every push to `main`.
 
 The drill's timer needs no operator step. `tasks/services.yml` enables and
-starts it, and `Persistent=true` lets the first run catch up at that deploy
-instead of waiting for the 1st.
+starts it, and the first drill runs at the first 1st after that deploy;
+`Persistent=true` catches up only a month the box spent switched off once a
+trigger is stored.
