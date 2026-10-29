@@ -1,0 +1,152 @@
+# Monthly restore drill over the newest D1 backups (fleet-ops#10594).
+#
+# What it proves: an encrypted dump that sits in a GitHub artifact really can be
+# turned back into a database, on the host that already holds the private key,
+# without a Cloudflare token and without creating anything in Cloudflare.
+# fleet-ops#10594 asked for exactly this, because a backup nobody has restored
+# is a claim, not a backup.
+#
+# What it does, in four steps and no script:
+#   1. Reads the newest completed run of drive's weekly d1-export.yml and lists the
+#      d1-backup-* artifacts it left behind. No branch filter: a run dispatched by
+#      hand from a branch exports the same live database as the weekly one, so the
+#      newest artifact is the newest backup whichever branch made it, and the
+#      drill works from the day the workflow lands rather than from the week the
+#      PR merges. One date is written once here (IST) and every later step reads
+#      it, so a catch-up run that crosses midnight still names the report with
+#      one string.
+#   2. Downloads each of those artifacts with gh, as the nishfleet-worker App
+#      with a one-hour Actions-write token for that one repo
+#      (fleet-worker-github-token@actions:drive.service, the same unit
+#      fleet-pr-sweep@.service uses). Actions write is what carries actions read;
+#      the App has no narrower grant, and the token is revoked and its env file
+#      deleted the moment the run ends, so a detached worker on the same uid
+#      never finds a live one in the runtime dir between drills.
+#   3. Decrypts each dump with age and the private key at
+#      ~/.config/drive/d1-backup-key.txt, loads the SQL into a fresh local
+#      SQLite file, runs PRAGMA integrity_check, and counts every table's rows.
+#   4. Writes one report per month to ~/workspaces/agent-state/d1-restore-drill/.
+#
+# What it deliberately does not do: it never calls the Cloudflare API. The
+# restore target is a local SQLite file, so the drill cannot create, import
+# into or delete a D1 database, and it needs no D1 token at all. That is the
+# point of putting it here: the private key lives on this host and on no
+# runner, and a GitHub Actions job could not reach it without a secret that
+# Nish has ruled out (fleet-ops#10594).
+#
+# The dumps are real customer data (payment rows, email signups). They are
+# decrypted only inside a 0700 runtime directory under /run/user (tmpfs), and
+# systemd removes that directory when the unit stops, so nothing decrypted
+# outlives the drill. The report carries counts and integrity results, never a
+# row, a name or an email address.
+#
+# A database that has no working backup shows up as a missing artifact, not as a
+# silent pass: step 1 fails when the newest run left no d1-backup-* artifact at
+# all, and the report lists only what was actually restored. Today
+# tinystudio_email_signups has no artifact because its export answers HTTP 404
+# (fleet-ops#10830) and the drive database has none because the D1 export API
+# refuses FTS5 virtual tables (drive#1027); both stay visible in the run's own
+# job list instead of being hidden here.
+#
+# Gates, each a failed unit someone can list (OnFailure= pages): a completed
+# run exists, at least one artifact exists, each download succeeds, each
+# integrity_check answers ok, at least one database was restored, and the
+# report exists. A dump that decrypts but does not load fails the unit, because
+# that is the failure this drill exists to catch.
+#
+# %%, $$, and no printf escapes. systemd expands % and $ itself before any shell
+# runs, so every shell $ is written $$ and every shell % is written %%
+# (ci.yml gate fleet-ops#8382), and systemd also unescapes a backslash pair
+# before the shell sees it. echo carries the newlines instead of printf, so no
+# backslash reaches the shell at all except the two a SQL identifier needs,
+# written \\" the way fleet-grafana-github-token.service writes them. gh is
+# found through /usr/bin/env, so the unit names no home path.
+#
+# Switch off: systemctl --user disable --now fleet-d1-restore-drill.timer, then
+# drop step 2l and its enable line from fleet-sync.service and delete both files.
+[Unit]
+Description=Monthly restore drill over the newest D1 backups (fleet-ops#10594)
+OnFailure=fleet-unit-failed@%N.service
+Requires=fleet-worker-github-token@actions:drive.service
+After=fleet-worker-github-token@actions:drive.service
+
+[Service]
+Type=oneshot
+RuntimeDirectory=fleet-d1-restore-drill
+RuntimeDirectoryMode=0700
+Environment=GH_REPO=Nishfleet/drive
+Environment=GH_WORKFLOW=d1-export.yml
+Environment=DRILL_KEY=%h/.config/drive/d1-backup-key.txt
+Environment=DRILL_STATE=%h/workspaces/agent-state/d1-restore-drill
+Environment=TZ=Asia/Kolkata
+Environment=LC_ALL=C.UTF-8
+EnvironmentFile=%t/fleet-worker-github-token/actions:drive.env
+# The required EnvironmentFile above is loaded for every command below, so an
+# empty token means a failed mint and the run must not fall back to the owner's
+# gh login. $$ keeps systemd from expanding the token into the shell's argv.
+ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN" || { echo "drill: no GitHub App token, refusing to run" >&2; exit 1; }'
+# 1. The newest completed backup run, its artifacts, and the one date. A run that
+#    ended in failure still holds the artifacts of the jobs that succeeded, which
+#    is why the newest completed run is the right one and not the newest success.
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; \
+  d=$$(date +%%F); echo "$$d" > "$$out/date"; \
+  test -s "$$DRILL_KEY" || { echo "drill: the private key $$DRILL_KEY is missing" >&2; exit 1; }; \
+  run=$$(gh run list -R $$GH_REPO -w $$GH_WORKFLOW -s completed -L 1 --json databaseId -q ".[0].databaseId"); \
+  test -n "$$run" || { echo "drill: no completed $$GH_WORKFLOW run in $$GH_REPO" >&2; exit 1; }; \
+  echo "$$run" > "$$out/run"; \
+  gh api "repos/$$GH_REPO/actions/runs/$$run/artifacts?per_page=100" --paginate -q ".artifacts[].name" | grep "^d1-backup-" > "$$out/names" || true; \
+  test -s "$$out/names" || { echo "drill: run $$run left no d1-backup-* artifact" >&2; exit 1; }; \
+  echo "drill: backup run $$run on $$d, $$(wc -l < "$$out/names") dump(s): $$(tr "\n" " " < "$$out/names")"'
+# 2. One download per artifact, straight out of the run.
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; run=$$(cat "$$out/run"); mkdir -p "$$out/dumps"; \
+  while read -r a; do test -n "$$a" || continue; gh run download "$$run" -R $$GH_REPO -n "$$a" -D "$$out/dumps/$$a"; echo "drill: downloaded $$a"; done < "$$out/names"'
+# 3. Decrypt, load into a fresh local SQLite file, integrity-check, count rows.
+#    The D1 export API hands back SQL text, not a database file, so the restore
+#    is a load into an empty database: that is the step a backup claim skips.
+#    The SQL is double-quoted (type = \\"table\\") because a systemd Exec line is
+#    itself single-quoted, so no shell single quote can appear in it, and SQLite
+#    reads a double-quoted string that names no identifier as a string.
+#    sqlite_sequence is SQLite's own AUTOINCREMENT bookkeeping, not application
+#    data, so it is not counted among the tables the dump made.
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; : > "$$out/rows"; : > "$$out/tables"; n=0; \
+  for f in "$$out"/dumps/*/*.sql.age; do \
+    test -e "$$f" || { echo "drill: no dump found under $$out/dumps" >&2; exit 1; }; \
+    a=$$(basename "$$(dirname "$$f")"); b=$$(basename "$$f" .sql.age); db="$$out/$$b.db"; \
+    age -d -i "$$DRILL_KEY" -o "$$out/$$b.sql" "$$f"; \
+    rm -f "$$db"; sqlite3 "$$db" < "$$out/$$b.sql"; \
+    ic=$$(sqlite3 "$$db" "PRAGMA integrity_check;"); \
+    test "$$ic" = ok || { echo "drill: $$a did not restore: integrity_check answered $$ic" >&2; exit 1; }; \
+    tot=0; det=""; \
+    for t in $$(sqlite3 "$$db" "select name from sqlite_master where type = \\"table\\" and name not like \\"sqlite_%%\\" order by name"); do \
+      c=$$(sqlite3 "$$db" "select count(*) from \\"$$t\\""); tot=$$((tot+c)); det="$$det $$t=$$c"; done; \
+    echo "| $$b | $$a | $$(wc -c < "$$out/$$b.sql") | ok | $$tot |" >> "$$out/rows"; \
+    echo "- $$b:$$det" >> "$$out/tables"; \
+    n=$$((n+1)); echo "drill: restored $$a from $$b, $$tot rows, integrity ok"; \
+  done; \
+  test "$$n" -gt 0 || { echo "drill: nothing was restored" >&2; exit 1; }; \
+  echo "$$n" > "$$out/count"'
+# 4. One report, in agent-state, which is private and never reaches a public repo.
+#    Counts and integrity results only: no row, no name, no email address.
+ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; d=$$(cat "$$out/date"); run=$$(cat "$$out/run"); \
+  mkdir -p "$$DRILL_STATE"; rep="$$DRILL_STATE/report-$$d.md"; \
+  { echo "# D1 restore drill, $$d (Asia/Kolkata)"; echo; \
+    echo "Backup run: https://github.com/$$GH_REPO/actions/runs/$$run"; \
+    echo "Source: the weekly $$GH_WORKFLOW matrix in $$GH_REPO (fleet-ops#10594)."; \
+    echo "Key: $$DRILL_KEY"; \
+    echo "Where: this host, into a 0700 runtime directory that systemd removes when the unit ends. No Cloudflare database was created and no Cloudflare API call was made."; echo; \
+    echo "| database | artifact | dump bytes | integrity | rows |"; echo "|---|---|---|---|---|"; \
+    cat "$$out/rows"; echo; echo "Per table:"; cat "$$out/tables"; echo; \
+    echo "$$(cat "$$out/count") database(s) restored."; \
+  } > "$$rep"; \
+  echo "drill: report $$rep"'
+# The report is the deliverable. It is checked against the date file rather than
+# a fresh `date`, so a run that crosses midnight still reads its own report, and
+# the message names which step produced nothing instead of only no-deliverable.
+ExecStopPost=/bin/sh -c 'out="$$RUNTIME_DIRECTORY"; test -s "$$out/date" || { echo "no-deliverable: set-up never wrote its date, so the run stopped before the run list" >&2; exit 1; }; test -s "$$out/run" || { echo "no-deliverable: set-up stopped after the date write: no completed backup run, or the artifact list was empty" >&2; exit 1; }; test -d "$$out/dumps" || { echo "no-deliverable: no artifact was downloaded" >&2; exit 1; }; test -s "$$out/count" || { echo "no-deliverable: no dump was decrypted, loaded and integrity-checked" >&2; exit 1; }; rep="$$DRILL_STATE/report-$$(cat "$$out/date").md"; test -s "$$rep" || { echo "no-deliverable: the restore ran but wrote no report" >&2; exit 1; }; echo "drill: report $$rep"'
+# The revoke and the rm are one command, because systemd loads EnvironmentFile=
+# again for every command it spawns: a revoke after the rm could not start, and a
+# failed command skips the rest. The revoke runs only with the App token loaded
+# (an empty GH_TOKEN would fall back to the owner's login), the rm always runs,
+# and a failed revoke still fails the unit.
+ExecStopPost=/bin/sh -c 'rc=0; [ -z "$$GH_TOKEN" ] || /usr/bin/env gh api -X DELETE installation/token || rc=$$?; rm -f %t/fleet-worker-github-token/actions:drive.env; exit $$rc'
+TimeoutStartSec=1800

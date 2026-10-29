@@ -164,11 +164,24 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     until fleet-host-config has run, and a failed step is a page. Off switch:
 #     delete this step and remove the hand-placed copy by hand.
 ExecStart=-/bin/sh -c 'w=%h/.config/systemd/user/default.target.wants/cua-desk-daemon.service; test -e /etc/systemd/user/cua-desk-daemon.service && { test "$$(readlink $$w)" = %h/.config/systemd/user/cua-desk-daemon.service && ln -sfn /etc/systemd/user/cua-desk-daemon.service $$w; rm -f %h/.config/systemd/user/cua-desk-daemon.service; }'
+# 2l. The monthly D1 restore drill (fleet-d1-restore-drill.timer, fleet-ops#10594):
+#     link the unit pair the same way 2h links its pair, so every deploy carries
+#     edits to it, and enable the timer on every deploy like 2f, because a
+#     backup that is never restored is a claim and not a backup (the issue's own
+#     words): a drill that is silently off is exactly the failure it ships to
+#     fix. The drill restores into a local SQLite file and calls no Cloudflare
+#     API, so it needs no Cloudflare token; it reads its private key off this
+#     host, which is why it is here and not a GitHub workflow. Off switch:
+#     delete this step and the enable line below, then `systemctl --user
+#     disable --now fleet-d1-restore-drill.timer`.
+ExecStart=/bin/sh -c 'for f in fleet-d1-restore-drill.service fleet-d1-restore-drill.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
+ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
 ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
+ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other
 #    file under rootfs/) are no longer this unit's job. fleet-host-config.service

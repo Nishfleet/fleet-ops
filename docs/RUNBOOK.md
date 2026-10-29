@@ -81,6 +81,65 @@ print the list at all, because the string only exists in the assert's failure
 message. A leftover that appears between runs is named by the next run, and
 only a hand `reset-failed` clears it.
 
+## D1 backups and the monthly restore drill (fleet-ops#10594)
+
+drive's weekly `d1-export.yml` exports every product database, seals each
+dump with `age` to the `AGE_RECIPIENT` repo variable, and uploads it as a
+GitHub artifact kept 90 days. The recipient is a public key, so a public repo's
+artifacts being publicly downloadable is not a leak: a dump without the private
+key is noise. The matrix covers drive's own database plus
+`siterep_payments`, `aiconverter`, `tinystudio_email_signups` and `0509`
+(fleet-ops#10594).
+
+Two rows in that matrix stay red on purpose, and both are open:
+`tinystudio_email_signups` answers HTTP 404 on the export endpoint
+(fleet-ops#10830, the database is not in the account the token names) and
+drive's own job is refused by the D1 export API because of FTS5 virtual tables
+(drive#1027). A missing backup that fails loudly on the run is the point: a
+matrix row that quietly passes would hide it. When the account is sorted, the
+fix is one line. Each database moves into its own repository's workflow once
+that repo has its own export credential (fleet-ops#10829).
+
+The restore drill is the other half, and it is a host unit rather than a
+workflow: the private key at `~/.config/drive/d1-backup-key.txt` lives on this
+box and on no runner, and Nish has ruled out putting it in GitHub Actions
+secrets. `fleet-d1-restore-drill.timer` runs `fleet-d1-restore-drill.service`
+on the 1st of every month at 05:30 IST, and fleet-sync step 2l links and enables
+it on every deploy (a drill that is silently off is the failure it ships to
+fix).
+
+What the drill does, in four steps and no script:
+
+1. Reads the newest completed `d1-export.yml` run and lists its `d1-backup-*`
+   artifacts. No branch filter, because a run dispatched by hand from a branch
+   exports the same live database as the weekly one.
+2. Downloads each artifact with the one-hour Actions-write App token minted by
+   `fleet-worker-github-token@actions:drive.service`, which is revoked and
+   whose env file is deleted the moment the run ends.
+3. Decrypts each dump with `age`, loads the SQL into a fresh local SQLite file
+   (the export API hands back SQL text, not a database file), runs
+   `PRAGMA integrity_check`, and counts every table's rows.
+4. Writes one report to `~/workspaces/agent-state/d1-restore-drill/`.
+
+It never calls the Cloudflare API. The restore target is a local SQLite file, so
+the drill cannot create, import into or delete a D1 database and needs no D1
+token at all. Decrypted dumps never leave a 0700 runtime directory that systemd
+removes when the unit stops, and the report carries counts and integrity results
+only, never a row, a name or an email address.
+
+Read the last drill:
+
+    cat ~/workspaces/agent-state/d1-restore-drill/report-$(date +%Y-%m).md
+    journalctl --user -u fleet-d1-restore-drill.service -b
+
+Run one by hand, on the host:
+
+    systemctl --user start fleet-d1-restore-drill.service
+
+Switch it off: `systemctl --user disable --now fleet-d1-restore-drill.timer`,
+then drop step 2l and its enable line from `systemd/fleet-sync.service` and
+delete both unit files.
+
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
