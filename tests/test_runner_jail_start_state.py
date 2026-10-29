@@ -353,21 +353,41 @@ def test_the_agent_pool_binds_no_fleet_config_path_no_job_reads() -> None:
     """A runner bind with no reader is exposure for nothing (fleet-ops#10826).
 
     A path under the fleet config dir is bound because a job reads it before the engine jail
-    starts. The eval pool's one bind is not checked: the drive eval container reads it, not a
-    step, and cutting it needs a credential moved (#10957).
+    starts. Only a workflow that runs on a runner can read it, so a hosted workflow's text never
+    justifies a bind. The eval pool's one bind is not checked: the drive eval container reads it,
+    not a step, and cutting it needs a credential moved (#10957).
     """
     readers: set[str] = set()
-    for path in sorted((ROOT / ".github").rglob("*.yml")) + sorted((ROOT / ".github").rglob("*.yaml")):
-        readers |= fleet_config_read_names(path.read_text())
+    for text in runner_workflows().values():
+        readers |= fleet_config_read_names(text)
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     unread = sorted(name for name in bound if not any(same_branch(name, reader) for reader in readers))
     assert not unread, f"bound with no job reading it: {unread}"
 
 
+def test_the_agent_pool_binds_no_directory_that_holds_the_fleet_config() -> None:
+    """A bind of the config dir or a parent of it exposes every credential in it (fleet-ops#10826).
+
+    #10956 made this change by binding the whole directory, which took the two repo files off the
+    named-path line instead of cutting them. The name scan cannot see that bind, because it matches
+    a path inside the directory, so the regression gets its own check.
+    """
+    config = "/home/nish/.config/fleet-ops"
+    wide: set[str] = set()
+    dirs = runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                token = token.lstrip("-+")
+                if config == token or config.startswith(token + "/"):
+                    wide.add(token)
+    assert not wide, f"binds a directory that holds the fleet config: {sorted(wide)}"
+
+
 def test_no_runner_job_reads_a_fleet_config_path_the_agent_pool_does_not_bind() -> None:
     """A read of a path the jail does not bind fails the job when it runs, not here (fleet-ops#10826).
 
-    The three places that count router slots read config/litellm-proxy.yaml from the deploy clone,
+    The two places that count router slots read config/litellm-proxy.yaml from the deploy clone,
     which the jail binds whole. Reading the host copy instead names a path the jail no longer
     carries, and the job dies on "No such file or directory" on a runner, so the read side needs
     its own tripwire: this is the check a revert of that move fails.
