@@ -26,7 +26,6 @@ logs its argv.
 """
 import json
 import os
-import re
 import pathlib
 import shutil
 import subprocess
@@ -591,7 +590,6 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
 
     def expand(name):
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
-        line = re.sub(r"\$\{(?:RUNNER_TEMP|CREDENTIALS_DIRECTORY):\+[^}]*\}", "", line)  # unset outside a runner, as bash expands it
         for k, v in sub.items():
             line = line.replace("$" + k, v)
         return line.split() + ["--"]

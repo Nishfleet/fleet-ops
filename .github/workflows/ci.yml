@@ -669,10 +669,10 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          defs=$(yq '.jobs.list.steps[0].env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[0].env.RED_REWORK' "$f")
+          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
-          run=$(yq '.jobs.list.steps[0].run' "$f")
+          run=$(yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
