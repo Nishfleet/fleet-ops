@@ -27,6 +27,11 @@ def seats(model):
     )
 
 
+def lanes(model):
+    cfg = yaml_json(ROUTER)
+    return sum(1 for row in cfg["model_list"] if row.get("model_name") == model)
+
+
 def max_parallel(job):
     return str(yaml_json(DISPATCH)["jobs"][job]["strategy"]["max-parallel"])
 
@@ -63,7 +68,7 @@ def test_sweep_fanout_stays_inside_its_governors():
     assert fanout <= AGENT_RUNNERS_MEASURED_2026_10_23, (
         f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
     )
-    assert fanout <= seats("worker-capable"), f"fan-out {fanout} exceeds the {seats('worker-capable')} worker-capable seats"
+    assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
 
 
 def test_review_concurrency_stays_inside_the_judge_seats():

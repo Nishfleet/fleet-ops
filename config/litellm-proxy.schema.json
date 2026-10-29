@@ -53,6 +53,11 @@
       "required": ["litellm_params"],
       "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
     },
+    "stepfunRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.stepfun.ai/step_plan/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -213,6 +218,22 @@
           "contains": { "$ref": "#/$defs/judgeRow" },
           "minContains": 2,
           "maxContains": 2
+        },
+        {
+          "$comment": "fleet-ops#10762: no StepFun row carries max_parallel_requests. Cause and measurements: note 13 in docs/litellm-router-notes.md. fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.",
+          "contains": { "$ref": "#/$defs/stepfunRow" },
+          "minContains": 0,
+          "maxContains": 10,
+          "items": {
+            "if": { "$ref": "#/$defs/stepfunRow" },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "not": { "required": ["max_parallel_requests"] }
+                }
+              }
+            }
+          }
         }
       ],
       "items": {

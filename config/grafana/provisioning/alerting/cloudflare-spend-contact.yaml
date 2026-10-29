@@ -25,7 +25,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "cost alarm: %s %s" .Labels.alertname .Labels.resource)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s. Top resource: %s.\n\n%s\n\nRule `%s`, started firing %s UTC. Source: the Grafana cloudflare-spend rules, fleet-ops#9355. Find the leak, stop it, then close this issue." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.top .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05"))
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
   - orgId: 1
@@ -46,7 +46,7 @@ contactPoints:
               {{- $$row := .Labels.model_id -}}
               {{- if not $$row -}}{{- if .Labels.requested_model -}}{{- $$row = printf "%s (proxy-level)" .Labels.requested_model -}}{{- else -}}{{- $$row = "unnamed proxy request" -}}{{- end -}}{{- end -}}
               {{- coll.Dict "title" (printf "router dead row: %s" $$row)
-                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL)
+                     "body" (printf "%s.\n\nValue: %s. Threshold: %s.\n\n%s\n\nRule `%s`, started firing %s UTC. Source: the Grafana router-dead-row rule (config/grafana/provisioning/alerting/router-dead-row.yaml), fleet-ops#9312 class fix. Do not remove or bench the row without Nish's yes: open a needs-nish-decision issue with the evidence." .Annotations.summary .Annotations.value .Annotations.threshold .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05"))
                      "labels" (coll.Slice "agent-ready" "priority-now") | data.ToJSON -}}
               {{- end -}}
 
@@ -66,7 +66,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC (%s). Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") .GeneratorURL (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed by the severity policy in cloudflare-spend-contact.yaml. A paid plan to cancel, a spend to accept or a row to remove is Nish's call: open a needs-nish-decision issue with the evidence instead of acting. Otherwise find the cause, fix it, then close this issue." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "agent-ready") | data.ToJSON -}}
               {{- end -}}
 
@@ -89,7 +89,7 @@ contactPoints:
               {{- $$units = printf "%s- %s (started firing %s UTC)\n" $$units (or .Labels.name .Labels.instance) (.StartsAt.Format "2006-01-02 15:04:05") -}}
               {{- end -}}
               {{- coll.Dict "title" (printf "alert: %s" .Labels.prom_alertname)
-                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nGrafana link: %s. Source: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units .GeneratorURL)
+                     "body" (printf "%s\n\n%s\n\nPrometheus alert `%s` is firing for %d instance(s):\n\n%s\nSource: the Grafana prometheus-alerts rule, fleet-ops#10300. One issue covers every instance of this alert name (fleet-ops#10327): fix the one cause behind them.\n\nFix the cause, prove the alert resolved, then close this issue. If the failed unit is on the polkit start list, re-run it with `systemctl start <unit>` once your fix is live, and show `Result=success`." .Annotations.summary .Annotations.description .Labels.prom_alertname (len $$.Alerts) $$units)
                      "labels" (coll.Slice "agent-ready" "strong-only") | data.ToJSON -}}
               {{- end -}}
 
