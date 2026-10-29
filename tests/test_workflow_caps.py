@@ -80,13 +80,16 @@ def test_sweep_drops_exactly_the_gate_park_labels():
     assert sweep_park_labels() == gate_park_labels()
 
 
-def test_one_plain_number_caps_the_opencode_and_devin_lanes():
+def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
     text = AGENT.read_text()
-    for lane in ("opencode", "devin"):
-        caps = {m.group(1) for m in re.finditer(rf'live {lane}\)"\s+-lt\s+(\S+)', text)}
-        assert len(caps) == 1, f"the {lane} lane has {len(caps)} caps, so the Gate and the Worker fall-through can drift apart: {sorted(caps)}"
-        cap = caps.pop()
-        assert cap.isdigit(), f"the {lane} cap is a switch, not a fixed number: {cap}"
+    # The Gate (queue pull), the Worker fall-through and miss-review all compare the live pi
+    # count against the same worker-capable seat sum, so the three cannot drift apart
+    # (the removed opencode and devin lanes each had a hand-written constant instead).
+    caps = re.findall(r'live pi\)"\s+-lt\s+(\S+)', text)
+    assert len(caps) == 3, f"the pi lane has {len(caps)} comparisons, not the Gate, the Worker fall-through and miss-review: {caps}"
+    assert set(caps) == {chr(34) + "$slots" + chr(34)}, f"every pi comparison must use the worker-capable seat sum: {sorted(set(caps))}"
+    sum_line = "slots=" + chr(36) + "(yq"
+    assert text.count(sum_line) == 3, "the seat sum is computed the same way in the Gate, the Worker and the queue pull"
 
 
 def permissions_block(block, where):
@@ -183,9 +186,9 @@ def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
             f"agent.yml no longer derives an arm from the issue number with `{formula}`, so a run's arm is not "
             "recoverable from its issue id and the trial cannot be read out of the threads"
         )
-    lane = text[text.index("elif [ \"$ENGINE\" = pi ]; then"):]
+    lane = text[text.index('if [ "$ENGINE" = pi ]; then'):]
     miss = lane[lane.index('if [ "$MISS" = true ]; then'):lane.index("else", lane.index('if [ "$MISS" = true ]; then'))]
-    plain = lane[lane.index("else", lane.index('if [ "$MISS" = true ]; then')):lane.index("elif [ \"$ENGINE\" != devin ]")]
+    plain = lane[lane.index("else", lane.index('if [ "$MISS" = true ]; then')):lane.index('elif [ "$ENGINE" != claude ]')]
     assert "arm_flags" not in miss and "-desk" not in miss, (
         "miss-review now carries an arm: it is not a trial lane, and both arms would silently change the review "
         "prompt under the trial's numbers"
