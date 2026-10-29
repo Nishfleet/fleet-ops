@@ -301,6 +301,16 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree, the fleet config dir and the App key dir the unjailed steps read.
+    for tail in ("/.local/lib", "/.config/fleet-worker", "/.config/fleet-ops", "/.local/bin"):
         assert tail in bound, tail
+
+
+def test_the_agent_pool_binds_the_fleet_config_dir_whole() -> None:
+    """A file bound inside the fleet config dir names a credential in a public repo (fleet-ops#10826)."""
+    agent = runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    fleet_config = "/.config/fleet-ops"
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(agent, key):
+            for token in shlex.split(value):
+                assert fleet_config + "/" not in token, token
