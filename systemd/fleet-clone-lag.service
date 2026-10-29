@@ -42,7 +42,7 @@ Description=Fail loud when the deploy clone is more than 35 min behind origin/ma
 # refs/remotes/origin/main, so this fetch never takes the ref lock that
 # fleet-sync's own fetch uses.
 # Switch off: systemctl --user disable --now fleet-clone-lag.timer, then drop step
-# 2j and its enable line from fleet-sync.service and delete both files.
+# 2m and its enable line from fleet-sync.service and delete both files.
 OnFailure=fleet-unit-failed@%N.service
 # Three tries 20 s apart, so one failed fetch does not page: RestartMode=direct
 # (systemd 254+) restarts without the failed state, so OnFailure= fires once, when
