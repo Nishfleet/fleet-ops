@@ -10,7 +10,8 @@ runs a sweep. Three ended or re-fired hand-offs give needs-nish-decision.
 The list job selects and the parked job writes, because the list job runs on a GitHub-hosted
 runner: the sweep token there fires no issues event, so a label write re-queues nothing, and no
 fleet credential exists, so both writes were refused on every run and 51 hand-offs sat on
-handoff-ended (fleet-ops#10963). The write job runs on the runner selection the orchestrate job uses (the fleet-ops runner group on fleet-ops, the agent pool elsewhere) and writes on the worker App
+handoff-ended (fleet-ops#10963). The write job runs on the runner selection the orchestrate job
+uses (the fleet-ops runner group on fleet-ops, the agent pool elsewhere) and writes on the worker App
 token, the same two steps admit uses: writing needs-orchestrator fires the labeled event the
 orchestrate job waits for, and the App sender is on its allowlist. A refused write fails the job
 and posts no marker, so the sweep's strike counts only a write that landed.
@@ -413,8 +414,17 @@ def test_the_list_job_writes_nothing():
 
 
 def test_the_list_job_publishes_the_released_hand_offs():
+    """The list job publishes the released selection as a job output the parked job reads.
+
+    `steps.<id>.outputs.<name>` reads only the step that holds that id, so the output must name
+    the step that writes `released`. The parked output broke this exact way -- it named the list
+    step, not the requeue step that writes parked -- so this detector ties released to the step
+    that writes it, and the same silent-empty failure cannot recur here.
+    """
     assert _y(".jobs.list.outputs.released") == "${{ steps.list.outputs.released }}\n"
-    assert 'echo "released=${released:-[]}"' in _y('.jobs.list.steps[] | select(.id == "list") | .run')
+    released_writer = '.jobs.list.steps[] | select(.run | contains("echo \\"released="))'
+    assert _y(f"{released_writer} | .id").strip() == "list", "the step that writes released carries the id the output names"
+    assert 'echo "released=${released:-[]}"' in _y(f"{released_writer} | .run")
 
 
 def test_a_released_hand_off_is_re_fired_by_the_two_label_writes(tmp_path):
