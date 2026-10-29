@@ -51,7 +51,6 @@
     tincan_upgrade: {stderr: ok}
     unpinned_extensions: {stdout_lines: []}
     cua_update_failed: ok
-    podman_autoupdate: {stdout_lines: [ok], stderr: ""}
     failed_system: {stdout_lines: []}
     failed_user: {stdout_lines: []}
     sweep_result: {}
@@ -311,8 +310,8 @@
           - wait_position < smoke_position
         fail_msg: >-
           The readiness wait before the pi smoke call is unbounded, longer
-          than about 15 minutes, or no longer runs before the smoke, so the
-          redis restart `podman auto-update` does can fail the call again.
+          than about 15 minutes, or no longer runs before the smoke, so a
+          router still starting can fail the call.
       vars:
         router_wait: "{{ router_wait_json.stdout | from_json }}"
         block_names: "{{ block_names_json.stdout | from_json }}"

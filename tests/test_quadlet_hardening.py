@@ -1,9 +1,14 @@
-"""Every quadlet has a restart policy, a memory cap and a digest-pinned image."""
+"""Every quadlet has a restart policy, a memory cap and a digest-pinned image,
+and the daily update moves an image only when a quadlet asks for it.
+"""
 
+import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -85,4 +90,51 @@ def test_proxy_cap_equals_its_slice() -> None:
     assert unit and slice_cap and size_bytes(unit[0]) == size_bytes(slice_cap[0]), (
         f"fleet-litellm-proxy [Service] MemoryMax={unit} must equal app-litellm.slice [Slice] MemoryMax={slice_cap}, "
         "because the unit cap is only made visible, not made tighter"
+    )
+
+
+def _walk_tasks(task_list: list[dict]) -> Iterator[dict]:
+    for task in task_list:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _walk_tasks(task.get(key) or [])
+
+
+def _command_text(task: dict) -> str:
+    return " ".join(
+        json.dumps(task[key]) for key in ("ansible.builtin.command", "ansible.builtin.shell", "command", "shell") if key in task
+    )
+
+
+def test_the_update_run_moves_an_image_exactly_when_a_quadlet_asks_for_it() -> None:
+    labelled = [
+        path.name
+        for path in quadlets()
+        if any(value.strip() for value in values(parse(path), "Container", "AutoUpdate"))
+    ]
+    play = yaml.safe_load((ROOT / "ansible/update.yml").read_text())
+    steps = [
+        task
+        for run in play
+        for key in ("pre_tasks", "tasks", "post_tasks", "handlers")
+        for task in _walk_tasks(run.get(key) or [])
+    ]
+    assert not [
+        task
+        for task in steps
+        if set(task) & {"include_tasks", "import_tasks", "include_role", "import_role", "roles"}
+    ], (
+        "ansible/update.yml pulls tasks from another file, so this walk cannot see every step: "
+        "keep the update steps in this file, or teach the test to follow the include"
+    )
+    moves = [
+        task.get("name", "unnamed")
+        for task in steps
+        if "auto-update" in (command := _command_text(task)) and "--dry-run" not in command
+    ]
+    assert labelled == moves, (
+        f"quadlets with any AutoUpdate value: {labelled or 'none'}, "
+        f"tasks in ansible/update.yml that run podman auto-update: {moves or 'none'}, "
+        "because podman reads that label from the container and a run with no labelled quadlet "
+        "moves nothing (fleet-ops#9257)"
     )
