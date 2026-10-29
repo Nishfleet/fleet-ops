@@ -78,6 +78,8 @@
     regexp: '^CLAUDE_CONFIG_DIR='
     state: absent
   loop: "{{ range(1, 31) | list }}"
+  become: true
+  become_user: nish
   when: "(nish_home ~ '/.local/share/agent-runner/' ~ item ~ '/.env') is exists"
 
 # Runner 1 is still registered with the `agent` label, so a running unit takes production

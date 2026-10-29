@@ -440,10 +440,10 @@ def test_even_issue_with_default_login_missing_uses_seat_a(tmp_path):
 
 
 def test_an_empty_login_file_counts_as_missing(tmp_path):
-    r, _, claude, _, _, _, _ = _worker(tmp_path, "claude", issue=5, login_a="")
+    r, _, claude, _, seat_a, _, seat_b = _worker(tmp_path, "claude", issue=5, login_a="")
     assert r.returncode == 0, r.stderr
     assert "::warning::claude lane: seat=a missing login, using seat=b" in r.stdout
-    assert "CCD=" in claude and "CCD=unset" not in claude
+    assert f"CCD={seat_b}" in claude and f"CCD={seat_a}" not in claude
 
 
 @pytest.mark.parametrize("issue", [5, 6])
@@ -509,16 +509,18 @@ def test_a_packet_with_a_pr_is_never_retried_on_the_other_seat(tmp_path):
     assert claude.count("CCD=") == 1
 
 
-def test_both_seats_at_their_usage_limit_leaves_the_wall_line_and_falls_through(tmp_path):
-    stamp = 1793276330
-    limit = f"Claude AI usage limit reached|{stamp}"
+def test_both_seats_at_their_usage_limit_falls_through_to_pi_as_infra(tmp_path):
+    # Both seats refused: the run is not a failed job. pi continues the packet, the step's
+    # stderr carries the CLI's own 429 so the Router wall requeues the issue as infra, and
+    # no failure comment, strike or orchestrator-tried follows (fleet-ops#10741).
+    limit = "Claude AI usage limit reached|1793276330"
     r, _, claude, ran, _, _, _ = _worker(tmp_path, "claude", issue=5, fail_seat=".claude", fail_out=limit)
     assert r.returncode == 0, r.stderr
     assert ran == ["claude", "pi"]
     assert claude.count("CCD=") == 2
-    at = subprocess.run(["date", "-d", f"@{stamp}", "+%Y-%m-%d %H:%M IST"], env={**os.environ, "TZ": "Asia/Kolkata"}, capture_output=True, text=True, check=True).stdout.strip()
-    assert f"claude: 429 usage limit on both seats, reset at {at} (epoch {stamp}); no failure comment and no strike" in r.stdout
+    assert "usage limit reached" in (tmp_path / "runner-tmp/worker.err").read_text()
     assert "fallthrough: pi (claude rate limit)" in r.stdout
+    assert "no failure comment" not in r.stdout
 
 
 @pytest.mark.parametrize("engine", ["pi"])
@@ -572,9 +574,9 @@ def _lane_seat(issue, home, runner_name="netcup-agent-1"):
     """Runs the lane's own seat lines (parity, then the login check) against real
     files under home and returns (seat, whether CLAUDE_CONFIG_DIR is set)."""
     lines = _step("work", "Worker").splitlines()
-    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("case ${id##*-} in"))
-    b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('[ "$claude_auth" != token ] || claude_jail='))
-    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nseat_a=$HOME/.claude-vps\nseat_b=$HOME/.claude\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("fallback=pi; case"))
+    b = next(i for i, ln in enumerate(lines) if "fallthrough: $ENGINE (claude login missing)" in ln) + 3
+    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nseat_a=$HOME/.claude-vps\nseat_b=$HOME/.claude\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${claude_cfg:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     seat, cfg = r.stdout.splitlines()[-1].split()
@@ -766,7 +768,7 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
     (bk / "creds").write_text("planted")
     for x in "ab":
         (seats / f"claude-seat-{x}.env").write_text(f"CLAUDE_CODE_OAUTH_TOKEN={_tok_env(x)}\n")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".claude-vps")).replace("$hide_all", _hides(home, ""))
     for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
@@ -813,10 +815,15 @@ def _tokens_tried(claude):
 
 @pytest.mark.parametrize("name,seat,other", [("netcup-agent-1", "a", "b"), ("netcup-agent-2", "b", "a")])
 def test_revoked_token_retries_once_with_the_other_seats_token(tmp_path, name, seat, other):
-    r, bwrap, claude, ran, _, _, _ = _worker(tmp_path, "claude", runner_name=name, issue={"a": 5, "b": 6}[seat], tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env(seat))
+    r, bwrap, claude, ran, seat_a, home, _ = _worker(tmp_path, "claude", runner_name=name, issue={"a": 5, "b": 6}[seat], tok_a=_tok_env("a"), tok_b=_tok_env("b"), bad_tokens=_tok_env(seat))
     assert r.returncode == 0, r.stderr
     assert _tokens_tried(claude) == [_tok_env(seat), _tok_env(other)]
-    assert f"::warning::claude lane: seat={seat} token rejected, retrying with seat={other}" in r.stdout
+    # A token attempt runs in the jail that shows no login, and the retry changes the auth
+    # with the seat: both attempts hide both seats' rotating logins.
+    assert len(bwrap.splitlines()) == 2
+    for line in bwrap.splitlines():
+        assert f"--tmpfs {seat_a}" in line and f"--ro-bind /dev/null {home}/.claude/.credentials.json" in line
+    assert f"::warning::claude lane: seat={seat} token rejected, retrying on seat={other}" in r.stdout
     assert f"claude lane: seat={other} auth=token retry=after-auth-failure" in r.stdout
     assert f"::add-mask::{_tok_env(other)}" in r.stdout
     assert ran == ["claude"] and _fallback_env(tmp_path) == ""
@@ -861,11 +868,13 @@ def test_both_tokens_revoked_fails_once_each_and_does_not_fall_through(tmp_path)
 
 
 def test_a_rate_limit_is_not_an_auth_failure(tmp_path):
-    r, _, claude, ran, _, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, bwrap, claude, ran, seat_a, home, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert "retry=after-auth-failure" not in r.stdout
     assert "claude lane: seat=b auth=token retry=after-usage-limit" in r.stdout
     assert ran == ["claude", "pi"]
+    for line in bwrap.splitlines():
+        assert f"--tmpfs {seat_a}" in line and f"--ro-bind /dev/null {home}/.claude/.credentials.json" in line
 
 
 def test_login_seat_auth_error_does_not_retry_with_a_token(tmp_path):
@@ -918,7 +927,7 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     (home / ".local/share").mkdir(parents=True)
     (home / ".local/share/claude-seat-backup").symlink_to(vault / "backup")
     (seats / "claude-seat-a.env").symlink_to(vault / "tok.env")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".claude-vps")).replace("$hide_all", _hides(home, ""))
     for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
