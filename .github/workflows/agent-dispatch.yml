@@ -696,20 +696,18 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; an ended hand-off is agent-blocked plus its comment (fleet-ops#10455); 3 ended or re-fired, then needs-nish-decision. An agent-blocked issue restarts only on a marker from a trusted author that no later blocked-on: note overrides, so a stranger's comment cannot unpark it.
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; an ended hand-off is agent-blocked plus its comment (fleet-ops#10455); 3 ended or re-fired, then needs-nish-decision. Only a marker or blocked-on: note from a trusted author counts, and a note later than the last marker keeps the issue parked, so no comment from outside can unpark it or stop a restart.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
-                and (($l | index("agent-blocked") != null) != ($l | index("needs-orchestrator") != null)))
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600 and (($l | index("agent-blocked") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
-              | {number, tried: ($l | index("agent-blocked") != null), newest: (.comments[-1].body // ""), runs: [.comments[]
-                | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
-              | select((.tried | not) or ((.runs | length) > 0 and (.newest | startswith("blocked-on: ") | not))) | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
+              | {number, tried: ($l | index("agent-blocked") != null), c: [.comments | to_entries[] | select((.value.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.value.author.login | IN("github-actions", "github-actions[bot]", "nishfleet-worker", "nishfleet-worker[bot]"))) | {at: .key, b: (.value.body // "")}]}
+              | {number, tried, last_ended: ([.c[] | select((.b | startswith("orchestrator hand-off ended without a PR: ")) or (.b | startswith("orchestrator re-fired by the sweep: "))) | .at] | last), last_block: ([.c[] | select(.b | startswith("blocked-on: ")) | .at] | last), runs: [.c[] | select((.b | startswith("orchestrator hand-off ended without a PR: ")) or (.b | startswith("orchestrator re-fired by the sweep: "))) | .b]}
+              | select((.tried | not) or (.last_ended != null and ((.last_block // -1) < .last_ended))) | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
@@ -1425,6 +1423,7 @@ jobs:
           # hand-off already ran and produced no PR: both end the loop here
           # rather than in the always() step, so nothing is built.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
+          case $labels in *,agent-blocked,*) echo "orchestrate: #$ISSUE is agent-blocked; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
           # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then

@@ -214,8 +214,24 @@ def test_blocked_issue_with_no_ended_hand_off_is_not_requeued(tmp_path):
 
 def test_worker_block_after_an_ended_hand_off_is_left_alone(tmp_path):
     i = issue(1, ended=1)
-    i["comments"].append({"body": "blocked-on: senior-conference", "authorAssociation": "NONE"})
+    i["comments"].append({"body": "blocked-on: senior-conference", "authorAssociation": "NONE",
+                          "author": {"login": "nishfleet-worker[bot]"}})
     assert run(tmp_path, [i]) == []
+
+
+def test_a_stranger_after_a_worker_block_does_not_unpark(tmp_path):
+    """The block note, not the newest comment, decides: a comment from outside cannot lift it."""
+    i = issue(1, ended=1)
+    i["comments"].append({"body": "blocked-on: senior-conference", "authorAssociation": "NONE",
+                          "author": {"login": "nishfleet-worker[bot]"}})
+    i["comments"].append({"body": "any update?", "authorAssociation": "NONE", "author": {"login": "stranger"}})
+    assert run(tmp_path, [i]) == []
+
+
+def test_a_stranger_cannot_stop_a_restart(tmp_path):
+    i = issue(1, ended=1)
+    i["comments"].append({"body": "blocked-on: mine now", "authorAssociation": "NONE", "author": {"login": "stranger"}})
+    assert edits(run(tmp_path, [i]), "--add-label needs-orchestrator") == [1]
 
 
 def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
