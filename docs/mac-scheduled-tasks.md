@@ -12,12 +12,13 @@ read from memory. Vault files cited below live under
 
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
 built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the
-Mac. Ten are retired outright, and one of those ten — the weekly gardener — was
-retired earlier. The last one, the weekly `seofixkit` database export, is
-retired as well, by the product repo itself: that repo deleted the export script
-and its scheduler on 2026-10-23 and moved its restore path to stock D1 Time
-Travel. The one question that path leaves open belongs to that repo and is
-Nish's, so fleet-ops#9527's hand-off is superseded rather than built.
+Mac, and all 11 are retired. Ten were retired outright, one of those ten — the
+weekly gardener — earlier than the rest. The last one, the weekly `seofixkit`
+database export, is retired too, by the product repo itself: that repo deleted
+the export script and its scheduler on 2026-10-23 and moved its restore path to
+stock D1 Time Travel. The one question that path leaves open belongs to that
+repo and is Nish's, so fleet-ops#9527's hand-off is superseded rather than
+built.
 
 ## The two backup tasks
 
@@ -43,7 +44,7 @@ gate. Both end retired, but for different reasons, and the difference matters.
   ran `ops/backup-d1.sh` through wrangler OAuth, and the Mac held the only
   session that script could use. The script and its out-of-repo scheduler are
   both gone: that repo's glue audit deleted them on 2026-10-23
-  (nish3451/seo-fix-kit#304, PR #307, squash `5e978e0d`), and its
+  (Nishfleet/seo-fix-kit#304, PR #307, squash `5e978e0d`), and its
   `docs/restore-runbook.md` documents only the stock restore path — D1 Time
   Travel, always on, the last 30 days, no statement-size limit, nothing to
   schedule. The dump lost that comparison on its own record: it ran weekly, so
@@ -62,7 +63,7 @@ gate. Both end retired, but for different reasons, and the difference matters.
   Nish's.
 
   What Time Travel does not cover is an open decision, and it is Nish's, in
-  nish3451/seo-fix-kit#308: a copy that survives the database's own deletion, or
+  Nishfleet/seo-fix-kit#308: a copy that survives the database's own deletion, or
   one older than 30 days. Cloudflare's Workflows export guide is named there as
   the stock answer if the answer is yes — it runs inside the account on a
   schedule, with no host scheduler and no shell script. Nothing is built here or
@@ -72,7 +73,7 @@ gate. Both end retired, but for different reasons, and the difference matters.
   this box schedules nothing. fleet-ops#10145 and fleet-ops#10150 retired it: the
   deploy stops and disables the timer, then deletes the three host paths. The
   unit pair that the second of those said had moved into the product repo never
-  landed there — nish3451/seo-fix-kit#305 closed unmerged on 2026-10-28, and no
+  landed there — Nishfleet/seo-fix-kit#305 closed unmerged on 2026-10-28, and no
   commit in that repo has ever contained `ops/seofixkit-d1-backup.service` — so
   that repo schedules nothing either.
 
@@ -157,10 +158,18 @@ page. The live-state commands and their output:
 - `gh api repos/Nishfleet/0509/contents/wrangler.jsonc?ref=main` → the
   `snapshot-backup` Workflow binding and the comment "0509-snapshots-backup is
   the nightly copy target of the snapshot-backup Workflow below" (0509#5802)
-- `gh api repos/nish3451/seo-fix-kit/contents/ops/backup-d1.sh?ref=main` →
-  `backup-d1.sh`
-- `gh api repos/nish3451/seo-fix-kit/contents/.github/workflows?ref=main` →
-  `deploy-production.yml`, `pr-check.yml`, `secret-scan.yml`
+- `gh api repos/Nishfleet/seo-fix-kit/contents/ops?ref=main` → HTTP 404, and
+  `gh api "repos/Nishfleet/seo-fix-kit/commits?path=ops/seofixkit-d1-backup.service"`
+  → `[]`, so the export script and the unit pair that stood in for it are in no
+  commit of that repo
+- `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`
+  → the page, whose only restore path is D1 Time Travel, and which records the
+  2026-06-12 `SQLITE_TOOBIG` rehearsal
+- `gh pr view 307 -R Nishfleet/seo-fix-kit --json state,mergedAt,mergeCommit` →
+  `MERGED`, `mergedAt=2026-10-23T12:36:29Z`, squash
+  `5e978e0da0fdec692bdc938c58349a66797ed081`; `gh pr view 305 -R
+  Nishfleet/seo-fix-kit --json state,mergedAt` → `CLOSED`, `mergedAt=null`;
+  `gh issue view 308 -R Nishfleet/seo-fix-kit --json state` → `OPEN`
 - `gh issue view 760 -R nish3451/drive --json number,state,stateReason` →
   `OPEN REOPENED`
 - `gh issue view 8936 -R Nishfleet/fleet-ops --json state,title` → `OPEN`,
