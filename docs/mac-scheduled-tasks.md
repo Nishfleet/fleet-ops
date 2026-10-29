@@ -70,12 +70,12 @@ gate. Both end retired, but for different reasons, and the difference matters.
   in that repo's CI until he decides.
 
   The loose user unit that stood in for the Mac task in October is gone too, so
-  this box schedules nothing. fleet-ops#10145 and fleet-ops#10150 retired it: the
-  deploy stops and disables the timer, then deletes the three host paths. The
-  unit pair that the second of those said had moved into the product repo never
-  landed there — Nishfleet/seo-fix-kit#305 closed unmerged on 2026-10-28, and no
-  commit in that repo has ever contained `ops/seofixkit-d1-backup.service` — so
-  that repo schedules nothing either.
+  this box no longer schedules the export. fleet-ops#10145 and fleet-ops#10150
+  retired it: the deploy stops and disables the timer, then deletes the three
+  host paths. The unit pair that the second of those said had moved into the
+  product repo never landed there — Nishfleet/seo-fix-kit#305 closed unmerged on
+  2026-10-28, and no commit on that repo's default branch has ever contained
+  `ops/seofixkit-d1-backup.service` — so that repo schedules nothing either.
 
 ## The other nine
 
@@ -161,11 +161,14 @@ commands and their output:
   the nightly copy target of the snapshot-backup Workflow below" (0509#5802)
 - `gh api repos/Nishfleet/seo-fix-kit/contents/ops?ref=main` → HTTP 404, and
   `gh api "repos/Nishfleet/seo-fix-kit/commits?path=ops/seofixkit-d1-backup.service"`
-  → `[]`, so the unit pair that stood in for the Mac task is in no commit of
-  that repo
-- `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`
-  → the page, whose only restore path is D1 Time Travel, and which records the
-  2026-06-12 `SQLITE_TOOBIG` rehearsal
+  → `[]`, so the unit pair that stood in for the Mac task is in no commit on
+  that repo's default branch
+- `ls ~/.config/systemd/user/seofixkit-d1-backup.service
+  ~/.config/systemd/user/seofixkit-d1-backup.timer
+  ~/.config/systemd/user/timers.target.wants/seofixkit-d1-backup.timer` → all
+  three answer `No such file or directory`; `find` over `/etc/systemd` and the
+  user tree finds no unit of that name, and `grep -rl seofixkit-d1-backup` over
+  both finds no enablement
 - `rg -n -A 6 '"seo-fix-kit" = \{' infra/cloudflare-tokens/main.tf` → the
   `account` list is `Workers Scripts Write`, `D1 Write`, `Queues Write`,
   `Account Settings Read`, with no R2 group
@@ -195,6 +198,11 @@ named with the command that read it:
   helper. Time Travel is the platform feature and needs none. Nothing in this
   repository runs a backup." The 2026-09-28 bullet (`[0928]`) records the
   re-checked-live bookmark and the export-to-import round trip.
+- `docs/restore-runbook.md` in `Nishfleet/seo-fix-kit` — read through
+  `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`.
+  Its only restore path is D1 Time Travel, and the quoted sentence sits under
+  the 2026-06-12 rehearsal: "so a dump import would silently drop report bodies,
+  and being weekly it could lose up to a week of writes."
 - `agent-state/glue-sweep/kill-list-20260918T091044Z.md` §5, the fable-judge-trio
   entry — read on this box. It names the six unit files, the packet
   `agent-state/fleet-landing-watch/fable-check.md`, the failure counts
