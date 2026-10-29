@@ -1057,7 +1057,8 @@ jobs:
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
+    # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions:
       pull-requests: write
