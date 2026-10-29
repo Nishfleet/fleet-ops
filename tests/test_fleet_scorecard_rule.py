@@ -147,9 +147,11 @@ def test_every_prometheus_range_query_stays_under_the_11000_points_prometheus_al
     queries = [(r["uid"], d) for r in _rules().values() for d in r["data"] if d["model"].get("range")]
     assert queries
     for uid, d in queries:
+        model = d["model"]
+        assert model.get("intervalMs") and model.get("maxDataPoints"), uid
         span = d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]
-        step = max(d["model"]["intervalMs"] / 1000, span / d["model"]["maxDataPoints"])
-        assert span / step <= 11000, uid
+        step = max(model["intervalMs"] / 1000, span / model["maxDataPoints"])
+        assert span / step + 1 <= 11000, uid
 
 
 def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
