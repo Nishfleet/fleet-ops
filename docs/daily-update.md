@@ -13,7 +13,7 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    Podman images, old build cache, the npm and uv caches.
 3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone, syncthing). Stale npm
+   plugins, uv, bun, rclone, syncthing). Stale npm
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.
