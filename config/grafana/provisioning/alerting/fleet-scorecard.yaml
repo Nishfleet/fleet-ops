@@ -280,7 +280,8 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: ''
-              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              # The queue admits agent-ready work only with no open dependency and none of the five park labels; GitHub search has no qualifier for issue dependencies, so the dispatch sweep carries that gate on agent-blocked-dep (fleet-ops#11094). needs-split and epic are the two park labels a search qualifier can reach directly.
+              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:agent-blocked-dep -label:needs-orchestrator -label:needs-nish-decision -label:needs-split -label:epic NOT \"grafana alert:\" in:title archived:false", timeField: 2}
               refId: B
           - refId: P
             relativeTimeRange: {from: 259200, to: 0}

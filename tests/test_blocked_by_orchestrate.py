@@ -3,6 +3,8 @@ agent-dispatch.yml against a fake gh.
 
 The orchestrate issue step skips a blocked issue. When an issue closes, the list job
 re-labels each unblocked needs-orchestrator dependent (remove, then add, on the runner login).
+The list job also carries the blocked_by gate on an agent-blocked-dep label the idle-runners
+scorecard alert excludes (fleet-ops#11094): no search qualifier reaches the dependency summary.
 """
 import json
 import os
@@ -68,12 +70,13 @@ def close(tmp_path, dependents):
     """Run the list step for a closed issue 1 that blocks `dependents` ({n: (labels, blocked_by)})."""
     (tmp_path / "blocking.json").write_text(json.dumps([{"number": n, "state": "open"} for n in dependents]))
     for n, (labels, blocked_by) in dependents.items():
-        (tmp_path / f"issue-{n}.json").write_text(json.dumps({
-            "number": n, "state": "open", "created_at": "2026-10-27T00:00:00Z",
-            "labels": [{"name": l} for l in labels],
-            "issue_dependencies_summary": {"blocked_by": blocked_by}}))
+        issue = {"number": n, "state": "open", "created_at": "2026-10-27T00:00:00Z",
+                 "labels": [{"name": l} for l in labels]}
+        if blocked_by is not None:
+            issue["issue_dependencies_summary"] = {"blocked_by": blocked_by}
+        (tmp_path / f"issue-{n}.json").write_text(json.dumps(issue))
     (tmp_path / "out").write_text("")
-    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "CLOSED": "1", "ISSUE": "",
+    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "SYNC_TOKEN": "sync", "CLOSED": "1", "ISSUE": "",
            "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": ""}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
                        env=env, capture_output=True, text=True)
@@ -93,3 +96,17 @@ def test_closing_a_blocker_refires_the_unblocked_dependent(tmp_path):
 def test_still_blocked_or_unparked_dependents_are_left_alone(tmp_path):
     w = close(tmp_path, {2: (["needs-orchestrator"], 1), 3: (["agent-ready"], 0)})
     assert w == []
+
+
+def test_dependency_blocked_ready_issues_carry_the_dep_label_the_alert_excludes(tmp_path):
+    w = close(tmp_path, {2: (["agent-ready"], 1),
+                         3: (["agent-ready", "agent-blocked-dep"], 1),
+                         4: (["agent-ready", "agent-blocked-dep"], 0),
+                         5: (["agent-ready"], None)})
+    raw = [l for l in w if "agent-blocked-dep" in l]
+    sync = [l.split("|")[0] for l in raw]
+    assert sync == [
+        "issue edit 2 -R o/r --add-label agent-blocked-dep",
+        "issue edit 4 -R o/r --remove-label agent-blocked-dep",
+        "issue edit 5 -R o/r --add-label agent-blocked-dep"]
+    assert all(l.endswith("token=sync") for l in raw), "the sync write must be the pinned job token: it must fire no run"

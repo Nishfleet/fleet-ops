@@ -386,6 +386,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # The App token, for the writes that must fire a workflow event.
           LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
+          # A second pin on the job token, for the sync writes that must fire none even if the ambient GH_TOKEN above is ever repointed.
+          SYNC_TOKEN: ${{ github.token }}
           CLOSED: ${{ github.event.issue.number }}
           ISSUE: ${{ inputs.issue }}
           # jq defs shared by the missing-checks and red-PR cases below.
@@ -550,6 +552,15 @@ jobs:
             # A closed blocker releases a parked hand-off: re-label it as the worker App so the label event starts it (fleet-ops#10489, #10949); at most 12 a sweep (fleet-ops#11010).
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
               released=$((${released:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
+            fi
+            # The idle-runners scorecard alert counts agent-ready issues GitHub search cannot see are dependency-blocked (fleet-ops#11094): no search qualifier reaches issue_dependencies_summary, the gate the refs filter below applies. Carry the gate on a label that alert excludes, and clear it the sweep after the blocker closes. The writes pin SYNC_TOKEN, not the App token: they must fire no run, because a blocked issue admits nothing to fire for, and the blocker's own close event is what re-admits it. The first add hides stderr because its expected failure (label not yet created) is handled below; every other fault resurfaces on the retried add or the ::warning.
+            if jq -e 'any(.labels[].name; . == "agent-ready") and ((.issue_dependencies_summary.blocked_by // 1) != 0) and (any(.labels[].name; . == "agent-blocked-dep") | not)' <<<"$i" >/dev/null; then
+              GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked-dep 2>/dev/null || {
+                GH_TOKEN="$SYNC_TOKEN" gh label create agent-blocked-dep -R "$GITHUB_REPOSITORY" --color F9D0C4 --description "Blocked by an open issue dependency; the queue waits for the blocker" >/dev/null || true
+                GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked-dep || echo "::warning::#$n: agent-blocked-dep label refused"
+              }
+            elif jq -e 'any(.labels[].name; . == "agent-blocked-dep") and ((.issue_dependencies_summary.blocked_by // 1) == 0)' <<<"$i" >/dev/null; then
+              GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked-dep 2>/dev/null || echo "::warning::#$n: agent-blocked-dep unlabel refused"
             fi
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
