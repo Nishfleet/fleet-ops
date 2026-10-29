@@ -30,10 +30,11 @@ def test_the_list_job_runs_the_sweep_file():
 
 def test_no_copy_of_the_sweep_is_left_in_the_workflow():
     text = pathlib.Path(WF).read_text()
-    for gone in ("CHECK_DEFS", "RED_REWORK", "RUN_LIVE_JQ: |"):
+    for gone in ("CHECK_DEFS", "RED_REWORK"):
         assert gone not in text, f"{gone} is still in agent-dispatch.yml"
     body = _y(".run")
     assert len(body.strip().splitlines()) == 1, "the list step carries shell again"
+    assert "jq" not in body, "the list step carries a jq program again"
 
 
 def test_the_sweep_imports_nothing_but_node_builtins():
