@@ -1,7 +1,9 @@
 """Review runners run as fleet-reviewer and take the reviewer App key from the credential store (fleet-ops#10950).
 
-Runners 9 to 12 are the only units the review job and the arm job run on, so they are the
-only units that may hold the reviewer App key. It arrives by bare name, which systemd reads
+Runners 9 to 12 run as fleet-reviewer, and no other unit may hold the reviewer App key: which
+runner answers a job is a GitHub label this repo cannot read, and runners 20 to 30 keep
+`review` too, so the check here is the set of units that hold the key, not the set a job lands
+on. It arrives by bare name, which systemd reads
 from /etc/credstore (root-owned 0600): a source path would be a readable copy under a home
 directory, and a second unit that loaded it would be a second identity that can post an
 approval (fleet-ops#9521). nish's home is mode 0700, so a bind of a 0600 file under it hands

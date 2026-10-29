@@ -130,8 +130,9 @@
 # worker job is a second identity that can post an approval on its own PR
 # (fleet-ops#9521). GitHub routes a job by the runner's labels, and the labels live at
 # GitHub, not here: the technical lead adds `review` to netcup-agent-11 and -12 and drops
-# `agent` and `fleet-ops` from them by hand. Until that is done the two new drop-ins are
-# held back, so the unit keeps running as nish on the nish runner directory and no worker
+# `agent` and `fleet-ops` from them by hand, which he did on 2026-10-29 before this merged.
+# The read below is what decides, so a runner that still carries a worker label keeps its
+# drop-in off, the unit keeps running as nish on the nish runner directory, and no worker
 # job meets the reviewer key. The org endpoint is the one that lists these runners, the
 # same one update.yml counts them from, and it is read as nish because that is the login
 # the box's other GitHub reads use. No answer at all holds them back too: a check that
