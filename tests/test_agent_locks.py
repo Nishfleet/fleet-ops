@@ -141,10 +141,9 @@ def test_the_one_service_key_comes_from_an_environment_file(name: str) -> None:
 def test_every_listener_unit_on_this_host_is_in_the_contract() -> None:
     installed = {path.name for path in INSTALLED.glob("tincan-listen-*.service")}
     covered = {Path(entry["unit"]).name for entry in AGENTS.values()}
-    covered |= {Path(gap["unit"]).name for gap in CONTRACT["gaps"] if gap.get("unit")}
     assert installed - covered == set(), (
-        "These listeners are installed by the repo but not in config/agent-locks.json, so no "
-        "test would notice if they could read the other agents' keys"
+        "These listeners are installed by the repo but are not an `agents` entry, so no test "
+        "would notice if they could read the other agents' keys"
     )
 
 
