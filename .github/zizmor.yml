@@ -17,13 +17,6 @@ rules:
         # agent.yml's per-job steps live in actions from main, so every agent.yml job
         # runs one definition and parallel PRs edit disjoint files (fleet-ops#10723).
         Nishfleet/fleet-ops/.github/actions/stuck: ref-pin
-        # The arm job is the same shape: its arm step lives in the action, so a PR that edits
-        # the arm body touches no workflow file (fleet-ops#10723). This one costs more than stuck
-        # does: the action arms the head with the App token, so @main lets a later main commit
-        # change what the arm job runs, which is the exposure the inline step had. The job keeps
-        # the App key read and the runner-login arm inline, because the App cannot push this
-        # file and so cannot edit either line.
-        Nishfleet/fleet-ops/.github/actions/arm: ref-pin
         "*": hash-pin
   dangerous-triggers:
     ignore:

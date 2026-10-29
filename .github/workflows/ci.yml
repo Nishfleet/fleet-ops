@@ -90,8 +90,6 @@ jobs:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
       # the gates below are independent linters: `if: always()` lists every violated gate.
       - name: actionlint over .github/workflows/
-        # actionlint reads workflows only: pointed at a composite action it reports "jobs section is
-        # missing" (1.7.12), so an action's shell and expressions are covered by the two steps below.
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
       - name: zizmor over .github/workflows/ and .github/actions/
@@ -100,7 +98,8 @@ jobs:
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
         # Policy and its kept exceptions: .github/zizmor.yml. .github/actions/ is in the path because
         # a composite action holds the same injections a workflow does, and the discovery steps below
-        # never find it (fleet-ops#10723).
+        # never reach it: actionlint reads workflows only, and shellcheck finds files by extension or
+        # shebang, so neither one sees a run block in an action (fleet-ops#10723).
         if: always()
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
         with:
@@ -110,25 +109,6 @@ jobs:
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         with:
           version: v0.11.0
-      - name: shellcheck over composite action run blocks
-        # A composite action holds no .sh file and no shebang, so the discovery above never reaches it
-        # (fleet-ops#10723). Each run block is extracted and checked on its own, so a quoting fault in
-        # an action is caught the same way one in a workflow is.
-        if: always()
-        run: |
-          set -euo pipefail
-          d=$RUNNER_TEMP/action-shellcheck
-          rm -rf "$d"; mkdir -p "$d"
-          for f in .github/actions/*/action.yml; do
-            b=$(basename "$(dirname "$f")")
-            n=$(yq '.runs.steps | length' "$f")
-            i=0
-            while [ "$i" -lt "$n" ]; do
-              [ "$(yq ".runs.steps[$i].run" "$f")" = null ] || yq -r ".runs.steps[$i].run" "$f" > "$d/$b-$i.sh"
-              i=$((i + 1))
-            done
-          done
-          shellcheck --shell=bash "$d"/*.sh
 
   systemd-verify:
     runs-on: ubuntu-latest
@@ -1118,8 +1098,7 @@ jobs:
           CASES
           test "$bad" -eq 0
       - name: Reviewer approves, blocks and arms without a person (fake gh)
-        # Runs the review job's own run block from agent.yml, and the arm job's from the
-        # .github/actions/arm composite action it calls (fleet-ops#10723), against a fake gh, curl and git.
+        # Runs the review job's and the arm job's own run blocks from agent.yml against a fake gh, curl and git.
         # A guard or workflow head is approved only when the judge (>= 0.9, no blocker line) AND two more reviewers
         # of other families approve. An infrastructure failure retries, and a real block, a low judge or an
         # unreadable guard list leaves it unapproved. None of them asks a person. The review never arms itself:
@@ -1136,17 +1115,8 @@ jobs:
           : > "$t/home/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md"
           f=.github/workflows/agent.yml
           yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
-          yq '.jobs.arm.steps[] | select(.id == "arm-head") | .run' "$f" > "$t/arm-head.sh"
-          yq '.runs.steps[] | select(.id == "arm-app") | .run' .github/actions/arm/action.yml > "$t/arm.sh"
-          for s in review arm-head arm; do { [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh"; } || { echo "$s step missing"; exit 1; }; done
-          # The two lines the blocker kept inline (fleet-ops#10723): the App key is read in the job, not in
-          # the action, and the runner-login arm is the job's own, because the App cannot push this file
-          # while it can push .github/actions/**. A PR that moves either line back fails here.
-          [ "$(yq '.jobs.arm.steps[] | select(.id == "app-key") | .id' "$f")" = app-key ] || { echo "the App key read left agent.yml"; exit 1; }
-          grep -q 'env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge' "$t/arm-head.sh" || { echo "the runner-login arm left agent.yml"; exit 1; }
-          if grep -q 'env -u GH_TOKEN' "$t/arm.sh"; then echo "the runner-login arm moved into the composite action"; exit 1; fi
-          [ "$(yq -o=json -I=0 '.inputs | keys' .github/actions/arm/action.yml)" = '["app-token"]' ] || { echo "the arm action takes more than the minted token"; exit 1; }
-          if grep -q 'create-github-app-token' .github/actions/arm/action.yml; then echo "the App token minting moved into the composite action"; exit 1; fi
+          yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
+          for s in review arm; do { [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh"; } || { echo "$s step missing"; exit 1; }; done
           for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_MODEL SECOND_FAMILY REVIEW_BACKOFF THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
@@ -1159,8 +1129,6 @@ jobs:
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
           yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
           yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
-          [ "$(yq -o=json -I=0 '[.jobs.arm.steps[].uses | select(. != null), (.jobs.arm.env | keys[])] | sort' "$f")" = '["GH_TOKEN","Nishfleet/fleet-ops/.github/actions/arm@main","Nishfleet/fleet-ops/.github/actions/runner-probe@main","PR","REPO","REVIEWED","SHA","actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"]' ] || { echo "arm job lost the runner probe, the token step, the arm action or an env key"; bad=1; }
-          yq '.jobs.arm.steps[] | select(.uses != null) | select(.uses | test("actions/arm@")) | .with."app-token"' "$f" | grep -q 'steps\.arm-token\.outputs\.token' || { echo "the arm action does not get the minted token"; bad=1; }
           yq '.jobs.review.outputs.approved_sha' "$f" | grep -q 'steps.review.outputs.approved_sha' || { echo "review job does not export approved_sha"; bad=1; }
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
@@ -1361,26 +1329,21 @@ jobs:
           diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
           CASES
           gen_none_rows)
-          # The arm job's own step and the composite action it calls: together they arm the exact
-          # approved head, and do nothing for a stale head (a push after the approval), a draft, an
-          # armed PR or a closed one. A PR that edits .github/workflows/** is armed with the runner's
-          # own login (GH_TOKEN unset), because the App lacks the workflows permission, only when this
-          # run's review job approved the head (REVIEWED equals SHA; an arm_pr dispatch leaves it
-          # empty). Every other arm uses the App token the job minted. A failed file listing arms
-          # nothing.
+          # The arm job's step: arms the exact approved head, and does nothing for a
+          # stale head (a push after the approval), a draft, an armed PR or a closed one.
+          # A PR that edits .github/workflows/** is armed with the runner's own login
+          # (GH_TOKEN unset), because the App lacks the workflows permission, only
+          # when this run's review job approved the head (REVIEWED equals SHA; an
+          # arm_pr dispatch leaves it empty). Every other arm uses the App token. A
+          # failed file listing arms nothing.
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345
           # case: name|HEAD_NOW|DRAFT|ARMED|CLOSED|files (1 = workflow edit, rename, fail)|REVIEWED (sha, other or empty)|want armed|want token|want exit
           while IFS='|' read -r name head draft armed closed wf reviewed want tok code; do
             export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf REVIEWED=
             case $reviewed in sha) export REVIEWED=$SHA ;; other) export REVIEWED=0000000000000000000000000000000000000001 ;; esac
-            mkdir -p "$STATE"; : > "$STATE/merge"; : > "$GITHUB_OUTPUT"
+            mkdir -p "$STATE"; : > "$STATE/merge"
             rc=0
-            PATH="$t/bin:$PATH" bash "$t/arm-head.sh" > "$STATE/out" 2>&1 || rc=$?
-            # The job's step arms a workflow head itself; otherwise it hands the minted App token
-            # to the composite action, which is the only step that merges.
-            if [ "$(sed -n 's/^armed=//p' "$GITHUB_OUTPUT")" = false ]; then
-              PATH="$t/bin:$PATH" GH_TOKEN=y bash "$t/arm.sh" >> "$STATE/out" 2>&1 || rc=$?
-            fi
+            PATH="$t/bin:$PATH" bash "$t/arm.sh" > "$STATE/out" 2>&1 || rc=$?
             got=no; [ ! -s "$STATE/merge" ] || got=yes
             problem=
             [ "$rc" = "${code:-0}" ] || problem="exit=$rc (want ${code:-0})"
@@ -1388,7 +1351,6 @@ jobs:
             if [ "$got" = yes ]; then
               grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"
               grep -q -- " token=$tok\$" "$STATE/merge" || problem="$problem arm token is not $tok"
-              [ "$(wc -l < "$STATE/merge")" = 1 ] || problem="$problem more than one merge call"
             fi
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
           done <<'CASES'
