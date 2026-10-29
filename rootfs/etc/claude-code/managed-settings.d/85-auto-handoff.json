@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "auto-handoff": {
+      "source": {
+        "source": "github",
+        "repo": "obie/auto-handoff"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "auto-handoff@auto-handoff": true
+  }
+}
