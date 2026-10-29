@@ -1375,8 +1375,10 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
-    "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
-    "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
+    "/run/user/1000/bus": "made by the user manager (dbus activation), which the runners are ordered after",
+    "/run/user/1000/systemd": "made by the user manager, which the runners are ordered after",
+    "/run/user/1000/podman": "made by the user manager, which the runners are ordered after",
+    "/run/user/1000/gnupg": "made by the user manager, which the runners are ordered after",
     "/run/podman-eval": "retired path, kept masked",
 }
 
@@ -1396,42 +1398,52 @@ def tmpfiles_created(tmpfiles_dir: Path) -> set[str]:
     return created
 
 
-def runner_mask_paths(dropin: Path) -> list[str]:
-    """Every InaccessiblePaths= entry of one drop-in without its "-"/"+" prefixes; ValueError when empty or unparsable."""
+def runner_listed_paths(dropin: Path, key: str) -> list[str]:
+    """Every `key=` entry of one drop-in without its "-"/"+" prefixes and mount options; ValueError when empty or unparsable."""
     paths: list[str] = []
     lines = dropin.read_text().splitlines()
     i = 0
     while i < len(lines):
         line = lines[i].strip()
         i += 1
-        if not line.startswith("InaccessiblePaths="):
+        if not line.startswith(key + "="):
             continue
-        value = line.removeprefix("InaccessiblePaths=")
+        value = line.removeprefix(key + "=")
         while value.endswith("\\") and i < len(lines):
             value = value[:-1] + " " + lines[i].strip()
             i += 1
         try:
             tokens = shlex.split(value)
         except ValueError as err:
-            raise ValueError(f"{dropin}: unparsable InaccessiblePaths= line {line!r}: {err}") from err
+            raise ValueError(f"{dropin}: unparsable {key} line {line!r}: {err}") from err
         if not tokens:
-            raise ValueError(f"{dropin}: empty InaccessiblePaths= line (it would reset the mask list)")
+            raise ValueError(f"{dropin}: empty {key} line (it would reset the list)")
         for token in tokens:
-            path = token.lstrip("-+")
+            path = token.split(":", 1)[0].lstrip("-+")
             if not path.startswith("/") or path == "/":
-                raise ValueError(f"{dropin}: unparsable InaccessiblePaths= entry {token!r}")
+                raise ValueError(f"{dropin}: unparsable {key} entry {token!r}")
             paths.append(path)
     return paths
 
 
+def runner_mask_paths(dropin: Path) -> list[str]:
+    return runner_listed_paths(dropin, "InaccessiblePaths")
+
+
+def runner_hidden_paths(dropin: Path) -> list[str]:
+    """Both lists that hide a path from a job: a mask and a mount each hide it, and each leaves the host
+    path behind when it does not apply, so both need a creator that runs before the runner starts."""
+    return runner_listed_paths(dropin, "InaccessiblePaths") + runner_listed_paths(dropin, "TemporaryFileSystem")
+
+
 def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: dict[str, str]) -> list[str]:
-    """Masked /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a mask list is empty."""
+    """Hidden /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a list is empty."""
     created = tmpfiles_created(tmpfiles_dir)
     bad = []
     for directory in dropin_dirs:
-        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_mask_paths(conf)]
+        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_hidden_paths(conf)]
         if not paths:
-            raise ValueError(f"{directory}: no InaccessiblePaths= entry in any drop-in")
+            raise ValueError(f"{directory}: no InaccessiblePaths= or TemporaryFileSystem= entry in any drop-in")
         for path in paths:
             norm = _run_norm(path)
             if (norm == "/run" or norm.startswith("/run/")) and norm not in created:
@@ -1440,19 +1452,24 @@ def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: 
     return bad
 
 
-def test_every_masked_run_path_has_a_boot_time_creator() -> None:
+def test_every_hidden_run_path_has_a_boot_time_creator() -> None:
+    """A path that does not exist when the runner starts is not hidden at all: a mask is skipped and a mount
+    point is made by systemd itself, as root, which the token mint cannot write into (fleet-ops#10886)."""
     assert len(RUNNER_DROPINS) >= 5, "the runner drop-in directories were not found"
     assert unguarded_run_paths(RUNNER_DROPINS, TMPFILES, RUN_PATH_ALLOWLIST) == []
 
 
 def test_run_path_allowlist_has_no_stale_entry() -> None:
-    masked = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_mask_paths(conf)}
+    hidden = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_hidden_paths(conf)}
     created = tmpfiles_created(TMPFILES)
     for pattern, reason in RUN_PATH_ALLOWLIST.items():
         assert reason.strip()
-        assert any(fnmatch.fnmatchcase(path, pattern) for path in masked), f"{pattern} is masked by no runner"
+        assert any(fnmatch.fnmatchcase(path, pattern) for path in hidden), f"{pattern} is hidden by no runner"
         assert pattern not in created, f"{pattern} has a tmpfiles creator, drop it from the allowlist"
-    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in masked
+    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in hidden
+    # The two token dirs are covered by a mount, so the mount points must exist before the runners start.
+    assert "/run/user/1000/fleet-worker-github-token" in created and "/run/user/1000/fleet-worker-github-token" in hidden
+    assert "/run/user/1000/fleet-grafana-github-token" in created and "/run/user/1000/fleet-grafana-github-token" in hidden
 
 
 def _fixture(tmp_path: Path, mask: str, tmpfiles: str = "") -> tuple[list[Path], Path]:
@@ -1481,8 +1498,18 @@ def test_run_path_check_accepts_a_creator_and_normalises_var_run(tmp_path: Path)
 def test_run_path_check_reads_every_line_and_prefix(tmp_path: Path) -> None:
     mask = "[Service]\nInaccessiblePaths=-/etc/a \\\n  -/run/x\nInaccessiblePaths=/run/y +/run/z\n"
     dirs, tmpdir = _fixture(tmp_path, mask)
-    assert runner_mask_paths(dirs[0] / "20-lockdown.conf") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
+    assert runner_listed_paths(dirs[0] / "20-lockdown.conf", "InaccessiblePaths") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
     assert len(unguarded_run_paths(dirs, tmpdir, {})) == 3
+
+
+def test_run_path_check_covers_a_mounted_path_and_its_options(tmp_path: Path) -> None:
+    """A mount hides a path the way a mask does, so it needs the same creator (fleet-ops#10886)."""
+    mask = "[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:ro\n"
+    dirs, tmpdir = _fixture(tmp_path, mask, "")
+    assert runner_listed_paths(dirs[0] / "20-lockdown.conf", "TemporaryFileSystem") == ["/run/user/1000/fleet-worker-github-token"]
+    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/user/1000/fleet-worker-github-token"]
+    (tmpdir / "x.conf").write_text("d /run/user/1000/fleet-worker-github-token 0700 nish nish -\n")
+    assert unguarded_run_paths(dirs, tmpdir, {}) == []
 
 
 @pytest.mark.parametrize(

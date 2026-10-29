@@ -20,6 +20,10 @@ both lists is masked and the mount never happens.
 The paths still masked by inode (the user bus, the user systemd dir, podman, the user gpg
 dir) are made by the user manager itself, so every runner drop-in is ordered after it
 (fleet-ops#10081).
+
+An absent mount point is made by the manager itself, as root mode 0755, before it mounts, and the
+token mints run as nish, so rootfs/etc/tmpfiles.d/fleet-runner-token-dirs.conf makes the user
+runtime dir and both token dirs nish-owned mode 0700 at boot, before any runner starts.
 """
 
 import os
@@ -52,6 +56,13 @@ TOKEN_DIRS = (USER_RUN + "fleet-worker-github-token", USER_RUN + "fleet-grafana-
 IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
 SUDO = ["sudo", "-n"] if IN_CI else []
 SCOPE = [] if IN_CI else ["--user"]
+TMPFILES = ROOT / "rootfs/etc/tmpfiles.d"
+TOKEN_DIR_OWNER = "nish"
+TOKEN_DIR_MODE = "0700"
+# A `d` line makes the directory and adjusts its mode and owner; a `d-` line does not adjust a
+# directory that exists already, and a `D` line empties the directory, so neither keeps a
+# root-owned mount point usable.
+BOOT_DIR_TYPES = {"d"}
 
 
 def manager_usable() -> bool:
@@ -211,6 +222,22 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
     assert starts_after_user_manager(start_conf.read_text()) == []
 
 
+def test_gate_fails_when_the_start_order_is_missing(tmp_path: Path) -> None:
+    """The self-test of starts_after_user_manager(): without it a drop-in that loses its start order passes."""
+    good = tmp_path / "good.conf"
+    good.write_text("[Unit]\nAfter=user@1000.service\nWants=user@1000.service\n")
+    assert starts_after_user_manager(good.read_text()) == []
+    bad = tmp_path / "bad.conf"
+    bad.write_text("[Unit]\nAfter=user@1000.service\n")
+    assert starts_after_user_manager(bad.read_text()) == ["[Unit] Wants=user@1000.service"]
+    worse = tmp_path / "worse.conf"
+    worse.write_text("[Unit]\nAfter=network.target\n[Service]\nWants=user@1000.service\n")
+    assert starts_after_user_manager(worse.read_text()) == [
+        "[Unit] After=user@1000.service",
+        "[Unit] Wants=user@1000.service",
+    ]
+
+
 @pool
 def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: Path) -> None:
     """The mint makes its dir after the runner started, so the path is covered by a mount and not by a mask (fleet-ops#10886)."""
@@ -218,6 +245,87 @@ def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: 
     covered = mounted_paths(text)
     for name in TOKEN_DIRS:
         assert name in covered, f"{lockdown_conf.name}: {name} is masked by inode, not covered by a mount"
+
+
+def boot_dir_creators(tmpfiles_dir: Path) -> dict[str, tuple[str, str]]:
+    """Path -> (mode, owner) of every directory a tmpfiles.d `d` line makes at boot."""
+    created = {}
+    for conf in sorted(tmpfiles_dir.glob("*.conf")):
+        for line in conf.read_text().splitlines():
+            fields = line.split()
+            if len(fields) < 4 or line.lstrip().startswith("#") or fields[0] not in BOOT_DIR_TYPES:
+                continue
+            path = fields[1]
+            created["/run" + path[len("/var/run"):] if path.startswith("/var/run") else path] = (fields[2], fields[3])
+    return created
+
+
+def unguarded_run_mount_points(units: dict[str, list[Path]], tmpfiles_dir: Path) -> list[str]:
+    """A TemporaryFileSystem= entry under the user runtime dir whose mount point no boot-time creator
+    makes nish-owned mode 0700: the manager makes an absent mount point itself, as root, and the mint
+    that writes the token there runs as nish (fleet-ops#10886)."""
+    creators = boot_dir_creators(tmpfiles_dir)
+    bad = []
+    for name, dirs in units.items():
+        for path in sorted(merged_paths(dirs, "TemporaryFileSystem")):
+            if not path.startswith(USER_RUN):
+                continue
+            creator = creators.get(path)
+            if creator is None:
+                bad.append(f"{name}: {path} has no boot-time creator, so the manager makes the mount point as root")
+            elif creator != (TOKEN_DIR_MODE, TOKEN_DIR_OWNER):
+                bad.append(f"{name}: {path} is made {' '.join(creator)}, so the token mint cannot write its token there")
+    return bad
+
+
+def test_every_run_mount_point_has_a_creator_the_mint_can_write() -> None:
+    units = runner_units()
+    assert len(units) >= 5, "the runner drop-in dirs were not found"
+    assert unguarded_run_mount_points(units, TMPFILES) == []
+
+
+def test_gate_fails_when_a_run_mount_point_has_no_creator(tmp_path: Path) -> None:
+    dirs = tmp_path / "x-.service.d"
+    dirs.mkdir()
+    (dirs / "20.conf").write_text("[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:ro\n")
+    tmpfiles = tmp_path / "tmpfiles.d"
+    tmpfiles.mkdir()
+    units = {"x-.service.d": [dirs]}
+    path = "/run/user/1000/fleet-worker-github-token"
+    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} has no boot-time creator, so the manager makes the mount point as root"]
+    # A `d-` line does not adjust a directory that exists already, so it does not fix a root-owned one.
+    (tmpfiles / "x.conf").write_text(f"d- {path} 0700 nish nish -\n")
+    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} has no boot-time creator, so the manager makes the mount point as root"]
+    (tmpfiles / "x.conf").write_text(f"d {path} 0700 root root -\n")
+    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} is made 0700 root, so the token mint cannot write its token there"]
+    (tmpfiles / "x.conf").write_text(f"d {path} 0755 nish nish -\n")
+    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} is made 0755 nish, so the token mint cannot write its token there"]
+    (tmpfiles / "x.conf").write_text(f"d {path} 0700 nish nish -\n")
+    assert unguarded_run_mount_points(units, tmpfiles) == []
+
+
+def masked_paths_holding_a_colon(units: dict[str, list[Path]]) -> list[str]:
+    """Masked paths that hold a colon: runner-probe reads the options after a colon as the mark of a
+    mount, so such a path would be tested as a mount and its own check skipped (fleet-ops#10886)."""
+    bad = []
+    for name, dirs in units.items():
+        for value in merged_values(dirs, "InaccessiblePaths"):
+            for token in shlex.split(value):
+                path = token.lstrip("-+")
+                if ":" in path:
+                    bad.append(f"{name}: {path}")
+    return bad
+
+
+def test_no_masked_path_holds_a_colon() -> None:
+    assert masked_paths_holding_a_colon(runner_units()) == []
+
+
+def test_gate_fails_when_a_masked_path_holds_a_colon(tmp_path: Path) -> None:
+    dirs = tmp_path / "x-.service.d"
+    dirs.mkdir()
+    (dirs / "20.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/bus:/nested\n")
+    assert masked_paths_holding_a_colon({"x-.service.d": [dirs]}) == ["x-.service.d: /run/user/1000/bus:/nested"]
 
 
 def test_no_path_is_masked_and_mounted_at_once() -> None:
@@ -527,4 +635,3 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
     shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
->>>>>>> origin/main
