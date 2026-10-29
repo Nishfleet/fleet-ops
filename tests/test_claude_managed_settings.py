@@ -20,16 +20,18 @@ the repo's own tree is read: a user settings file is the play's business, which
 refuses the deploy while one names the variable.
 
 The box-wide defaults file's permission lists hold three invariants, each one a
-live hole before 2026-10-30 (fleet-ops#10567): every `Edit(path)` deny has its
-`Write(path)` mirror, because Claude Code matches a rule by tool name and lists
-Read, Write and Edit as separate file-pattern tools; no `ask` rule's command is
-already denied, because deny is checked first and such a rule never prompts; and
-no Bash command reads a seat or tincan file by hiding its path inside a quoted
-string, which the Read path denies alone do not stop.
+live hole before 2026-10-30 (fleet-ops#10567): no rule names a tool whose rules
+the file permission check ignores, because Claude Code matches a file rule by
+tool name and maps Write, NotebookEdit and MultiEdit onto Edit, so a `Write(path)`
+rule is dead text while an `Edit(path)` deny already covers the Write tool; no
+`ask` rule's command is already denied, because deny is checked first and such a
+rule never prompts; and no Bash command reads a seat or tincan file by hiding its
+path inside a quoted string, which the Read path denies alone do not stop.
 """
 import fnmatch
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -42,10 +44,16 @@ MANAGED = ROOT / "rootfs/etc/claude-code/managed-settings.json"
 DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
 JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
 NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
+RULE_SHAPE = re.compile(r"^\w+\(.*\)$")
+FILE_TOOLS_THE_CHECK_IGNORES = ("Write", "Glob")
+
+
+def _permissions():
+    return json.loads(MANAGED.read_text())["permissions"]
 
 
 def _rules(behavior):
-    return json.loads(MANAGED.read_text())["permissions"][behavior]
+    return _permissions()[behavior]
 
 
 def _bash_patterns(behavior):
@@ -235,16 +243,42 @@ def test_force_with_lease_is_allowed_off_main_and_plain_force_still_asks() -> No
         assert asks(cmd), cmd
 
 
-def test_every_edit_path_deny_has_its_write_mirror() -> None:
-    """Claude Code matches a permission rule by tool name and lists Read, Write and Edit as
-    separate file-pattern tools, so an `Edit(path)` deny never covers the Write tool: proved
-    on the box 2026-10-30, where the Write tool created a .sh file under a deny list holding
-    `Edit(**/*.sh)`. A path this file blocks the Edit tool on must block the Write tool on
-    too, or an agent writes the file instead of editing it."""
+def test_every_rule_names_a_tool_and_a_pattern() -> None:
+    """A rule that is not `Tool(pattern)` is matched by no check, so a typo would drop out of
+    the set the other invariants here read."""
+    for behavior, rules in _permissions().items():
+        for rule in rules:
+            assert RULE_SHAPE.match(rule), f"{behavior} rule {rule!r} is not Tool(pattern)"
+
+
+def test_no_rule_names_a_tool_whose_rules_the_file_permission_check_ignores() -> None:
+    """Claude Code matches a file rule by tool name and maps Write, NotebookEdit and MultiEdit
+    onto Edit, and Glob onto Read, when it does
+    (https://docs.claude.com/en/docs/claude-code/iam). Proved on the box 2026-10-30 with one
+    isolated `--settings` deny per rule: `Write(**/*.txt)` left the Write tool free to create
+    the file, and `Edit(**/*.txt)` blocked it. A `Write(path)` or `Glob(path)` rule is dead
+    text, and an `Edit(path)` deny already covers the Write tool, so the path denies in this
+    file need no mirror."""
+    for behavior, rules in _permissions().items():
+        for rule in rules:
+            tool = rule.split("(", 1)[0]
+            assert tool not in FILE_TOOLS_THE_CHECK_IGNORES, (
+                f"{behavior} rule {rule!r} is never matched: use the tool the check maps it onto"
+            )
+
+
+def test_a_protected_directory_denies_the_file_editing_tools_not_just_read() -> None:
+    """A path this file stops the Read tool on must stop the file-editing tools on too.
+    `Edit(path)` is the rule that covers Write, NotebookEdit and MultiEdit, so a directory an
+    agent cannot read but can overwrite is not protected: the seats directory holds the box's
+    seat keys and the tincan directory its inbox secret."""
     deny = _rules("deny")
-    edits = {rule[len("Edit("):-1] for rule in deny if rule.startswith("Edit(")}
-    writes = {rule[len("Write("):-1] for rule in deny if rule.startswith("Write(")}
-    assert edits <= writes, f"Edit denies with no Write mirror: {sorted(edits - writes)}"
+    for path in (
+        "//home/nish/.config/fleet-ops/seats/**",
+        "//home/nish/.config/tincan/*.secret",
+    ):
+        assert f"Read({path})" in deny, path
+        assert f"Edit({path})" in deny, f"{path} is read-denied but not edit-denied"
 
 
 def test_no_ask_rule_is_unreachable_because_a_deny_rule_already_blocks_it() -> None:
@@ -252,10 +286,13 @@ def test_no_ask_rule_is_unreachable_because_a_deny_rule_already_blocks_it() -> N
     deny rule already blocks never prompts: it is dead text. The three `wrangler delete`
     asks sat under `Bash(wrangler:*)` and never fired (proved on the box 2026-10-30:
     `wrangler delete --help` was denied, not asked). Each ask rule is replaced by a command
-    it matches and no deny rule matches, so an ask that loses to a deny fails."""
+    it matches and no deny rule matches, so an ask that loses to a deny fails. The removed
+    wrangler asks stay denied, so narrowing `Bash(wrangler:*)` cannot quietly allow them."""
     for pattern in _bash_patterns("ask"):
-        command = pattern.replace("*", "x")
+        command = pattern[:-2] + " x" if pattern.endswith(":*") else pattern.replace("*", "x")
         assert not _denied(command), f"ask rule {pattern!r} is unreachable: deny already blocks {command!r}"
+    for command in ("wrangler delete x", "wrangler d1 delete x", "wrangler r2 bucket delete x"):
+        assert _denied(command), command
 
 
 def test_no_bash_command_reads_a_seat_or_tincan_file_by_hiding_its_path() -> None:
@@ -263,7 +300,9 @@ def test_no_bash_command_reads_a_seat_or_tincan_file_by_hiding_its_path() -> Non
     (proved on the box 2026-10-30: `head -c 0`, `rg` and `ls` on a seats path were all denied),
     but a command that hides the path inside a quoted string is stopped only by a Bash rule
     that names the directory itself: `python3 -c "open('.../seats/x').read()"` ran before
-    that rule existed. A bare directory listing stays covered by the Read path deny."""
+    that rule existed. The limit is a string rule's reach: a command that reaches the file by
+    a relative path (`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring, so
+    closing that needs a file mode or a sandbox, not another pattern."""
     for path in (
         "/home/nish/.config/fleet-ops/seats/claude-seat-a.env",
         "/home/nish/.config/tincan/inbox.secret",

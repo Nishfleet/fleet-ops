@@ -10,14 +10,23 @@ subagent model, the advisor model, the per-model settings, the hand-picked
 explicit copy task, a single-file one or a directory one, never a sweep.
 
 The permission lists hold three invariants, and
-`tests/test_claude_managed_settings.py` checks each one. Every `Edit(path)` deny
-has its `Write(path)` mirror, because Claude Code matches a rule by tool name and
-lists Read, Write and Edit as separate file-pattern tools, so an `Edit` deny
-never stops the Write tool. No `ask` rule's command is already denied, because
-deny is checked first and such a rule never prompts. And no Bash command reads a
-seat or tincan file by hiding its path inside a quoted string, which the Read
-path denies alone do not stop. Each of the three was a live hole before
-2026-10-30 (fleet-ops#10567).
+`tests/test_claude_managed_settings.py` checks each one. No rule names a tool
+whose rules the file permission check ignores: Claude Code matches a file rule by
+tool name and maps Write, NotebookEdit and MultiEdit onto Edit and Glob onto
+Read, so a `Write(path)` or `Glob(path)` rule is dead text while an `Edit(path)`
+deny already stops the Write tool. A path the list stops the Read tool on also
+stops the editing tools, so a directory an agent cannot read is one it cannot
+overwrite either. And no `ask` rule's command is already denied, because deny is
+checked first and such a rule never prompts. Each of the three was a live hole
+before 2026-10-30 (fleet-ops#10567).
+
+The seat and tincan Bash rules are string rules, so their reach is the path as
+the command spells it: `Bash(*/.config/fleet-ops/seats/*)` stops a command that
+names the directory, and a command that reaches the same file by a relative path
+(`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. The `*`
+prefix also matches a command that only mentions the path, so `rg -n
+'/.config/tincan/' docs` is denied too. Closing the relative-path hole needs a
+file mode or a sandbox, not another pattern.
 
 - Verify: `cmp /etc/claude-code/managed-settings.json
   rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
@@ -25,10 +34,13 @@ path denies alone do not stop. Each of the three was a live hole before
   merge: `deploy-box.yml` starts `fleet-host-config.service`, which applies
   `ansible/host.yml`, so a merged change reaches `/etc` on that run and not
   before. Prove one permission rule with `claude -p "Run exactly this one Bash
-  command and report its output: <cmd>" --allowedTools Bash --output-format
-  stream-json --verbose`: a denied command reports a `permission_denied` event,
-  and a rule under test can be added for one run with `--settings
-  '{"permissions":{"deny":["Bash(<pattern>)"]}}'`.
+  command and report its output: cat ~/.config/tincan/inbox.secret"
+  --allowedTools Bash --output-format stream-json --verbose`: a denied command
+  reports `Permission to use Bash with command <cmd> has been denied.`, and a
+  rule under test can be added for one run with `--settings
+  '{"permissions":{"deny":["Bash(<pattern>)"]}}'`, which merges with the managed
+  lists (proved 2026-10-30: the managed `Bash(wrangler:*)` deny still fired with
+  an unrelated `--settings` deny in place).
 - Switch it off: a PR that deletes the file from `rootfs/` and adds
   `/etc/claude-code/managed-settings.json` to `retired` in `ansible/host.yml`.
 - The check is the `unit` job's `tests/test_claude_managed_settings.py`: every
