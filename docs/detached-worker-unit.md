@@ -10,7 +10,7 @@ trailing `&`: those die with the shell (fleet-ops#350) and launch with no dead-m
 
 One line, stock systemd, no wrapper script:
 
-    XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start fleet-worker-github-token@<repo>.service && sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<seconds> -p "EnvironmentFile=/run/user/1000/fleet-worker-github-token/<repo>.env" -p "TemporaryFileSystem=$HOME/.config/gh" -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' -E DELIVERABLE=<abs path> -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' --unit <name> -- sh -c 'cat <packet.md> | $HOME/.local/bin/pi --print --provider <provider> --model <model>'
+    XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start fleet-worker-github-token@<repo>.service && sudo systemd-run --uid=nish --gid=nish -p RuntimeMaxSec=<seconds> -p "EnvironmentFile=/run/user/1000/fleet-tokens/worker/<repo>.env" -p "TemporaryFileSystem=$HOME/.config/gh" -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' -E DELIVERABLE=<abs path> -p 'ExecStopPost=/bin/sh -c '"'"'test -s "$DELIVERABLE" || { echo no-deliverable >&2; exit 1; }'"'"'' --unit <name> -- sh -c 'cat <packet.md> | $HOME/.local/bin/pi --print --provider <provider> --model <model>'
 
 `<repo>` is the Nishfleet repo the worker targets.
 

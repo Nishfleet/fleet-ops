@@ -29,8 +29,8 @@ pytestmark = pytest.mark.skipif(
 
 
 def own_dir(text):
-    text = text.replace("RuntimeDirectory=fleet-worker-github-token\n", f"RuntimeDirectory={ENV_NAME}\n").replace("%t/fleet-worker-github-token/", f"%t/{ENV_NAME}/")
-    assert not re.search(r"fleet-worker-github-token(/|\n)", text), "a test unit still names the live token directory"
+    text = text.replace("RuntimeDirectory=fleet-tokens/worker\n", f"RuntimeDirectory={ENV_NAME}\n").replace("%t/fleet-tokens/worker/", f"%t/{ENV_NAME}/")
+    assert not re.search(r"fleet-tokens/worker(/|\n)", text), "a test unit still names the live token directory"
     return text
 
 

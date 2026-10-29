@@ -81,6 +81,41 @@ tests:
               summary: "hermes-gateway.service has not been active for 5 minutes"
               description: "node_systemd_unit_state{name=\"hermes-gateway.service\",state=\"active\"} has no active sample in the last 5 minutes, or the series is missing."
 
+  # AgentRunnersDown: some runner active all along never fires; when the last one
+  # stops being active the sum reaches 0 and pages after 5 minutes.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x60'
+      - series: 'node_systemd_unit_state{name="actions.runner.a.service",state="active"}'
+        values: '1x20 0x40'
+      - series: 'node_systemd_unit_state{name="actions.runner.b.service",state="active"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AgentRunnersDown
+        exp_alerts: []
+  - interval: 30s
+    input_series:
+      - series: 'up{job="node"}'
+        values: '1x60'
+      - series: 'node_systemd_unit_state{name="actions.runner.a.service",state="active"}'
+        values: '1x20 0x40'
+      - series: 'node_systemd_unit_state{name="actions.runner.b.service",state="active"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: AgentRunnersDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: AgentRunnersDown
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "no agent runner is active"
+              description: "No actions.runner unit has been active for 5 minutes, so no agent job can run. If the runner journals name /run/user/1000/fleet-tokens, the jail was built before that path existed: restart the runner."
+
   # SystemUnitFailed: pending for 5m, then fires; a unit that recovers does not.
   - interval: 30s
     input_series:

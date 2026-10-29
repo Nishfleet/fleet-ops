@@ -32,7 +32,7 @@ After=fleet-worker-github-token@actions:%i.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env
+EnvironmentFile=%t/fleet-tokens/worker/actions:%i.env
 # $$ keeps systemd from expanding the token into the shell's argv.
 ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN"'
 ExecStart=/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i
@@ -42,7 +42,7 @@ ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s comp
 # skips the rest. The revoke runs only with the App token loaded (an empty
 # GH_TOKEN would fall back to the owner's login), the rm always runs, and a
 # failed revoke still fails the unit.
-ExecStopPost=/bin/sh -c 'rc=0; [ -z "$$GH_TOKEN" ] || /usr/bin/env gh api -X DELETE installation/token || rc=$$?; rm -f %t/fleet-worker-github-token/actions:%i.env; exit $$rc'
+ExecStopPost=/bin/sh -c 'rc=0; [ -z "$$GH_TOKEN" ] || /usr/bin/env gh api -X DELETE installation/token || rc=$$?; rm -f %t/fleet-tokens/worker/actions:%i.env; exit $$rc'
 TimeoutStartSec=120
 # A network blip retries twice in the hour, then the unit stays failed and
 # OnFailure pages.

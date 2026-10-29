@@ -43,6 +43,23 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
+      # fleet-ops#10753: the runner jail is built once, when the unit starts, so a
+      # credential path that does not exist at that moment stays readable and every
+      # agent job then fails its own runner-probe step. Nothing is "failed" in that
+      # state: the fleet looks idle and no other rule fires, so this pages on the
+      # only signal common to both causes (a stale jail and a runner that stopped),
+      # and names the path the jail has to mask.
+      - alert: AgentRunnersDown
+        expr: |
+          sum(node_systemd_unit_state{name=~"actions\\.runner\\..*",state="active"}) < 1
+          and on() (up{job="node"} == 1)
+        for: 5m
+        labels:
+          severity: nish
+        annotations:
+          summary: "no agent runner is active"
+          description: "No actions.runner unit has been active for 5 minutes, so no agent job can run. If the runner journals name /run/user/1000/fleet-tokens, the jail was built before that path existed: restart the runner."
+
       - alert: DiskWillFill
         expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
         for: 30m
