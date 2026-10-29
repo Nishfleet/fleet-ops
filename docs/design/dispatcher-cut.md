@@ -7,7 +7,8 @@ Issue: #10804.
 
 ## Why
 
-`.github/workflows/agent-dispatch.yml` (1,687 lines, 53% of them a `run:` block)
+`.github/workflows/agent-dispatch.yml` (1,687 lines, 53% of its lines a `run:`
+block)
 and `.github/workflows/agent.yml` (1,433 lines, 70%), measured at `origin/main`
 `fa9a6445a`, are the fleet's dispatcher.
 They work, and they have grown one workaround at a time: a mirror with a file
@@ -33,8 +34,8 @@ Two rules decide every row:
 
 Every home-made mechanism, the stock feature that would hold its fact, and the
 verdict. Verdicts are `stock` (GitHub does it, we already lean on it), `cut`
-(deletable, filed above), and `keep` (no stock equivalent; the one line says
-why).
+(deletable, filed as its own issue), and `keep` (no stock equivalent; the one
+line says why).
 
 | Home-made mechanism | Stock feature | Verdict |
 |---|---|---|
@@ -45,7 +46,7 @@ why).
 | issue blocking | issue dependencies (`blocked_by`) | stock |
 | fire on CI failure, on a branch push, on a merged PR | `workflow_run`, `workflow_run` on `claim/issue-*`, `pull_request_target` | stock |
 | the claim branch's own cleanup after a merge | `delete_branch_on_merge` | stock |
-| retry a run | `gh run rerun --failed` and `run_attempt` | cut (row 5) |
+| retry a run | `gh run rerun` and the run's `attempt` | cut (row 5) |
 | a checkout per hand-off | `actions/checkout` | cut (row 7) |
 | `agent-in-progress` | the issue's live runs | cut (row 6) |
 | `miss-review`, `miss-review-pr`, `miss-stalled` | none needed: the sweep's `red` class covers the fact | cut (row 1) |
@@ -64,7 +65,8 @@ why).
 The merge queue is the one stock feature the fleet already leans on everywhere:
 fleet-ops gates `main` with ruleset `23692529` (squash queue, required checks
 `Gitleaks`, `ci`, `ratchet / ratchet`, `coordinator-approval`), 0509 with
-`21391031`, drive with `24262668`. Every row below assumes the queue keeps
+`21391031`, drive with `24262668`, all three read with `gh api
+repos/<repo>/rulesets` on 2026-10-28. Every row below assumes the queue keeps
 landing PRs. Nothing here touches it.
 
 ## Two shapes
@@ -100,11 +102,12 @@ re-derive a fact GitHub already stores — the infra retry count (a run's
 6), the hand-off's checkout cache (a per-job workspace, row 7) — and every job
 that duplicates a class the sweep already owns (rows 1 to 4).
 
-Rows 1 and 6 remove two of the sweep's seven classes (stalled refs, and the
-orphan class, which exists only because the label can be left behind). The five
-that remain are in "Kept" below, and B's rule for each is the same as for a
-store: a class that is a repair moves into a stock object, and a class that is a
-policy stays where it is.
+Rows 1 to 4 take three dispatch jobs and one log read off the event path. Row 6
+also removes one of the sweep's seven classes, the orphan label class, because
+it exists only because the label can be left behind. The other six are in
+"Kept" below, and B's rule for each is the same as for a store: a class that is
+a repair moves into a stock object, and a class that is a policy stays where it
+is.
 
 Shape: 346 lines leave, and the *state* surface halves: no `agent-in-progress`,
 no infra comment ledger, no mirror, no worktree registration. Its weakness is
@@ -134,7 +137,8 @@ Why B is safe to start now: every row is independently revertible, is a single
 PR, and removes code whose replacement is a stock call the fleet already makes.
 `actions/checkout` is what every other job in the fleet uses, `list`'s run reads
 are the same API the sweep already calls, and `gh run rerun` is new: no workflow
-in the fleet calls it today, so row 5 is the one row that adds a command.
+in the fleet calls it today (grepped 2026-10-28), so row 5 is the one row that
+adds a command.
 
 ## Delete list, ordered by lines removed per hour of work
 
@@ -149,25 +153,36 @@ fewer hours, then by more lines.
 | 2 | `conflicts` and `remerge` (#10807) | dispatch | 63 | 1 | **63** | a conflicted claim PR waits for the sweep, not seconds |
 | 3 | log excerpt in `rework-note` (#10808) | dispatch | 20 | 0.5 | **40** | the comment names the run, not the log lines |
 | 4 | `Start the next ready issue` becomes one dispatch (#10809) | agent.yml | 67 | 2 | **34** | a freed lane waits up to the sweep interval |
-| 5 | infra retry ledger becomes `run_attempt` plus `gh run rerun` (#10810) | agent.yml | 30 | 1.5 | **20** | a retry stays on the same engine by design || 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
-| 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | a hand-off that died unpushed loses those commits, so its prompt's push-as-soon-as-checks-pass rule is the precondition, not a preference |
+| 5 | infra retry becomes rerun-in-place: the sweep calls `gh run rerun` and `attempt` is the count (#10810) | agent.yml | 30 | 1.5 | **20** | a retry is the same run's next attempt, and a park starts a new run, so the count resets with it |
+| 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
+| 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | an unpushed hand-off loses those commits: accepted, not mitigable, and its prompt's step 4 rule (commit and push as soon as the checks pass) is what keeps it rare |
 
 Total: 346 lines and 11.5 hours, 30 lines per hour on average. That is 210 lines
 of `agent-dispatch.yml` (12% of it), 132 of `agent.yml` (9%), and 4 occurrences
 of the one label name `agent-in-progress` in `config/intake-repos.json`,
 `config/orchestrate-events.json`, `docs/intake-enrolment.md` and
-`docs/red-main-issues.md`, all counted in row 6. Rows 1 and 2 delete jobs, not
-labels, so they carry no config lines. Row 1 also retires the `MISS_REVIEW`
-repo variable: no job reads it once its three jobs are gone, and the value is
-recorded in that issue before the delete.
+`docs/red-main-issues.md`. Row 6's 59 is 20 in the dispatcher, 35 in `agent.yml`
+and those 4. Rows 1 and 2 delete jobs, not labels, so they carry no config
+lines. Row 1 also retires the `MISS_REVIEW` repo variable: no job reads it once
+its three jobs are gone, and the value is recorded in that issue before the
+delete.
+
+Row 6's read rule belongs in the row, not in a signal below: a run-list read
+that fails holds the issue, never admits it, because an unread run list looks
+exactly like "no worker on this" (the double admit the row removes).
+
+Hours are work time only. They exclude the post-merge observation window rows
+5, 6 and 7 need, which is why the ranking puts them last: a row whose proof is
+a live run cannot be timed from the edit alone.
 
 Issue numbers are creation order, not row order: row 6's issue was filed after
 row 7's, so #10814 comes before #10811 in the list.
 
 Stop after row 4 if the goal is the cheapest behaviour change: 4 hours for 198
-lines, and it removes the failure class that cost 258 cancelled runs
-(fleet-ops#9269). Rows 5 to 7 are the ones that need a live run as proof and the
-ones that change how a worker is retried, where it builds, and how it is seen as
+lines, and it removes the relabel chain that re-dispatched a waiting issue and
+got its run displaced, the chain #9269 counted at 258 cancelled runs. Rows 5
+to 7 are the ones that need a live run as proof and the ones that change how a
+worker is retried, where it builds, and how it is seen as
 held, so they are last on purpose even though row 6 is the largest single
 delete.
 
@@ -186,11 +201,11 @@ delete.
 - **`stuck-prs` (168).** The single retry authority. GitHub has no "PR with no
   verdict for 15 minutes" event, and this job is where every such class
   converges.
-- **`list`'s five remaining classes.** Triage labelling, a required check that
-  never reported, an unarmed PR, a red claim PR, and a deleted issue. Each is a
-  fact no stock object stores (a variable, a check that never ran, a missing
-  arm, a red head, a 410), and the sweep is the only mover that reads state
-  rather than events.
+- **`list`'s six remaining classes.** Triage labelling, a required check that
+  never reported, an unarmed PR, a red claim PR, a deleted issue, and a stalled
+  `-miss-review` ref. Each is a fact no stock object stores (a variable, a check
+  that never ran, a missing arm, a red head, a 410, a deleted PR), and the sweep
+  is the only mover that reads state rather than events.
 - **`red-main` (85).** Files one issue per red workflow and closes it when the
   workflow is green. Nothing stock files and closes issues.
 - **`close-claim` (32).** `delete_branch_on_merge` cleans a merged claim
@@ -201,7 +216,9 @@ delete.
   product: routing, the session, paid judgment, and a stock auto-merge call
   wrapped only because the token must be the App's.
 - **Attempt cap and two strikes (62 of `Strike or requeue`'s 92).** Escalation
-  policy: a packet that failed twice goes to the senior lane.
+  policy: a packet that failed twice goes to the senior lane. Row 5 changes what
+  the cap counts (the run's `attempt`, not a comment) and who calls the retry
+  (the sweep), never when it fires.
 
 ## Seen, not filed
 
@@ -216,6 +233,11 @@ yet, recorded so the next cut starts from here instead of from scratch.
 - **`RUN_LIVE_JQ` (job env, 10 lines).** It reads stock run state, and it is
   the price of not trusting `status` for a run whose `work` job ended. Both
   copies are needed while `stuck-prs` runs before the run list settles.
+- **`list`'s `stalled_refs` class (about 15 lines).** Row 1 deletes the jobs
+  that create `-miss-review` refs, so this class stops finding anything. Left out
+  of row 1 because its 48 lines were measured on the three jobs, and a class
+  that finds nothing is harmless until the next sweep re-reads it. A good
+  follow-up PR once row 1 is live for a week.
 - **`admit`'s trusted-login check.** An authorization rule, not glue. The
   `orchestrate` job's sender check is the same rule twice, and that duplication
   is deliberate: both jobs can start a session.
@@ -242,14 +264,22 @@ hours are work time, and the queue is the rest. And the worker App token cannot
 push a workflow file, so the hand-off applies each row, not a worker.
 
 Row 5's one new command needs a credential answer, and the answer is the one
-row 4 already uses: `gh run rerun` runs as the runner login (`env -u GH_TOKEN`),
-the same login the dispatch step calls with today, so no token gains a scope.
-The `run_attempt` read uses the App token's existing `actions: read`.
+row 4 already uses: both calls run as the runner login (`env -u GH_TOKEN`), not
+the App token, which has no Actions permission at all. `gh run view --json
+attempt` and `gh run rerun` are the same two calls the dispatch step already
+makes with that login, so no token gains a scope. The caller is the sweep, not
+the dying run: a run cannot rerun itself while it runs. `--failed` reruns only
+failed jobs, so a cancelled or timed-out run needs the plain `gh run rerun
+<id>`. The verdict itself travels as one annotation instead of a comment: the
+run prints `::warning::infra: <signature>`, and the sweep reads it from the
+run's check run, which is the read that replaces the comment-counting jq.
 
 Rolling back a row is that row's PR reverted, plus one `gh variable set` for a
 row that deleted a repo variable: the value is recorded in the row's issue
-before the delete, so the restore is one line. No row touches a database or a
-host file, and no row is a migration.
+before the delete, so the restore is one line. The hand-off runs the rollback
+the same way it runs the row, and both its revert and `gh variable set` need the
+same approvals and the same repo-admin login it already uses. No row touches a
+database or a host file, and no row is a migration.
 
 ## What would tell us this was wrong
 
@@ -261,14 +291,14 @@ host file, and no row is a migration.
   no failing line, twice.
 - Row 4: a freed lane sits idle for more than one sweep interval while ready
   work waits, twice in a week.
-- Row 5: the same engine fails the same way three times on a run whose
-  `run_attempt` is still under the cap.
-- Row 6: a worker run that parks, strikes or requeues leaves an issue that the
-  Gate then admits twice, or the sweep never requeues an issue whose run died.
-  A run-list read that fails must hold the issue, never admit it: an unread run
-  list looks like "no worker on this", which is the double admit.
+- Row 5: the same engine fails the same way on a run already at `attempt` 4,
+  past the rerun cap, and nothing strikes.
+- Row 6: a worker run that parks, strikes or requeues leaves an issue the Gate
+  then admits twice, or the sweep never requeues an issue whose run died.
 - Row 7: a hand-off loses work to a fresh checkout, or a live hand-off cannot
-  open its PR from a per-job workspace.
+  open its PR from a per-job workspace. The first is the accepted cost of the
+  row, so it counts as a failure only twice in a month; the second is a
+  blocker.
 
 Each is observable from the issue thread and the run list, without a new
 detector. That is the test for every future row too: if the wrongness needs a
