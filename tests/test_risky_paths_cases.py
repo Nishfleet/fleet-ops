@@ -2,11 +2,10 @@
 
 Every case in config/risky-paths.json must classify as its "want" through
 agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out of the workflow, so
-the list and the programs cannot drift from what the hold-risky job runs.
-
-A case with "paths": null stands for an unreadable list, which must hold. An approval
-case feeds APPROVAL {sha, statuses, comments}: the shape the job builds from the head
-sha, its statuses and the PR's comments.
+the list and the programs cannot drift from what the hold-risky job runs. A case with
+"paths": null stands for an unreadable list, which must hold. An approval case feeds
+APPROVAL {sha, statuses, comments}, the shape the job builds from the head sha, its
+statuses and the PR's comments.
 """
 import json
 import pathlib
@@ -21,7 +20,7 @@ HOLD = '.jobs["hold-risky"].env'
 
 
 def _env(name):
-    out = subprocess.run(["yq", f"{HOLD}.{name}", str(WORKFLOW)], check=True, capture_output=True, text=True)
+    out = subprocess.run(["yq", f"{HOLD}.{name}", str(WORKFLOW)], check=True, capture_output=True, text=True, timeout=120)
     value = out.stdout.strip()
     assert value and value != "null", f"agent-dispatch.yml hold-risky env {name} is missing"
     return value
@@ -40,7 +39,7 @@ def classify():
     def run(case, cfg):
         done = subprocess.run(
             ["jq", "-c", "--argjson", "cfg", json.dumps(cfg), "--arg", "label", label, program],
-            input=json.dumps(case), capture_output=True, text=True)
+            input=json.dumps(case), capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
         return json.loads(done.stdout)
 
@@ -56,7 +55,7 @@ def approve():
         done = subprocess.run(
             ["jq", "-r", "--arg", "c", context, "--arg", "who", " ".join(case["approvers"]), program],
             input=json.dumps({k: case.get(k) for k in ("sha", "statuses", "comments")}),
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
 
@@ -77,7 +76,8 @@ def test_every_case_classifies_as_its_want(config, classify):
 def test_every_approval_case_answers_its_want(config, approve):
     wrong = []
     for case in config["approval_cases"]:
+        assert isinstance(case["want"], bool), f"{case['id']}: want is not a bool"
         got = approve(case)
-        if got != str(case["want"]).lower():
+        if got != json.dumps(case["want"]):
             wrong.append(f"{case['id']}: got {got}")
     assert not wrong, "\n".join(wrong)
