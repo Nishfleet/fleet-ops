@@ -14,6 +14,7 @@ WALL = "https://nish345.cloudflareaccess.com/cdn-cgi/access/login/0509.io?kid=5d
 STEP = '.jobs.lighthouse.steps[] | select(.id == "reach")'
 AUDIT = '.jobs.lighthouse.steps[] | select(has("uses")) | select(.with.configPath)'
 VERDICT = '.jobs.lighthouse.steps[] | select(.name | test("^Verdict on a failed audit"))'
+ASSERT = "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json"
 
 
 def _y(expr):
@@ -138,9 +139,9 @@ def _run_verdict(files, urls, npx_rc=0):
             '#!/bin/sh\n'
             'printf \'%s\\n\' "$*" >> "$NPX_LOG"\n'
             'if [ "$NPX_RC" = 0 ] && [ "$3" = collect ]; then\n'
-            '  for a in "$@"; do case $a in --url=*) u=${a#--url=};; esac; done\n'
+            '  for a in "$@"; do case $a in --numberOfRuns=*) k=${a#--numberOfRuns=};; --url=*) u=${a#--url=};; esac; done\n'
             '  n=$(ls .lighthouseci/lhr-*.json 2>/dev/null | wc -l)\n'
-            '  printf \'{"requestedUrl": "%s"}\\n\' "$u" > ".lighthouseci/lhr-$((n+1)).json"\n'
+            '  i=1; while [ "$i" -le "$k" ]; do printf \'{"requestedUrl": "%s"}\\n\' "$u" > ".lighthouseci/lhr-$((n+i)).json"; i=$((i+1)); done\n'
             'fi\n'
             'exit "$NPX_RC"\n'
         )
@@ -167,78 +168,34 @@ def _run_verdict(files, urls, npx_rc=0):
         return done.returncode, done.stdout + done.stderr, calls
 
 
-def test_a_breached_verdict_still_fails_the_run_and_names_the_assertion():
-    results = json.dumps(
+def _lhrs(url, count, first=1):
+    return {f"lhr-{i}.json": json.dumps({"requestedUrl": url}) for i in range(first, first + count)}
+
+
+def test_the_verdict_expects_the_number_of_runs_the_audit_asks_for():
+    assert f"want={_y(f'{AUDIT} | .with.runs')}" in _y(f"{VERDICT} | .run")
+
+
+def test_a_reached_verdict_fails_the_run_and_points_at_the_step_that_says_why():
+    breach = json.dumps(
         [{
             "passed": False,
             "level": "error",
             "url": "http://s/a",
             "auditId": "largest-contentful-paint",
-            "auditProperty": "",
             "operator": "<=",
             "expected": 1500,
             "actual": 3200,
         }]
     )
-    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
+    code, logged, calls = _run_verdict({"assertion-results.json": breach}, "http://s/a\n")
     assert code != 0
-    assert "::error::http://s/a breached largest-contentful-paint: expected <= 1500, found 3200" in logged
+    assert "::error::the audit reached a verdict, so this failure is not a lost trace" in logged
     assert calls == ""
 
 
-def test_the_breach_line_names_the_audit_property():
-    results = json.dumps(
-        [{
-            "passed": False,
-            "level": "error",
-            "url": "http://s/a",
-            "auditId": "resource-summary",
-            "auditProperty": "script:size",
-            "operator": "<=",
-            "expected": 153600,
-            "actual": 200000,
-        }]
-    )
-    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
-    assert code != 0
-    assert "::error::http://s/a breached resource-summary.script:size: expected <= 153600, found 200000" in logged
-    assert calls == ""
-
-
-def test_a_failed_audit_that_never_reached_a_verdict_fails_when_nothing_is_recorded():
-    code, logged, _calls = _run_verdict({}, "http://s/a\n", npx_rc=1)
-    assert code != 0
-    assert "::error::http://s/a recorded no trace in two audits, so there is no verdict for it" in logged
-
-
-def test_a_lost_trace_is_decided_on_the_runs_that_recorded():
-    lhr = json.dumps({"requestedUrl": "http://s/a"})
-    code, logged, calls = _run_verdict({"lhr-1.json": lhr, "lhr-2.json": lhr}, "http://s/a\n")
-    assert code == 0
-    assert "::error::" not in logged
-    assert calls == "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json\n"
-
-
-def test_a_page_that_recorded_nothing_gets_one_more_collect_before_the_verdict():
-    lhr = json.dumps({"requestedUrl": "http://s/a"})
-    code, logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n")
-    assert code == 0
-    assert "::warning::http://s/b recorded no trace, so it is audited once more" in logged
-    assert calls.splitlines() == [
-        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url=http://s/b --config=./config/lighthouserc.json",
-        "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json",
-    ]
-
-
-def test_a_page_that_records_nothing_twice_fails_the_run():
-    lhr = json.dumps({"requestedUrl": "http://s/a"})
-    code, logged, _calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\nhttp://s/b\n", npx_rc=1)
-    assert code != 0
-    assert "::error::http://s/b recorded no trace in two audits, so there is no verdict for it" in logged
-
-
-def test_a_verdict_that_failed_no_assertion_still_fails_the_run_and_says_why():
-    results = json.dumps(
+def test_a_reached_verdict_fails_the_run_when_no_assertion_failed():
+    upload_failure = json.dumps(
         [{
             "passed": True,
             "level": "error",
@@ -249,16 +206,59 @@ def test_a_verdict_that_failed_no_assertion_still_fails_the_run_and_says_why():
             "actual": 1200,
         }]
     )
-    code, logged, calls = _run_verdict({"assertion-results.json": results}, "http://s/a\n")
+    code, logged, calls = _run_verdict({"assertion-results.json": upload_failure}, "http://s/a\n")
     assert code != 0
-    assert "no assertion at error level failed" in logged
-    assert "recorded no trace" not in logged
+    assert "the audit reached a verdict" in logged
+    assert "of 5 runs" not in logged
     assert calls == ""
 
 
-def test_a_lost_trace_whose_rerecord_verdict_fails_still_fails_the_run():
-    lhr = json.dumps({"requestedUrl": "http://s/a"})
-    code, logged, calls = _run_verdict({"lhr-1.json": lhr}, "http://s/a\n", npx_rc=1)
+def test_a_page_that_recorded_every_run_is_not_collected_again():
+    code, logged, calls = _run_verdict(_lhrs("http://s/a", 5), "http://s/a\n")
+    assert code == 0
+    assert "::warning::" not in logged
+    assert calls == f"{ASSERT}\n"
+
+
+def test_a_page_short_of_its_runs_is_recorded_up_to_the_count():
+    code, logged, calls = _run_verdict(_lhrs("http://s/a", 2), "http://s/a\n")
+    assert code == 0
+    assert "::warning::http://s/a recorded 2 of 5 runs, so the missing ones are collected once more" in logged
+    assert calls.splitlines() == [
+        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=3 --url=http://s/a --config=./config/lighthouserc.json",
+        ASSERT,
+    ]
+
+
+def test_a_page_that_recorded_nothing_is_recorded_from_scratch():
+    code, logged, calls = _run_verdict({}, "http://s/a\n")
+    assert code == 0
+    assert "::warning::http://s/a recorded 0 of 5 runs" in logged
+    assert calls.splitlines() == [
+        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url=http://s/a --config=./config/lighthouserc.json",
+        ASSERT,
+    ]
+
+
+def test_only_the_page_that_is_short_is_collected_again():
+    page_a, page_b = _lhrs("http://s/a", 5), _lhrs("http://s/b", 1, first=6)
+    code, logged, calls = _run_verdict({**page_a, **page_b}, "http://s/a\nhttp://s/b\n")
+    assert code == 0
+    assert logged.count("::warning::") == 1 and "http://s/b recorded 1 of 5 runs" in logged
+    assert calls.splitlines() == [
+        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=4 --url=http://s/b --config=./config/lighthouserc.json",
+        ASSERT,
+    ]
+
+
+def test_a_page_that_still_falls_short_has_no_verdict():
+    code, logged, _calls = _run_verdict(_lhrs("http://s/a", 4), "http://s/a\n", npx_rc=1)
     assert code != 0
-    assert calls == "-y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json\n"
-    assert "recorded no trace in two audits" not in logged
+    assert "::error::http://s/a recorded 4 of 5 runs in two audits, so there is no verdict for it" in logged
+
+
+def test_a_page_is_matched_regardless_of_a_trailing_slash():
+    code, logged, calls = _run_verdict(_lhrs("http://s/a/", 5), "http://s/a\n")
+    assert code == 0
+    assert "::warning::" not in logged
+    assert calls == f"{ASSERT}\n"

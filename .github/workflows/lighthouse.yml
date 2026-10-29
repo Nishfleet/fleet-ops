@@ -35,12 +35,16 @@ jobs:
       # A run whose trace cannot be recorded (NO_NAVSTART) aborts lhci's whole collect after its own
       # retries, keeping the runs that did record, and the action then throws before assert writes its
       # verdict file (https://github.com/treosh/lighthouse-ci-action/blob/v12/src/index.js). So a failed
-      # audit cannot tell a lost trace from a breached budget, and this step is what tells them apart.
-      # The CLI version is the action's own pin: https://github.com/treosh/lighthouse-ci-action/blob/v12/package.json
-      - name: "Verdict on a failed audit: a lost trace is tolerated, a breached budget is not"
+      # audit cannot tell a lost trace from a breached budget, and this step is what tells them apart: a
+      # page short of the runs the audit asked for is re-recorded up to that count, so no page is decided
+      # on a smaller sample than the budget is set against, and a page that still falls short of it has no
+      # verdict and fails the run. A verdict file, by contrast, means assert ran: the action's annotations
+      # name the breached budgets, so this step only names the step that carries the reason.
+      # The CLI version is the action's own pin: https://github.com/treosh/lighthouse-ci-action/blob/v12/node_modules/@lhci/cli/package.json
+      - name: "Verdict on a failed audit: a lost trace is re-recorded, a breached budget still fails"
         if: steps.audit.outcome == 'failure'
         env: {URLS: "${{ steps.reach.outputs.urls }}"}
         run: |
-          if [ -f .lighthouseci/assertion-results.json ]; then jq -r '.[] | select(.passed == false and .level == "error") | (.auditProperty // "") as $p | "::error::\(.url // "the page") breached \(.auditId)\(if $p == "" then "" else "." + $p end): expected \(.operator) \(.expected), found \(.actual)"' .lighthouseci/assertion-results.json; echo "the audit reached a verdict and no assertion at error level failed, so the audit step failed after its assertions"; exit 1; fi
-          while IFS= read -r u; do [ -n "$u" ] || continue; jq -se --arg u "$u" 'any(.[]; .requestedUrl == $u)' .lighthouseci/lhr-*.json >/dev/null 2>&1 || { echo "::warning::$u recorded no trace, so it is audited once more"; npx -y @lhci/cli@0.15.1 collect --additive --numberOfRuns=5 --url="$u" --config=./config/lighthouserc.json || { echo "::error::$u recorded no trace in two audits, so there is no verdict for it"; exit 1; }; }; done <<<"$URLS"
+          if [ -f .lighthouseci/assertion-results.json ]; then echo "::error::the audit reached a verdict, so this failure is not a lost trace: the audit step above names the assertions that failed, or its own error"; exit 1; fi
+          want=5; while IFS= read -r u; do [ -n "$u" ] || continue; have=$(jq -s --arg u "$u" '[.[]|select((.requestedUrl//""|rtrimstr("/"))==($u|rtrimstr("/")))]|length' .lighthouseci/lhr-*.json 2>/dev/null) || have=0; [ "$have" -ge "$want" ] && continue; echo "::warning::$u recorded $have of $want runs, so the missing ones are collected once more"; npx -y @lhci/cli@0.15.1 collect --additive --numberOfRuns=$((want-have)) --url="$u" --config=./config/lighthouserc.json || { echo "::error::$u recorded $have of $want runs in two audits, so there is no verdict for it"; exit 1; }; done <<<"$URLS"
           npx -y @lhci/cli@0.15.1 assert --config=./config/lighthouserc.json
