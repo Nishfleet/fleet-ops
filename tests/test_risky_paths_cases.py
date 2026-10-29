@@ -1,11 +1,11 @@
-"""The risky-path hold list and the two programs that read it agree (fleet-ops#10943).
+"""fleet-ops#10943: the risky-path hold list and the two programs that read it agree.
 
 Every case in config/risky-paths.json must classify as its "want" through
 agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out of the workflow, so
-the list and the programs cannot drift from what the hold-risky job runs. A case with
-"paths": null stands for an unreadable list, which must hold. An approval case feeds
-APPROVAL {sha, statuses, comments}, the shape the job builds from the head sha, its
-statuses and the PR's comments.
+the list and the programs cannot drift from what the hold job and the
+coordinator-approval gate read. A case with "paths": null stands for an unreadable
+list, which must hold. An approval case feeds APPROVAL {sha, statuses, comments},
+the shape the gate builds from the head sha, its statuses and the PR's comments.
 """
 import json
 import pathlib
@@ -16,13 +16,14 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/agent-dispatch.yml"
 LIST = ROOT / "config/risky-paths.json"
-HOLD = '.jobs["hold-risky"].env'
 
 
 def _env(name):
-    out = subprocess.run(["yq", f"{HOLD}.{name}", str(WORKFLOW)], check=True, capture_output=True, text=True, timeout=120)
+    out = subprocess.run(
+        ["yq", f'.env.{name} // .jobs["hold-risky"].env.{name}', str(WORKFLOW)],
+        check=True, capture_output=True, text=True, timeout=120)
     value = out.stdout.strip()
-    assert value and value != "null", f"agent-dispatch.yml hold-risky env {name} is missing"
+    assert value and value != "null", f"agent-dispatch.yml env {name} is missing"
     return value
 
 

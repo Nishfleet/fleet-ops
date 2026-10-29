@@ -1564,7 +1564,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_(deploy_failed_(rule|engine)|grafana_fixture_drift)\.py$|\.github/workflows/ci\.yml$)'; then
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|\.github/workflows/ci\.yml$)'; then
             run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
