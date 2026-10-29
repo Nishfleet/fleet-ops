@@ -697,19 +697,21 @@ jobs:
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
+      # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - 21600
+              | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
                 and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
-              | {number, ended: ($l | index("handoff-ended") != null), runs: [.comments[]
+              | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
@@ -740,8 +742,8 @@ jobs:
     strategy:
       fail-fast: false
       # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
-      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots,
-      # Devin's 4) is gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
+      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots) is
+      # gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
@@ -1425,10 +1427,11 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,handoff-ended,*) echo "orchestrate: #$ISSUE already has handoff-ended; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
+          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: park it on agent-blocked, because a session cannot push to an ended branch (fleet-ops#10211: three sessions of about 50 minutes each, and its one PR had already merged) and because a bare skip leaves it parked on needs-orchestrator with no PR, so the queue-stuck rule counts it as stuck and it never leaves the queue (fleet-ops#10843). The label swap also ends this path, since the check above leaves the issue alone once needs-orchestrator is gone. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then 0 else length end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
-            if [ "$ended" != 0 ]; then echo "orchestrate: $branch has only closed or merged PRs; skip"; exit 0; fi
+            ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then "open" elif length == 0 then "none" else "newest #\([.[].number] | max // "unknown")" end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
+            # The two writes below need issues: write, and this job holds issues: read (its own token reads the issue and the PR list above). They go as the runner user's own gh login, the credential every other write in this job uses (the mark-tried step below, and the session's push), so `env -u` is what hands gh that login, not a way to strip its only credential.
+            if [ "$ended" != open ] && [ "$ended" != none ]; then env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator; env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator: $branch has only closed or merged pull requests ($ended), so no hand-off can continue it. Parked agent-blocked for the open-or-close decision; a fresh branch needs a new claim."; echo "orchestrate: $branch has only closed or merged PRs; parked #$ISSUE agent-blocked"; exit 0; fi
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
           # used ~31% of Nish's weekly Claude limit. It counts today's (IST)
