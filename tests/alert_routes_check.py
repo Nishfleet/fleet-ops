@@ -10,11 +10,32 @@ bypass the policy tree. This reads the provisioning files, walks the policy tree
 for each rule (also for the DatasourceError and DatasourceNoData alerts the rule
 can turn into), and fails when any of that does not hold. Adding a paging rule
 means adding it to URGENT here, with its reason, and labelling it critical.
+It also fails when a rule or a dashboard panel reads a data source this repo does
+not provision, or an owner this repo's GitHub App has no installation for: that
+read is blind, and a rule that reads nothing turns into a DatasourceError alert
+nobody can act on (fleet-ops#9803). It also fails when an annotation interpolates
+$values.X, $labels.Y or the .Value of a struct a $values guard bound outside the
+with/if that scopes it: a DatasourceError alert carries no values, so the bare
+form renders %!f(<nil>) and [no value] instead of a number (fleet-ops#9810, #9822).
+
+It also holds the other end of the alert path: Alertmanager's API answers only
+with basic auth, and every Prometheus client of it carries the credential
+(fleet-ops#10058). Two files have to agree for that to hold and nothing else
+in CI compares them: the options file that names the web config, and
+Prometheus's client config, which needs the matching plaintext for both the
+alerting target and the scrape job. A drift in the first stops the service
+from starting. A drift in the second is silent until the outside dead-man
+notices that the alert set stopped arriving. The credential pair itself is
+hand-placed host state, root- and service-owned: any process that can reach
+the loopback listener already runs as nish, so a credential nish could read
+would protect nothing.
 
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
+import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -34,6 +55,7 @@ URGENT = {
     "StepFun idle": "money", "z.ai idle": "money",
     "OpenCode Go idle": "money",
     "Alibaba token-plan SG idle": "money",
+    "Session hop rate above 45%": "money",
     "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
@@ -52,6 +74,14 @@ PLAN_REPEAT = 604800
 DEFAULT_REPEAT = 86400
 ERR = ("DatasourceError", "DatasourceNoData")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+# A data source that was provisioned and then removed keeps its readers blind, so
+# each one names the replacement the reader must take (fleet-ops#9803).
+RETIRED_DATASOURCES = {"fleet-github-personal": "fleet-github"}
+RETIRED_OWNERS = {"nish3451": "Nishfleet"}
+# Grafana writes the built-in sources several ways: the UI names two of them, the
+# expression engine uses __expr__, and a saved expression node carries -100 (older
+# rules) or "grafana" (newer ones) as its data source uid.
+BUILTIN_DATASOURCES = {"-- Mixed --", "-- Dashboard --", "-- Grafana --", "__expr__", "-100", "grafana"}
 
 
 def seconds(text):
@@ -94,6 +124,43 @@ def route(node, labels, repeat=None):
     return out if matched else {(node["receiver"], repeat)}
 
 
+AM_OPTIONS = "rootfs/etc/default/prometheus-alertmanager"
+AM_PROMETHEUS = "rootfs/etc/prometheus/prometheus.yml"
+AM_WEB_CONFIG = "/etc/alertmanager/web.yml"
+AM_AUTH_FILE = "/etc/prometheus/alertmanager_password"
+
+
+def alertmanager_auth(repo):
+    """What CI alone can see of the alertmanager credential: the options file that
+    names the web config, and the client config that sends the credential to it.
+    The two halves of the pair are hand-placed host state, so only a deploy can
+    compare them; this catches the drift that is silent until then."""
+    bad = []
+    args = ""
+    for line in (repo / AM_OPTIONS).read_text().splitlines():
+        if line.startswith("ARGS="):
+            args = line
+    if f"--web.config.file={AM_WEB_CONFIG}" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS does not set --web.config.file={AM_WEB_CONFIG}")
+    if "--web.listen-address=127.0.0.1:9093" not in args:
+        bad.append(f"{AM_OPTIONS}: ARGS no longer pins the listener to loopback")
+    config = yaml.safe_load((repo / AM_PROMETHEUS).read_text())
+    clients = [("alerting.alertmanagers", e) for e in (config.get("alerting") or {}).get("alertmanagers") or []]
+    clients += [(f"scrape_configs[{j.get('job_name')}]", j) for j in config.get("scrape_configs") or [] if j.get("job_name") == "alertmanager"]
+    if len(clients) < 2:
+        bad.append(f"{AM_PROMETHEUS}: want an alerting target and an alertmanager scrape job, found {len(clients)}")
+    for name, entry in clients:
+        auth = entry.get("basic_auth")
+        if not auth:
+            bad.append(f"{AM_PROMETHEUS}: {name} has no basic_auth, so Alertmanager answers it 401")
+            continue
+        if not auth.get("username"):
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth has no username")
+        if auth.get("password") or auth.get("password_file") != AM_AUTH_FILE:
+            bad.append(f"{AM_PROMETHEUS}: {name} basic_auth must read password_file {AM_AUTH_FILE}, not an inline password")
+    return bad
+
+
 def group_key(node, labels):
     """The Alertmanager group an alert lands in under this route: its group_by
     labels ('...' means every label, so each instance is its own group)."""
@@ -124,6 +191,62 @@ def selftest():
     assert seconds("1h") == 3600 and seconds("1h30m") == 5400 and seconds("24h") == 86400
     assert re.search(r"\$[A-Za-z_{]", "{{ $labels.a }}".replace("$$", ""))
     assert not re.search(r"\$[A-Za-z_{]", "{{ $$labels.a }}".replace("$$", ""))
+    repo = Path(__file__).resolve().parents[1]
+    findings = alertmanager_auth(repo)
+    assert findings == [], findings
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp)
+        for rel in (AM_OPTIONS, AM_PROMETHEUS):
+            (fixture / rel).parent.mkdir(parents=True, exist_ok=True)
+            (fixture / rel).write_text((repo / rel).read_text())
+        doc = yaml.safe_load((fixture / AM_PROMETHEUS).read_text())
+        for entry in (doc.get("alerting") or {}).get("alertmanagers") or []:
+            entry.pop("basic_auth", None)
+        for job in doc.get("scrape_configs") or []:
+            if job.get("job_name") == "alertmanager":
+                job.pop("basic_auth", None)
+        (fixture / AM_PROMETHEUS).write_text(yaml.safe_dump(doc))
+        assert sum("has no basic_auth" in f for f in alertmanager_auth(fixture)) == 2, alertmanager_auth(fixture)
+        (fixture / AM_PROMETHEUS).write_text((repo / AM_PROMETHEUS).read_text())
+        (fixture / AM_OPTIONS).write_text('ARGS="--config.file=/etc/alertmanager/alertmanager.yml --web.listen-address=127.0.0.1:9093"\n')
+        assert any("--web.config.file" in f for f in alertmanager_auth(fixture)), alertmanager_auth(fixture)
+        (fixture / AM_OPTIONS).write_text((repo / AM_OPTIONS).read_text())
+    refs = []
+    walk_refs({"datasource": {"uid": "x"}, "targets": [
+        {"datasource": ["a", "b"]},
+        {"datasource": {"uid": "fleet-github-personal"}, "queryType": "Issues", "owner": "nish3451"}]}, "f", refs)
+    assert ("f", "datasource", "x") in refs
+    assert ("f > targets[0]", "datasource", "a") not in refs
+    assert ("f > targets[1]", "datasource", "fleet-github-personal") in refs
+    assert ("f > targets[1]", "owner", "nish3451") in refs
+    var = []
+    walk_refs({"datasource": {"uid": "${DS}"}}, "f", var)
+    assert [v for _, k, v in var if k == "variable"] == ["${DS}"]
+    planted = ref_findings({"fleet-github"}, [
+        ("f", "datasource", "fleet-github"), ("f", "datasource", "fleet-github-personal"),
+        ("f", "owner", "nish3451"), ("f", "datasource", "gone"),
+        ("f", "datasource", "-100"), ("f", "variable", "${DS}")])
+    assert planted == ["f: data source fleet-github-personal was retired, read fleet-github instead",
+                       "f: reads owner nish3451, which this repo's App has no installation for; read Nishfleet",
+                       "f: data source gone is not provisioned in provisioning/datasources"], planted
+    guarded = 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}unknown row{{ end }} answered {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times'
+    assert unguarded_refs(guarded) == []
+    assert unguarded_refs('{{ with $values.B }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}') == []
+    assert unguarded_refs('{{ if $values }}live{{ else }}blind{{ end }}') == []
+    assert unguarded_refs('{{ $$labels.a }}') == []
+    assert unguarded_refs('{{ $values.D.Value | printf "%.0f" }}') == [".Value", "values.D"]
+    assert unguarded_refs('{{ $labels.resource }}') == ["labels.resource"]
+    assert unguarded_refs('{{ with $labels.a }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ $values.B.Value }} then {{ $labels.c }}') == [".Value", "values.B", "labels.c"]
+    assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ with $labels.a }}{{ . }}{{ else if $labels.b }}{{ . }}{{ end }}') == []
+    assert unguarded_refs('{{ range $labels }}{{ $labels.b }}{{ end }}') == ["labels.b"]
+    assert unguarded_refs('{{ with $values }}{{ $values.D.Value }}{{ end }}') == [".Value", "values.D"]
+    assert unguarded_refs('{{ with index $values "D" }}{{ .Value | printf "%.0f" }}{{ end }}') == [".Value"]
+    assert unguarded_refs('{{ with $values.B }}{{ .Value | printf "%.3f" }}{{ end }}') == [".Value"]
+    assert unguarded_refs('{{- with $labels.a -}} for {{ . }}{{ end }}') == []
+    assert unguarded_refs('{{ if gt .Value 0.0 }}maxed{{ else }}idle{{ end }}') == []
+    assert unguarded_refs('{{ printf "%v %v" $values $values.D }}') == ["values", "values.D"]
 
 
 def dead_row_shape(rules, points, bad):
@@ -152,6 +275,169 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row-dispatch: a template variable needs $$ in a contact point, or Grafana expands it to empty and the template fails to parse")
 
 
+ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
+VALUE_FIELD = re.compile(r"\$values\.([A-Za-z_]\w*)")
+LABEL_FIELD = re.compile(r"\$labels\.([A-Za-z_]\w*)")
+VALUE_INDEX = re.compile(r'index\s+\$values\s+"([^"]+)"')
+BARE_VALUE = re.compile(r"\$values(?![.\w])")
+BARE_LABEL = re.compile(r"\$labels(?![.\w])")
+DOT_VALUE = re.compile(r"\.Value\b")
+SCOPES = ("with", "if")
+
+
+def _refs(body):
+    """The interpolations one template action reads: $values.X, $labels.Y, a bare
+    $values or $labels map, and the .Value field of a struct a $values guard bound."""
+    out = set()
+    for name in VALUE_FIELD.findall(body):
+        out.add(("values", name))
+    for name in LABEL_FIELD.findall(body):
+        out.add(("labels", name))
+    if BARE_VALUE.search(body):
+        out.add(("values", None))
+    if BARE_LABEL.search(body):
+        out.add(("labels", None))
+    if DOT_VALUE.search(body):
+        out.add(("dot", "Value"))
+    return out
+
+
+def _guards(body):
+    """The interpolations a with/if argument scopes: one field for index $values
+    "A", $values.A or $labels.A, and .Value for an if/with on .Value itself. A bare
+    $values scopes nothing: it rebinds the dot, while $values.D still resolves
+    against the map, so a map without D still formats a nil."""
+    return {ref for ref in _refs(body) if ref[1] is not None}
+
+
+def _name(ref):
+    kind, name = ref
+    return f".{name}" if kind == "dot" else (f"{kind}.{name}" if name else kind)
+
+
+def unguarded_refs(annotation):
+    """Every interpolation outside the with/if that scopes it. A DatasourceError
+    alert carries no values, so a bare one formats a nil and the annotation reads
+    %!f(<nil>) or [no value] (fleet-ops#9810, #9822)."""
+    stack, bad = [], []
+    for action in ACTION.findall(re.sub(r"\$\$", "\x00", annotation)):
+        words = re.sub(r"^-|-", "", action.strip()).split()
+        if not words:
+            continue
+        if words[0] in SCOPES:
+            stack.append(_guards(action))
+            continue
+        if words[0] == "range":
+            stack.append(set())
+            continue
+        if words[0] == "end":
+            if stack:
+                stack.pop()
+            continue
+        if words[0] == "else":
+            if stack:
+                stack[-1] = _guards(" ".join(words[1:])) if words[1:2] == ["if"] else set()
+            continue
+        covered = set().union(*stack) if stack else set()
+        bad += [_name(ref) for ref in sorted(_refs(action), key=lambda r: (r[0], r[1] or ""))
+                if ref not in covered]
+    return bad
+
+
+def annotation_guards(rules, bad):
+    """Fail any annotation that interpolates $values/$labels/.Value with no guard, so
+    the next unguarded rule cannot ship the %!f(<nil>) body #9810 fixed."""
+    checked, found = 0, 0
+    for r in rules:
+        for key, value in (r.get("annotations") or {}).items():
+            checked += 1
+            missing = sorted(set(unguarded_refs(str(value))))
+            if missing:
+                found += len(missing)
+                bad.append(f"{r.get('title')}: annotation {key} interpolates {', '.join(missing)} with no "
+                           f"with/if guard, so a DatasourceError renders %!f(<nil>) and [no value] (fleet-ops#9822)")
+    if not found:
+        print(f"annotations: {checked} checked, every $values/$labels/.Value interpolation sits inside a with/if guard")
+
+
+def provisioned_uids(provisioning):
+    uids = set()
+    for f in sorted((Path(provisioning) / "datasources").glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        for d in doc.get("datasources") or []:
+            assert d.get("uid"), f"{f.name}: a data source without a uid cannot be referenced"
+            uids.add(d["uid"])
+    assert uids, f"no data source provisioned under {provisioning}/datasources"
+    return uids
+
+
+def walk_refs(node, where, out):
+    """Every data source uid, query owner and template variable in a rule model or
+    a dashboard panel tree, as (where, kind, value)."""
+    if isinstance(node, dict):
+        ds = node.get("datasource")
+        uid = ds.get("uid") if isinstance(ds, dict) else ds
+        if isinstance(uid, str) and uid:
+            out.append((where, "variable" if "${" in uid else "datasource", uid))
+        if node.get("datasourceUid"):
+            out.append((where, "datasource", node["datasourceUid"]))
+        if node.get("queryType") and node.get("owner"):
+            out.append((where, "owner", node["owner"]))
+        for key, value in node.items():
+            if isinstance(value, (dict, list)):
+                walk_refs(value, where if key in ("model", "options") else f"{where} > {key}", out)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            walk_refs(value, f"{where}[{i}]", out)
+
+
+def datasource_refs(root, provisioning):
+    """[(where, kind, value)] for every alert rule and dashboard panel that names one.
+    A file that carries a rule or a dashboard but names no data source at all is a
+    broken walk, not a silent pass."""
+    out, per_file = [], {}
+    for f in sorted(Path(root).glob("*.y*ml")):
+        doc = yaml.safe_load(f.read_text()) or {}
+        rules = [r for g in doc.get("groups") or [] for r in g["rules"]]
+        before = len(out)
+        for r in rules:
+            walk_refs(r, f"{f.name}: {r.get('title') or 'rule'}", out)
+        if rules:
+            per_file[f.name] = len(out) - before
+    dash = Path(provisioning).parent / "dashboards"
+    files = sorted(dash.glob("*.json"))
+    assert files, f"no dashboard json under {dash}"
+    for f in files:
+        before = len(out)
+        walk_refs(json.loads(f.read_text()), f.name, out)
+        per_file[f.name] = len(out) - before
+    silent = sorted(k for k, n in per_file.items() if not n)
+    assert not silent, f"{silent} carry rules or a dashboard but name no data source, so the walk never reached them"
+    return out
+
+
+def ref_findings(uids, refs):
+    """Findings for every reference that reads a data source this repo does not
+    provision, or an owner its GitHub App has no installation for."""
+    bad = []
+    for where, kind, value in refs:
+        if kind == "owner" and value.lower() in RETIRED_OWNERS:
+            bad.append(f"{where}: reads owner {value}, which this repo's App has no installation for; read {RETIRED_OWNERS[value.lower()]}")
+        elif kind == "datasource" and value in RETIRED_DATASOURCES:
+            bad.append(f"{where}: data source {value} was retired, read {RETIRED_DATASOURCES[value]} instead")
+        elif kind == "datasource" and value not in uids and value not in BUILTIN_DATASOURCES:
+            bad.append(f"{where}: data source {value} is not provisioned in provisioning/datasources")
+    return bad
+
+
+def check_datasource_refs(root, provisioning):
+    uids = provisioned_uids(provisioning)
+    bad = ref_findings(uids, datasource_refs(root, provisioning))
+    if not bad:
+        print(f"every rule and panel reads one of {len(uids)} provisioned data sources")
+    return bad
+
+
 def main(root):
     selftest()
     rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
@@ -167,7 +453,11 @@ def main(root):
             contacts_doc.append(c)
     assert policy, "no notification policy found"
     assert PAGE in contacts and ISSUE_SINKS <= contacts, f"missing contact points {sorted(({PAGE} | ISSUE_SINKS) - contacts)}"
-    bad, paging = [], {}
+    bad, paging = check_datasource_refs(root, Path(root).parent), {}
+    for c in contacts_doc:
+        for rcv in c.get("receivers") or []:
+            if ".GeneratorURL" in json.dumps(rcv):
+                bad.append(f"{c['name']}: the issue body must not interpolate .GeneratorURL, the private Grafana host, because this repo is public (fleet-ops#10763)")
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
         for k, v in labels.items():
@@ -204,6 +494,8 @@ def main(root):
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
     dead_row_shape(rules, points, bad)
+    annotation_guards(rules, bad)
+    bad += alertmanager_auth(Path(__file__).resolve().parents[1])
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
@@ -233,6 +525,7 @@ def main(root):
             print(f"::error::{b}")
         return 1
     print(f"{len(paging)} of {len(rules)} rules can page (critical, every <=1h); the other {len(rules) - len(paging)} are warning and reach the fleet only; every rule files a fleet-ops issue")
+    print(f"alertmanager: the options require {AM_WEB_CONFIG}, and both Prometheus paths read {AM_AUTH_FILE} from a host-only file")
     return 0
 
 
