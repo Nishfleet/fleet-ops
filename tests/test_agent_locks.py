@@ -34,7 +34,8 @@ def settings(unit: Path) -> dict[str, list[str]]:
             key, _, value = stripped.partition("=")
             values.setdefault(key.strip(), []).extend(value.split())
     for key, tokens in values.items():
-        values[key] = [token.replace("%h", "~").replace("/home/nish", "~").replace("%S", "~/.local/state") for token in tokens]
+        stripped = [token[1:] if key == "InaccessiblePaths" and token.startswith("-") else token for token in tokens]
+        values[key] = [token.replace("%h", "~").replace("/home/nish", "~").replace("%S", "~/.local/state") for token in stripped]
     return values
 
 
@@ -107,6 +108,19 @@ def test_every_path_the_agent_needs_is_still_readable(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(AGENTS), ids=str)
+def test_a_listener_waits_for_the_user_manager_it_hides(name: str) -> None:
+    values = settings(ROOT / AGENTS[name]["unit"])
+    hides = [path.lstrip("-") for path in values.get("InaccessiblePaths", [])]
+    if not any(covers("/run/user/1000", [path]) for path in hides):
+        return
+    assert "user@1000.service" in values.get("After", []), (
+        f"{name} hides /run/user/1000 but does not order after user@1000.service. "
+        "InaccessiblePaths= is applied once at start, so a boot start that wins the race "
+        "keeps the user manager socket and the worker App token readable for its whole life."
+    )
+
+
+@pytest.mark.parametrize("name", sorted(AGENTS), ids=str)
 def test_the_one_service_key_comes_from_an_environment_file(name: str) -> None:
     key = AGENTS[name].get("service_key")
     if key is None:
@@ -172,3 +186,8 @@ def test_the_probe_expands_the_contracts_tilde_before_systemd_sees_it() -> None:
         assert "'^~'" in rendered, (
             "The probe hands systemd a ~ path, which it reads relative to the host's root"
         )
+    assert "map('regex_replace', '^', '-')" in hidden[0], (
+        "The probe's InaccessiblePaths= has no '-' prefix, so a path that is absent on the box "
+        "(dockerd down, a file that agent never had) fails the transient unit with 226/NAMESPACE "
+        "before the shell runs, and the whole playbook stops at the import after this file."
+    )

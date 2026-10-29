@@ -3,6 +3,10 @@
 # key comes from EnvironmentFile=, which systemd reads as root, so the seats
 # directory itself stays hidden from the agent. Every path is absolute because a
 # system unit's %h is /root, and HOME and PATH come from the shared drop-in.
+# OpenCode seat keys expired 2026-10-22, so the lane runs through the fleet
+# LiteLLM proxy with its own worker-cheap virtual key (daily cap, rate limit,
+# revoked with /key/delete). OPENCODE_CONFIG points the CLI at the proxy profile,
+# and the model is pinned so the lane cannot pick a paid model (fleet-ops#10221).
 [Unit]
 Description=Agent Tincan wake for opencode (tincan listen -> headless agent drains the inbox)
 Wants=network-online.target
@@ -18,11 +22,12 @@ Group=nish
 SupplementaryGroups=
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/opencode.json
 Environment=FLEET_TASK_ID=tincan-opencode
-EnvironmentFile=/home/nish/.config/fleet-ops/seats/opencode.env
+EnvironmentFile=/home/nish/.config/fleet-ops/seats/tincan-opencode.env
+Environment=OPENCODE_CONFIG=/home/nish/.config/tincan/opencode-litellm.jsonc
 WorkingDirectory=/home/nish/.local/state/tincan-listen-opencode
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/opencode run "$$(cat /home/nish/.config/tincan/prompts/opencode.txt)"'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/opencode run -m litellm/worker-cheap "$$(cat /home/nish/.config/tincan/prompts/opencode.txt)"'
 
 [Install]
 WantedBy=multi-user.target

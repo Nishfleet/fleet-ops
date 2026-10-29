@@ -29,7 +29,7 @@ Two shapes are in use. `tincan-listen-claude-vps.service` is deny-by-default:
 `ProtectHome=tmpfs` empties all of `/home` and `BindPaths=` /
 `BindReadOnlyPaths=` list back what the agent needs. It was proved live before
 this repo owned it (request `95eeb9cc666c91d7dbf0`: gh no, hetzner no, Jev key
-yes, Jev call yes, p=0.99). The other seven relay listeners use an explicit
+yes, Jev call yes, p=0.99). The other six relay listeners use an explicit
 deny list, `InaccessiblePaths=` in
 `rootfs/etc/systemd/system/fleet-agent-lock.service.d/50-shared.conf` (the keys
 every agent loses, plus `HOME=` and `PATH=`) plus `60-own-keys.conf` in each
@@ -39,12 +39,18 @@ runs still runs.
 
 Every `tincan-listen-*.service.d/50-shared.conf` is a symlink to the shared
 file, so the rules have one source in the repo. `install-config.yml`'s copy
-dereferences the link, so the box holds eight real files and a deploy re-copies
+dereferences the link, so the box holds seven real files and a deploy re-copies
 them when the shared file changes. Every path in these units is absolute,
 never `%h`: `%h` is the *system manager's* home (`/root`) and is not influenced
 by `User=` (systemd.unit(5)), so a `%h` unit would point at paths that do not
 exist and fail its ExecStart. `HOME=` is set for the same reason — a CLI that
 expands `~` would otherwise land in `/root`.
+
+Every `InaccessiblePaths=` path starts with `-`, so a unit still starts on a
+box where that path is absent: at boot a listener can come up before dockerd
+creates `/run/docker.sock` or before `user@1000` creates `/run/user/1000`, and
+the '-' prefix is systemd's own way to say "hide it if it exists"
+(systemd.exec(5)).
 
 ## The switch-over
 
@@ -54,7 +60,7 @@ that could leave an agent with no unit running:
 1. Run the probe for every listener except claude-vps, whose shape was proved
    live. A probe failure stops the play before anything is switched.
 2. Start the locked listeners with `state: started`, never `restarted`: this
-   playbook runs on every merge to main and once a day, and restarting eight
+   playbook runs on every merge to main and once a day, and restarting seven
    listeners that often throws away in-flight work for no change.
 3. Wait until `systemctl is-active --quiet` is quiet for **all** of them.
    `Restart=on-failure` with `RestartSec=30` means a start job can succeed and

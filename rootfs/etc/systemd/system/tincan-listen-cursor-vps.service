@@ -22,7 +22,7 @@ EnvironmentFile=/home/nish/.config/fleet-ops/seats/cursor.env
 WorkingDirectory=/home/nish/.local/state/tincan-listen-cursor-vps
 Restart=always
 RestartSec=10
-ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/cursor-agent -p --yolo --trust "$$(cat /home/nish/.config/tincan/prompts/cursor-vps.txt)"'
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/cursor-agent -p --yolo --trust --model auto "$$(cat /home/nish/.config/tincan/prompts/cursor-vps.txt)"'
 
 [Install]
 WantedBy=multi-user.target

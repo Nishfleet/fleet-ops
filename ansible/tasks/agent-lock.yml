@@ -21,9 +21,11 @@
 - name: Show one agent cannot read the other agents' keys
   # The contract spells its paths with ~, and systemd takes them relative to the
   # host's root (systemd.exec(5)), so they are expanded here before they reach
-  # --property=InaccessiblePaths=. The probe runs as the service user, not as
-  # root: access(2) is checked as that user, and root would read a mode-000
-  # hidden path straight through the lock.
+  # --property=InaccessiblePaths=. Each path takes the '-' prefix for the same
+  # reason the units do: a path that is absent on this box (dockerd down, a file
+  # that agent never had) would otherwise fail the transient unit with 226/NAMESPACE
+  # before the shell runs, and host.yml imports this file second, so a failed
+  # probe stops every later import on every deploy.
   ansible.builtin.command:
     argv:
       - /usr/bin/systemd-run
@@ -32,7 +34,7 @@
       - --pipe
       - --collect
       - "--property=User={{ agent_locks.user }}"
-      - "--property=InaccessiblePaths={{ agent_locks.agents[item].must_hide | map('regex_replace', '^~', '/home/' + agent_locks.user) | join(' ') }}"
+      - "--property=InaccessiblePaths={{ agent_locks.agents[item].must_hide | map('regex_replace', '^~', '/home/' + agent_locks.user) | map('regex_replace', '^', '-') | join(' ') }}"
       - /bin/sh
       - -c
       - >-
@@ -62,11 +64,7 @@
 # which fails this run and leaves every user unit below untouched.
 - name: Wait until every locked listener is active
   ansible.builtin.command:
-    argv:
-      - /usr/bin/systemctl
-      - is-active
-      - --quiet
-      - "{{ agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list | join(' ') }}"
+    argv: "{{ ['/usr/bin/systemctl', 'is-active', '--quiet'] + (agent_locks.agents | dict2items | map(attribute='key') | map('regex_replace', '$', '.service') | list) }}"
   register: locked_listeners
   until: locked_listeners.rc == 0
   retries: 8
@@ -74,20 +72,13 @@
   changed_when: false
 
 # The contract lists the unlocked user unit files, not the ones the box
-# happens to have: a listener whose user unit the repo never shipped
-# (tincan-listen-amp) must not fail the run with "Unit ... does not exist",
-# and one that is there is still retired. list-unit-files names only what is
-# installed, and answers rc 1 when nothing matches, which is not a failure.
+# happens to have: a listener the box never enabled must not fail the run with
+# "Unit ... does not exist", and one that is there is still retired.
+# list-unit-files names only what is installed, and answers rc 1 when nothing
+# matches, which is not a failure.
 - name: List the unlocked listener units the box still has
   ansible.builtin.command:
-    argv:
-      - /usr/bin/systemctl
-      - --user
-      - --machine=nish@.host
-      - list-unit-files
-      - --plain
-      - --no-legend
-      - "{{ agent_locks.stale_user_units | map('basename') | list | join(' ') }}"
+    argv: "{{ ['/usr/bin/systemctl', '--user', '--machine=nish@.host', 'list-unit-files', '--plain', '--no-legend'] + (agent_locks.stale_user_units | map('basename') | list) }}"
   register: stale_listener_units
   changed_when: false
   failed_when: stale_listener_units.rc > 1

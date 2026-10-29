@@ -78,43 +78,6 @@
         "~/.config/tincan/claude-vps.json"
       ]
     },
-    "tincan-listen-amp": {
-      "unit": "rootfs/etc/systemd/system/tincan-listen-amp.service",
-      "relay_identity": "~/.config/tincan/amp.json",
-      "needs": [
-        "~/.claude-vps",
-        "~/.amp",
-        "~/.local/state/tincan-listen-amp"
-      ],
-      "must_hide": [
-        "~/.config/fleet-ops/seats",
-        "~/.config/cloudflare",
-        "~/.config/gh",
-        "~/.config/systemd",
-        "~/.ssh",
-        "~/.git-credentials",
-        "~/.hermes",
-        "~/.claude",
-        "~/.local/share/claude-seat-backup",
-        "~/.pi",
-        "~/.commandcode",
-        "~/.cursor",
-        "~/.devin",
-        "~/.config/opencode",
-        "~/.config/tincan/command-code.json",
-        "~/.config/tincan/cursor-vps.json",
-        "~/.config/tincan/devin-vps.json",
-        "~/.config/tincan/fleet-worker.json",
-        "~/.config/tincan/hermes.json",
-        "~/.config/tincan/hermes-webhook.secret",
-        "~/.config/tincan/opencode.json",
-        "~/.config/tincan/pi.json",
-        "~/.config/tincan/agentmail.key",
-        "/run/user/1000",
-        "/run/docker.sock",
-        "~/.config/tincan/claude-vps.json"
-      ]
-    },
     "tincan-listen-command-code": {
       "unit": "rootfs/etc/systemd/system/tincan-listen-command-code.service",
       "relay_identity": "~/.config/tincan/command-code.json",
@@ -232,7 +195,7 @@
     "tincan-listen-opencode": {
       "unit": "rootfs/etc/systemd/system/tincan-listen-opencode.service",
       "relay_identity": "~/.config/tincan/opencode.json",
-      "service_key": "~/.config/fleet-ops/seats/opencode.env",
+      "service_key": "~/.config/fleet-ops/seats/tincan-opencode.env",
       "needs": [
         "~/.config/opencode",
         "~/.config/tincan/prompts",
@@ -317,6 +280,12 @@
       "unit": null,
       "reason": "Still user units under ~/.config/systemd/user, so their settings are ignored on this box. They need the same move to system units with a service user, and their own live probe, before they can be switched.",
       "issue": "#9982"
+    },
+    {
+      "agent": "issue-desk",
+      "unit": null,
+      "reason": "Still a user unit under systemd/, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
+      "issue": "#10813"
     },
     {
       "agent": "hermes-gateway and hermes-serve",
