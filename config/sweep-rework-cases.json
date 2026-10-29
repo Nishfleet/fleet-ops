@@ -304,38 +304,6 @@
    }
   },
   {
-   "id": "infra-failed-arm-suffixed-run-after-failure-retries",
-   "want": "go",
-   "set": {
-    "comments": [
-     {
-      "body": "agent run started: https://github.com/x/actions/runs/1 · arm: menu=off desk=on",
-      "createdAt": "2026-10-06T05:00:00Z"
-     },
-     {
-      "body": "agent run started: https://github.com/x/actions/runs/2 · arm: menu=on desk=off",
-      "createdAt": "2026-10-06T06:00:00Z"
-     },
-     {
-      "body": "agent run infra-failed: https://github.com/x/actions/runs/2",
-      "createdAt": "2026-10-06T06:05:00Z"
-     }
-    ]
-   }
-  },
-  {
-   "id": "armed-run-started-after-the-failure",
-   "want": "run-after-failure",
-   "set": {
-    "comments": [
-     {
-      "body": "agent run started: https://github.com/x/actions/runs/1 · arm: menu=on desk=on",
-      "createdAt": "2026-10-06T06:00:00Z"
-     }
-    ]
-   }
-  },
-  {
    "id": "at-cap-still-goes-so-gate-parks",
    "want": "go",
    "set": {

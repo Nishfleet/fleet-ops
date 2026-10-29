@@ -502,9 +502,7 @@ jobs:
           # view comments}. reason is "go" or the skip reason; run is the
           # newest counted "agent run started:" body.
           # The label list and infra-failed rule are agent.yml's Gate, copied; a
-          # start whose run infra-failed never tried, so it does not count. The
-          # trial arm suffix (fleet-ops#9330) is stripped exactly as the Gate
-          # strips it, or an armed start would stop matching its infra failure.
+          # start whose run infra-failed never tried, so it does not count.
           # No cap test: a PR at the cap is dispatched on purpose, so the Gate
           # parks it with needs-orchestrator and later sweeps skip it on the
           # label. No rework: note test: rework-note posts even while paused,
@@ -515,7 +513,7 @@ jobs:
             | ([$checks[] | select(failed) | (.completedAt // .startedAt // empty) | fromdateiso8601] | max) as $failed_at
             | (.issue.labels | map(.name)) as $labels
             | [.comments[] | select(.body | startswith("agent run infra-failed: ")) | .body | ltrimstr("agent run infra-failed: ")] as $infra
-            | [.comments[] | select(.body | startswith("agent run started: ")) | select(.body | ltrimstr("agent run started: ") | sub(" · arm: menu=(on|off) desk=(on|off)$"; "") | . as $u | $infra | index($u) | not)] as $started
+            | [.comments[] | select(.body | startswith("agent run started: ")) | select(.body | ltrimstr("agent run started: ") | . as $u | $infra | index($u) | not)] as $started
             | (if $failed_at == null then "not-red"
                elif ($checks | any(pending)) then "pending"
                elif .pr.mergeStateStatus == "DIRTY" then "conflicting"

@@ -169,34 +169,29 @@ def test_hand_summons_reaches_the_orchestrate_job():
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
-def test_the_started_comment_arm_suffix_has_one_format_and_every_reader_strips_it():
+def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
     text = AGENT.read_text()
-    strip = 'sub(" · arm: menu=(on|off) desk=(on|off)$"; "")'
-    assert text.count(strip) == 2, (
-        "both readers of the started comment in agent.yml must strip the arm suffix before comparing: the attempt "
-        "cap (fleet-ops#9330 would otherwise count arm runs as unstarted) and the strike probe (a suffix breaks "
-        f"its endswith). Found {text.count(strip)} strippers."
+    assert "arm: menu=" not in text and "sub(\" · arm: " not in text, (
+        "the trial arm no longer goes on the started comment (fleet-ops#9330): the arm is a pure function of the issue "
+        "number, so nothing records it and no reader needs to strip it. A suffix here would break the attempt cap "
+        "in agent.yml, the strike probe, and the sweep's RED_REWORK program in agent-dispatch.yml at once."
     )
-    assert DISPATCH.read_text().count(strip) == 1, (
-        "the sweep's RED_REWORK program (agent-dispatch.yml) reads the same started comment and compares it with "
-        "the infra-failed bodies, so a suffix on an armed start stops that start from matching its own infra "
-        "failure and the sweep answers run-after-failure instead of go (config/sweep-rework-cases.json pins both "
-        "directions: infra-failed-arm-suffixed-run-after-failure-retries, armed-run-started-after-the-failure)"
+    assert text.count("arm_flags+=(--no-skills)") == 1, "the menu arm is not applied exactly once in agent.yml"
+    assert text.count("pi_model=$pi_model-desk") == 1, "the desk arm is not applied exactly once in agent.yml"
+    for formula in ("${id##*-} % 2", "${id##*-} / 2 % 2"):
+        assert formula in text, (
+            f"agent.yml no longer derives an arm from the issue number with `{formula}`, so a run's arm is not "
+            "recoverable from its issue id and the trial cannot be read out of the threads"
+        )
+    lane = text[text.index("elif [ \"$ENGINE\" = pi ]; then"):]
+    miss = lane[lane.index('if [ "$MISS" = true ]; then'):lane.index("else", lane.index('if [ "$MISS" = true ]; then'))]
+    plain = lane[lane.index("else", lane.index('if [ "$MISS" = true ]; then')):lane.index("elif [ \"$ENGINE\" != devin ]")]
+    assert "arm_flags" not in miss and "-desk" not in miss, (
+        "miss-review now carries an arm: it is not a trial lane, and both arms would silently change the review "
+        "prompt under the trial's numbers"
     )
-    for path in (AGENT, DISPATCH):
-        for line in path.read_text().splitlines():
-            if 'ltrimstr("agent run started: ")' in line:
-                assert strip in line, (
-                    f"{path.name} reads the started comment on a line that does not strip the arm suffix, so the "
-                    f"comparison it feeds sees the suffix: {line.strip()}"
-                )
-    assert 'arm=" · arm: menu=$arm_menu desk=$arm_desk"' in text, (
-        "the started comment's arm suffix changed shape; update the strippers with it"
-    )
-    assert "actions/runs/$GITHUB_RUN_ID$arm" in text, "the started comment no longer appends the arm suffix it records"
-    assert re.search(r'if \[ "\$miss" = false \] && \[ "\$engine" = pi \]; then', text), (
-        "the Gate no longer limits the arm to a plain Pi run, so a lane that never reads ARM_MENU or ARM_DESK "
-        "would still wear an arm on the issue and skew the trial"
+    assert '"${arm_flags[@]}"' in plain and "pi_model=$pi_model-desk" in plain, (
+        "the plain pi invocation no longer receives the arm flags or the desk group"
     )
 
 
