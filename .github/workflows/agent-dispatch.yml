@@ -268,10 +268,11 @@ jobs:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
       # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
+      # nish3451 is the approver: agent.yml's review job approves with a review and a comment as the runner's own gh
+      # login after a judge review (and, for the guard or a workflow, a second family). Nobody is asked. The job's own
+      # token logs in as github-actions[bot], which a PR that adds its own workflow could post as, so the bot is not an
+      # approver at all (fleet-ops#9521). nish3451 is also an optional override: a typed comment.
+      APPROVERS: nish3451
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
       # stdin: {repo, labels, files, patches, changed_files}; $cfg:
       # risky-paths.json or null. patches is [{file, patch}] with patch null
@@ -446,8 +447,8 @@ jobs:
   # themselves, no pasted approval lines). agent.yml's review job reads the
   # head's diff through the API, never checks out PR code, asks a model with no
   # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot]; the same run's arm
-  # job then arms the PR.
+  # coordinator-approval comment as the runner's own gh login (nish3451), not as
+  # github-actions[bot]; the same run's arm job then arms the PR.
   # hold-risky stays the only door: it reads that comment like any other.
   # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
   # needs three reviews to approve: the judge and two more reviewers of
@@ -781,8 +782,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           # Logins whose unedited `coordinator-approval: <sha>` comment counts,
-          # hold-risky's APPROVERS.
-          APPROVERS: nish3451 github-actions[bot]
+          # hold-risky's APPROVERS. The sweep's own `stuck-review:` markers below
+          # stay the job token's github-actions[bot]: they are asks, not verdicts.
+          APPROVERS: nish3451
           STUCK: |
             .pr.headRefOid as $sha
             | $sha[0:7] as $s7
@@ -791,9 +793,10 @@ jobs:
             | [$cs[] | select((.user.login // "") as $l | any($approvers[]; . == $l)
                 and .created_at != null and .updated_at == .created_at
                 and any(.lines[]; . == "coordinator-approval: \($sha)"))] as $ok
-            | [$cs[] | select(.user.login == "github-actions[bot]")] as $bot
-            | [$bot[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
-            | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
+            | [$cs[] | select((.user.login // "") as $l | any($approvers[]; . == $l))] as $rev
+            | [$rev[] | select(any(.lines[]; startswith("reviewer: \($sha) blocked.") or startswith("reviewer: \($sha) not approved.")))] as $no
+            | [$cs[] | select(.user.login == "github-actions[bot]")] as $self
+            | [$self[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
             | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
