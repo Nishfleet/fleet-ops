@@ -4,6 +4,11 @@ program (read out with yq, never copied) against a fake gh.
 A PR whose comments JSON passes the 131072-byte single-argument limit is
 judged like any other, and one PR whose verdict errors is skipped with a
 warning while the rest are judged and the job still fails at the end.
+
+A stuck-PR report whose PR merged or closed is closed before the slots are
+counted, so it stops holding one; a report whose PR is still open at the
+reported head, and a report with no `stuck-pr: #<n> <sha>` marker, are left
+alone.
 """
 import json
 import os
@@ -24,8 +29,15 @@ case "$1 $2" in
   "pr list") cat "$FAKE_DIR/prs.json" ;;
   "pr checks") echo '[]' ;;
   "pr comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "pr view")
+    while IFS=$'\t' read -r num state sha; do
+      [ "$num" = "$3" ] && { printf '%s%s\n' "$state" "$sha"; exit 0; }
+    done < "$FAKE_DIR/pr-states.tsv"
+    echo "fake gh: no pr view fixture for $3" >&2
+    exit 1 ;;
   "issue list")
-    case "$*" in *'Stuck PR'*) echo 0 ;; *) echo '[]' ;; esac ;;
+    case "$*" in *'Stuck PR'*) cat "$FAKE_DIR/reports.tsv" ;; *) echo '[]' ;; esac ;;
+  "issue close") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "api --paginate")
     n=${3#*/issues/}; n=${n%%/*}
     cat "$FAKE_DIR/comments-$n.json" ;;
@@ -59,17 +71,21 @@ def filler(size):
     return {"user": {"login": "someone"}, "body": "x" * size, "created_at": OLD, "updated_at": OLD}
 
 
-def _run(tmp_path, comments, armed=()):
+def _run(tmp_path, comments, armed=(), reports=(), pr_states=None, conflicting=()):
     fake = tmp_path / "fake"
     fake.mkdir()
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    prs = [pr(n) | ({"autoMergeRequest": {"enabledAt": OLD}} if n in armed else {}) for n in comments]
+    prs = [pr(n) | ({"autoMergeRequest": {"enabledAt": OLD}} if n in armed else {})
+           | ({"mergeable": "CONFLICTING"} if n in conflicting else {}) for n in comments]
     (fake / "prs.json").write_text(json.dumps(prs))
     for n, c in comments.items():
         (fake / f"comments-{n}.json").write_text(json.dumps(c))
+    (fake / "reports.tsv").write_text("".join(f"{i}\t{p}\t{s}\n" for i, p, s in reports))
+    (fake / "pr-states.tsv").write_text("".join(f"{n}\t{state}\t{sha}\n" for n, (state, sha) in (pr_states or {}).items()))
+    (fake / "writes.log").write_text("")
     gh = fake / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
@@ -90,6 +106,15 @@ def _run(tmp_path, comments, armed=()):
 
 def _armed(outputs):
     return sorted(int(x["pr"]) for x in json.loads(outputs["arm"]))
+
+
+def _writes(tmp_path):
+    return (tmp_path / "fake" / "writes.log").read_text()
+
+
+def _three_reports():
+    shas = {n: f"{n:040x}" for n in (5001, 5002, 5003)}
+    return [(9000 + k, n, sha) for k, (n, sha) in enumerate(shas.items(), start=1)], shas
 
 
 def test_comments_json_over_the_argument_limit_is_judged(tmp_path):
@@ -122,6 +147,35 @@ def test_a_refused_disarm_is_a_warning_and_the_pr_is_still_armed(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "::warning::#101: disarm refused" in r.stdout
     assert _armed(outputs) == [101, 102]
+
+
+def test_open_prs_keep_their_reports_and_their_slots(tmp_path):
+    reports, shas = _three_reports()
+    r, outputs = _run(tmp_path, {6001: []}, reports=reports, conflicting={6001},
+                      pr_states={n: ("OPEN", sha) for n, sha in shas.items()})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "issue close" not in _writes(tmp_path)
+    assert outputs["file"] == "[]"
+
+
+@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+def test_a_done_pr_closes_its_report_and_frees_its_slot(tmp_path, state):
+    reports, shas = _three_reports()
+    r, outputs = _run(tmp_path, {6001: []}, reports=reports, conflicting={6001},
+                      pr_states={n: ("OPEN", sha) for n, sha in shas.items()} | {5001: (state, shas[5001])})
+    assert r.returncode == 0, r.stdout + r.stderr
+    writes = _writes(tmp_path)
+    assert "issue close 9001" in writes
+    assert "PR #5001" in writes
+    assert "issue close 9002" not in writes
+    assert "issue close 9003" not in writes
+    assert [int(x["pr"]) for x in json.loads(outputs["file"])] == [6001]
+
+
+def test_a_report_with_no_marker_is_untouched(tmp_path):
+    r, outputs = _run(tmp_path, {6001: []}, reports=[(9004, "", "")], conflicting={6001})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "issue close" not in _writes(tmp_path)
 
 
 @pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-rework", "stuck-file"])
