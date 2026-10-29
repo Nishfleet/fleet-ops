@@ -48,7 +48,7 @@
     {"id": "row-rewrite", "hold_no_patch": true, "files": "\\.sql$|^migrations/", "pattern": "\\b(update\\b[^;]*\\bset\\b|alter\\s+table|rename\\s+(to|column))"},
     {"id": "object-purge", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(deleteObjects?\\b|purge(Bucket|Objects?|All|Data)|emptyBucket|deleteBucket|bucket\\.delete)"},
     {"id": "workflow-secrets", "hold_no_patch": true, "files": "^\\.github/", "pattern": "\\bsecrets(\\.|\\[)"},
-    {"id": "secret-handling", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.", "pattern": "(api_?key|secret|private_?key|access_?token|auth_?token|credential|password|process\\.env\\.\\w*(key|token))"},
+    {"id": "secret-handling", "files": "\\.(js|jsx|ts|tsx|mjs|cjs|go|py|sh|ya?ml|json|jsonc|toml)$", "not_files": "(^|/)(tests?|__tests__|evals?)/|\\.(test|spec)\\.|_test\\.go$|(^|/)testdata/", "pattern": "(api_?key|secret|private_?key|access_?token|auth_?token|credential|password|process\\.env\\.\\w*(key|token))"},
     {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "guard": [
@@ -83,6 +83,8 @@
     {"id": "drive-env-file", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": [".env.example"], "patches": [{"file": ".env.example", "patch": "@@ -1 +1 @@\n+A=1"}]},
     {"id": "drive-secret-handling", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/auth-helper.js"], "patches": [{"file": "src/auth-helper.js", "patch": "@@ -1 +1 @@\n+const k = process.env.API_KEY"}]},
     {"id": "drive-secret-in-test-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["test/x.test.js"], "patches": [{"file": "test/x.test.js", "patch": "@@ -1 +1 @@\n+const password = 'x'"}]},
+    {"id": "drive-secret-in-go-test-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["cmd/drive/windows_test.go"], "patches": [{"file": "cmd/drive/windows_test.go", "patch": "@@ -1 +1 @@\n+rotated.SecretKey = \"rotatedsecretkey\""}]},
+    {"id": "drive-secret-in-testdata-safe", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["cmd/drive/testdata/key.json"], "patches": [{"file": "cmd/drive/testdata/key.json", "patch": "@@ -1 +1 @@\n+{\"api_key\": \"x\"}"}]},
     {"id": "drive-object-purge", "want": true, "repo": "Nishfleet/drive", "labels": [], "changed_files": 1, "files": ["src/cleanup.js"], "patches": [{"file": "src/cleanup.js", "patch": "@@ -1 +1 @@\n+await bucket.deleteObjects(keys)"}]},
     {"id": "safe-route", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 1, "files": ["app/routes/home.tsx"]},
     {"id": "safe-tests-docs", "want": false, "repo": "Nishfleet/0509", "labels": [], "changed_files": 2, "files": ["tests/unit/home.test.ts", "docs/notes.md"]},
