@@ -1,6 +1,11 @@
 # The deployed ppi-alibaba, ppi-commandcode and ppi-minimax A expressions,
 # inlined from paid-plan-idle.yaml, each wrapped in `(...) > 0`.
 #
+# These three carry the behaviour cases below. Every plan's window (24h for the
+# worker rows, 72h for MiniMax, 7d for Alibaba) is pinned against the deployed
+# file by tests/test_paid_plans.py, so a rule with no case here is still locked
+# against a narrowed window or a mistyped api_base regex.
+#
 # The wrapper reproduces Grafana's C threshold the way
 # prompt-cache-hit.test.rules.yml does: the closing paren sits directly after
 # the union's last branch, because a comparison binds tighter than `or`, so an
@@ -32,7 +37,7 @@ groups:
       plan: commandcode
       severity: critical
   - alert: MiniMaxIdle
-    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[24h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[24h])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"} offset 24h) or vector(0)))\n))\n> 0"
+    expr: "(absent_over_time(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[72h])\nor\n(\n(sum(increase(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}[72h])) == bool 0)\n*\n((sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~\"https://api.minimax.io/anthropic.*\"} offset 72h) or vector(0)))\n))\n> 0"
     labels:
       grafana_folder: fleet
       plan: minimax

@@ -12,6 +12,11 @@
 # window back. Each side is `or vector(0)`, so an absent series compares as 0
 # rather than dropping the comparison to an empty result.
 #
+# Each plan keeps its own window: the worker rows read 24h, MiniMax 72h
+# (fleet-ops#10431) and Alibaba 7d (fleet-ops#9865). The MiniMax cases below
+# pin that 72h window, and tests/test_paid_plans.py pins all six deployed
+# windows and api_base regexes against this fixture's behaviour.
+#
 # Structure follows prompt-cache-hit.test.yml: alert_rule_test answers "does
 # Grafana's threshold call it Alerting", promql_expr_test pins the values the
 # union returns (what that threshold reads).
@@ -77,7 +82,7 @@ tests:
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
-    values: '100+0x20'
+    values: '100+1x20'
   alert_rule_test:
   - alertname: CommandCodeIdle
     eval_time: 45h
@@ -92,9 +97,13 @@ tests:
     exp_samples:
     - labels: '{}'
       value: 1
-# Last sample exactly 24h before the eval: the range window still holds it, so
-# the absence branch is quiet, and with that one sample alone in the window
-# there is no rate to extrapolate, so the idle branch returns nothing at all.
+# Last sample exactly 24h before the eval. A promtool whose range selectors
+# include their left edge, as 2.x does and apt installs, still holds that
+# sample, and with one sample alone in the window there is no rate to
+# extrapolate, so the idle branch returns nothing and the absence branch is
+# quiet. Prometheus 3.0 made range selectors left-open, a sample at the lower
+# limit being excluded (prometheus/prometheus#13904), so on 3.x this row is
+# already absent at 44h and this case fires. It pins 2.x.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
@@ -107,41 +116,59 @@ tests:
   - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
     eval_time: 44h
     exp_samples: []
-# MiniMax: the same restart shape, on the busiest of the four plans the #9879
-# incident did not name. Old expression: Alerting.
+# MiniMax (#10431): a call 25h back sits inside MiniMax's 72h window and
+# outside a 24h one, so the plan is not idle. Old 24h expression: Alerting.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
-    values: '500+0x46'
+    values: '0+0x20 1+0x26'
   alert_rule_test:
   - alertname: MiniMaxIdle
     eval_time: 47h
     exp_alerts: []
   promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 24h) or vector(0)))))'
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
     eval_time: 47h
     exp_samples:
     - labels: '{}'
       value: 0
-# MiniMax: genuinely idle, so the row still pages.
+# MiniMax genuinely idle for its whole 72h window, and the offset side is
+# present, so the totals comparison has to pass the row as well.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
-    values: '500+0x47'
+    values: '500+0x79'
   alert_rule_test:
   - alertname: MiniMaxIdle
-    eval_time: 47h
+    eval_time: 79h
     exp_alerts:
     - exp_labels:
         grafana_folder: fleet
         plan: minimax
         severity: critical
   promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 24h) or vector(0)))))'
-    eval_time: 47h
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
+    eval_time: 79h
     exp_samples:
     - labels: '{}'
       value: 1
+# MiniMax vanished 30h ago: inside the 72h absence window, and its counter
+# moved before it went, so the row is neither absent nor idle yet. Old 24h
+# expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '0+0x5 10+0x25'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 60h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
+    eval_time: 60h
+    exp_samples:
+    - labels: '{}'
+      value: 0
 # The #9865 incident shape: present, last call 91h back, outside the old 24h
 # idle branch and inside the 7d one.
 - interval: 1h
