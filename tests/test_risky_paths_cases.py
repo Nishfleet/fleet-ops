@@ -53,8 +53,9 @@ def approve():
     assert context == "coordinator-approval"
 
     def run(case):
+        assert "approvers" in case, f"{case['id']}: no approvers list"
         done = subprocess.run(
-            ["jq", "-r", "--arg", "c", context, "--arg", "who", " ".join(case.get("approvers", [])), program],
+            ["jq", "-r", "--arg", "c", context, "--arg", "who", " ".join(case["approvers"]), program],
             input=json.dumps({k: case.get(k) for k in ("sha", "statuses", "comments")}),
             capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
