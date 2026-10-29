@@ -1,0 +1,26 @@
+{
+  "question": "Does the risky-review rubric name the cut as a blocker on an over-built PR, and leave a clean move alone whose base files already use the new module, once the over-building bullet says to check the base files and to clear the finding in the PR text or by cutting it, and once that bullet is exempted from the faulty-input rule?",
+  "prompt_file": "prompts/risky-review.md",
+  "before": "origin/main before this change, the #10613 wording",
+  "after": "this head",
+  "cases_file": "tests/evals/cases/risky_review.json",
+  "labeller": "the judge group (Qwen seat behind litellm judge), three calls, one case and its expected cut per call: overbuilt-date-abstraction, helper-move-already-used, and a retry-helper-already-used draft the parent dropped before scoring. The judge seat wrote every case and every label. The parent wrote no case and no label: it corrected two mechanical faults in the drafts before any score existed, a hunk that replaced a line with an identical line, and a docs.ts hunk whose old expression did not match the moved helper, which would have made the move a behaviour change rather than a pure move. Nothing was changed after a score was seen. The parent dropped the retry draft because its diff adds a retry of a POST with no idempotency key, so a block is the correct answer and the case cannot test this rule.",
+  "tuning": "none. All four cases existed before the wording was chosen, so every row is held out. No case was added or edited after a score was seen.",
+  "scorer": "worker-capable (GLM-5.3-Flash) on the litellm seat: a family that is neither the judge nor the parent, so the builder does not grade its own work",
+  "command": "pi --print --no-tools --no-session --provider litellm --model worker-capable --append-system-prompt \"$(cat $HOME/AGENTS.md <prompt>)\" < <case input>, where the case input is the diff, then the base files of the changed files, then the linked issue text: the shape the review job builds in agent.yml",
+  "before_scores": {
+    "band-aid-001": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "overbuilt-001": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "overbuilt-date-abstraction": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "helper-move-already-used": { "verdict": "APPROVE", "blocker_names_cut": null, "correct": true }
+  },
+  "after_scores": {
+    "band-aid-001": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "overbuilt-001": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "overbuilt-date-abstraction": { "verdict": "BLOCK", "blocker_names_cut": true, "correct": true },
+    "helper-move-already-used": { "verdict": "APPROVE", "blocker_names_cut": null, "correct": true }
+  },
+  "known_gap": "No case exercises the branch where the issue text names a cause that needs the item, so that clearing path has no held-out row. Adding one now would be a case added after a score was seen, so it is left for the next edit.",
+  "summary": "4 of 4 correct before, 4 of 4 correct after, and every row is identical in both verdict and cut naming. The stand-in model already resolved both questions this wording change answers, so the measurement shows no regression and no gain. The reason for the change is different: the text a judge reads contradicted itself in two places, which is a defect of the instruction, not a behaviour this model needed fixed.",
+  "notes": "The two blocks on the previous heads of this change name the two defects this wording answers. The first says the same bullet both demands a cut as a blocker and hands that finding to the rule that only a concrete faulty input can make a blocker, so the text calls the cut a blocker and forbids it in the same breath. The second says a reviewer can call an existing, already used module an option the cause does not need, because nothing in the bullet sends it to the base files first. Both are reads of the text rather than of a model, and both are answered here: the bullet now sends the reviewer to the base files and lets the issue text, or a cut, clear it, and the root-cause-or-extra bullet is exempted from the faulty-input rule."
+}
