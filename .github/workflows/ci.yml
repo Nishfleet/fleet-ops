@@ -1783,7 +1783,7 @@ jobs:
                   for: 0s
                   noDataState: OK
                   execErrState: Error
-                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  annotations: {summary: drill, value: "1", threshold: "0", description: 'drill: systemd/fleet-worker-github-token@.service mints every worker token for one repository'}
                   labels: {severity: warning, signal: queue-stuck, audience: nish}
           YAML
           echo drill-admin-pw > "$d/admin-pw"

@@ -86,7 +86,7 @@ contactPoints:
             template: |-
               {{- with index .Alerts 0 -}}
               {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
-                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed for Nish by the audience route in cloudflare-spend-contact.yaml.\n\nWhy this reaches Nish and not a worker: the rule reads a board no worker token can read. systemd/fleet-worker-github-token@.service mints every worker token with a body that names one repository, so a worker running a fleet-ops issue gets 404 on the private board, and a worker lane can never work an ask on it. GitHub also links an issue to a pull request only inside one repository, so an ask delivered by a fleet-ops pull request never reads as linked:pr. The only seats that can move the board are a person and the org-wide App installation this data source uses. Answer the asks, or give the board read to the fleet so a lane can work one." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed for a seat by the audience route in cloudflare-spend-contact.yaml, so the worker queue does not dispatch it." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
                      "labels" (coll.Slice "needs-nish-decision") | data.ToJSON -}}
               {{- end -}}
 
@@ -206,7 +206,7 @@ policies:
         group_by: ['...']
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 24h
+        repeat_interval: 7d
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]

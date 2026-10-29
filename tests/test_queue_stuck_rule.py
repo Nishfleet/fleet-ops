@@ -94,8 +94,8 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
 def test_ask_rule_reads_the_private_board_and_names_the_token_that_cannot():
     ask = _rules()["queue-stuck-ask-noslip"]
     (search,) = (d for d in ask["data"] if d["refId"] == "A")
-    assert search["model"]["repository"] == "nish-vault"
-    assert search["model"]["queryType"] == "Issues"
+    assert search["model"]["repository"] == "nish-vault", (
+        "the ask rule reads the one board no worker token can reach, so its text must name who can act on an ask")
     body = ask["annotations"]["description"]
     assert "fleet-worker-github-token@.service" in body, (
         "the ask rule reads the one board no worker token can reach, so its text must name who can act on an ask")

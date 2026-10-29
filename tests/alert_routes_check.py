@@ -253,6 +253,65 @@ def selftest():
     assert unguarded_refs('{{- with $labels.a -}} for {{ . }}{{ end }}') == []
     assert unguarded_refs('{{ if gt .Value 0.0 }}maxed{{ else }}idle{{ end }}') == []
     assert unguarded_refs('{{ printf "%v %v" $values $values.D }}') == ["values", "values.D"]
+    audience_policy = {"receiver": "root", "routes": [
+        {"receiver": "nish-ask-dispatch", "object_matchers": [["audience", "=", "nish"],
+                                                             ["alertname", "!~", "DatasourceError|DatasourceNoData"]]},
+        {"receiver": "fleet-alert-dispatch"}]}
+    ask = [{"title": "Nish ask sits open with no PR for 4h", "labels": {"audience": "nish"}}]
+    settings = {"url": ISSUE_URL, "httpMethod": "POST", "authorization_scheme": "Bearer",
+               "authorization_credentials": TOKEN_FILE}
+    points = {name: {"receivers": [{"disableResolveMessage": True, "settings": dict(settings)}]}
+              for name in sorted(ISSUE_SINKS)}
+    shape_bad = []
+    sink_shape({name: {"receivers": []} for name in sorted(ISSUE_SINKS)}, shape_bad)
+    assert set(shape_bad) == {f"{name}: the contact point has no receiver, so its alert files nothing"
+                              for name in sorted(ISSUE_SINKS)}, shape_bad
+    shape_bad = []
+    sink_shape(points, shape_bad)
+    assert shape_bad == [], shape_bad
+    wrong_method = {name: {"receivers": [{"disableResolveMessage": True, "settings": dict(settings)}]}
+                    for name in sorted(ISSUE_SINKS)}
+    wrong_method["fleet-alert-dispatch"]["receivers"][0]["settings"]["httpMethod"] = "GET"
+    shape_bad = []
+    sink_shape(wrong_method, shape_bad)
+    assert shape_bad == ["fleet-alert-dispatch: httpMethod is 'GET', want 'POST', so its alert files nothing"], shape_bad
+    no_resolve = {name: {"receivers": [{"disableResolveMessage": True, "settings": dict(settings)}]}
+                  for name in sorted(ISSUE_SINKS)}
+    no_resolve["fleet-alert-dispatch"]["receivers"][0]["disableResolveMessage"] = False
+    shape_bad = []
+    sink_shape(no_resolve, shape_bad)
+    assert shape_bad == ["fleet-alert-dispatch: a resolve message re-files the issue as a comment on every resolve"], shape_bad
+    wrong_token = {name: {"receivers": [{"disableResolveMessage": True, "settings": dict(settings)}]}
+                   for name in sorted(ISSUE_SINKS)}
+    wrong_token["fleet-alert-dispatch"]["receivers"][0]["settings"]["authorization_credentials"] = "$__file{/etc/token}"
+    shape_bad = []
+    sink_shape(wrong_token, shape_bad)
+    assert shape_bad == ["fleet-alert-dispatch: authorization_credentials is '$__file{/etc/token}', want "
+                         "'$__file{/run/secrets/github-token/token}', so its alert files nothing"], shape_bad
+    good_sink = {"nish-ask-dispatch": {"receivers": [{"settings": {"payload": {"template": '{{ coll.Slice "needs-nish-decision" }}'}}}]}}
+    audience_bad = []
+    audience_check(ask, audience_policy, good_sink, audience_bad)
+    assert audience_bad == [], audience_bad
+    repointed = {"receiver": "root", "routes": [
+        {"receiver": "fleet-alert-dispatch", "object_matchers": [["audience", "=", "nish"]]},
+        {"receiver": "fleet-alert-dispatch"}]}
+    audience_bad = []
+    audience_check(ask, repointed, good_sink, audience_bad)
+    assert audience_bad == ["Nish ask sits open with no PR for 4h: audience nish must reach only nish-ask-dispatch, got ['fleet-alert-dispatch']"], audience_bad
+    unguarded = {"receiver": "root", "routes": [
+        {"receiver": "nish-ask-dispatch", "object_matchers": [["audience", "=", "nish"]]},
+        {"receiver": "fleet-alert-dispatch"}]}
+    audience_bad = []
+    audience_check(ask, unguarded, good_sink, audience_bad)
+    assert audience_bad == ["Nish ask sits open with no PR for 4h: a read error on it must reach fleet-alert-dispatch and not nish-ask-dispatch, because the fleet fixes a broken data source and the seat cannot"], audience_bad
+    audience_bad = []
+    audience_check(ask, audience_policy, {"nish-ask-dispatch": {"receivers": [
+        {"settings": {"payload": {"template": '{{ coll.Slice "agent-ready" }}'}}}]}}, audience_bad)
+    assert audience_bad == ["nish-ask-dispatch: must label its issue needs-nish-decision, which no lane dispatches",
+                            "nish-ask-dispatch: labels its issue for the worker queue, so a worker that cannot read the board runs on it"], audience_bad
+    audience_bad = []
+    audience_check(ask, audience_policy, {}, audience_bad)
+    assert audience_bad == [], audience_bad
 
 
 def dead_row_shape(rules, points, bad):
@@ -449,7 +508,11 @@ def sink_shape(points, bad):
     its alert files nothing at all: fleet-ops#10881 added nish-ask-dispatch for the ask
     board's alert, and a sink that cannot deliver is the same as no fix."""
     for name in sorted(ISSUE_SINKS):
-        for rcv in points.get(name, {}).get("receivers") or []:
+        receivers = points.get(name, {}).get("receivers") or []
+        if not receivers:
+            bad.append(f"{name}: the contact point has no receiver, so its alert files nothing")
+            continue
+        for rcv in receivers:
             s = rcv.get("settings") or {}
             for key, want in (("url", ISSUE_URL), ("httpMethod", "POST"), ("authorization_scheme", "Bearer"),
                               ("authorization_credentials", TOKEN_FILE)):
@@ -476,14 +539,15 @@ def audience_check(rules, policy, points, bad):
         if got != {want}:
             bad.append(f"{title}: audience {audience} must reach only {want}, got {sorted(got)}")
         err = {rc.removesuffix("#muted") for rc, _ in route(policy, {**labels, "alertname": "DatasourceError"})}
-        if GENERIC_SINK not in err:
-            bad.append(f"{title}: a read error on it must still reach {GENERIC_SINK}, which fixes the data source")
-        tpl = next(iter((r.get("settings") or {}).get("payload", {}).get("template", "")
-                          for r in points.get(want, {}).get("receivers", [])), "")
-        if 'coll.Slice "needs-nish-decision"' not in tpl:
-            bad.append(f"{want}: must label its issue needs-nish-decision, which no lane dispatches")
-        if 'coll.Slice "agent-ready"' in tpl:
-            bad.append(f"{want}: labels its issue for the worker queue, so a worker that cannot read the board runs on it")
+        if GENERIC_SINK not in err or want in err:
+            bad.append(f"{title}: a read error on it must reach {GENERIC_SINK} and not {want}, "
+                       f"because the fleet fixes a broken data source and the seat cannot")
+        for rcv in points.get(want, {}).get("receivers") or []:
+            tpl = ((rcv.get("settings") or {}).get("payload") or {}).get("template", "")
+            if 'coll.Slice "needs-nish-decision"' not in tpl:
+                bad.append(f"{want}: must label its issue needs-nish-decision, which no lane dispatches")
+            if 'coll.Slice "agent-ready"' in tpl:
+                bad.append(f"{want}: labels its issue for the worker queue, so a worker that cannot read the board runs on it")
 
 
 def main(root):
