@@ -278,6 +278,7 @@ jobs:
               if [ -n "$1" ]; then [ -n "$claude_cfg_root" ] || { claude_cfg_root=$(mktemp -d "$RUNNER_TEMP/claude-config.XXXXXX"); trap 'rm -rf "$claude_cfg_root"' EXIT; }; cfg=$(mktemp -d "$claude_cfg_root/c.XXXXXX"); fi
               (
                 if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; fi
+                # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces the CLI to default permission mode, so --allowedTools is what keeps a token-mode run able to use a tool: without the list it answers in text and exits 0 with no PR (fleet-ops#10101).
                 echo "$packet" | $claude_jail --chdir "$dir" -- \
                   claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --allowedTools "Bash Read Edit Write Glob Grep WebFetch WebSearch TodoWrite NotebookEdit mcp__chrome-devtools" --max-turns "$CLAUDE_MAX_TURNS" \
                   --mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" \
@@ -464,6 +465,7 @@ jobs:
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
           fi
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so the relabel would start no next run (fleet-ops#8552). Minted fresh: the first token is an hour old after a 55-minute Worker.
       - name: App token for strike
         id: strike-token
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
@@ -489,6 +491,7 @@ jobs:
           ROUTER_ERR: ${{ steps.host.outputs.router_err }}
           ENGINE: ${{ steps.gate.outputs.engine }}
           SHORT_RUN_SECS: '600'
+          # Guard baselines (fleet-ops#9291): 54 min separates the 55-minute cap death from an early failure; 5x cores sits between the healthy ~6 (fleet-ops#8860) and the 2026-10-05 overload's 50-374 (#9264); 4G swap is above designed paging and below that overload's 7G of 8G; 3 infra requeues is the cap a stuck host cannot exceed.
           WORKER_TIMEOUT_SECS: '3240'
           CPU_LOAD_FACTOR: '5'
           SWAP_GUARD_KB: '4194304'
