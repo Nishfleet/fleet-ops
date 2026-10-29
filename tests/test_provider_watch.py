@@ -660,6 +660,13 @@ def test_every_router_key_has_an_environment_file_in_the_unit():
         assert f"EnvironmentFile=-%E/fleet-ops/seats/{_provider_name(var)}.env\n" in unit, f"{var} has no EnvironmentFile= in {UNIT.name}"
 
 
+def test_every_seat_file_in_the_unit_is_read_by_a_router_row():
+    unit = UNIT.read_text()
+    listed = set(re.findall(r"^EnvironmentFile=-%E/fleet-ops/seats/([\w-]+)\.env$", unit, re.M))
+    served = {_provider_name(r["api_key"].split("/", 1)[1]) for r in _router_rows() if str(r.get("api_key", "")).startswith("os.environ/")}
+    assert listed <= served, f"{UNIT.name} loads a seat file that no router row reads: {sorted(listed - served)}"
+
+
 def test_every_router_row_with_a_key_has_an_https_api_base():
     rows = [r for r in _router_rows() if r.get("api_key")]
     assert rows

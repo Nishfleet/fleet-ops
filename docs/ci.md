@@ -20,6 +20,23 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Preview before apply: rootfs/ against main's copy
+
+`tests/test_rootfs_preview.py` is the first half of fleet-ops#10991. It lists every file
+a PR changes under `rootfs/` with the live path it takes and its diff against main's copy. The
+live path comes out of the tree's shape, never a copy of it: `rootfs/etc/X` lands at `/etc/X`,
+because the tree mirrors `/`. It runs in the `unit` job, so it needs no job of its own, and the
+listing goes to the step summary because `pytest -q` hides printed output on a passing test. It
+needs no root on the runner and nothing on the box, because a root `ansible --check` cannot run
+there (nftables needs `CAP_NET_ADMIN`, and `NoNewPrivileges` blocks sudo).
+
+`fleet-host-config.service` applies the tree as root on every push to main, which is what the
+preview stands in for. Its one assertion is the preview's own integrity: the diff against main's
+copy must be a real diff, so a base that is not main's copy fails instead of printing nothing.
+The `unit` job's checkout moves to `fetch-depth: 2` for that, because the base is `HEAD^1`. On a
+merge-group entry that is the previous queue entry, so the preview there covers that entry.
+Step 2 (which task installs each file, and which handler runs after it) is a later issue.
+
 ### Ratchet: workflow and script code only shrinks
 
 The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
@@ -45,16 +62,32 @@ A web or product repo adds a workflow with one job named `ratchet` that calls
 `uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
 and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
 the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
-Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
-403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
-`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
-only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
-ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
+The organization ruleset below covers a repo with no caller file, and it covers a repo that repoints
+the caller's `uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent`
+runner group allows only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in
+the `main-merge-queue` ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
 context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
 the job alone does not switch it off: a required check that never reports blocks the PR.
 
-`.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
-sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
+### One organization ruleset requires the ratchet in every repo
+
+`config/org-ruleset.json` defines the organization ruleset `org-required-workflows`: target every
+repository, the default branch, no bypass actor, and one rule, "Require workflows to pass" on
+`Nishfleet/fleet-ops` `.github/workflows/ratchet.yml` at `refs/heads/main`. A repository created later
+is covered with no file of its own, and a later check joins as one more entry in that rule once it
+runs in under 60 s. Creating a ruleset is an organization setting, so it takes org-owner access:
+`gh api --method POST orgs/Nishfleet/rulesets --input config/org-ruleset.json`. It starts at
+enforcement `evaluate`, so the check reports without blocking a merge; set it to `active` once a pull
+request in a second repo shows the check in under 60 s. A ruleset runs a file only if it declares
+`pull_request`, `pull_request_target` or `merge_group`, so `ratchet.yml` carries `pull_request` and
+`merge_group` beside `workflow_call`: a merge-queue entry needs `merge_group`, or the check never
+reports. Its job skips the ruleset's own run in this repo, where `ci.yml` already calls it. That run
+reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that still has a caller file runs
+both. Off switch: delete the rule in the organization settings. This
+repo keeps `ratchet / ratchet` either way.
+
+`.github/workflows/secret-scan.yml` is the gitleaks scan; its steps live in
+`.github/actions/secret-scan` (pinned binary + sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
 `secret-scan.yml` set `timeout-minutes` on their jobs. `agent-dispatch.yml`
 sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs
@@ -83,5 +116,5 @@ assertions in `config/lighthouserc.json` (LCP 1500 ms, interactive 3000 ms, CLS
 0.05, script 150 KB, total 500 KB, no console errors; sizes are bytes there,
 153600 and 512000). A web repo calls it with
 `uses: Nishfleet/fleet-ops/.github/workflows/lighthouse.yml@main` and
-`with: urls:` (one page URL per line); callers cannot change the assertions. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
+`with: urls:` (one page URL per line); callers cannot change the assertions. A run that cannot record a trace (a NO_NAVSTART flake, fleet-ops#9546) no longer fails the audit: the verdict step re-records the runs a page is short of, so every page is decided on the run count the audit asks for (5), and a page that still falls short has no verdict and fails the run. A breached budget still fails the run, with the action's own annotations naming each failed assertion. It no longer prints the LCP breakdown to the step summary (removed to offset the `ratchet` job, fleet-ops#9622); the assertions are unchanged.
 

@@ -1,5 +1,5 @@
 """Fleet scorecard alerts (fleet-ops#10711): each rule's real SQL, read out with yq and run in
-sqlite, fires only when both consecutive 24h windows miss."""
+sqlite, fires only when both windows miss."""
 import json
 import pathlib
 import re
@@ -12,6 +12,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/fleet-scorecard.yaml"
+ALERTING = ROOT / "config/grafana/provisioning/alerting"
+CONTAINER = ROOT / "containers/quadlet/fleet-grafana.container"
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 FMT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -37,19 +39,20 @@ def _missed(uid, tables, columns):
     return db.execute(sql).fetchone()[0]
 
 
-def _runs(good_today, bad_today, good_yday, bad_yday):
-    return [(1, "success")] * good_today + [(2, "failure")] * bad_today + [(30, "success")] * good_yday + [(31, "failure")] * bad_yday
+def _runs(good_new, bad_new, good_prev, bad_prev):
+    return [(1.5, "success")] * good_new + [(1.75, "failure")] * bad_new, [(25.5, "success")] * good_prev + [(25.75, "failure")] * bad_prev
 
 
-@pytest.mark.parametrize("today,yday,missed", [((90, 5, 0, 0), (0, 0, 90, 5), 1), ((100, 0, 90, 5), None, 0), ((90, 5, 100, 0), None, 0), ((0, 0, 0, 0), None, 0)])
-def test_failure_share_fires_only_when_both_days_miss(today, yday, missed):
-    rows = _runs(*today) if yday is None else _runs(today[0], today[1], yday[2], yday[3])
-    assert _missed("scorecard-run-failure-share", {"A": rows, "B": []}, "created_at TEXT, conclusion TEXT") == missed
+@pytest.mark.parametrize("new,prev,missed", [((90, 5), (90, 5), 1), ((100, 0), (90, 5), 0), ((90, 5), (100, 0), 0), ((0, 0), (0, 0), 0), ((90, 5), (0, 0), 0)])
+def test_failure_share_fires_only_when_both_windows_miss(new, prev, missed):
+    now_rows, day_ago_rows = _runs(*new, *prev)
+    assert _missed("scorecard-run-failure-share", {"A": now_rows, "B": day_ago_rows, "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == missed
 
 
 def test_failure_share_ignores_cancelled_and_skipped():
-    rows = _runs(98, 2, 98, 2) + [(3, "cancelled")] * 50 + [(30, "skipped")] * 50
-    assert _missed("scorecard-run-failure-share", {"A": rows, "B": []}, "created_at TEXT, conclusion TEXT") == 0
+    now_rows, day_ago_rows = _runs(98, 2, 98, 2)
+    rows = now_rows + [(1.5, "cancelled")] * 50 + day_ago_rows + [(25.5, "skipped")] * 50
+    assert _missed("scorecard-run-failure-share", {"A": rows, "B": [], "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == 0
 
 
 def _merged(own_today, prod_today, own_yday, prod_yday):
@@ -66,7 +69,7 @@ def test_products_behind_fires_only_when_both_days_miss(args, missed):
 
 DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
 INTAKE = ROOT / "config/intake-repos.json"
-GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "date_format", "from_unixtime", "min", "max", "avg", "abs"}
+GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "ceil", "date_format", "from_unixtime", "min", "max", "avg", "abs", "row_number"}
 
 
 def _dashboard_targets():
@@ -79,6 +82,29 @@ def _rule_targets():
 
 def _searches(targets):
     return [t for t in targets() if t.get("queryType") == "Pull_Requests"]
+
+
+def _expressions():
+    return [t.get("expression", "") for t in _dashboard_targets() + _rule_targets()]
+
+
+def _grouped_select_lists(sql):
+    words = [(m.start(), m.group().upper()) for m in re.finditer(r"[A-Za-z_]+", sql)]
+    depth, level = [], 0
+    for char in sql:
+        depth.append(level)
+        level += char == "("
+        level -= char == ")"
+    lists = []
+    for index, (position, word) in enumerate(words):
+        if word != "GROUP" or index + 1 == len(words) or words[index + 1][1] != "BY":
+            continue
+        opening = next((p for p, w in reversed(words[:index]) if depth[p] == depth[position] and w == "SELECT"), None)
+        if opening is None:
+            continue
+        closing = next((p for p, w in words if p > opening and depth[p] == depth[position] and w == "FROM"), len(sql))
+        lists.append(sql[opening:closing])
+    return lists
 
 
 def _declared_products():
@@ -98,7 +124,7 @@ def _dashboard_products_expression():
 @pytest.mark.parametrize("targets", [_dashboard_targets, _rule_targets])
 def test_sql_calls_only_functions_grafana_allows(targets):
     for t in targets():
-        for name in re.findall(r"\b(?!(?:from|in|as|on|and|or|when|then|else|union|all|select|where|join)\b)([A-Za-z_]+)\s*\(", t.get("expression", ""), re.I):
+        for name in re.findall(r"\b(?!(?:from|in|as|on|and|or|when|then|else|union|all|select|where|join|over|partition)\b)([A-Za-z_]+)\s*\(", t.get("expression", ""), re.I):
             assert name.lower() in GRAFANA_SQL_FUNCTIONS, name
 
 
@@ -123,6 +149,61 @@ def test_the_rule_searches_the_three_days_its_two_windows_divide():
     assert {json.dumps(d["relativeTimeRange"], sort_keys=True) for d in targets} == {json.dumps({"from": 259200, "to": 0})}
 
 
+def _failure_share_reads():
+    rule = _rules()["scorecard-run-failure-share"]
+    return rule, [d for d in rule["data"] if d["model"].get("queryType") == "Workflow_Runs"]
+
+
+def test_the_failure_share_reads_each_window_with_its_own_target():
+    _, reads = _failure_share_reads()
+    now, day_ago = json.dumps({"from": 7200, "to": 3600}), json.dumps({"from": 93600, "to": 90000})
+    assert sorted(json.dumps(d["relativeTimeRange"], sort_keys=True) for d in reads) == sorted([now, now, day_ago, day_ago])
+
+
+def test_the_failure_share_windows_stay_under_githubs_1000_row_cap():
+    # GitHub returns at most 1,000 results for a search that filters on created, and the plugin
+    # pages 100 at a time:
+    # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+    _, reads = _failure_share_reads()
+    peak_runs_an_hour = 400
+    assert all(
+        (d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]) * peak_runs_an_hour <= 1000 * 3600
+        for d in reads
+    )
+
+
+def test_the_failure_share_expression_windows_match_the_ranges_its_targets_read():
+    rule, reads = _failure_share_reads()
+    sql = next(d for d in rule["data"] if d["refId"] == rule["condition"])["model"]["expression"]
+    assert {int(n) for n in re.findall(r"age [<>]=? (\d+)", sql)} == {d["relativeTimeRange"][edge] for d in reads for edge in ("from", "to")}
+
+
+def test_every_prometheus_range_query_stays_under_the_11000_points_prometheus_allows():
+    queries = [(r["uid"], d) for r in _rules().values() for d in r["data"] if d["model"].get("range")]
+    assert queries
+    for uid, d in queries:
+        model = d["model"]
+        assert model.get("intervalMs") and model.get("maxDataPoints"), uid
+        span = d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]
+        step = max(model["intervalMs"] / 1000, span / model["maxDataPoints"])
+        assert span / step + 1 <= 11000, uid
+
+
+def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
+    line = next(l for l in CONTAINER.read_text().splitlines() if l.startswith("Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT="))
+    scale = {"s": 1, "m": 60, "h": 3600}
+    intervals = [int(n) * scale[u] for p in ALERTING.glob("*.yaml") for n, u in re.findall(r"^\s+interval: (\d+)([smh])$", p.read_text(), re.M)]
+    assert 30 < int(line.split("=")[2].removesuffix("s")) < min(intervals)
+
+
 @pytest.mark.parametrize("targets,expression", [(_dashboard_targets, _dashboard_products_expression), (_rule_targets, _rule_products_expression)])
 def test_the_expression_counts_every_repository_it_queries(targets, expression):
     assert {t["refId"] for t in _searches(targets)} == set(re.findall(r"\bFROM ([A-Z])\b", expression()))
+
+
+def test_no_grouped_select_list_holds_a_scalar_subquery():
+    expressions = [e for e in _expressions() if "GROUP BY" in e]
+    assert expressions
+    for expression in expressions:
+        for select_list in _grouped_select_lists(expression):
+            assert not re.search(r"\(\s*SELECT\b", select_list, re.I), select_list
