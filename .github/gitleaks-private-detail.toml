@@ -237,10 +237,10 @@ regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|h
 condition = "AND"
 
 [[allowlists]]
-description = "The review runners' drop-ins hand the reviewer App key, the worker App key, the router key and one seat token over with LoadCredential= and EnvironmentFile=, and bind the tools, the rules and the deploy clone; a unit line cannot carry an inline gitleaks:allow comment and a system unit has no %h. The test reads those lines back, so it spells out one of them. Only the paths these three files carry are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10950"
+description = "The four review runners' drop-ins hand the reviewer App key, the worker App key, the router key and one seat token over with LoadCredential= and EnvironmentFile=, and bind the tools, the rules and the deploy clone; a unit line cannot carry an inline gitleaks:allow comment and a system unit has no %h. The test reads those lines back, so it spells out one of them. Only the paths these files carry are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10950, four runners since #11069"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = [
-  '''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-(9|10)\.service\.d/30-review-user\.conf$''',
+  '''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-(9|10|11|12)\.service\.d/30-review-user\.conf$''',
   '''^tests/test_review_runner_key\.py$''',
 ]
 regexes = [
