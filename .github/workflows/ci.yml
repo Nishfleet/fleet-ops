@@ -288,9 +288,12 @@ jobs:
           # happen.
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
-          tmp_home=$(mktemp -d)
+          tmp_home=$(mktemp -d); export CREDENTIALS_DIRECTORY=$tmp_home/.cred-ci
           export HOME="$tmp_home"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # On the runner the App key is a systemd credential; the jail must hide the
+          # credential directory the same way it hides $HOME/.config/fleet-worker
+          # (fleet-ops#10957).
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
@@ -302,7 +305,7 @@ jobs:
           bk1=$HOME/.claude-ci-backup
           bk2=$HOME/backups-claude-ci
           test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
-          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker" "$CREDENTIALS_DIRECTORY"
           echo planted > "$bk1/creds"
           echo planted > "$bk2/creds"
           # The jail lines' hide lists come from agent.yml's own claude_hides function.
@@ -322,14 +325,14 @@ jobs:
           test ! -e "$HOME/.config/fleet-worker/planted-key"
           trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
-          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"; echo planted > "$CREDENTIALS_DIRECTORY/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
             # $HOME is the line's only expansion; no eval of file text.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
             read -ra jail <<< "$exp --"
-            "${jail[@]}" test -r "$HOME/.config/control"
+            "${jail[@]}" test -r "$HOME/.config/control" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
             # No engine but claude can read either Claude seat's login: the bound
             # files are empty and the seat directory is an empty tmpfs.
             test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
@@ -352,9 +355,9 @@ jobs:
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
             read -ra jail <<< "$l --"
-            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
             got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)

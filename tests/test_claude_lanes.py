@@ -587,9 +587,12 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
+    cred = tmp_path / "credentials"
+    cred.mkdir()
+    (cred / "key").write_text("planted")
 
     def expand(name):
-        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
+        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat)).replace("$cred_hide", f"--tmpfs {cred}")
         for k, v in sub.items():
             line = line.replace("$" + k, v)
         return line.split() + ["--"]
@@ -597,15 +600,15 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     def read_all(name):
         cmd = expand(name)
         out = {}
-        paths = {"a": seat_a / ".credentials.json", "b": home / ".claude/.credentials.json", "cj": home / ".claude.json", "file": home / ".claude-backup.json"}
+        paths = {"a": seat_a / ".credentials.json", "b": home / ".claude/.credentials.json", "cj": home / ".claude.json", "file": home / ".claude-backup.json", "cred": cred / "key"}
         paths.update({f"bk{i}": d / "creds" for i, d in enumerate(backups)})
         for key, path in paths.items():
             r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
             out[key] = "planted" in r.stdout
         return out
 
-    none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
-    # Every other engine reads no login at all.
+    none = {k: False for k in ("b", "cj", "file", "cred", "bk0", "bk1", "bk2")}
+    # Every other engine reads no login at all, and no engine reads the App key's credential.
     assert read_all("jail_base") == {"a": False, **none}
     # The claude lane reads the seat the issue's parity picks and nothing else: no other
     # seat, no Max dir, no backup, no plain backup file.
@@ -729,8 +732,11 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
     (bk / "creds").write_text("planted")
     for x in "ab":
         (seats / f"claude-seat-{x}.env").write_text(f"CLAUDE_CODE_OAUTH_TOKEN={_tok_env(x)}\n")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
-    for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds"):
+    cred = tmp_path / "credentials"
+    cred.mkdir()
+    (cred / "key").write_text("planted")
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, "")).replace("$cred_hide", f"--tmpfs {cred}")
+    for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds", cred / "key"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
 
@@ -879,8 +885,11 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     (home / ".local/share").mkdir(parents=True)
     (home / ".local/share/claude-seat-backup").symlink_to(vault / "backup")
     (seats / "claude-seat-a.env").symlink_to(vault / "tok.env")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
-    for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
+    cred = tmp_path / "credentials"
+    cred.mkdir()
+    (cred / "key").write_text("planted")
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, "")).replace("$cred_hide", f"--tmpfs {cred}")
+    for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds", cred / "key"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
 

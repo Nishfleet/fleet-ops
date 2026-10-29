@@ -35,6 +35,16 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
     assert minted == {"agent-dispatch.yml": {"orchestrate"}, "agent.yml": {"arm"}}
 
 
+def test_the_worker_jails_hide_the_credential_directory():
+    """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
+    wf = (ROOT / ".github/workflows/agent.yml").read_text()
+    assert "cred_hide=${CREDENTIALS_DIRECTORY:+--tmpfs $CREDENTIALS_DIRECTORY}" in wf, "an unset CREDENTIALS_DIRECTORY must not leave a bare --tmpfs in the jail line"
+    jails = [line for line in wf.splitlines() if re.match(r'\s*(?:jail_base|claude_jail_[ab])="bwrap --dev-bind', line)]
+    assert len(jails) >= 4, jails
+    for line in jails:
+        assert "$cred_hide" in line, line
+
+
 def test_the_orchestrator_session_cannot_read_the_app_key():
     """The orchestrate job mints a workflows: write token; the session it starts must not see the key or the step-output files."""
     wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()

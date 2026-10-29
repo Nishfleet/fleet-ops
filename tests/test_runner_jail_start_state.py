@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
+KEY = "nishfleet-worker.private-key.pem"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
 # pool -> (drop-in with the start order and the pre-start step, drop-in with InaccessiblePaths=)
@@ -304,8 +305,9 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     # pi's library tree and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
-    # The App key dir is a credential, not a bind (fleet-ops#10957): systemd loads the key
-    # into the unit and the unjailed steps read $CREDENTIALS_DIRECTORY first.
-    assert [token for token in bound.split() if token.lstrip("-+").endswith("/.config/fleet-worker")] == []
-    loaded = [value.split(":")[0] for value in merged_values(agent, "LoadCredential")]
-    assert loaded == ["nishfleet-worker.private-key.pem"], loaded
+    assert [token for token in bound.split() if "/.config/fleet-worker" in token] == []
+    loaded = merged_values(agent, "LoadCredential")
+    assert len(loaded) == 1, loaded
+    name, _, source = loaded[0].partition(":")
+    # A wrong name, directory or file is a unit that fails at start, so the whole value is checked here, by its tail.
+    assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
