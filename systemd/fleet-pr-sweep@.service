@@ -43,7 +43,7 @@ Type=oneshot
 EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env
 # $$ keeps systemd from expanding the token into the shell's argv.
 ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN"'
-ExecStart=/bin/sh -c 'out=$$(/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i 2>&1); rc=$$?; if [ "$$rc" -ne 0 ]; then case "$$out" in *"on a disabled workflow"*) echo "skip: Nishfleet/%i disabled agent-dispatch (HTTP 422), so there is no sweep to start"; exit 0;; esac; [ -z "$$out" ] || echo "$$out"; exit "$$rc"; fi; /usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq '"'"'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'"'"''
+ExecStart=/bin/sh -c 'out=$$(/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i 2>&1); rc=$$?; if [ "$$rc" -ne 0 ]; then case "$$out" in *"on a disabled workflow"*) echo "skip: Nishfleet/%i disabled agent-dispatch (HTTP 422), so there is no sweep to start"; exit 0;; esac; [ -z "$$out" ] || printf '%%s\n' "$$out"; exit "$$rc"; fi; /usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq '"'"'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'"'"''
 # One command, not two: systemd loads EnvironmentFile= again for every command
 # it spawns, so a revoke after the rm could not start, and a failed command
 # skips the rest. The revoke runs only with the App token loaded (an empty
