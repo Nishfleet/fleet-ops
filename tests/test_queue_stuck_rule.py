@@ -106,6 +106,20 @@ def test_the_annotation_search_links_exclude_archived_repositories():
             assert "archived%3Afalse" in link, (uid, link)
 
 
+def test_every_org_wide_issue_search_leaves_the_fleets_own_alert_issues_out():
+    for path in sorted(ALERTING.glob("*.yaml")):
+        for query in _github_queries(path):
+            if query.startswith("org:Nishfleet") and "is:issue" in query.split():
+                assert 'NOT "grafana alert:" in:title' in query, (path.name, query)
+
+
+def test_the_annotation_search_links_leave_the_fleets_own_alert_issues_out():
+    for uid, rule in _rules().items():
+        for link in re.findall(r"https://github\.com/search\?[^\s]+", rule["annotations"]["description"]):
+            if "type=issues" in link:
+                assert "NOT+%22grafana+alert%3A%22+in%3Atitle" in link, (uid, link)
+
+
 def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
     rules = _rules()
     assert len({r["uid"] for r in rules.values()}) == len(rules) == 5
