@@ -143,10 +143,10 @@ def _comments(failed=0, login="nishfleet-worker", assoc="CONTRIBUTOR"):
 def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, comments=None):
     """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
-    start = script.index("jev_env=")
-    start = script.rindex("live() {", 0, start)
+    livefn = next(ln for ln in script.splitlines() if ln.strip().startswith("live() {"))
+    start = script.rindex("pi_free() {", 0, script.index("jev_env="))
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
-    seg = script[start:end]
+    seg = livefn + "\n" + script[start:end]
     b, home = _bin(tmp_path)
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
@@ -885,7 +885,7 @@ case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;
 def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
-    start = script.index("# A still-firing alert re-files")
+    start = script.index("if jq -e '.title|startswith(\"alert: \")'")
     end = script.index("skip duplicate-alert; fi\n", start)
     end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
     b = tmp_path / "bin"
