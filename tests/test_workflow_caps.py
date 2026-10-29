@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / ".github/workflows/agent-dispatch.yml"
 AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
-SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework", "miss-stalled")
+SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework")
 AGENT_RUNNERS_MEASURED_2026_10_23 = 22
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
 WORKFLOWS = ROOT / ".github/workflows"
@@ -82,14 +82,14 @@ def test_sweep_drops_exactly_the_gate_park_labels():
 
 def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
     text = AGENT.read_text()
-    # The Gate (queue pull), the Worker fall-through and miss-review all compare the live pi
-    # count against the same worker-capable seat sum, so the three cannot drift apart
-    # (the removed opencode and devin lanes each had a hand-written constant instead).
+    # The Gate (queue pull) and the Worker fall-through both compare the live pi
+    # count against the same worker-capable seat sum, so the two cannot drift apart
+    # (the removed opencode, devin and miss-review lanes each had a hand-written constant).
     caps = re.findall(r'live pi\)"\s+-lt\s+(\S+)', text)
-    assert len(caps) == 3, f"the pi lane has {len(caps)} comparisons, not the Gate, the Worker fall-through and miss-review: {caps}"
+    assert len(caps) == 2, f"the pi lane has {len(caps)} comparisons, not the Gate and the Worker fall-through: {caps}"
     assert set(caps) == {chr(34) + "$slots" + chr(34)}, f"every pi comparison must use the worker-capable seat sum: {sorted(set(caps))}"
     sum_line = "slots=" + chr(36) + "(yq"
-    assert text.count(sum_line) == 3, "the seat sum is computed the same way in the Gate, the Worker and the queue pull"
+    assert text.count(sum_line) == 2, "the seat sum is computed the same way in the Gate and the queue pull"
 
 
 def permissions_block(block, where):
@@ -172,6 +172,16 @@ def test_hand_summons_reaches_the_orchestrate_job():
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
+def test_every_task_a_condition_excludes_is_one_a_job_starts():
+    text = DISPATCH.read_text()
+    started = set(re.findall(r"inputs\.task == '([^']+)'", text))
+    excluded = set(re.findall(r"inputs\.task != '([^']+)'", text))
+    assert excluded <= started, (
+        f"agent-dispatch.yml excludes {sorted(excluded - started)} from a job's if:, and no job starts that task, "
+        "so the comparison can never be false and the job runs where its author meant to skip it"
+    )
+
+
 def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
     text = AGENT.read_text()
     assert "arm: menu=" not in text and "sub(\" · arm: " not in text, (
@@ -187,15 +197,17 @@ def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
             "recoverable from its issue id and the trial cannot be read out of the threads"
         )
     lane = text[text.index('if [ "$ENGINE" = pi ]; then'):]
-    miss = lane[lane.index('if [ "$MISS" = true ]; then'):lane.index("else", lane.index('if [ "$MISS" = true ]; then'))]
-    plain = lane[lane.index("else", lane.index('if [ "$MISS" = true ]; then')):lane.index('elif [ "$ENGINE" != claude ]')]
-    assert "arm_flags" not in miss and "-desk" not in miss, (
-        "miss-review now carries an arm: it is not a trial lane, and both arms would silently change the review "
-        "prompt under the trial's numbers"
+    pi_body = lane[:lane.index('elif [ "$ENGINE" != claude ]')]
+    assert '"${arm_flags[@]}"' in pi_body and "pi_model=$pi_model-desk" in pi_body, (
+        "the pi invocation no longer receives the arm flags or the desk group"
     )
-    assert '"${arm_flags[@]}"' in plain and "pi_model=$pi_model-desk" in plain, (
-        "the plain pi invocation no longer receives the arm flags or the desk group"
-    )
+
+
+def test_the_miss_review_lane_stays_deleted():
+    text = AGENT.read_text()
+    assert "MISS_REVIEW" not in text, "agent.yml reads the retired MISS_REVIEW variable again"
+    assert "miss-review" not in text, "the miss-review ref and packet are back in agent.yml"
+    assert not (ROOT / "prompts/miss-review.md").exists(), "the miss-review packet is back"
 
 
 def test_every_desk_alias_falls_exactly_where_its_group_falls():

@@ -147,11 +147,13 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed. Coordinator approval is a **required status check**: the
   `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
-  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
-  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  15368, alongside `ci` and `Gitleaks`), and `.github/workflows/coordinator-approval.yml`'s
+  job of that name — on `main` since 6c8667075 (PR #9389, 2026-10-07; its own
+  workflow file since #10292) — runs on `merge_group`,
   resolves every PR in the queue entry from the group ref, reads the CLASSIFY
   and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
-  commit, and fails a risky PR whose current head sha carries no approval. A
+  commit (a caller repo, which has no copy, reads fleet-ops main by URL), and
+  fails a risky PR whose current head sha carries no approval. A
   hand enqueue is caught by it as well, because a queue entry cannot merge
   while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
   unapproved before the check existed; the job ran from 2026-10-07 but the
@@ -177,9 +179,13 @@ The rules still in force:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
   To switch it off, give those two runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
+  Those two runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
+  and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
+  so no unit other than these two and no job on another runner can read it (fleet-ops#10950).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools Claude call for findings (on the runner's own login:
+  through the API, asks a no-tools Claude call for findings (on the review user's own
+  seat token, `fleet-reviewer` with `claude-seat-b.env` and never nish's login, fleet-ops#10950:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
@@ -201,6 +207,9 @@ The rules still in force:
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
+  the programs live in agent-dispatch.yml's workflow-level `env`, which
+  `coordinator-approval.yml` reads, so removing the `hold-risky` job leaves the
+  check intact (fleet-ops#10292);
   agent-authored PRs self-land green. The reviewer also runs by hand, so a
   dispatch that cannot start never needs a person to approve: `gh workflow run
   agent.yml -f review_pr=<N> -f review_sha=<sha>` runs the same job, from

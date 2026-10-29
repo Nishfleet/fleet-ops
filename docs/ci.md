@@ -20,6 +20,23 @@ schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
 (fleet-ops#8653), so a loosened schema goes red.
 
+### Preview before apply: rootfs/ against main's copy
+
+`tests/test_rootfs_preview.py` is the first half of fleet-ops#10991. It lists every file
+a PR changes under `rootfs/` with the live path it takes and its diff against main's copy. The
+live path comes out of the tree's shape, never a copy of it: `rootfs/etc/X` lands at `/etc/X`,
+because the tree mirrors `/`. It runs in the `unit` job, so it needs no job of its own, and the
+listing goes to the step summary because `pytest -q` hides printed output on a passing test. It
+needs no root on the runner and nothing on the box, because a root `ansible --check` cannot run
+there (nftables needs `CAP_NET_ADMIN`, and `NoNewPrivileges` blocks sudo).
+
+`fleet-host-config.service` applies the tree as root on every push to main, which is what the
+preview stands in for. Its one assertion is the preview's own integrity: the diff against main's
+copy must be a real diff, so a base that is not main's copy fails instead of printing nothing.
+The `unit` job's checkout moves to `fetch-depth: 2` for that, because the base is `HEAD^1`. On a
+merge-group entry that is the previous queue entry, so the preview there covers that entry.
+Step 2 (which task installs each file, and which handler runs after it) is a later issue.
+
 ### Ratchet: workflow and script code only shrinks
 
 The `ratchet` job in `ci.yml` calls `.github/workflows/ratchet.yml`, the one definition of the rule. It fails a PR whose net added lines (additions minus
@@ -69,8 +86,8 @@ reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that still ha
 both. Off switch: delete the rule in the organization settings. This
 repo keeps `ratchet / ratchet` either way.
 
-`.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
-sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
+`.github/workflows/secret-scan.yml` is the gitleaks scan; its steps live in
+`.github/actions/secret-scan` (pinned binary + sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
 `secret-scan.yml` set `timeout-minutes` on their jobs. `agent-dispatch.yml`
 sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs
