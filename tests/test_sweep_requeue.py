@@ -22,6 +22,7 @@ REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
 ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/"
 
 FAKE_GH = r"""#!/usr/bin/env bash
+cred() { [ -n "$GH_TOKEN" ] || [ -e "$FAKE_DIR/login" ] || { echo "gh: no credential: $*" >&2; exit 4; }; }
 case "$1 $2" in
   "issue list") cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
@@ -32,8 +33,8 @@ case "$1 $2" in
     [ -z "$FAIL_JOBS" ] || exit 1
     id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
-  "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
-  "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit"|"issue comment") cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -64,8 +65,9 @@ def job(name, status="in_progress"):
     return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=()):
-    """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), login=True):
+    """Every live run is titled differently (sweep, stub); only its job names say orchestrate. login
+    models the runner's own ~/.config/gh, which every hosted runner lacks."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
     jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
     for i, j in enumerate(other_jobs):
@@ -73,6 +75,8 @@ def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=())
     (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [{"id": int(k)} for k in jobs]}))
     (tmp_path / "jobs.json").write_text(json.dumps(jobs))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
+    if login:
+        (tmp_path / "login").touch()
     gh = tmp_path / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
@@ -263,3 +267,29 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
 def test_list_job_asks_no_more_than_the_caller_stubs_grant():
     got = subprocess.run(["yq", ".jobs.list.permissions.actions", WF], capture_output=True, text=True, check=True).stdout.strip()
     assert got == "read"
+
+
+def test_the_requeue_write_needs_the_login_the_runner_has(tmp_path):
+    """The re-queue write runs as `env -u GH_TOKEN`, the runner's own login, because the job's own
+    token fires no event. A hosted runner has no login: sweep 40786326904 refused five hand-offs and
+    only warned (fleet-ops#10963)."""
+    assert "::warning::#1: re-queue refused" in run(tmp_path, [issue(1)], login=False, out=True)
+    assert "re-queue refused" not in run(tmp_path, [issue(1)], out=True)
+
+
+def test_the_list_job_runs_where_the_login_is():
+    """A hosted runner has no ~/.config/gh, so the job that re-queues runs where the login is:
+    fleet-ops on its own runners, a caller on its agent runners (fleet-ops#10963)."""
+    expr = _y(".jobs.list.runs-on")
+    assert "self-hosted" in re.findall(r'"([^"]+)"', expr), expr
+    assert "ubuntu-latest" not in expr, expr
+
+
+def test_the_requeue_writes_run_as_the_login_not_the_job_token():
+    """The job's own token writes the label but fires no event, so nothing re-queues (fleet-ops#10489).
+    Every label write that must fire one carries `env -u GH_TOKEN`."""
+    writes = [l.strip() for l in _y(f"{STEP} | .run").splitlines()
+              if "gh issue edit" in l and "needs-orchestrator" in l]
+    assert writes, "the sweep no longer re-queues with a label write"
+    for w in writes:
+        assert "env -u GH_TOKEN" in w.split("gh issue edit")[0], w
