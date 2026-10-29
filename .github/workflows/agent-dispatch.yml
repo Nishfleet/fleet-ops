@@ -1441,11 +1441,13 @@ jobs:
           # Sonnet always, never the session default (Opus, #10750). The session pushes
           # with the App token in GH_TOKEN (fleet-ops#10949). The prompt
           # goes on stdin: its `---` front matter parses as an option as an argument.
+          # The session never sees the App key the token above came from (fleet-ops#9521, #10949).
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).
             FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
-              "$HOME/.local/bin/pi" --print \
+              "${jail[@]}" "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
@@ -1455,7 +1457,7 @@ jobs:
           [ "$HOOKS" != on ] || hook_args=()
           # Start-up trim: 51,407 input tokens and $0.334 untrimmed, 36,440 and
           # $0.146 trimmed (VPS, bare prompt, cold cache).
-          "$HOME/.local/bin/claude" -p \
+          "${jail[@]}" "$HOME/.local/bin/claude" -p \
             --model "$MODEL" \
             "${hook_args[@]}" \
             --strict-mcp-config \

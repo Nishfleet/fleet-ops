@@ -16,7 +16,7 @@ def test_no_runner_dropin_binds_the_gh_login():
 
 def test_no_workflow_step_falls_back_to_the_runner_login():
     # `env -u GH_TOKEN gh/git` (or a session started that way) hands the call the stored login.
-    fallback = re.compile(r'env -u GH_TOKEN(?: -u GITHUB_TOKEN)? (?:\S+=\S+ )*(?:gh|git|"\$HOME/\.local/bin/(?:claude|pi)")\b')
+    fallback = re.compile(r'env (?:-i|(?:-u (?:GH_TOKEN|GITHUB_TOKEN) )+)(?:\S+=\S+ )*(?:gh|git|"\$HOME/\.local/bin/(?:claude|pi)")\b')
     for wf in [*(ROOT / ".github/workflows").glob("*.yml"), *(ROOT / ".github/actions").glob("*/action.yml")]:
         hits = [n for n, line in enumerate(wf.read_text().splitlines(), 1) if fallback.search(line)]
         assert hits == [], f"{wf.name}: lines {hits}"
@@ -33,3 +33,12 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
             if "permission-workflows: write" in line:
                 minted.setdefault(wf.name, set()).add(job)
     assert minted == {"agent-dispatch.yml": {"orchestrate"}, "agent.yml": {"arm"}}
+
+
+def test_the_orchestrator_session_cannot_read_the_app_key():
+    """The orchestrate job mints an org-wide token with workflows: write; the session it starts must not see the key."""
+    wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
+    step = wf[wf.index("- name: Run the orchestrator session"):wf.index("- name: Clean up and mark a PR-less hand-off")]
+    assert '--tmpfs "$HOME/.config/fleet-worker"' in step and '--tmpfs "$CREDENTIALS_DIRECTORY"' in step
+    starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
+    assert starts and all('"${jail[@]}"' in line for line in starts), starts
