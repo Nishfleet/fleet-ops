@@ -1,7 +1,7 @@
 """fleet-ops#11014: a hand-off that ends with no PR on an issue whose `due:` line is still in
-the future must park it on-hold, not orchestrator-tried.
+the future must park it on-hold, not handoff-ended.
 
-orchestrator-tried is the label the parked hand-off sweep re-fires and later-sweep skips, so a
+handoff-ended is the label the parked hand-off sweep re-fires and later-sweep skips, so a
 future-dated issue could never reach its date: three tries, then needs-nish-decision, then a
 person clears the label. This runs the real `run:` block of agent-dispatch.yml's no-PR step
 against a fake gh, one case per branch.
@@ -72,12 +72,12 @@ def edits(writes):
 
 
 @pytest.mark.parametrize("body", [FUTURE, "prose first\n\ndue: 2099-01-01 09:00 IST\n"], ids=["first-line", "mid-body"])
-def test_a_future_due_parks_on_hold_and_never_marks_it_tried(tmp_path, body):
+def test_a_future_due_parks_on_hold_and_never_marks_it_ended(tmp_path, body):
     out, writes = run(tmp_path, body)
     assert edits(writes) == [
         "issue edit 11011 -R Nishfleet/fleet-ops --add-label on-hold --remove-label needs-orchestrator"
     ], writes
-    assert not [line for line in writes if "orchestrator-tried" in line], writes
+    assert not [line for line in writes if "handoff-ended" in line], writes
     assert not [line for line in writes if "ended without a PR" in line], (
         "the sweep counts that comment prefix as a strike"
     )
@@ -96,9 +96,9 @@ def test_a_future_due_parks_on_hold_and_never_marks_it_tried(tmp_path, body):
     ],
     ids=["past", "none", "month-13", "not-IST", "one-digit-hour", "empty"],
 )
-def test_a_past_missing_or_unreadable_due_marks_it_tried_as_today(tmp_path, body):
+def test_a_past_missing_or_unreadable_due_marks_it_ended_as_today(tmp_path, body):
     _, writes = run(tmp_path, body)
     assert edits(writes) == [
-        "issue edit 11011 -R Nishfleet/fleet-ops --add-label orchestrator-tried --remove-label needs-orchestrator"
+        "issue edit 11011 -R Nishfleet/fleet-ops --add-label handoff-ended --remove-label needs-orchestrator"
     ], writes
     assert not [line for line in writes if "on-hold" in line], writes
