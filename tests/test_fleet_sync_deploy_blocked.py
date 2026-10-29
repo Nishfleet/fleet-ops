@@ -144,7 +144,7 @@ def test_the_hook_names_the_fix_a_session_needs(tmp_path: Path) -> None:
     code, text = run_git(clone, "worktree", "add", "-b", "x", str(tmp_path / "x"), "refs/remotes/origin/main")
     assert code != 0
     assert "DEPLOY-BLOCKED" in text
-    assert "git worktree add /home/nish/workspaces/agent-worktrees/<name> <ref>" in text
+    assert "git worktree add ~/workspaces/agent-worktrees/<name> <ref>" in text
 
 
 def test_the_hook_blocks_a_fetch_that_creates_a_branch(tmp_path: Path) -> None:
@@ -180,10 +180,21 @@ def test_the_hook_allows_the_deploy_steps(tmp_path: Path) -> None:
 
 
 def test_the_hook_leaves_a_linked_worktree_alone(tmp_path: Path) -> None:
-    clone = clone_with_hook(tmp_path)
+    # The worktree is made before the hook is installed: `git worktree add` runs
+    # its HEAD transaction from the main worktree, and whether the hook can tell
+    # that HEAD is the new worktree's is a git version detail. What the guard
+    # promises is that a ref update made in a linked worktree is skipped, so the
+    # test moves that worktree's HEAD, which the clone's own guard refuses.
+    clone = clone_at(tmp_path)
+    (clone / "later.txt").write_text("later\n")
+    git(clone, "add", "later.txt")
+    git(clone, "commit", "-m", "a second commit on main")
     worktree = tmp_path / "side"
-    code, text = run_git(clone, "worktree", "add", "--detach", str(worktree), "refs/remotes/origin/main")
+    git(clone, "worktree", "add", "--detach", str(worktree), "HEAD~1")
+    git(clone, "config", "core.hooksPath", str(HOOK.parent))
+    code, text = run_git(worktree, "update-ref", "HEAD", "refs/heads/main")
     assert code == 0, text
+    assert git(worktree, "rev-parse", "HEAD") == git(clone, "rev-parse", "refs/heads/main")
     assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
 
 

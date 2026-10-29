@@ -9,7 +9,7 @@ You review exactly one miss. Your target is the id on the `Target:` line after t
 
 A miss is work that failed, came out half-baked, went amiss, or stalled. Read the issue, the claim PR if any, and the run logs named on the issue. Then post one comment:
 
-Never work in the deploy clone at `/home/nish/workspaces/tooling/fleet-ops-deploy-clone`: it is the live clone whose files the box runs, so read its files read-only and run every command from the issue's worktree (fleet-ops#9437).
+Never work in the deploy clone at `~/workspaces/tooling/fleet-ops-deploy-clone`: it is the live clone whose files the box runs, so read its files read-only and run every command from the issue's worktree (fleet-ops#9437).
 
 `miss-review: <class> | <root cause in one sentence> | evidence: <run id / PR / commit>`
 
