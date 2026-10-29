@@ -23,7 +23,7 @@ alerting:
         - targets: ['127.0.0.1:9093']
       # Alertmanager requires basic auth on every route (see
       # rootfs/etc/default/prometheus-alertmanager). The username is not a
-      # secret; the password comes from a hand-placed 0600 file that
+      # secret; the password comes from a 0600 file, made on the first run, that
       # ansible/tasks/alerting.yml keeps owned by the prometheus user, so it
       # stays out of this repo. promtool does not open the file, so CI passes
       # without it, and the deploy probes the pair before it installs this.
