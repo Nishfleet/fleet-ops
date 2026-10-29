@@ -389,12 +389,39 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
-    # A glob, so a runner added after this line was written restarts too, and a no-match
-    # glob is a success, so a host with no runner installed still converges. try-restart
-    # leaves a runner that is already stopped stopped. A job running on a restarted
-    # runner fails; every runner started before its current drop-in is the case this
-    # restores (fleet-ops#10866).
-    - name: Restart the agent runners
+    # The sandbox is read at unit start, so an installed drop-in reaches no running runner
+    # until it restarts. One runner first, its own mount namespace read back, then the pool:
+    # a drop-in the unit refuses fails the deploy on one runner instead of taking every
+    # runner down blind, and the read is the proof the sandbox reached a running runner
+    # (fleet-ops#10866). The pool glob covers a runner added after this line was written,
+    # and a glob that matches nothing is a success, so a host with no runner converges.
+    - name: Restart one agent runner
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-1.service
+        state: restarted
+
+    - name: Read the main pid of that runner
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - show
+          - -p
+          - MainPID
+          - --value
+          - actions.runner.Nishfleet.netcup-agent-1.service
+      register: agent_runner_pid
+      changed_when: false
+
+    - name: Fail unless that runner mounts the deploy clone read-only
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/grep
+          - -Eq
+          - "fleet-ops-deploy-clone ro(,|$)"
+          - "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"
+      changed_when: false
+
+    - name: Restart the rest of the agent runners
       ansible.builtin.command:
         argv:
           - /usr/bin/systemctl

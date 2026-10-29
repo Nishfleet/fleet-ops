@@ -114,7 +114,7 @@
     mode: preserve
   notify:
     - Reload systemd
-    - Restart the agent runners
+    - Restart one agent runner
 
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
