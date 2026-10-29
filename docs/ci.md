@@ -45,13 +45,19 @@ A web or product repo adds a workflow with one job named `ratchet` that calls
 `uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main` on `pull_request` and `merge_group`,
 and requires the check `ratchet / ratchet` in its ruleset. Run from `@main`, the rule is
 the base branch's, not the PR's; and a PR that edits the caller's `ratchet` job fails the check.
-Not covered, because the Free plan has no org required workflows or org rulesets (the API answers
-403, and a repository ruleset `workflows` rule is rejected): a PR can still repoint the caller's
-`uses:` at another repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
+One org ruleset does the same job in every repo, including a repo made later, with no caller file:
+target all repositories, add the rule "Require workflows to pass", choose `Nishfleet/fleet-ops`
+workflow `.github/workflows/ratchet.yml` at `main` (fleet-ops#10554). It is not on yet because an org
+ruleset needs the Team plan and an org owner: on the Free plan the API answers 403 "Upgrade to
+GitHub Team" and a repository ruleset `workflows` rule is rejected (fleet-ops#9640), which is why a
+repo adds its own caller file. Until it exists, a PR can still repoint a caller's `uses:` at another
+repository (fleet-ops#9627). Pin `@main`, never a SHA: the `agent` runner group allows
 only `@main`, and a SHA pin queues forever. The check is in `ci`'s `needs` and in the `main-merge-queue`
 ruleset's required status checks as `ratchet / ratchet`. To switch it off, remove that
 context from the ruleset (Settings, Rules, `main-merge-queue`) and from `ci`'s `needs`. Deleting
-the job alone does not switch it off: a required check that never reports blocks the PR.
+the job alone does not switch it off: a required check that never reports blocks the PR. The org
+rule is switched off by deleting it at the organization level (Settings, Rules); it is one rule over
+all repos, so its removal changes nothing in any repo's own ruleset.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
 sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
