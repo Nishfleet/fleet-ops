@@ -60,32 +60,38 @@
 # reads 0.861 and fires (a test case below).
 #
 # minimax's floor is 4.9 points down, not 2 (fleet-ops#10955). The rule fired
-# 2026-10-29T14:36Z with 7d 0.926 and 48h 0.917 against the 0.9259 floor; the
-# re-read the same day at 15:13Z gave 7d 0.9257 and 48h 0.9168 on 327M input
-# tokens. Per row over 48h: minimax-m31-worker-capable 161.9M at 0.919;
-# minimax-m31b-worker-capable 155.6M at 0.913; the two worker-cheap rows 4.2M
-# at 0.913 and 5.1M at 0.966. Every row still reports cached_tokens: the
-# ratio's `and on (model_id)` pinning gives a defined share only to a row
-# whose cached and input counters both moved in the window, and all four rows
-# read one, the dip hours included (a defined 0.003 is the field present as
-# 0, and section 6 proved a miss reports 0 rather than dropping the field).
-# The prefix held: the big-volume hours read 0.87 to 0.95 (10-28 19h: 0.940
-# and 0.918 on about 20M tokens per row; 10-28 21h: 0.935 and 0.912 on about
-# 28M and 31M), and a broken prefix or a vendor that stopped caching reads
-# low on every hour. What dragged the vendor under is the cause #10757 found
-# on opencodego and #10894 on commandcode: sparse hours on a cold cache. The
-# days where one big row carried almost no traffic read near zero (m31b 0.004
-# on 0.36M tokens on 10-24, m31b 0.008 on 0.03M on 10-26, m31 0.238 on 0.06M
-# on 10-27), and the 10-29 dip hours read 0.003 to 0.005 on under 0.3M
-# tokens while the row carrying that hour's load read 0.85 to 0.94. The
-# heavy days themselves read about 0.92 against the 0.9459 baseline (10-28:
-# 107.6M and 120.1M tokens at 0.926 and 0.921), which is the load swing
-# #10654 documented on synthetic's senior row, tighter here. The floor is
-# the fresh 48h read (0.9168) minus 2 points. The cost: a 2 to 5 point drift
-# on minimax now passes; one of the two big rows losing its cache outright
-# still takes the vendor to about 0.46 and fires, and the 1-hour paging rule
-# covers a total one. A second filing on minimax means look at the burst
-# pattern before moving the floor again.
+# 2026-10-29T14:36Z with 7d 0.926 and 48h 0.917 against the 0.9259 floor. The
+# vendor still caches: all four rows report cached_tokens, a session's first
+# call reads 0.27 cached (another session's prefix still warm on the vendor's
+# side), and the median prompt held at 65k to 75k tokens across the window. The
+# fall is ours. Per row over the 48h the floor was cut from (10-23T08:12Z to
+# 10-25T08:12Z, LiteLLM_SpendLogs): m31-worker-capable 50.8M at 0.9434,
+# m31-worker-cheap 41.4M at 0.9506, m31b-worker-capable 22.8M at 0.9084,
+# m31b-worker-cheap 43.8M at 0.9578, so the cheap rows were 54% of the tokens
+# at 0.95. Over the 48h that fired (10-27T14:36Z to 10-29T14:36Z): 160.2M at
+# 0.9172, 4.3M at 0.9056, 159.6M at 0.9130 and 5.2M at 0.9500, so the cheap
+# rows are 3% and the vendor reads the two big rows' 0.91 to 0.92. Session
+# shape did the rest. The two capable rows ran 29 sessions of 36.7 calls each
+# in the baseline window with 1.9% of their tokens inside a session of 20 calls
+# or fewer; in the window that fired they ran 236 sessions of 21.3 calls each
+# with 10.6% inside 20 calls (4.3% inside 5). A call reads 0.26 on its
+# session's first turn and 0.84 by the fifth against 0.95 once the session is
+# warm, and that mix alone takes m31 from 0.9434 to 0.9231, which is 2 of its
+# 2.6 points. The warm share itself slid (0.9553 to 0.9426 at 21-plus calls,
+# 0.9722 to 0.9515 at 6 to 20), and four fleet-side prompt changes landed
+# inside the window: the 3-day token trial drops the skills menu from half the
+# plain-pi workers and compacts the other half earlier (#10444,
+# 2026-10-29T06:27Z, whose desk arm carried one call in the whole spend log
+# that day on another vendor, so the menu arm is the one that reached
+# minimax), AGENTS.md was cut to 1,498 words (#10561, 08:55Z), the Cursor and
+# Devin lanes were retired onto pi (#10580, 10:26Z) and the worker and
+# hand-off lanes moved seat (#10870, 10:50Z). The router sends the rows
+# unchanged: same api_base, no temperature, no timestamp. The floor is the
+# fresh 48h read (0.916) minus 2 points. The cost: a 2 to 5 point drift on
+# minimax now passes; one of the two big rows losing its cache outright still
+# takes the vendor to about 0.46 and fires, and the 1-hour paging rule covers a
+# total one. The trial's three days end 2026-11-01, and #11011 carries the
+# re-cut from the first 48h read after the menu returns to every worker.
 #
 # commandcode's floor is 6.4 points down, not 2 (fleet-ops#10894). The 48h read
 # was 0.886 (7d 0.908) on 118M tokens, with every row still reporting

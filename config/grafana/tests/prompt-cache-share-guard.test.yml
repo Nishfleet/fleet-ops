@@ -33,6 +33,12 @@
 #    the big row at 0.90 reads 0.861 and fires. Case 1 carries the silent
 #    half, the last case the firing half.
 #
+# 8. minimax on the shape that filed #10955: the 7d window holds warm days while
+#    the 48h window sits one-over the floor (0.9068 against 0.8968), so nothing
+#    fires, because the rule needs both windows under the floor. The same mix
+#    with the last two days slower reads 0.8768 over 48h and 0.8791 over 7d and
+#    fires, which is the half of the rule the issue came from.
+#
 # The alert name, `for` and labels here are the deployed ones, so a case that
 # fires here is a case Grafana calls Alerting.
 evaluation_interval: 12h
@@ -166,6 +172,52 @@ tests:
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
         values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: minimax
+
+  # minimax on the shape that filed #10955: the 7d window still holds warm days
+  # and the 48h window sits one-over the floor, so nothing fires. The 7d read is
+  # 0.9287 and the 48h read 0.9068 against the 0.8968 floor, and the rule needs
+  # both windows under the floor, which is what kept minimax silent on the days
+  # before the 48h read fell. The samples are listed out rather than expanded
+  # because the last two days run at a different rate, which the xN form cannot
+  # say.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0 10000000 20000000 30000000 40000000 50000000 60000000 70000000 80000000 90000000 100000000 110000000 120000000 130000000 140000000'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0 9375000 18750000 28125000 37500000 46875000 56250000 65625000 75000000 84375000 93750000 102818000 111886000 120954000 130022000'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The same mix with the last two days slower: the 48h read is 0.8768, two
+  # under the floor, and the 7d read 0.8791 is under it too, so the vendor
+  # fires. This is the half of the rule that filed #10955, where the 48h window
+  # held the storm days, and it pins the 48h span against the deployed floor.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0 10000000 20000000 30000000 40000000 50000000 60000000 70000000 80000000 90000000 100000000 110000000 120000000 130000000 140000000'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0 8800000 17600000 26400000 35200000 44000000 52800000 61600000 70400000 79200000 88000000 96768000 105536000 114304000 123072000'
       - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
