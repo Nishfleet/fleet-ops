@@ -7,18 +7,12 @@
 # The pair below is what puts basic auth in front of Alertmanager's API. While
 # either half is missing the prometheus config install is skipped, so alerting
 # keeps working on the old loopback-only options and the run fails here, naming
-# the two paths. Placing them is one root step: the runbook in the W15 proof
-# folder.
+# the two paths. alerting.yml makes them on the first run, so this fails only when that
+# step failed.
 - name: Fail when the alertmanager API credential pair is not in place
   ansible.builtin.assert:
     that: alertmanager_auth_ready | default(false) | bool
-    fail_msg: "Alertmanager's API is still unauthenticated and the prometheus config was not installed: /etc/alertmanager/web.yml and /etc/prometheus/alertmanager_password must both exist, owned by root or prometheus and not readable by nish. Place both as one root step (the runbook in the W15 proof folder), then re-run the deploy."
-    quiet: true
-
-- name: Fail when the Command Code login could not be set up
-  ansible.builtin.assert:
-    that: commandcode_problems | default([]) | length == 0
-    fail_msg: "Command Code login: {{ commandcode_problems | default([]) | join('; ') }}. cmd keeps whatever login it has; the rest of this run completed."
+    fail_msg: "Alertmanager's API is still unauthenticated and the prometheus config was not installed: /etc/alertmanager/web.yml and /etc/prometheus/alertmanager_password must both exist, owned by root or prometheus and not readable by nish. ansible/tasks/alerting.yml makes both on the first run; check that run's errors."
     quiet: true
 
 - name: Fail when a live digest prompt differs from config/hermes/

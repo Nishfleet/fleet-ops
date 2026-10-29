@@ -30,7 +30,7 @@
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
   scheduled tasks), `quality-bar.md` and `incidents/` (one blameless
   write-up per outage, named `YYYY-MM-DD-<slug>.md`).
-- `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
+- `template/` — `agents/` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](../template/README.md)).
 - `prompts/` — Pi agent prompts fed to workers on stdin.
@@ -69,8 +69,7 @@
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
-  under `.pi/agent/sessions`, `.cursor/chats/*/` and
-  `.local/state/pi-issues`.
+  under `.pi/agent/sessions` and `.local/state/pi-issues`.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml` cites it for the App's grant).
 - `.agents/skills/verify-fleet/` — the verify-fleet skill. `SKILL.md` says how
@@ -132,50 +131,26 @@
     `/etc/systemd/system/tincan-listen-claude-vps.service` to the `retired`
     list in `ansible/host.yml` (that task, not the file deletion, removes the
     installed copy on the next config run), then `sudo systemctl daemon-reload`.
-- `systemd/tincan-listen-command-code.service`,
-  `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
-  `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
-  `tincan-listen-pi.service` and
-  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
-  and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
-  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
-  OpenCode and the paid pi seat, each reading its own
+- `rootfs/etc/systemd/system/tincan-listen-pi.service` and
+  `tincan-listen-fleet-worker.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the two Tincan wake
+  services and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service
+  runs `tincan listen` for one pi worker, reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
-  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
-  router with a virtual key of its own, kept in the fleet's local seat directory
-  (worker-cheap only, capped per day), minted with `POST /key/generate` like
-  every other consumer credential, because a prompt-injected message in that
-  lane could make the run print its environment. The router's master key is not
-  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
-  daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
-  The six wake services were hand-placed regular files under
-  `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
-  them; the files here are the bytes that ran before, and `fleet-sync.service`
-  step 2j links each one on every deploy (the `default.target.wants` links
-  already point at these paths, so a hand disable stays off: step 2j has no
-  `enable` line). The desk daemon is
+  `~/.local/state/tincan-listen-<agent>`. Both are system units whose lock
+  contract is `config/agent-locks.json` (fleet-ops#9977). The Devin, Cursor,
+  OpenCode and command-code listeners were deleted when those lanes retired
+  (nish-vault#44 item 9). `cua-desk-daemon.service` is the Cua daemon the desk
+  agent runs on, with `CUA_MESH=prefer` and the seat b env file; it is
   root-owned, installed from `rootfs/etc/systemd/user/` by
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
-  bundled `cua` binary; step 2k retires its hand-placed copy once the installed
-  one is there, and repoints its wants link at the installed file so the link
-  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
-  are enabled already (the wants link names the unit, and step 2j keeps the six
-  wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. The OpenCode lane will not start without its own key file, so mint
-  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
-  limit) into the fleet's seat directory before its first start, the way the
-  Cursor lane's seat file is provisioned: a missing file fails the unit and
-  pages, which is the point, because the lane has no fallback to the admin key.
+  bundled `cua` binary. Run one by hand with `systemctl --user start <unit>`: all
+  three are enabled already, and a unit edit applies at that unit's next restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-command-code.service`
-  `systemctl --user disable --now tincan-listen-cursor-vps.service`
-  `systemctl --user disable --now tincan-listen-devin-vps.service`
   `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-opencode.service`
   `systemctl --user disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
-  Delete one of the six wake services by removing its name from
-  `fleet-sync.service` step 2j, its file here and the live link, then
+  Delete a wake service by deleting its file here and the installed copy, then
   `systemctl --user daemon-reload`. Delete the desk daemon with
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
@@ -223,21 +198,16 @@
   Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
   `systemctl --user disable --now fleet-hermes-xai-login-check.timer
   fleet-hermes-xai-login-check.path` and delete the files.
-- `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` sets `UMask=0077` on
-  the Devin Tincan listener (unit file moved into `systemd/` with fleet-ops#10133),
-  so its session-text output files are owner-only and the drop-in applies on every
-  deploy. Applies at the next restart.
-  That drop-in covers the listener only. The Devin CLI runs in two more places,
-  and both started it group-writable: under the `netcup-agent` runners at the
-  units' 0022, which made a new log group-readable, and in nish's login shells
-  at `pam_umask`'s 0002, which made it group-writable (audit W1a,
-  `nish-vault#30`).
+- Session output files stay owner-only. The retired Devin listener's own drop-in
+  went with its unit, but the audit it came from (W1a, `nish-vault#30`) still
+  applies: the vendor CLIs run under the `netcup-agent` runners at the units'
+  0022 and in nish's login shells at `pam_umask`'s 0002.
   `rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-umask.conf`
   sets `UMask=0077` for every `netcup-agent` runner — a prefix drop-in, because
   their unit files come from the runner's own `svc.sh` — and
   `rootfs/etc/zsh/zprofile` sets `umask 077` for nish's login shells, which is
   how sshd and tmux start one. Both apply at the next runner restart and the
-  next login. The check after a fresh CLI run: `find ~/.local/share/devin
+  next login. The check after a fresh CLI run: `find ~/.local/state ~/.local/share
   -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
   always shows mode 777, so it is excluded).
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan

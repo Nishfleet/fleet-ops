@@ -252,12 +252,35 @@
       - "{{ nish_home }}/.local/bin/CHANGELOG.md"
       - "{{ nish_home }}/.local/bin/LICENSE"
       - "{{ nish_home }}/.local/bin/share"
-      # The hand-placed Syncthing binary (#10844): the Ubuntu build has no
-      # `upgrade` command, so the daily update's self-upgrade step failed every
-      # night. Syncthing's own apt repository installs the packaged build, which
-      # the unit runs from /usr/bin now. This copy comes first on PATH, so
-      # leaving it would answer `syncthing --version` with the old build and
-      # hide the package from the update run.
+      # The four CLI listener lanes (#44 item 9): the repo stopped shipping their
+      # units with the lanes, so the installed copy and its drop-in directory,
+      # the user-scope links step 2j of fleet-sync.service made, and the enable
+      # links nish's user manager holds all go. Left behind, the /etc copies fail
+      # the drift check and the dangling user links fail the LINK-GUARD pass. The
+      # tasks above stop and disable both scopes first. The devin drop-in is the
+      # one hand `ln -s` in that set.
+      - /etc/systemd/system/tincan-listen-command-code.service
+      - /etc/systemd/system/tincan-listen-command-code.service.d
+      - /etc/systemd/system/tincan-listen-cursor-vps.service
+      - /etc/systemd/system/tincan-listen-cursor-vps.service.d
+      - /etc/systemd/system/tincan-listen-devin-vps.service
+      - /etc/systemd/system/tincan-listen-devin-vps.service.d
+      - /etc/systemd/system/tincan-listen-opencode.service
+      - /etc/systemd/system/tincan-listen-opencode.service.d
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-command-code.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-devin-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-devin-vps.service.d/80-hardening.conf"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-opencode.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-command-code.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-cursor-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-devin-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-opencode.service"
+      # The OpenCode managed config: it set chrome-devtools for the opencode CLI
+      # (agent-policy.yml no longer writes it), and no reader is left.
+      - /etc/opencode/opencode.json
+      # Retired: the unit runs the packaged /usr/bin/syncthing now, and this
+      # copy comes first on PATH (#10844).
       - "{{ nish_home }}/.local/bin/syncthing"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
@@ -307,16 +330,10 @@
       - /usr/bin/google-chrome
       - --no-usage-statistics
       - --no-performance-crux
-    chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
     drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
-    drive_mcp_servers: "{{ {'drive': drive_mcp_entry | combine({'args': drive_mcp_words[1:]})} }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
-    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
-    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
-    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
     # when it is missing; the Redis requirepass fragment and the proxy env file are rendered
     # from it on every run, so the two cannot differ. Deleting the file mints a new password,
@@ -332,8 +349,6 @@
       - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
       - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
-    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
-    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - ansible.builtin.import_tasks: tasks/install-config.yml

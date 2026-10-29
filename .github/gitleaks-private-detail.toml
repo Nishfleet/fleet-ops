@@ -112,15 +112,15 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
-description = "The six Tincan wake services and the Cua desk daemon are user units whose ExecStart=, Environment= and EnvironmentFile= lines name the tincan and vendor binaries, each listener's own config and prompt, and the cursor listener's seat file; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Only those paths are allowed, so a new one in these files still fails the scan. The desk daemon lived at systemd/ in this PR's first commit and moved under rootfs/etc/systemd/user/ (fleet-ops#10140), and a PR scan reads every commit"
+description = "The Tincan wake services and the Cua desk daemon are user units whose ExecStart=, Environment= and EnvironmentFile= lines name the tincan and vendor binaries and each listener's own config and prompt; a unit line cannot carry an inline gitleaks:allow comment, and %h is not the idiom the live Tincan units use. Only those paths are allowed, so a new one in these files still fails the scan. The desk daemon lived at systemd/ in this PR's first commit and moved under rootfs/etc/systemd/user/ (fleet-ops#10140), and a PR scan reads every commit"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = [
-  '''(^|/)systemd/tincan-listen-(command-code|cursor-vps|devin-vps|fleet-worker|opencode|pi)\.service$''',
+  '''(^|/)systemd/tincan-listen-(fleet-worker|pi)\.service$''',
   '''(^|/)systemd/cua-desk-daemon\.service$''',
   '''(^|/)rootfs/etc/systemd/user/cua-desk-daemon\.service$''',
 ]
 regexes = [
-  '''^home/nish/\.local/bin/(tincan|command-code|cursor-agent|devin|pi|opencode)$''',
+  '''^home/nish/\.local/bin/(tincan|pi)$''',
   '''^home/nish/\.config/tincan/[a-z-]+\.json$''',
   '''^home/nish/\.config/tincan/prompts/[a-z-]+\.txt$''',
   '''^\.config/fleet-ops/seats$''',
@@ -128,7 +128,7 @@ regexes = [
 condition = "AND"
 
 [[allowlists]]
-description = "The unit-key test reads the wake units back, so it spells out one listener's home and TINCAN_CONFIG path in an expected string and asserts the cursor and desk seat files the units load (fleet-ops#10133, #10140). Only those three literals are allowed in this file"
+description = "The unit-key test reads the wake units back, so it spells out one listener's home and TINCAN_CONFIG path in an expected string and asserts the desk seat file the desks load (fleet-ops#10133, #10140). Only those three literals are allowed in this file"
 targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''^tests/test_systemd_unit_keys\.py$''']
 regexes = [
