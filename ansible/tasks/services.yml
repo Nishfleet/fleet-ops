@@ -1,0 +1,88 @@
+# The daily drift timer is gone (fleet-ops#10457): the host changes when main
+# changes, through deploy-box.yml, and after a boot. Stopped and disabled
+# here, and its file is in `retired`. A box where it is already gone is fine.
+- name: Stop and disable the retired daily host config timer
+  ansible.builtin.systemd_service:
+    name: fleet-host-config.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+
+# A reboot stops tether's Cua Space (Docker restart policy `no`) and its next
+# start publishes a new port, so the env file and the nft rule must be
+# rendered again: this runs this very playbook once after every boot.
+# `enabled` only: a start now would fire the elapsed boot timer at once.
+- name: Enable the host config run after boot
+  ansible.builtin.systemd_service:
+    name: fleet-host-config-boot.timer
+    enabled: true
+    daemon_reload: true
+  # Under --check the copy above did not really install the timer yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# Starting the timer only schedules ansible/update.yml; it never runs it now.
+- name: Enable the daily update
+  ansible.builtin.systemd_service:
+    name: fleet-update.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The deploy request watcher. Its mailbox files come from tmpfiles.d, created
+# by the handler flush above, so enabling it never fires on creation.
+- name: Enable the deploy request watcher
+  ansible.builtin.systemd_service:
+    name: fleet-deploy.path
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
+# fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
+# once; a later edit to the unit file is staged until the next restart. It
+# replaces podman-eval, which cannot run the eval (Inspect needs Docker Engine
+# 24.0.6 or newer). The tmpfiles entry and the unit were installed above, and
+# the queued handlers ran, before this point.
+- name: Enable the rootless Docker engine for the drive eval
+  ansible.builtin.systemd_service:
+    name: dockerd-eval.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  register: dockerd_eval_up
+  # A unit that fails to start must not stop the rest of the host config, so
+  # the error is not fatal here; the task below puts it in this run's output.
+  ignore_errors: true
+
+# The engine is one unit among many: the eval's own run fails until it is
+# fixed, and a failed unit is listed by fleet-unit-failed@.service.
+- name: Report a rootless Docker engine that did not start
+  ansible.builtin.debug:
+    msg: "dockerd-eval.service did not start ({{ dockerd_eval_up.msg | default('no message') | trim }}). drive's agent eval fails until it does."
+  when: dockerd_eval_up is failed
+
+# The retired podman engine: stopped and disabled, and its unit file is in
+# `retired` below. A host where the unit is already gone is not an error.
+- name: Stop and disable the retired rootless podman socket
+  ansible.builtin.systemd_service:
+    name: podman-eval.service
+    enabled: false
+    state: stopped
+  register: podman_eval_off
+  failed_when:
+    - podman_eval_off.failed | default(false)
+    - "'Could not find' not in (podman_eval_off.msg | default(''))"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The system podman API socket: every podman call in this repo and in update.yml
+# runs as nish against the user manager's socket, and rootful podman needs no
+# daemon, so nothing on this box uses it. Masked, so the listener cannot return at
+# boot or on a package upgrade; `systemctl unmask podman.socket` puts it back.
+- name: Mask the unused root podman API socket
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    state: stopped
+    masked: true

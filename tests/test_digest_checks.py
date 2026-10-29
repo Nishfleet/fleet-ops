@@ -10,12 +10,32 @@ canonical prompts under config/hermes/ honest:
 - no command uses a bare bracket test, which the guard cannot resolve,
 - the stored-item command, run against a fake gh and a fake notepad, classifies
   each stored item the way the reply rules say,
+- the stored-item command discovers every open issue labelled
+  needs-nish-decision from the repositories it reads, stores each one, and
+  prints WAITING-UNREAD for a repository whose list could not be read, so a
+  labelled decision can never be missed by a title judgement
+  (fleet-ops#9741),
+- the waiting step runs no command of its own: the label alone decides, and a
+  stored issue whose label was removed prints UNLABELLED and drops out
+  (fleet-ops#9741),
+- a repository with issues enabled and no labelled issue reads as empty, not as
+  unreadable, and stores no key for it, so a healthy repository cannot flood the
+  reply with a false unread line (fleet-ops#9741),
 - a stored broken item is classified from that workflow's own latest run on
   main, read directly, so a busy main branch cannot push the workflow out of a
   run window and turn a real status into an unreadable one (fleet-ops#9902),
 - a stored broken item whose latest run passed before the digest window started
   is dropped as STALE and never reported as newly fixed, because a pass from
   days earlier is not a repair that happened now (fleet-ops#9924),
+- a stored wait item closed as not planned is never reported as FIXED, so a
+  decision Nish declined is not shipped to him as a fix (fleet-ops#10289),
+- the evening site check stores a timestamped site_checked row on every run, so
+  an audit can verify the nightly publish claim after the fact, and the reply
+  carries one short line when that row could not be saved (fleet-ops#9862),
+- and the evening site check never writes over a store it could not read, so a
+  run that reads nothing leaves every stored wait and broken item alone, and it
+  reports STORED-SAVE-FAILED instead of claiming the row was saved
+  (fleet-ops#9862),
 - ansible/host.yml applies the prompts to the live jobs,
 - and it deletes the named retired jobs from the same cron store, so a proof job
   whose issue has closed stops existing, while a fresh one is left alone
@@ -30,6 +50,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MORNING = ROOT / "config/hermes/digest-morning.md"
@@ -71,14 +92,15 @@ def test_shipped_count_has_no_command_substitution_in_its_loop():
 
 
 def test_host_yml_applies_the_prompts_to_the_live_jobs():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "config/hermes/" in text
     assert "digest-morning" in text and "digest-evening" in text
     assert "- cron" in text and "- edit" in text and "- --prompt" in text
 
 
 def test_ci_runs_this_file():
-    assert "tests/test_digest_checks.py" in CI.read_text()
+    # ci.yml finds every test under tests/ (fleet-ops#10721), so this file runs without being named there.
+    assert re.search(r"pytest\b[^\n]*\stests(\s|$)", CI.read_text()), "ci.yml has no step that runs pytest on the whole tests/ directory"
 
 
 FAKE_GH = """#!/usr/bin/env python3
@@ -86,7 +108,35 @@ import json, os, sys
 a = sys.argv[1:]
 d = json.load(open(os.environ["FAKE_GH"]))
 if a[:2] == ["repo", "list"]:
-    print("\\n".join(d["repos"]))
+    if d.get("failrepos"):
+        print("the repositories could not be read", file=sys.stderr)
+        sys.exit(1)
+    repos = d["repos"]
+    if "--jq" in a:
+        jq = a[a.index("--jq") + 1]
+        if "hasIssuesEnabled" in jq:
+            repos = [r for r in repos if r not in d.get("noissues", [])]
+        print("\\n".join(repos))
+    else:
+        print(json.dumps([{"name": r, "hasIssuesEnabled": r not in d.get("noissues", [])} for r in repos]))
+elif a[:2] == ["issue", "list"]:
+    repo = a[a.index("--repo") + 1]
+    if repo.split("/")[-1] in d.get("faillist", []):
+        print("the repository could not be read", file=sys.stderr)
+        sys.exit(1)
+    if repo.split("/")[-1] in d.get("silentfail", []):
+        sys.exit(1)
+    out = []
+    for key, obj in d["issues"].items():
+        if not key.startswith(repo + "#"):
+            continue
+        if obj.get("state") != "OPEN":
+            continue
+        if "needs-nish-decision" not in [x["name"] for x in obj.get("labels", [])]:
+            continue
+        num = int(key.rsplit("#", 1)[1])
+        out.append({"number": num, "title": obj.get("title", "issue %d" % num), "url": obj.get("url", ""), "labels": obj.get("labels", [])})
+    print(json.dumps(out))
 elif a[:2] == ["issue", "view"]:
     key = a[a.index("--repo") + 1] + "#" + a[2]
     if key not in d["issues"]:
@@ -109,6 +159,8 @@ a = sys.argv[1:]
 if a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "get":
     sys.stdout.write(open(os.environ["FAKE_STORE"]).read())
 elif a[:3] == ["cron", "notepad", "3acce3a945cb"] and a[3] == "set":
+    if os.environ.get("FAKE_SET_FAIL"):
+        sys.exit(1)
     open(os.environ["FAKE_SAVED"], "w").write(a[5])
 else:
     sys.exit(2)
@@ -123,7 +175,7 @@ def _fake_box(tmp_path, gh, store):
     if shutil.which("jq") is None:
         pytest.skip("jq is not installed")
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(exist_ok=True)
     for name, body in (("gh", FAKE_GH), ("hermes", FAKE_HERMES)):
         (bindir / name).write_text(body)
         (bindir / name).chmod(0o755)
@@ -146,8 +198,8 @@ def _run_2a(prompt, tmp_path, gh, store):
     return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
 
 
-def _issue(state, *labels):
-    return {"state": state, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
+def _issue(state, *labels, state_reason="COMPLETED"):
+    return {"state": state, "stateReason": state_reason if state == "CLOSED" else None, "labels": [{"name": x} for x in labels], "url": "https://example.com/i"}
 
 
 def _run_row(conclusion, name, days_ago=1):
@@ -168,6 +220,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
             "Nishfleet/alpha#1": _issue("CLOSED", "needs-nish-decision"),
             "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
             "Nishfleet/alpha#3": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#5": _issue("OPEN", "priority-now"),
         },
         "runs": {
             "Nishfleet/alpha": [
@@ -194,6 +247,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "open|needs-nish-decision",
         "wait:alpha#3": "open|needs-nish-decision",
         "wait:alpha#4": "open|needs-nish-decision",
+        "wait:alpha#5": "open|needs-nish-decision",
         "broken:alpha:Midrun": "failure",
         "broken:alpha:Nullrun": "failure",
         "broken:alpha:Cancelled": "failure",
@@ -207,6 +261,7 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
         "wait:alpha#2": "CHANGED",
         "wait:alpha#3": "UNCHANGED",
         "wait:alpha#4": "UNKNOWN",
+        "wait:alpha#5": "UNLABELLED",
         "broken:alpha:Midrun": "UNCHANGED",
         "broken:alpha:Nullrun": "UNCHANGED",
         "broken:alpha:Cancelled": "UNCHANGED",
@@ -228,7 +283,247 @@ def test_stored_item_command_classifies_each_item(prompt, tmp_path):
     }
 
 
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_wait_item_closed_as_not_planned_is_not_reported_as_fixed(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {
+            "Nishfleet/alpha#7": _issue("CLOSED", "needs-nish-decision", state_reason="NOT_PLANNED"),
+            "Nishfleet/alpha#8": _issue("CLOSED", "needs-nish-decision", state_reason=None),
+        },
+        "runs": {"Nishfleet/alpha": []},
+    }
+    store = json.dumps({"wait:alpha#7": "open|needs-nish-decision", "wait:alpha#8": "open|needs-nish-decision"})
+    lines, saved = _run_2a(prompt, tmp_path, gh, store)
+    assert "ROW wait:alpha#7 NOT-PLANNED https://example.com/i" in lines
+    assert "ROW wait:alpha#8 NOT-PLANNED https://example.com/i" in lines
+    assert not any(" FIXED " in l for l in lines)
+    assert saved == {}
+
+
 _WINDOW_PUSHES = 30
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_issue_not_in_the_store_is_discovered_and_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "issues": {
+            "Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#8": _issue("OPEN", "needs-nish-decision", "priority-now"),
+            "Nishfleet/alpha#9": _issue("OPEN", "agent-ready"),
+            "Nishfleet/alpha#10": _issue("CLOSED", "needs-nish-decision"),
+        },
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = {l.split(" ")[1]: l.split(" ")[2] for l in lines if l.startswith("ROW ")}
+    assert rows["wait:alpha#6"] == "UNCHANGED"
+    assert rows["wait:alpha#7"] == "NEW"
+    assert rows["wait:alpha#8"] == "NEW"
+    assert not any("alpha#9" in l or "alpha#10" in l for l in lines)
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "UNCHANGED_TOTAL 1" in lines
+    assert saved == {
+        "wait:alpha#6": "open|needs-nish-decision",
+        "wait:alpha#7": "open|needs-nish-decision",
+        "wait:alpha#8": "open|needs-nish-decision,priority-now",
+    }
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_failure_is_loud_and_the_rest_is_stored(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "faillist": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert lines[-1] == "STORED-SAVED"
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_skips_a_repository_with_issues_disabled(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "quiet"],
+        "noissues": ["quiet"],
+        "faillist": ["quiet"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/quiet": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_is_loud(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD all" in lines
+    assert not any(l.startswith("ROW wait:") for l in lines)
+    assert saved == {}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_repo_list_failure_keeps_the_stored_items(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "failrepos": True,
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(
+        prompt,
+        tmp_path,
+        gh,
+        json.dumps({"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}),
+    )
+    assert "WAITING-UNREAD all" in lines
+    assert "ROW wait:alpha#6 UNCHANGED" in lines
+    assert "ROW broken:alpha:ci UNKNOWN" in lines
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision", "broken:alpha:ci": "failure"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_reads_a_repository_with_no_labelled_issue_as_empty(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "empty"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/empty": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert not any("WAITING-UNREAD" in l for l in lines)
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "silentfail": ["beta"],
+        "issues": {"Nishfleet/alpha#7": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#7 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#7": "open|needs-nish-decision"}
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_is_the_labelled_backlog_not_the_rows_it_printed(prompt, tmp_path):
+    labelled, stored = 68, 46
+    issues = {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in range(1, labelled + 1)}
+    store = {f"wait:alpha#{n}": "open|needs-nish-decision" for n in range(1, stored + 1)}
+    gh = {"repos": ["alpha"], "issues": issues, "runs": {"Nishfleet/alpha": []}}
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps(store))
+    assert lines[:2] == [f"WAITING_TOTAL {labelled}", f"WAITING_MORE {labelled - 2}"], lines[:2]
+    assert len([l for l in lines if " NEW " in l]) == labelled - stored
+    assert f"UNCHANGED_TOTAL {stored}" in lines
+    assert len(saved) == labelled
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_carries_no_overflow_when_the_whole_backlog_fits(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {
+            "Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision"),
+            "Nishfleet/alpha#2": _issue("OPEN", "needs-nish-decision", "priority-now"),
+        },
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert lines[0] == "WAITING_TOTAL 2", lines
+    assert not any(l.startswith("WAITING_MORE") for l in lines), lines
+    assert len(saved) == 2
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_count_fails_loudly_when_a_repository_could_not_be_read(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha", "beta"],
+        "faillist": ["beta"],
+        "issues": {"Nishfleet/alpha#1": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": [], "Nishfleet/beta": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING_COUNT FAILED" in lines, lines
+    assert not any(l.startswith("WAITING_TOTAL") or l.startswith("WAITING_MORE") for l in lines), lines
+    assert "WAITING-UNREAD beta" in lines
+    assert "ROW wait:alpha#1 NEW https://example.com/i" in lines
+    assert saved == {"wait:alpha#1": "open|needs-nish-decision"}
+
+
+def test_the_reply_copies_the_printed_waiting_count():
+    for prompt in (MORNING, EVENING):
+        text = prompt.read_text()
+        step = next(l for l in text.splitlines() if l.startswith("3 WAITING ON NISH"))
+        assert "copied exactly from that WAITING_MORE line" in step, prompt.name
+        assert "never count the ROW lines" in step, prompt.name
+        assert "never write the WAITING_TOTAL number" in step, prompt.name
+        assert "WAITING_COUNT FAILED" in step, prompt.name
+        assert "Never show the count of labelled issues" not in text, prompt.name
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_the_waiting_counts_never_reach_the_stored_object(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in (1, 2, 3)},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING_TOTAL 3" in lines, lines
+    assert not set(saved) & {"waiting", "wfail"}, saved
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_waiting_discovery_names_a_stored_issue_once(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {"Nishfleet/alpha#6": _issue("OPEN", "needs-nish-decision")},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps({"wait:alpha#6": "open|needs-nish-decision"}))
+    rows = [l for l in lines if l.startswith("ROW wait:alpha#6 ")]
+    assert rows == ["ROW wait:alpha#6 UNCHANGED"]
+    assert saved == {"wait:alpha#6": "open|needs-nish-decision"}
+
+
+def test_both_digests_run_the_same_waiting_discovery():
+    segs = []
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        segs.append(seg[:seg.index("; done)") + len("; done)")])
+    assert segs[0] == segs[1]
+
+
+def test_waiting_discovery_loop_has_no_command_substitution_in_its_body():
+    for prompt in (MORNING, EVENING):
+        line = next(x for x in prompt.read_text().splitlines() if "D=$(RL=" in x)
+        seg = line[line.index("D=$(RL="):]
+        body = seg[seg.index("do "):seg.index("; done")]
+        assert "$(" not in body, prompt.name
+
+
+def test_the_waiting_discovery_command_is_the_only_labelled_sweep():
+    for prompt in (MORNING, EVENING):
+        assert prompt.read_text().count("--label needs-nish-decision --state open") == 1, prompt.name
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
@@ -316,6 +611,22 @@ def test_stored_item_command_writes_nothing_when_the_store_is_unreadable(prompt,
     assert saved is None
 
 
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_stored_item_command_carries_the_site_checked_row(prompt, tmp_path):
+    store = json.dumps(
+        {
+            "site": "200|2026-10-15",
+            "site_checked": "200|2026-10-15|2026-10-15T20:00:00Z",
+        }
+    )
+    lines, saved = _run_2a(prompt, tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
+    assert "STORED-SAVED" in lines
+    assert saved == {
+        "site": "200|2026-10-15",
+        "site_checked": "200|2026-10-15|2026-10-15T20:00:00Z",
+    }
+
+
 def test_shipped_count_command_prints_a_total_or_fails_loudly(tmp_path):
     gh = {"repos": ["alpha", "beta"], "issues": {}, "runs": {}}
     env = _fake_box(tmp_path, gh, "{}")
@@ -344,47 +655,119 @@ else:
 _FEED = "<rss><channel><lastBuildDate>Thu, 15 Oct 2026 02:00:00 +0000</lastBuildDate><item><pubDate>Thu, 15 Oct 2026 02:00:00 +0000</pubDate></item></channel></rss>"
 
 
-def _run_2b(tmp_path, store, code, feed):
+def _run_2b(tmp_path, store, code, feed, set_fails=False):
     env = _fake_box(tmp_path, {"repos": [], "issues": {}, "runs": {}}, store)
     (tmp_path / "bin/curl").write_text(FAKE_CURL)
     (tmp_path / "bin/curl").chmod(0o755)
     env = {**env, "FAKE_CODE": code, "FAKE_FEED": feed, "TZ": "UTC"}
+    if set_fails:
+        env["FAKE_SET_FAIL"] = "1"
+    lo = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     r = subprocess.run(["bash", "-c", _site_command()], env=env, capture_output=True, text=True, timeout=60)
+    hi = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=1)
     saved = pathlib.Path(env["FAKE_SAVED"])
-    return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None)
+    return r.stdout.splitlines(), (json.loads(saved.read_text()) if saved.exists() else None), (lo, hi)
 
 
 def _site_command():
     text = EVENING.read_text()
-    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); test -z \"$R\" && R='{}'; W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
+    start = text.index("R=$(hermes cron notepad 3acce3a945cb get sent); W=$(printf '%s' \"$R\" | jq -c 'select(type==\"object\")|del(.inish)')")
     return text[start:text.index("\n", start)]
 
 
+_STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def _checked(saved, window):
+    parts = saved["site_checked"].split("|")
+    assert len(parts) == 3 and _STAMP.fullmatch(parts[2]), f"site_checked is not code|edition|UTC stamp: {saved['site_checked']!r}"
+    when = datetime.datetime.strptime(parts[2], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    lo, hi = window
+    assert lo <= when <= hi, f"site check timestamp {parts[2]} is outside the run window {lo.isoformat()}..{hi.isoformat()}"
+    return parts[0], parts[1]
+
+
+def _without_checked(saved):
+    return {k: v for k, v in saved.items() if k != "site_checked"}
+
+
 def test_site_check_stores_the_newest_edition_date(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"inish": "200|2026-09-29", "wait:a#1": "open|x"}), "200", _FEED)
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"inish": "200|2026-09-29", "wait:a#1": "open|x"}), "200", _FEED)
     assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVED"]
-    assert saved == {"wait:a#1": "open|x", "site": "200|2026-10-15"}
+    assert _without_checked(saved) == {"wait:a#1": "open|x", "site": "200|2026-10-15"}
+    assert _checked(saved, window) == ("200", "2026-10-15")
 
 
 def test_site_check_with_the_same_edition_is_unchanged(tmp_path):
-    lines, _ = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
-    assert lines[0] == "ROW site UNCHANGED 200|2026-10-15"
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-15"}), "200", _FEED)
+    assert lines == ["ROW site UNCHANGED 200|2026-10-15", "STORED-SAVED"]
+    assert _without_checked(saved) == {"site": "200|2026-10-15"}
+    assert _checked(saved, window) == ("200", "2026-10-15")
 
 
-def test_site_check_without_a_feed_date_is_unknown_and_saves_nothing(tmp_path):
-    lines, saved = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14"}), "200", "<html></html>")
-    assert lines == ["ROW site UNKNOWN"]
+def test_site_check_without_a_feed_date_still_stores_a_checked_row(tmp_path):
+    lines, saved, window = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14"}), "200", "<html></html>")
+    assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
+    assert _without_checked(saved) == {"site": "200|2026-10-14"}
+    assert _checked(saved, window) == ("200", "none")
+
+
+def test_site_check_with_a_failing_page_still_stores_a_checked_row(tmp_path):
+    lines, saved, window = _run_2b(tmp_path, "{}", "500", _FEED)
+    assert lines == ["ROW site UNKNOWN", "STORED-SAVED"]
+    assert saved.keys() == {"site_checked"}
+    assert _checked(saved, window) == ("500", "none")
+
+
+def test_site_check_stores_nothing_when_the_store_is_unreadable(tmp_path):
+    lines, saved, _ = _run_2b(tmp_path, "not json", "200", _FEED)
+    assert lines == ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]
     assert saved is None
 
 
-def test_site_check_with_a_failing_page_is_unknown(tmp_path):
-    lines, saved = _run_2b(tmp_path, "{}", "500", _FEED)
-    assert lines == ["ROW site UNKNOWN"]
+def test_site_check_stores_nothing_when_the_store_read_returns_nothing(tmp_path):
+    lines, saved, _ = _run_2b(tmp_path, "", "200", _FEED)
+    assert lines == ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]
     assert saved is None
+
+
+def test_site_check_reports_a_failed_save(tmp_path):
+    lines, saved, _ = _run_2b(tmp_path, json.dumps({"site": "200|2026-10-14", "wait:a#1": "open|x"}), "200", _FEED, set_fails=True)
+    assert lines == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVE-FAILED"]
+    assert saved is None
+
+
+def test_site_check_reports_the_page_result_even_when_the_store_was_not_read(tmp_path):
+    for code, feed, rows in (
+        ("200", _FEED, ["ROW site UNSTORED 200|2026-10-15", "STORED-UNREADABLE"]),
+        ("500", _FEED, ["ROW site UNKNOWN", "STORED-UNREADABLE"]),
+        ("200", "<html></html>", ["ROW site UNKNOWN", "STORED-UNREADABLE"]),
+    ):
+        lines, saved, _ = _run_2b(tmp_path, "not json", code, feed)
+        assert lines == rows, (code, lines)
+        assert saved is None
+
+
+def test_the_evening_sequence_carries_the_checked_row_from_2a_into_2b(tmp_path):
+    gh = {"repos": [], "issues": {}, "runs": {}}
+    two_a, stored_after_2a = _run_2a(EVENING, tmp_path, gh, "{}")
+    assert two_a == ["WAITING_TOTAL 0", "UNCHANGED_TOTAL 0", "STORED-SAVED"], two_a
+    assert stored_after_2a == {}
+    (tmp_path / "bin/curl").write_text(FAKE_CURL)
+    (tmp_path / "bin/curl").chmod(0o755)
+    env = {**_fake_box(tmp_path, gh, json.dumps(stored_after_2a)), "FAKE_CODE": "200", "FAKE_FEED": _FEED, "TZ": "UTC"}
+    lo = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    out = subprocess.run(["bash", "-c", _site_command()], env=env, capture_output=True, text=True, timeout=60)
+    hi = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=1)
+    saved = json.loads(pathlib.Path(env["FAKE_SAVED"]).read_text())
+    assert out.stdout.splitlines() == ["ROW site CHANGED 200|2026-10-15", "STORED-SAVED"]
+    assert _checked(saved, (lo, hi)) == ("200", "2026-10-15")
 
 
 PRUNE = "Delete the retired jobs from Hermes' cron store"
 READ = "Read Hermes' scheduled jobs"
+REREAD = "Read Hermes' scheduled jobs again"
+GUARD = "Fail when the retired Hermes reminder job is still in the store"
 
 FAKE_CRON_STUB = """#!/usr/bin/env python3
 import json, os, sys
@@ -422,10 +805,13 @@ CRON_LIVE = [
     _job("b30761322118", "audit-claims", True, **_cron("30 8,20 * * *")),
     _job("783b31b9d5e5", "audit-urgent", True, **_cron("50 8,20 * * *")),
     _job("6362250bf181", "audit-file", True, **_cron("10 9,21 * * *")),
-    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
     _job("4231290e3e00", "sec-k3-key-renewal", True, **_once(400)),
     _job("1145b749d731", "sec-daily-summary", True, **_cron("0 21 * * *")),
     _job("33199b7bfff5", "sec-coordinator-backstop", True, **_cron("41 */6 * * *")),
+]
+
+CRON_RETIRED_REMINDER = [
+    _job("527a50bfda03", "remind-orchestrator-app", True, **_cron("0 10 * * *")),
 ]
 
 CRON_PROOF = [
@@ -452,7 +838,7 @@ CRON_KEPT = [
 
 
 def _retired_ids():
-    lines = HOST.read_text().splitlines()
+    lines = ansible_host.text().splitlines()
     out = []
     for line in lines[lines.index("    hermes_retired_jobs:") + 1 :]:
         if line.startswith("      #"):
@@ -464,7 +850,7 @@ def _retired_ids():
 
 
 def _task_text(name):
-    lines = HOST.read_text().splitlines()
+    lines = ansible_host.text().splitlines()
     start = lines.index(f"    - name: {name}")
     end = start + 1
     while end < len(lines) and not lines[end].startswith("    - "):
@@ -475,7 +861,7 @@ def _task_text(name):
     return block
 
 
-def _prune(tmp_path, jobs):
+def _prune(tmp_path, jobs, guard=False, retired=None):
     if shutil.which("ansible-playbook") is None:
         pytest.skip("ansible-playbook is not installed")
     stub = tmp_path / ".local/bin/hermes"
@@ -497,7 +883,7 @@ def _prune(tmp_path, jobs):
                 "  gather_facts: false",
                 "  vars:",
                 f"    nish_home: {tmp_path}",
-                f"    hermes_retired_jobs: {json.dumps(_retired_ids())}",
+                f"    hermes_retired_jobs: {json.dumps(_retired_ids() if retired is None else retired)}",
                 "    nish_env:",
                 f"      HOME: {tmp_path}",
                 f"      PATH: {stub.parent}:/usr/local/bin:/usr/bin:/bin",
@@ -506,6 +892,8 @@ def _prune(tmp_path, jobs):
                 "  tasks:",
                 *_task_text(READ),
                 *_task_text(PRUNE),
+                *(_task_text(REREAD) if guard else []),
+                *(_task_text(GUARD) if guard else []),
                 "",
             ]
         )
@@ -518,33 +906,51 @@ def _prune(tmp_path, jobs):
         text=True,
         timeout=300,
     )
-    assert run.returncode == 0, run.stdout + run.stderr
     left = json.loads(store.read_text())["jobs"] if store.exists() else None
-    return left, log.read_text().split()
+    if not guard:
+        assert run.returncode == 0, run.stdout + run.stderr
+    return left, log.read_text().split(), run.returncode, run.stdout + run.stderr
 
 
-def test_the_host_jobs_remove_the_proof_jobs_and_the_expired_one_shots(tmp_path):
-    assert _retired_ids() == [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
-    jobs, calls = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
-    assert sorted(calls) == sorted(job["id"] for job in CRON_PROOF + CRON_EXPIRED)
+def test_the_host_jobs_remove_the_retired_jobs_and_the_expired_one_shots(tmp_path):
+    retired = CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED
+    assert _retired_ids() == [job["id"] for job in retired]
+    jobs, calls, _, _ = _prune(tmp_path, CRON_LIVE + retired + CRON_KEPT)
+    assert sorted(calls) == sorted(job["id"] for job in retired)
     assert jobs == CRON_LIVE + CRON_KEPT
+
+
+def test_the_reminder_guard_passes_once_the_job_is_gone(tmp_path):
+    retired = CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED
+    jobs, calls, rc, out = _prune(tmp_path, CRON_LIVE + retired + CRON_KEPT, guard=True)
+    assert jobs == CRON_LIVE + CRON_KEPT
+    assert rc == 0, out
+
+
+def test_the_reminder_guard_fails_while_the_job_is_still_in_the_store(tmp_path):
+    wrong_id = [job["id"] for job in CRON_PROOF + CRON_EXPIRED]
+    jobs, calls, rc, out = _prune(tmp_path, CRON_LIVE + CRON_RETIRED_REMINDER + CRON_KEPT, guard=True, retired=wrong_id)
+    assert calls == []
+    assert [job for job in jobs if job["name"] == "remind-orchestrator-app"] == CRON_RETIRED_REMINDER
+    assert rc != 0
+    assert "hermes_retired_jobs" in out
 
 
 def test_the_host_jobs_leave_a_fresh_proof_job_alone(tmp_path):
     fresh = _job("444444444444", "tmp-10600-proof", True, **_once(0))
-    jobs, calls = _prune(tmp_path, CRON_LIVE + [fresh])
+    jobs, calls, _, _ = _prune(tmp_path, CRON_LIVE + [fresh])
     assert calls == []
     assert jobs == CRON_LIVE + [fresh]
 
 
 def test_the_host_jobs_remove_nothing_on_a_second_run(tmp_path):
-    jobs, _ = _prune(tmp_path, CRON_LIVE + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
-    again, calls = _prune(tmp_path, jobs)
+    jobs, _, _, _ = _prune(tmp_path, CRON_LIVE + CRON_RETIRED_REMINDER + CRON_PROOF + CRON_EXPIRED + CRON_KEPT)
+    again, calls, _, _ = _prune(tmp_path, jobs)
     assert calls == []
     assert again == jobs
 
 
 def test_the_host_jobs_remove_nothing_without_a_store(tmp_path):
-    jobs, calls = _prune(tmp_path, None)
+    jobs, calls, _, _ = _prune(tmp_path, None)
     assert calls == []
     assert jobs is None

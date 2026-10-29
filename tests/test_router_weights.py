@@ -4,18 +4,22 @@ key 2"), so one OpenCode Go ds41flash row per worker group carries a weight in
 config/litellm-proxy.yaml so simple-shuffle sends about a third of each worker
 group's picks to them, with no row removed or benched.
 
-Runs the real Router of the pinned LiteLLM v1.98.0 on the shipped worker rows
-(litellm/router_strategy/simple_shuffle.py:43-59 weights the pick only when the
-first healthy row has a weight, and reads a missing weight as 0) and counts
-2000 picks per group. Share = k*w / (k*w + n - k).
+Runs the real Router of the pinned proxy image's LiteLLM v1.105.0 on the shipped
+worker rows (litellm/router_strategy/simple_shuffle.py:43-59 weights the pick
+only when the first healthy row has a weight, and reads a missing weight as 0)
+and counts 2000 picks per group. Share = k*w / (k*w + n - k).
 """
 import asyncio
 import random
 import re
 from pathlib import Path
 
-import yaml
-from litellm import Router
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
+
+import yaml  # noqa: E402
+from litellm import Router  # noqa: E402
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml"
 PREFERRED = re.compile(r"^opencodego-ds41flash-worker-(capable|cheap)$")
