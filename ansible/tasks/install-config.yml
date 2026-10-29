@@ -126,6 +126,50 @@
     mode: preserve
   notify: Reload systemd
 
+# A review runner drop-in loads the reviewer App key, so a unit that can still take a
+# worker job is a second identity that can post an approval on its own PR
+# (fleet-ops#9521). GitHub routes a job by the runner's labels, and the labels live at
+# GitHub, not here: the technical lead adds `review` to netcup-agent-11 and -12 and drops
+# `agent` and `fleet-ops` from them by hand. Until that is done the two new drop-ins are
+# held back, so the unit keeps running as nish on the nish runner directory and no worker
+# job meets the reviewer key. The org endpoint is the one that lists these runners, the
+# same one update.yml counts them from, and it is read as nish because that is the login
+# the box's other GitHub reads use. No answer at all holds them back too: a check that
+# waves itself through when it cannot run is not a check (fleet-ops#10144).
+- name: Read the labels GitHub holds for the two new review runners
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv:
+      - gh
+      - api
+      - orgs/Nishfleet/actions/runners
+      - --paginate
+      - --jq
+      - '.runners[] | select(.name == "netcup-agent-11" or .name == "netcup-agent-12") | select(any(.labels[]; .name == "review") and all(.labels[]; .name != "agent" and .name != "fleet-ops")) | .name'
+  register: new_review_runner_labels
+  changed_when: false
+  ignore_errors: true
+
+# The copy above installs every drop-in rootfs/ ships, so the two new ones are taken back
+# here while their runner can still take a worker job. host.yml: copy never deletes, and
+# removing a live file is a reviewed PR that deletes it in rootfs/ and adds a
+# `state: absent` task for it, which is what this is. The reload the copy notified runs
+# after this task, so systemd forgets a held drop-in with it, and the unit reads the
+# drop-in at its next start, which the nightly update performs after it drains the
+# runners (fleet-ops#10898). A held drop-in leaves the unit inert as a review runner,
+# which is where the pool was before this change, and the drift check in
+# retired-and-drift.yml passes because a file the box does not have is not a hand install.
+- name: Hold the two new review runner drop-ins back until both are review-only
+  ansible.builtin.file:
+    path: /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf
+    state: absent
+  loop: [11, 12]
+  when: >-
+    new_review_runner_labels.rc | default(1) != 0
+    or (new_review_runner_labels.stdout_lines | default([]) | sort) != ['netcup-agent-11', 'netcup-agent-12']
+
 # fleet-update.service reads the healthchecks.io success-ping URL from a
 # root-only curl config; the URL is not named in the repo (fleet-ops#9965).
 - name: Make the directory for the update unit's root-only files
