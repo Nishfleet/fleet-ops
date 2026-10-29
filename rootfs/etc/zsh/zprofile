@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # Owner-only files for nish's login shells, which is how the Devin CLI and tmux
 # start on this box. pam_umask sets a session to 0002 (UMASK 022 in
 # /etc/login.defs with USERGROUPS_ENAB yes), so the CLI's run logs under
