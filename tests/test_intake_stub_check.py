@@ -4,14 +4,16 @@ serving fixture stubs and a fixture config.
 The real program runs in ci.yml with only the fleet-ops workflow token, so
 these cases pin what a live run cannot show: a full stub passes, a short stub
 fails naming the repo and the missing type, extra types are allowed, a stub
-with no pull_request_target trigger, one with the trigger but no types, and one
-in the list form of `on:` fail with their own reasons, a malformed stub fails
-with its line, a readable repo with no stub fails, a transport failure and a
-missing gh binary fail closed, a repo the token cannot read is named as not
-verified and skipped without masking a real failure elsewhere, a run that read
-no stub at all fails, an empty required list fails, the required list and the
-enrolled set both come from the run's base ref rather than from the checkout,
-and each repo's own stub is read from that repo's default branch.
+with no pull_request_target trigger, one with the trigger but no types, one with
+a types list of non-strings, and one in the list form of `on:` fail with their
+own reasons, a malformed stub fails with its line, a readable repo with no stub
+fails, a transport failure and a missing gh binary fail closed, a repo the token
+cannot read is named as not verified and skipped without masking a real failure
+elsewhere, an API state other than 404 fails closed instead of reading as one
+more unreadable repo, a run that read no stub at all fails, an empty required
+list fails, the required list and the enrolled set both come from the run's base
+ref rather than from the checkout, and each repo's own stub is read from that
+repo's default branch.
 """
 import base64
 import importlib.util
@@ -37,33 +39,48 @@ REF = "a" * 40
 ABSENT = "absent"
 
 GH = """#!/bin/bash
-p=$2
+p=$3
 name=${p#repos/Nishfleet/}; name=${name%%[/?]*}
 kind=repo
 case "$p" in */contents/*) kind=contents ;; esac
 for n in $TRANSPORT; do
   if [ "$name" = "$n" ]; then echo "gh: connection refused" >&2; exit 7; fi
 done
+for n in $FAILED; do
+  if [ "$name" = "$n" ]; then
+    printf 'HTTP/2.0 500 Internal Server Error\\r\\n\\r\\n{"message":"boom"}'
+    echo "gh: Internal Server Error (HTTP 500)" >&2
+    exit 1
+  fi
+done
+missing() {
+  printf 'HTTP/2.0 404 Not Found\\r\\n\\r\\n{"message":"Not Found","status":"404"}'
+  echo "gh: $1 (HTTP 404)" >&2
+  exit 1
+}
 for n in $PRIVATE; do
-  if [ "$name" = "$n" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+  if [ "$name" = "$n" ]; then missing "Not Found"; fi
 done
 if [ "$kind" = repo ]; then
-  printf '{"full_name":"Nishfleet/%s"}' "$name"
+  printf 'HTTP/2.0 200 OK\\r\\n\\r\\n{"full_name":"Nishfleet/%s"}' "$name"
   exit 0
 fi
 case "$p" in
-  *\\?ref=*) [ "$name" = fleet-ops ] || { echo "gh: No commit found for the ref (HTTP 404)" >&2; exit 1; } ;;
+  *\\?ref=*) [ "$name" = fleet-ops ] || missing "No commit found for the ref" ;;
 esac
 for n in $BADCONTENT; do
-  if [ "$name" = "$n" ]; then printf '{"encoding":"base64","content":"!!!"}'; exit 0; fi
+  if [ "$name" = "$n" ]; then
+    printf 'HTTP/2.0 200 OK\\r\\n\\r\\n{"encoding":"base64","content":"!!!"}'
+    exit 0
+  fi
 done
 case "$p" in
   *contents/config/intake-repos.json*)
-    [ -f "$CONFIGS/intake-repos.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    printf '{"encoding":"base64","content":"%s"}' "$(base64 -w0 "$CONFIGS/intake-repos.json" | fold -w 60 | jq -Rs . | tr -d '"')" ;;
+    [ -f "$CONFIGS/intake-repos.json" ] || missing "Not Found"
+    printf 'HTTP/2.0 200 OK\\r\\n\\r\\n{"encoding":"base64","content":"%s"}' "$(base64 -w0 "$CONFIGS/intake-repos.json" | fold -w 60 | jq -Rs . | tr -d '"')" ;;
   *contents/.github/workflows/agent-dispatch.yml*)
-    [ -f "$STUBS/$name.yml" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    printf '{"encoding":"base64","content":"%s"}' "$(base64 -w0 "$STUBS/$name.yml" | fold -w 60 | jq -Rs . | tr -d '"')" ;;
+    [ -f "$STUBS/$name.yml" ] || missing "Not Found"
+    printf 'HTTP/2.0 200 OK\\r\\n\\r\\n{"encoding":"base64","content":"%s"}' "$(base64 -w0 "$STUBS/$name.yml" | fold -w 60 | jq -Rs . | tr -d '"')" ;;
 esac
 """
 
@@ -79,6 +96,8 @@ def _stub_body(types):
         return "on:\n  pull_request_target:\n"
     if types == "empty":
         return "on:\n  pull_request_target:\n    types: []\n"
+    if types == "not-strings":
+        return "on:\n  pull_request_target:\n    types: [1]\n"
     return "on:\n  pull_request_target:\n    types: [%s]\n" % ", ".join(types)
 
 
@@ -99,8 +118,8 @@ def _load_program():
 def run(tmp_path, monkeypatch, capsys):
     """Call the real main() against fixture stubs, a fake gh and a fake config."""
 
-    def _run(stubs, repos, private=(), transport=(), bad_content=(), with_gh=True, dispatcher=NINE,
-             base_ref=None, base_repos=None, token="x"):
+    def _run(stubs, repos, private=(), transport=(), bad_content=(), failed=(), with_gh=True,
+             dispatcher=NINE, base_ref=None, base_repos=None, token="x"):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir(exist_ok=True)
         stubs_dir = tmp_path / "stubs"
@@ -123,6 +142,7 @@ def run(tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("PRIVATE", " ".join(private))
         monkeypatch.setenv("TRANSPORT", " ".join(transport))
         monkeypatch.setenv("BADCONTENT", " ".join(bad_content))
+        monkeypatch.setenv("FAILED", " ".join(failed))
         if token is None:
             monkeypatch.delenv("GH_TOKEN", raising=False)
         else:
@@ -196,6 +216,12 @@ def test_stub_in_the_list_form_of_on_fails_with_the_same_reason(run):
     assert "a pull_request_target trigger with no types list" in out
 
 
+def test_a_types_list_of_non_strings_fails_with_its_own_reason(run):
+    code, out, _ = run({"a": "not-strings"}, ["a"])
+    assert code == 1
+    assert "a pull_request_target.types that is not a list of event names" in out
+
+
 def test_malformed_stub_fails_with_its_line(run):
     code, out, _ = run({"a": "malformed"}, ["a"])
     assert code == 1
@@ -214,6 +240,14 @@ def test_readable_repo_with_no_stub_fails(run):
     assert code == 1
     assert "::error::Nishfleet/a: .github/workflows/agent-dispatch.yml gh api failed" in out
     assert "Not Found (HTTP 404)" in out
+
+
+def test_an_api_state_other_than_404_fails_closed_instead_of_skipping(run):
+    code, out, _ = run({"a": NINE, "b": NINE}, ["a", "b"], failed=["b"])
+    assert code == 1
+    assert ("::error::Nishfleet/b: the repo could not be read (gh api failed: gh: Internal Server Error "
+            "(HTTP 500)); failing closed") in out
+    assert "not verified" not in out
 
 
 def test_a_transport_failure_fails_closed(run):
@@ -319,10 +353,9 @@ def test_the_check_runs_in_ci_and_its_tests_are_discovered():
     ci = CI.read_text()
     assert "python3 tests/intake_stub_check.py" in ci
     assert "fleet-ops#9730" in ci
-    # The discovering step runs pytest over tests/, ignoring only the router tests: this module needs no ci.yml edit to run.
-    step = next(l for l in ci.splitlines() if " tests " in l and "pytest -q -p no:cacheprovider" in l)
-    assert "test_router_" in step
-    assert "test_intake_stub_check" not in step
+    discovering = next(l for l in ci.splitlines() if " tests " in l and "pytest -q -p no:cacheprovider" in l)
+    assert "test_router_" in discovering
+    assert "test_intake_stub_check" not in discovering
 
 
 def test_real_fleet_ops_config_and_dispatcher_are_accepted_offline():

@@ -7,6 +7,8 @@ review and no coordinator gate on risky PRs, because hold-risky is the only
 door into review-risky and a pull_request_target trigger fires only for the
 types its own repo's stub lists. Nothing checked the precondition: drive and
 siterep-public both shipped eight of the nine types (fleet-ops#9730).
+siterep-public is now enrolled and complete, and drive stays unenrolled, so this
+check reads neither as short.
 
 The required list and the enrolled set are both read from the run's base ref
 when one is given, so a PR cannot loosen the rules that judge it, the way
@@ -40,18 +42,35 @@ NOT_VERIFIED = "not verified: the CI token cannot read this repo (private or gon
 
 
 def _gh(path):
-    """`gh api <path>` as (parsed json, None) or (None, one-line notice)."""
+    """`gh api <path>` as (status, parsed json, None) or (status, None, notice).
+
+    `--include` puts the status on the first stdout line, so a caller can tell a
+    404 (this token cannot see the repo) from a 403 or a 5xx, which must fail the
+    run instead of reading as one more unreadable repo.
+    """
     try:
-        done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+        done = subprocess.run(["gh", "api", "--include", path], capture_output=True, text=True)
     except FileNotFoundError:
-        return None, "gh is not on PATH, so no stub can be read"
-    if done.returncode != 0:
+        return None, None, "gh is not on PATH, so no stub can be read"
+    status = _status(done.stdout)
+    if status is None or status >= 400:
         why = " ".join((done.stderr or done.stdout or f"exit {done.returncode}").split())
-        return None, f"gh api failed: {why}"
+        return status, None, f"gh api failed: {why}"
+    _, _, body = done.stdout.partition("\r\n\r\n")
+    if not body:
+        _, _, body = done.stdout.partition("\n\n")
     try:
-        return json.loads(done.stdout), None
+        return status, json.loads(body), None
     except json.JSONDecodeError as exc:
-        return None, f"the reply is not JSON ({exc.msg})"
+        return status, None, f"the reply is not JSON ({exc.msg})"
+
+
+def _status(text):
+    """The HTTP status on gh --include's first line, or None when there is none."""
+    parts = text.split("\n", 1)[0].strip().split()
+    if len(parts) > 1 and parts[0].startswith("HTTP/") and parts[1].isdigit():
+        return int(parts[1])
+    return None
 
 
 def _text_of(data):
@@ -99,7 +118,7 @@ def _stub(name, ref=None):
     path = f"repos/{ORG}/{name}/contents/{DISPATCHER_PATH}"
     if ref:
         path += f"?ref={ref}"
-    data, notice = _gh(path)
+    _, data, notice = _gh(path)
     if data is None:
         return None, notice
     text, notice = _text_of(data)
@@ -111,26 +130,16 @@ def _stub(name, ref=None):
 def _api_answering():
     """Fail closed when gh cannot reach the API at all, so a transport or auth
     failure is never reported as one unreadable repo after another."""
-    data, notice = _gh(f"repos/{ORG}/{SELF}")
+    _, data, notice = _gh(f"repos/{ORG}/{SELF}")
     if data is None:
         sys.exit(f"::error::the GitHub API is not answering through gh ({notice}); failing closed")
-
-
-def _repo_readable(name):
-    """None when the token can read the repo, else a one-line notice."""
-    data, notice = _gh(f"repos/{ORG}/{name}")
-    if data is None:
-        return notice
-    if not isinstance(data, dict) or "full_name" not in data:
-        return "the reply is not a repo"
-    return None
 
 
 def _enrolled(ref):
     """The enrolled repo names, from the base ref when one is given."""
     if ref:
         path = f"repos/{ORG}/{SELF}/contents/{CONFIG_PATH}?ref={ref}"
-        data, notice = _gh(path)
+        _, data, notice = _gh(path)
         if data is None:
             sys.exit(f"::error::{CONFIG_PATH}: {notice} at the base ref; failing closed")
         text, notice = _text_of(data)
@@ -140,6 +149,8 @@ def _enrolled(ref):
             config = json.loads(text)
         except json.JSONDecodeError as exc:
             sys.exit(f"::error::{CONFIG_PATH} at the base ref is not JSON ({exc.msg}); failing closed")
+        if not isinstance(config, dict):
+            sys.exit(f"::error::{CONFIG_PATH} at the base ref is not an object; failing closed")
     else:
         try:
             config = json.loads(CONFIG.read_text())
@@ -179,9 +190,13 @@ def main():
     verified = 0
     failures = 0
     for name in repos:
-        unreadable = _repo_readable(name)
-        if unreadable is not None:
-            print(f"::warning::Nishfleet/{name}: {NOT_VERIFIED} ({unreadable})")
+        status, data, notice = _gh(f"repos/{ORG}/{name}")
+        if status == 404:
+            print(f"::warning::Nishfleet/{name}: {NOT_VERIFIED} ({notice})")
+            continue
+        if data is None or not isinstance(data, dict) or "full_name" not in data:
+            print(f"::error::Nishfleet/{name}: the repo could not be read ({notice}); failing closed")
+            failures += 1
             continue
         types, why = _stub(name)
         if types is None:
@@ -196,10 +211,10 @@ def main():
             continue
         print(f"Nishfleet/{name}: ok ({len(types)} types)")
         verified += 1
-    if not verified:
-        sys.exit("::error::no enrolled repo's stub could be read, so nothing was verified")
     if failures:
         sys.exit(f"::error::{failures} enrolled repo(s) have a stub this check cannot pass")
+    if not verified:
+        sys.exit("::error::no enrolled repo's stub could be read, so nothing was verified")
     print(f"{len(repos)} enrolled repo(s) checked, {verified} stub(s) read")
 
 
