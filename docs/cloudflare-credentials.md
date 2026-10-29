@@ -10,14 +10,17 @@ The worker jail in `agent.yml` mounts an empty tmpfs over
 `~/.config/cloudflare` and `~/.config/gh`, because a worker reads outsider
 comments and a fooled model must not reach an admin GitHub login or a no-expiry
 deploy token. `ci.yml` fails if that jail line, run against planted files, can
-read either path. Credential parity still holds for sessions outside the jail (the
-orchestrator hand-off, interactive sessions).
+read either path. Credential parity holds only for interactive host sessions.
+The orchestrator hand-off runs on a runner unit, and `20-lockdown.conf` masks
+`~/.config/cloudflare` for every runner, so the hand-off cannot read these files
+either (fleet-ops#10352); a packet that needs a Cloudflare token it cannot mint
+stays owner-gated.
 
 Jailed workers cannot mint either: the minter file is hidden from them too. A
 worker packet whose acceptance needs the Cloudflare API parks with
 `blocked-on: orchestrator`.
 
-Outside the jail, read the token from the file, never print it, and never copy it
+An interactive host session reads the token from the file, never prints it, and never copies it
 into a repo, PR or issue.
 
 ## The two long-lived tokens
