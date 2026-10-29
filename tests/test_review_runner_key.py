@@ -75,6 +75,12 @@ def test_the_review_runners_never_get_nish_gh_login(name: str) -> None:
     assert [v for v in bound if "/.config/gh" in v] == [], "a review runner that reads nish's gh login is the bug this issue removes"
 
 
+def test_no_other_unit_names_the_reviewer_key() -> None:
+    """A second unit that loaded the key would be a second identity that can post an approval."""
+    named = {str(p.relative_to(UNITS)) for p in sorted(UNITS.rglob("*")) if p.is_file() and REVIEW_KEY in p.read_text()}
+    assert named == REVIEW_USERS
+
+
 def test_no_unit_binds_the_credential_store() -> None:
     """A bind of /etc/credstore or /run/credentials would put the reviewer key back in reach of a job."""
     bad = []

@@ -5,8 +5,6 @@
 # and the worker App key from the credential store, the router key and one Claude seat
 # token as systemd credentials, and the tools, the deploy clone and AGENTS.md as
 # read-only binds. nish's home stays mode 0700, so nothing is copied out of it.
-# The registration is copied once: only while the copy has no runsvc.sh, so a re-run
-# never overwrites the runner's live state.
 - name: Create the review runner user
   ansible.builtin.user:
     name: fleet-reviewer
