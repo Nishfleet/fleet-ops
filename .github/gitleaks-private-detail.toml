@@ -212,3 +212,10 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
 regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|home/nish/workspaces/tooling/fleet-ops-deploy-clone/|\.config/fleet-ops/seats)$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The pre-existing ~/.claude backup-exclusion row in config/restic/README.md, edited by fleet-ops#10625 (a PR scan reads the edited line, and history cannot be rewritten on an open PR)"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)config/restic/README\.md$''']
+regexes = ['''^home/nish/\.claude$''']
+condition = "AND"
