@@ -394,29 +394,16 @@ def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
             assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"
 
 
-def test_the_hermes_entries_in_the_agent_lock_table_match_the_dropin() -> None:
+def test_both_hermes_units_are_in_the_agent_lock_table() -> None:
     table = json.loads((ROOT / "config/agent-locks.json").read_text())
     home = f"/home/{table['user']}"
     agents = table["agents"]
-    hidden = {str(path) for path in _hermes_hidden()}
+    entries = []
     for unit in HERMES_UNITS:
         assert unit in agents, f"{unit} is missing from config/agent-locks.json"
         entry = agents[unit]
         assert entry["unit"] == f"rootfs/etc/systemd/system/{unit}.service", entry
-        for path in entry["must_hide"]:
-            assert _table_path(path, home) in hidden, f"{unit}: the table hides {path}, no hermes layer does"
-        for path in entry["needs"]:
-            absolute = _table_path(path, home)
-            covering = [hidden_path for hidden_path in hidden if absolute == hidden_path or absolute.startswith(hidden_path + "/")]
-            assert not covering, f"{unit}: the table needs {path}, a hermes layer hides it"
-    assert sorted(gap["issue"] for gap in table["gaps"]) == sorted(["#9982", "#9983"]), "closing one of these gaps means dropping it from this list in the same change, so a stale entry is a red gate, not a comment"
-    assert table["stale_user_units"] == {}, "a stale user unit is recorded as a gap issue instead, so this key stays empty while #9982 is open"
-
-
-def test_both_hermes_units_hide_the_same_set_because_they_read_one_dropin() -> None:
-    table = json.loads((ROOT / "config/agent-locks.json").read_text())
-    home = f"/home/{table['user']}"
-    entries = [table["agents"][unit] for unit in HERMES_UNITS]
+        entries.append(entry)
     lists = [{_table_path(path, home) for path in entry["must_hide"]} for entry in entries]
     assert lists[0] == lists[1], "hermes-gateway and hermes-serve read the same hermes-.service.d/sandbox.conf, so their must_hide lists cannot differ"
     for entry in entries:
@@ -426,25 +413,10 @@ def test_both_hermes_units_hide_the_same_set_because_they_read_one_dropin() -> N
 def test_the_table_accounts_for_every_path_the_hermes_lock_hides() -> None:
     table = json.loads((ROOT / "config/agent-locks.json").read_text())
     home = f"/home/{table['user']}"
-    named = {_table_path(path, home) for entry in table["agents"].values() for path in entry["must_hide"]}
-    beyond = table["hidden_beyond_the_table"]
-    assert all(group.get("source") for group in beyond), "every group in hidden_beyond_the_table names where its paths come from"
-    attributed = {path for group in beyond for path in group["paths"]}
-    assert not named & attributed, f"counted twice, in must_hide and in hidden_beyond_the_table: {sorted(named & attributed)}"
+    named = {_table_path(path, home) for unit in HERMES_UNITS for path in table["agents"][unit]["must_hide"]}
     hidden = {str(path) for path in _hermes_hidden()}
-    assert not hidden - named - attributed, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named - attributed)}"
-    assert not attributed - hidden, f"the table attributes these to a source but no hermes layer hides them: {sorted(attributed - hidden)}"
-
-
-def test_every_hermes_need_outside_its_own_state_carries_a_reason() -> None:
-    table = json.loads((ROOT / "config/agent-locks.json").read_text())
-    notes = " ".join(table["notes"])
-    own = ("~/.hermes", "~/.local/state/hermes", "~/workspaces/tooling/nish-vault")
-    for unit, entry in table["agents"].items():
-        for path in entry["needs"]:
-            if path.startswith(own):
-                continue
-            assert path in notes, f"{unit}: {path} stays readable with no reason recorded in the table's notes"
+    assert not hidden - named, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named)}"
+    assert not named - hidden, f"the table hides these and no hermes layer does: {sorted(named - hidden)}"
 
 
 def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:

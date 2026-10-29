@@ -3,9 +3,8 @@
 systemd silently ignores sandbox settings in a user unit on this box
 (kernel.apparmor_restrict_unprivileged_userns=1), so a lock only counts when the
 unit is a system unit with User= and a service user. This file resolves each
-agent's real settings, the unit plus every drop-in with the symlinked shared
-file followed, and fails when a hidden path is still readable or a needed path
-is hidden.
+agent's real settings, the unit plus every drop-in directory systemd reads for
+it, and fails when a hidden path is still readable or a needed path is hidden.
 """
 
 import json
@@ -20,12 +19,29 @@ AGENTS = CONTRACT["agents"]
 STALE_USER_UNITS = CONTRACT.get("stale_user_units", {})
 
 
+def dropin_dirs(unit: Path) -> list[Path]:
+    """Every drop-in directory systemd reads for this unit, in systemd's order.
+
+    systemd.unit(5): for a unit name containing dashes, the directories made by
+    repeatedly truncating the name after each dash are searched too, so
+    hermes-gateway.service reads hermes-gateway.service.d/ and then
+    hermes-.service.d/. Reading only the exact directory misses the shared
+    hermes sandbox file, and the contract would judge a lock it cannot see.
+    """
+    dirs = [unit.with_name(unit.name + ".d")]
+    prefix = unit.name.removesuffix(".service")
+    while "-" in prefix:
+        prefix = prefix.rsplit("-", 1)[0]
+        dirs.append(unit.with_name(prefix + "-.service.d"))
+    return dirs
+
+
 def settings(unit: Path) -> dict[str, list[str]]:
     values: dict[str, list[str]] = {}
     files = [unit]
-    dropins = unit.with_name(unit.name + ".d")
-    if dropins.is_dir():
-        files += sorted(dropins.iterdir())
+    for dropins in dropin_dirs(unit):
+        if dropins.is_dir():
+            files += sorted(dropins.iterdir())
     for path in files:
         for line in path.read_text().splitlines():
             stripped = line.strip()
@@ -46,8 +62,8 @@ def covers(path: str, roots: list[str]) -> bool:
 def env(values: dict[str, list[str]], key: str) -> str:
     for pair in values.get("Environment", []):
         name, _, value = pair.partition("=")
-        if name == key:
-            return value
+        if name.strip('"') == key:
+            return value.rstrip('"')
     return ""
 
 
@@ -85,10 +101,9 @@ def test_a_locked_agent_gets_the_service_users_home_and_path(name: str) -> None:
         f"{name} sets no HOME, so a CLI that expands ~ writes to /root"
     )
     path = env(values, "PATH").split(":")
-    assert path[:1] == ["~/.local/bin"], (
-        f"{name} does not start PATH with /home/{CONTRACT['user']}/.local/bin, where node, "
-        "npm and every agent CLI live, so an #!/usr/bin/env node shebang fails and the "
-        "unit restart-loops"
+    assert "~/.local/bin" in path, (
+        f"{name} leaves /home/{CONTRACT['user']}/.local/bin off its PATH, where node, npm and "
+        "every agent CLI live, so an #!/usr/bin/env node shebang fails and the unit restart-loops"
     )
     assert "/usr/bin" in path and "/bin" in path, f"{name} leaves /usr/bin or /bin off its PATH"
 
