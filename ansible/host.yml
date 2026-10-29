@@ -385,14 +385,10 @@
 
 
   handlers:
-    # The runner sandbox is read at unit start, so an installed drop-in reaches no running
-    # runner until it restarts. This play reloads the daemon and stops there: a restart waits
-    # TimeoutStopSec (5 min) for a job and then kills it, and the pool restart that shipped
-    # with fleet-ops#10892 cut three hand-offs mid-session on its own merge, 2026-10-29 11:57Z
-    # (fleet-ops#10898). Every runner picks the drop-in up at its next start: the nightly
-    # update stops and starts each runner after it drains them, and that run reads the clone
-    # bind back on one runner it restarted (fleet-ops#10866). A boot or an OOM kill does the
-    # same, so a restart at any moment is a case the fleet already meets.
+    # The runner sandbox is read at unit start, so an installed drop-in waits for a start.
+    # This play installs it and reloads the daemon, and restarts no runner: a restart waits
+    # 5 min for a running job and then kills it, which cut three hand-offs on 2026-10-29
+    # 11:57Z (fleet-ops#10898). The drop-in header says where the change lands instead.
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true

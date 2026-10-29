@@ -23,6 +23,7 @@ RELOAD = "Reload systemd"
 DRAIN = "Wait until those jobs finish"
 STOP = "Stop the runner services, so no CI job starts mid-update"
 START = "Start the runner services this run stopped"
+UP = "Wait for every runner service to be up again"
 READ_PID = "Read the main pid of a runner this run restarted"
 READ_BIND = "Fail unless that runner mounts the deploy clone read-only"
 ASSERT = "Fail loudly if any step or check went wrong"
@@ -31,6 +32,10 @@ BIND_PATTERN = "fleet-ops-deploy-clone ro(,|$)"
 
 def handlers() -> list[dict]:
     return play()["handlers"]
+
+
+def install_config() -> list[dict]:
+    return yaml.safe_load((ROOT / "ansible/tasks/install-config.yml").read_text())
 
 
 def copy_task() -> dict:
@@ -42,7 +47,10 @@ def copy_task() -> dict:
 
 def update() -> dict:
     playbook = yaml.safe_load((ROOT / "ansible/update.yml").read_text())
-    return next(t for t in playbook[0]["tasks"] if isinstance(t, dict) and "always" in t)
+    blocks = [t for t in playbook[0]["tasks"] if isinstance(t, dict) and "always" in t]
+    found = [b for b in blocks if START in [t["name"] for t in b["always"]]]
+    assert len(found) == 1, [len(b["always"]) for b in found]
+    return found[0]
 
 
 def always() -> dict:
@@ -50,6 +58,8 @@ def always() -> dict:
 
 
 def in_order(names: list[str], *wanted: str) -> None:
+    missing = [name for name in wanted if name not in names]
+    assert not missing, missing
     positions = [names.index(name) for name in wanted]
     assert positions == sorted(positions), positions
 
@@ -65,7 +75,14 @@ def test_the_agent_pool_is_the_only_pool_that_binds_the_deploy_clone() -> None:
 
 
 def test_a_sandbox_change_is_installed_and_the_daemon_reloaded() -> None:
-    assert copy_task()["notify"] == RELOAD
+    notified = copy_task()["notify"]
+    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD}
+
+
+def test_the_sandbox_install_restarts_no_unit() -> None:
+    text = yaml.safe_dump(install_config())
+    assert "restarted" not in text
+    assert "try-restart" not in text
 
 
 def test_the_deploy_signals_no_agent_runner() -> None:
@@ -81,9 +98,14 @@ def test_the_nightly_update_drains_before_it_stops_the_runners() -> None:
 
 def test_the_nightly_update_reads_the_clone_bind_back_on_a_runner_it_restarted() -> None:
     tasks = always()
-    in_order(list(tasks), START, READ_PID, READ_BIND)
+    in_order(list(tasks), START, UP, READ_PID, READ_BIND, ASSERT)
     assert tasks[READ_PID]["ansible.builtin.command"]["argv"][-1].startswith("{{ (runners_stopped")
     assert tasks[READ_BIND]["ansible.builtin.command"]["argv"][2:] == [BIND_PATTERN, "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"]
     for name in (READ_PID, READ_BIND):
         assert "runners_stopped" in tasks[name]["when"], "the read would fail a run that restarted no runner"
-    assert any("agent_runner_clone_bind" in check for check in tasks[ASSERT]["ansible.builtin.assert"]["that"])
+
+
+def test_a_run_that_read_no_bind_fails_unless_no_runner_was_up() -> None:
+    checks = [check for check in always()[ASSERT]["ansible.builtin.assert"]["that"] if "agent_runner_clone_bind" in check]
+    assert len(checks) == 1, "a skipped read and a failed read would both pass the assert"
+    assert "runner_units" in checks[0], "a run that restarted a runner has to have read the bind"
