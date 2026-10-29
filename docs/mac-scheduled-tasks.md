@@ -47,10 +47,10 @@ gate. Both end retired, but for different reasons, and the difference matters.
   (Nishfleet/seo-fix-kit#304, PR #307, squash `5e978e0d`), and its
   `docs/restore-runbook.md` documents only the stock restore path — D1 Time
   Travel, always on, the last 30 days, no statement-size limit, nothing to
-  schedule. The dump lost that comparison on its own record: it ran weekly, so
-  it could lose up to a week of writes, and the 2026-06-12 rehearsal hit
-  `SQLITE_TOOBIG` on oversized `audit_reports.report_json` rows, so a dump
-  import silently dropped report bodies.
+  schedule — and records why the dump went: the 2026-06-12 rehearsal hit
+  `SQLITE_TOOBIG` on oversized `audit_reports.report_json` rows, "so a dump
+  import would silently drop report bodies, and being weekly it could lose up to
+  a week of writes".
 
   **Hand-off superseded.** fleet-ops#9527 asked for a weekly export in that
   repo's own CI, using the `cf` CLI and the Cloudflare token that repo already
@@ -128,7 +128,8 @@ command).
 ## Checked, not assumed
 
 Every reason above was checked against live state, in the run that added this
-page or in the run that corrected it. The live-state commands and their output:
+page or in the run that corrected it for fleet-ops#9527. The live-state
+commands and their output:
 
 - `tar -tf mac-rescue-20261009/claude-scheduled-tasks.tar` → the 11 task
   directories, each holding the `SKILL.md` quoted above. `sha256sum -c
@@ -165,6 +166,9 @@ page or in the run that corrected it. The live-state commands and their output:
 - `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`
   → the page, whose only restore path is D1 Time Travel, and which records the
   2026-06-12 `SQLITE_TOOBIG` rehearsal
+- `sed -n '/"seo-fix-kit" = {/,/}/p' infra/cloudflare-tokens/main.tf` → the
+  `account` list is `Workers Scripts Write`, `D1 Write`, `Queues Write`,
+  `Account Settings Read`, with no R2 group
 - `gh pr view 307 -R Nishfleet/seo-fix-kit --json state,mergedAt,mergeCommit` →
   `MERGED`, `mergedAt=2026-10-23T12:36:29Z`, squash
   `5e978e0da0fdec692bdc938c58349a66797ed081`; `gh pr view 305 -R
