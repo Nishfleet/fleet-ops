@@ -1,0 +1,54 @@
+# Gate for the router-dead-key rule (fleet-ops#11081). The rule counts 401 parks per
+# row over 6 hours, but only while the row is still parking: at least one park in the
+# last 30 minutes, held for 15 minutes. A park is one cooldown, because a 401 row is
+# parked on AuthenticationErrorAllowedFails 0.
+#
+#  - 3 parks in 6 hours with the last one inside the 30-minute window fires: the bar
+#    is 2, not the row rule's 5, because a parked row cannot park again until its
+#    cooldown ends;
+#  - a row that parked 4 times and then stopped stays quiet at 2 hours: the 30-minute
+#    factor reads 0, which is the difference between the multiply and `and`;
+#  - a dead key parks every cooldown and fires.
+evaluation_interval: 5m
+rule_files:
+- router-dead-key.test.rules.yml
+tests:
+- interval: 1m
+  name: three parks in 6 hours, the last one recent, fires
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="commandcode-glm53flash-worker-capable",litellm_model_name="worker-capable",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",exception_status="401"}'
+    values: '0+1x2 2+0x50 3+0x300'
+  alert_rule_test:
+  - alertname: RouterRowParkedOn401
+    eval_time: 80m
+    exp_alerts:
+    - exp_labels:
+        model_id: commandcode-glm53flash-worker-capable
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-key
+      exp_annotations: {}
+- interval: 1m
+  name: a 401 row that stopped parking stays quiet
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="commandcode-glm53flashb-worker-capable",litellm_model_name="worker-capable",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",exception_status="401"}'
+    values: '0+1x4 4+0x200'
+  alert_rule_test:
+  - alertname: RouterRowParkedOn401
+    eval_time: 120m
+    exp_alerts: []
+- interval: 1m
+  name: a row parked on every cooldown fires
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="commandcode-glm53flashb-worker-capable",litellm_model_name="worker-capable",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",exception_status="401"}'
+    values: '0+1x120'
+  alert_rule_test:
+  - alertname: RouterRowParkedOn401
+    eval_time: 60m
+    exp_alerts:
+    - exp_labels:
+        model_id: commandcode-glm53flashb-worker-capable
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-key
+      exp_annotations: {}
