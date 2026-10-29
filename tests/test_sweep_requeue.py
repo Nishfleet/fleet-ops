@@ -3,8 +3,8 @@
 
 An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
 no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 12 minus the live orchestrate runs a sweep. Three ended or
-re-fired hand-offs give needs-nish-decision.
+marker comment and no label write. At most 12 minus the live orchestrate runs a sweep, and a closed
+blocker releases at most 12. Three ended or re-fired hand-offs give needs-nish-decision.
 """
 import datetime
 import json
@@ -18,6 +18,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
 STEP = ".jobs.list.steps[] | select(.env.REQUEUE)"
+LIST = '.jobs.list.steps[] | select(.id == "list")'
 REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
 ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/"
 
@@ -34,6 +35,16 @@ case "$1 $2" in
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
+esac
+"""
+
+FAKE_LIST_GH = r"""#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/o/r/issues/"*"/parent") exit 1 ;;
+  "api repos/o/r/issues/"*"/dependencies/blocking") jq -r "$4" "$FAKE_DIR/dependents.json" ;;
+  "api repos/o/r/issues/"*) jq --arg n "${2##*/}" '.[$n]' "$FAKE_DIR/issues.json" ;;
+  "issue edit") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -130,6 +141,35 @@ def test_a_priority_now_issue_takes_a_slot_ahead_of_the_parked_backlog(tmp_path)
 def test_batch_is_twelve(tmp_path):
     w = run(tmp_path, [issue(n) for n in range(1, 15)])
     assert len(edits(w, "--add-label needs-orchestrator")) == 12
+
+
+def released(tmp_path, numbers):
+    """The list step on a closed blocker's path, over the open issues it released."""
+    issues = {str(n): {"number": n, "state": "open", "labels": [{"name": "needs-orchestrator"}],
+                       "issue_dependencies_summary": {"blocked_by": 0}} for n in numbers}
+    (tmp_path / "issues.json").write_text(json.dumps(issues))
+    (tmp_path / "dependents.json").write_text(json.dumps([{"number": n, "state": "open"} for n in numbers]))
+    gh = tmp_path / "gh"
+    gh.write_text(FAKE_LIST_GH)
+    gh.chmod(0o755)
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path),
+           "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "GITHUB_OUTPUT": str(out),
+           "CLOSED": "1", "ISSUE": "",
+           "CHECK_DEFS": _y(f"{LIST} | .env.CHECK_DEFS"), "RED_REWORK": _y(f"{LIST} | .env.RED_REWORK")}
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST} | .run")],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = tmp_path / "writes.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_a_closed_epic_releases_no_more_than_the_requeue_batch(tmp_path):
+    """A closed epic blocks hundreds, and each released hand-off costs two writes on the runner login
+    (fleet-ops#10489), so the list step stops at the requeue batch's 12 (fleet-ops#11010)."""
+    w = released(tmp_path, range(2, 32))
+    assert edits(w, "--add-label needs-orchestrator") == list(range(2, 14))
 
 
 def test_live_runs_use_up_the_batch(tmp_path):

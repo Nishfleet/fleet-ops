@@ -679,8 +679,10 @@ jobs:
             esac
             pages="$pages$i"$'\n'
             # A closed blocker releases a parked hand-off: re-label it on the runner login so the label event starts it (fleet-ops#10489).
-            if [ -n "$CLOSED" ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
-              for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
+            # At most 12 a sweep, the requeue batch's own bound, because each one costs two writes and a
+            # closed epic can block hundreds (fleet-ops#11010).
+            if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
+              released=$((${released:-0} + 1)); for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
             fi
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
