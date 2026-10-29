@@ -393,14 +393,23 @@
     # until it restarts. One runner first, its own mount namespace read back, then the pool:
     # a drop-in the unit refuses fails the deploy on one runner instead of taking every
     # runner down blind, and the read is the proof the sandbox reached a running runner
-    # (fleet-ops#10866). The pool glob covers a runner added after this line was written,
-    # and a glob that matches nothing is a success, so a host with no runner converges.
+    # (fleet-ops#10866). A handler runs only when something notifies it, and its place in
+    # this list only sets the order, so all four listen to one topic.
+    #
+    # The canary is runner 2, not runner 1: tasks/pilot-and-retired-runners.yml leaves the
+    # pilot runner 1 stopped and disabled while it carries the agent label, and `restarted`
+    # on a stopped unit starts it, which is the state fleet-ops#10706 removed. The canary
+    # has to be a runner this play leaves running. A host with no such unit stops the deploy
+    # here with "Could not find the requested service", which is the loud result to want
+    # over a pool restart with no runner to read back first.
     - name: Restart one agent runner
+      listen: Restart the agent runners
       ansible.builtin.systemd_service:
-        name: actions.runner.Nishfleet.netcup-agent-1.service
+        name: actions.runner.Nishfleet.netcup-agent-2.service
         state: restarted
 
     - name: Read the main pid of that runner
+      listen: Restart the agent runners
       ansible.builtin.command:
         argv:
           - /usr/bin/systemctl
@@ -408,11 +417,15 @@
           - -p
           - MainPID
           - --value
-          - actions.runner.Nishfleet.netcup-agent-1.service
+          - actions.runner.Nishfleet.netcup-agent-2.service
       register: agent_runner_pid
       changed_when: false
 
+    # The clone is bound with a `-` prefix, so a clone directory that is missing lets the
+    # runner start without the bind. This grep then fails the deploy, which is the result to
+    # want: a missing clone stops the deploy instead of leaving a runner without its guard.
     - name: Fail unless that runner mounts the deploy clone read-only
+      listen: Restart the agent runners
       ansible.builtin.command:
         argv:
           - /usr/bin/grep
@@ -421,12 +434,17 @@
           - "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"
       changed_when: false
 
+    # Runners 3 and up: the handlers above restart runner 2, and runner 1 stays stopped. One
+    # digit 3-9 and any two-digit id cover a runner this file never names, and a pattern that
+    # matches nothing is a success, so a host with no runner converges.
     - name: Restart the rest of the agent runners
+      listen: Restart the agent runners
       ansible.builtin.command:
         argv:
           - /usr/bin/systemctl
           - try-restart
-          - actions.runner.Nishfleet.netcup-agent-*.service
+          - actions.runner.Nishfleet.netcup-agent-[3-9].service
+          - actions.runner.Nishfleet.netcup-agent-[0-9][0-9].service
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
