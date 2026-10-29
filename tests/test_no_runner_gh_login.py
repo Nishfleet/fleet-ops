@@ -16,7 +16,7 @@ def test_no_runner_dropin_binds_the_gh_login():
 
 def test_no_workflow_step_falls_back_to_the_runner_login():
     # `env -u GH_TOKEN gh/git` (or a session started that way) hands the call the stored login.
-    fallback = re.compile(r'env (?:-i|(?:-u (?:GH_TOKEN|GITHUB_TOKEN) )+)(?:\S+=\S+ )*(?:gh|git|"\$HOME/\.local/bin/(?:claude|pi)")\b')
+    fallback = re.compile(r'env (?:-i|(?:-u (?:GH_TOKEN|GITHUB_TOKEN) )+)(?:[A-Za-z_][A-Za-z0-9_]*=\S* )*(?:gh|git|"\$HOME/\.local/bin/(?:claude|pi)")\b')
     for wf in [*(ROOT / ".github/workflows").glob("*.yml"), *(ROOT / ".github/actions").glob("*/action.yml")]:
         hits = [n for n, line in enumerate(wf.read_text().splitlines(), 1) if fallback.search(line)]
         assert hits == [], f"{wf.name}: lines {hits}"
