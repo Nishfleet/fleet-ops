@@ -93,12 +93,14 @@ The database has to be created again in the fleet account, then TinyStudio.io's
 then drive's matrix row corrected. No token that belongs to this product can do the first
 two steps, so the recreation is an owner action, not a worker action.
 
-Two gaps this incident exposed sit outside this issue's scope and are filed as follow-ups:
+Two gaps this incident exposed sit outside this issue's scope:
 
 - `config/grafana/provisioning/alerting/deploy-failed.yaml` watches eight repositories and
-  not TinyStudio.io-public, so 16 days of red deploys raised no alert.
-- drive's `d1-export.yml` matrix on branch `fleet-product-db-backups` has no open pull
-  request, so the stopgap for the four product databases is not scheduled anywhere.
+  not TinyStudio.io-public, so 16 days of red deploys raised no alert. Filed as a follow-up
+  issue.
+- The weekly backup for this database, and for the three other product databases, exists
+  only on drive's unmerged branch `fleet-product-db-backups`, so none of the four is on a
+  schedule. fleet-ops#10594 owns that work, so nothing further is filed here.
 
 ## Proof
 
