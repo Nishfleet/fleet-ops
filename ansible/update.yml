@@ -24,9 +24,10 @@
 #              services restarted, tincan with its idle listeners restarted,
 #              the npm and uv tools (yt-dlp is a uv tool and must never
 #              self-update: that replaced its running binary and broke it,
-#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and the
-#              redis container through
-#              `podman auto-update`. Stale npm staging dirs go first, so
+#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and
+#              `podman auto-update`, which finds nothing to move because every
+#              quadlet image is digest-pinned (tests/test_quadlet_hardening.py).
+#              Stale npm staging dirs go first, so
 #              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
 #              runners, clear the pause flag only where this run set it,
@@ -51,9 +52,9 @@
 # aiostreams and redis. No quadlet carries AutoUpdate=registry, because every
 # image is pinned by a digest and tests/test_quadlet_hardening.py fails a pinned
 # image that does, so `podman auto-update` below finds nothing to move. It stays
-# for a quadlet that floats later, which the same test requires to carry the
-# label. Skipped on purpose: GitHub runners (they update themselves) and the raw
-# binaries in ~/.local/bin that have no updater.
+# for a quadlet that floats later, which the same test then requires to carry the
+# label, once its digest rule relaxes. Skipped on purpose: GitHub runners (they
+# update themselves) and the raw binaries in ~/.local/bin that have no updater.
 - name: Pause the fleet, prune, update everything, resume
   hosts: localhost
   connection: local
@@ -852,8 +853,9 @@
         # No quadlet carries AutoUpdate=registry, because every image is pinned
         # by a digest and tests/test_quadlet_hardening.py fails a pinned image
         # that carries the label, so this reports nothing to do; it stays for a
-        # quadlet that floats later, which the same test requires to carry the
-        # label. A unit that fails to start is rolled back, and podman
+        # quadlet that floats later, which the same test then requires to carry
+        # the label, once its digest rule relaxes. A unit that fails to start is
+        # rolled back, and podman
         # auto-update then exits non-zero (the assert at the end of the run
         # fails loud on it). A unit that starts but is broken is not rolled
         # back: no quadlet has a HealthCmd. As nish, because the quadlets are
