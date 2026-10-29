@@ -117,7 +117,7 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
-          # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900).
+          # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900). Substring, not a parse: an over-match costs one orchestrator run, a "parse it properly" fix brings the wall burn back (#8877).
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
@@ -213,6 +213,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
+          # Pi sends this as x-litellm-session-id, so the router keeps the whole run on one model; without it the call exits 1 (fleet-ops#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
@@ -400,6 +401,7 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
+              # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq still printed any red names, empty if none
