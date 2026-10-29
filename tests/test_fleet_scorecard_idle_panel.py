@@ -62,16 +62,18 @@ EXPECTED = {
 }
 
 
-def _idle():
+def _idle(dispatch=()):
     db = sqlite3.connect(":memory:")
     db.create_function("UNIX_TIMESTAMP", 0, lambda: int(NOW.timestamp()))
     db.create_function("UNIX_TIMESTAMP", 1, lambda ms: None if ms is None else ms // 1000)
     db.create_function("FROM_UNIXTIME", 1, lambda s: datetime.fromtimestamp(s, timezone.utc).strftime("%Y-%m-%d"))
     db.create_function("DATE_FORMAT", 2, lambda value, _: value)
     db.execute("CREATE TABLE A (created_at INTEGER, run_started_at INTEGER, updated_at INTEGER, status TEXT)")
+    db.execute("CREATE TABLE D (created_at INTEGER, run_started_at INTEGER, updated_at INTEGER, status TEXT)")
     db.execute("CREATE TABLE B (created_at INTEGER, closed_at INTEGER)")
     db.execute("CREATE TABLE P (time INTEGER, __value__ REAL)")
     db.executemany("INSERT INTO A VALUES (?, ?, ?, ?)", RUNS)
+    db.executemany("INSERT INTO D VALUES (?, ?, ?, ?)", dispatch)
     db.executemany("INSERT INTO B VALUES (?, ?)", ISSUES)
     db.executemany("INSERT INTO P VALUES (?, ?)", POOL)
     return {row[0]: (row[1], row[2]) for row in db.execute(_expression())}
@@ -90,7 +92,9 @@ def test_panel_reads_each_source_and_keeps_it_out_of_the_result():
     assert targets["B"]["options"]["query"] == ISSUES_QUERY
     assert targets["B"]["options"]["timeField"] == 2
     assert targets["P"]["datasource"] == {"type": "prometheus", "uid": "fleet-prometheus"}
-    assert all(targets[ref]["hide"] is True for ref in "ABP")
+    assert targets["D"]["queryType"] == "Workflow_Runs"
+    assert targets["D"]["options"] == {"owner": "Nishfleet", "repository": "fleet-ops", "workflow": "agent-dispatch.yml"}
+    assert all(targets[ref]["hide"] is True for ref in "ABPD")
     assert targets["C"]["type"] == "sql"
 
 
@@ -101,6 +105,13 @@ def test_expression_calls_only_functions_the_engine_allows():
     assert "__value__" in expression
     assert "DATE_FORMAT(FROM_UNIXTIME(d.day_start), '%Y-%m-%d')" in expression
     assert len(_idle()) == 14
+
+
+def test_a_dispatch_run_counts_toward_busy_minutes():
+    day = "2026-10-28"
+    assert _idle()[day][1] == EXPECTED[day][1]
+    busy_all_day = (_at(28, 0), _at(28, 0), _at(29, 0), "completed")
+    assert _idle([busy_all_day])[day][1] == EXPECTED[day][1] - 1440
 
 
 def test_a_run_longer_than_its_day_clamps_to_zero_instead_of_going_negative():
