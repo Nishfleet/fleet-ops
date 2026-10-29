@@ -60,34 +60,22 @@ def test_the_weekly_apply_supplies_the_addresses_the_vps_token_needs():
     assert "vps_cidrs" in (ROOT / "infra/cloudflare-tokens/README.md").read_text()
 
 
-def test_the_apply_republishes_the_secret_that_grafana_mounts():
+def test_the_apply_hands_the_rotation_to_the_existing_writer():
     """Grafana mounts a copy, so a rotation that only rewrites the file blinds it.
 
-    The Cloudflare spend watch reads through that secret; a rotation without
-    this step leaves it holding the token the apply just deleted until the next
-    host-config run.
+    The Cloudflare spend watch reads through that secret. One writer already
+    refreshes it from this file, so the apply starts that writer instead of
+    writing the secret a second time and drifting from it.
     """
     text = UNIT.read_text()
     post = next(line for line in text.splitlines() if line.startswith("ExecStartPost="))
-    assert "grafana-cloudflare-api-token" in post, "the rotated token never reaches Grafana"
-    assert "deploy-ci.env" in post, "the secret must come from the file the apply writes"
-    assert "restart fleet-grafana.service" in post
-    assert "--replace" in post and "secret inspect" in post, "restart Grafana only when the value changed"
-    assert "{{.SecretData}}" in post
-    assert 'printf %%s "$$new" |' in post, "%s is a systemd specifier for the user's shell, not a printf format"
-    assert "/usr/bin/printf" not in post, "an external printf puts the value in argv, which /proc reads"
-    assert "is-active --quiet" in post, "a failed restart must be retried on the next run"
+    assert post == "ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service"
+    assert "polkit" in text, "the unit must say why a user unit may start a system unit"
     assert "grafana-cloudflare-api-token" in HOST.read_text()
-
-
-def test_the_apply_refuses_to_start_without_the_addresses_file():
-    """A failed plan renews nothing, so name the missing file before tofu runs."""
-    text = UNIT.read_text()
-    pres = [line for line in text.splitlines() if line.startswith("ExecStartPre=")]
-    check = pres[0]
-    assert "vps-cidrs.tfvars" in check and "exit 1" in check
-    assert pres[1].startswith("ExecStartPre=%h/.local/bin/tofu"), "the check runs before tofu"
-    assert "README.md" in check, "the failure must say where the format is"
+    assert "--no-block" in post, "a long playbook must not hold the apply"
+    assert not [line for line in text.splitlines() if line.startswith(("ExecStart=", "ExecStartPost=")) and "/bin/sh" in line and "TF_VAR_github_app_pem" not in line], (
+        "no second writer in shell: ansible/tasks/secrets.yml already does this"
+    )
 
 
 def test_the_grafana_queries_are_account_level_so_no_zone_group_is_needed():

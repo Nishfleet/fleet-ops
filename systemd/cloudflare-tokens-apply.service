@@ -46,24 +46,23 @@ EnvironmentFile=%h/.config/cloudflare/token-minter.env
 EnvironmentFile=-%h/.config/cloudflare/tofu-state-encryption.env
 Environment=TF_DATA_DIR=%h/.cache/fleet-ops/cloudflare-tokens-tofu
 Environment=TF_IN_AUTOMATION=1
-ExecStartPre=/bin/sh -c 'test -s %h/.config/cloudflare/vps-cidrs.tfvars || { echo "cloudflare-tokens-apply: missing %h/.config/cloudflare/vps-cidrs.tfvars (vps_cidrs; see infra/cloudflare-tokens/README.md, VPS-only tokens). Without it the plan fails closed and no token rotates." >&2; exit 1; }'
 ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
 # GitHub: the nishfleet-secrets App, not the owner's personal login (fleet-ops#10601). The key file is 0600 in a
 # 0700 directory; its contents go to the provider through the environment of this one process only.
 ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfleet-secrets.private-key.pem) && export TF_VAR_github_app_pem && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false -var-file=%h/.config/cloudflare/vps-cidrs.tfvars'
 # Grafana does not read deploy-ci.env: it mounts a copy of it as the
 # grafana-cloudflare-api-token Podman secret (containers/quadlet/
-# fleet-grafana.container), and ansible/tasks/secrets.yml is the only other
-# thing that refreshes that copy, on a host-config run. A rotation here would
-# otherwise leave Grafana holding the token this apply just deleted until the
-# next host-config run, and the Cloudflare spend watch (fleet-ops#9355) would
-# read nothing meanwhile. So the apply republishes it itself: the value goes to
-# podman on stdin, never argv, and Grafana restarts only when it changed. There
-# is no host-config timer (deploy-box.yml starts fleet-host-config.service only
-# on a push to main, or at boot), so the window has no other bound. Two systemd
-# details: the format is %%s, because %s is a specifier for the user's shell,
-# and printf takes no path, because an external printf would put the value in
-# its argv and /proc/<pid>/cmdline is world-readable.
-ExecStartPost=/bin/sh -c 'set -e; f=%h/.config/cloudflare/deploy-ci.env; test -s "$$f"; new=$$(/usr/bin/sed -n "s/^CLOUDFLARE_API_TOKEN=//p" "$$f"); test -n "$$new"; if /usr/bin/podman secret inspect grafana-cloudflare-api-token >/dev/null 2>&1; then if test "$$new" = "$$(/usr/bin/podman secret inspect --showsecret --format "{{.SecretData}}" grafana-cloudflare-api-token)"; then /usr/bin/systemctl --user is-active --quiet fleet-grafana.service || exec /usr/bin/systemctl --user restart fleet-grafana.service; exit 0; fi; set -- --replace; fi; printf %%s "$$new" | /usr/bin/podman secret create "$$@" grafana-cloudflare-api-token -; exec /usr/bin/systemctl --user restart fleet-grafana.service'
+# fleet-grafana.container), and ansible/tasks/secrets.yml refreshes that copy on
+# a host-config run. A rotation here would otherwise leave Grafana holding the
+# token this apply just deleted until the next host-config run, and the
+# Cloudflare spend watch (fleet-ops#9355) would read nothing meanwhile. There is
+# no host-config timer (deploy-box.yml starts fleet-host-config.service only on a
+# push to main, or at boot), so the window has no other bound. So the apply asks
+# that existing writer to run rather than writing the secret a second time: it
+# already reads this file, trims the value, replaces the secret only when it
+# differs and restarts Grafana. polkit grants nish `start` on that unit and
+# nothing else (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules), and
+# --no-block keeps a long playbook from holding this oneshot.
+ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service
 TimeoutStartSec=900
 UMask=0077

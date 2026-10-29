@@ -128,7 +128,7 @@ locals {
     # The only consumer that is not a GitHub Actions job (fleet-ops#10169):
     # Grafana's Cloudflare data source reads this token from the 0600 env file
     # below, which ansible/host.yml renders into the grafana-cloudflare-api-token
-    # Podman secret (the apply republishes it on each rotation). It replaces the
+    # Podman secret (the apply starts the host-config run that republishes it). It replaces the
     # hand-made deploy-ci user token, which has no
     # expiry, is not IP-locked and is wider than the one read-only group the
     # spend watch needs. The value never enters a GitHub secret and never enters
