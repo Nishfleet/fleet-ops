@@ -61,6 +61,43 @@
     enabled: false
   when: retired_smb_bridge.stat.exists
 
+# The Leviathan index timers and the Executor hub (#10625) were stopped and
+# disabled at runtime on 2026-10-28, but a box that still has them enabled
+# would fire a timer whose files this play is about to delete. Stop, then drop
+# the enable link, as the seo-fix-kit timer above does. A unit that is already
+# gone answers non-zero, which is the state this leaves behind.
+- name: Stop the retired Leviathan index timers and the Executor hub before their files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, stop, "{{ item }}"]
+  loop:
+    - leviathan-index@claude.timer
+    - leviathan-index@pi.timer
+    - leviathan-index@claude.service
+    - leviathan-index@pi.service
+    - executor.service
+  register: retired_index_executor_stop
+  changed_when: retired_index_executor_stop.rc == 0
+  failed_when: >-
+    retired_index_executor_stop.rc != 0
+    and 'not loaded' not in retired_index_executor_stop.stderr | lower
+    and 'does not exist' not in retired_index_executor_stop.stderr | lower
+  notify:
+    - Reload nish's user manager
+
+- name: Disable the retired Leviathan index timers and the Executor hub before their files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, "{{ item }}"]
+  loop:
+    - leviathan-index@claude.timer
+    - leviathan-index@pi.timer
+    - executor.service
+  register: retired_index_executor_disable
+  changed_when: retired_index_executor_disable.rc == 0
+  failed_when: >-
+    retired_index_executor_disable.rc != 0
+    and 'not loaded' not in retired_index_executor_disable.stderr | lower
+    and 'does not exist' not in retired_index_executor_disable.stderr | lower
+
 # Files the repo used to leave live and now removes, and files a session
 # hand-installed that the repo or a product repo now owns. Each path is named,
 # so a deletion is always a reviewed line in this file. system.control

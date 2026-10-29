@@ -44,23 +44,42 @@ for days), so a window either equals the run period and can miss a red run, or
 is wide enough to hide a failure for days. Both were tried and cut
 (fleet-ops#10211).
 
-The cause of a leftover is a `systemd-run` transient under the user manager. A
-unit `systemd-run` created stays loaded in `failed` state after it stops, and
-for a `--user` unit nothing else reports it: node_exporter reads only the
-system bus, so a failed user unit has no detector at all. The launcher rule in
-AGENTS.md "Session-outliving work" is the fix: launch a system unit as nish.
-A failed system unit fires `SystemUnitFailed` and becomes a fix job.
+The cause of a leftover is a `systemd-run` transient. A unit `systemd-run`
+created stays loaded in `failed` state after it stops, under the user manager
+and the system manager alike, because `systemd-run` leaves `CollectMode=
+inactive` and nothing unloads it. `reset-failed` is the only thing that clears
+it.
 
-To read a leftover before clearing it, ask the unit, not `status` (`status`
-prints the unit file path, not the flag):
+What the launcher rule in AGENTS.md "Session-outliving work" changes is the
+detector, not the leftover. It launches a system unit as nish. node_exporter
+reads only the system bus, so a failed system unit fires `SystemUnitFailed`
+and becomes a fix job. A failed user unit is not scraped: of the 212 unit
+names node_exporter exposes, not one is a user-manager unit, and
+`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+are all absent from them. A user unit's one other route is
+`OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
+carries and which instantiates a system unit node_exporter does scrape. That
+route is dormant on this box, because the reconcile URL file it reads is mode
+000, root-owned and empty, so the unit SKIPs and exits 0. What hears about a
+failed user unit today is the daily update, and nothing else. A leftover still
+needs a hand `reset-failed`; the difference is that somebody hears about it.
+
+To read a leftover before clearing it, `show` is the one-line form (`status`
+prints the flag too, inside its `Loaded:` and `Transient:` lines, which is not
+something a script can read):
 
     systemctl --user show -p Transient --value <unit>       # yes = no unit file
     systemctl --user show -p InactiveEnterTimestamp --value <unit>
 
 Then one line clears it: `systemctl --user reset-failed <unit>`.
 
-The 2026-10-23 leftovers are gone. The 2026-10-28 daily update reported
-`failed units: []` and `failed=0`.
+The failed-unit check itself has not been what turned a run red lately. The
+three most recent runs that reported it all read `failed units: []`, and all
+three ended red on other checks (an unpinned pi extension, runners resumed,
+one tool update failed), which is the check doing its job. A green run does not
+print the list at all, because the string only exists in the assert's failure
+message. A leftover that appears between runs is named by the next run, and
+only a hand `reset-failed` clears it.
 
 ## Deploy and wiring
 
@@ -107,9 +126,10 @@ manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
 a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
 `EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
-because such a unit stays loaded in `failed` state after it stops and nothing
-resets it ("The failed-unit check and leftover ad-hoc units" above). Not from
-an interactive shell either (README, "systemd by default").
+because a failed user unit is not scraped: node_exporter reads only the system
+bus, so a failed `--user` unit fires no alert and only the daily update sees it
+("The failed-unit check and leftover ad-hoc units" above). Not from an
+interactive shell either (README, "systemd by default").
 
 The loader that ran the systemd environment generator in those files from
 2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
@@ -410,8 +430,8 @@ Rollback (follow-up): delete the three `.container` files in
 ## Claude session credentials (fleet-ops#9020)
 
 The systemd `--user` manager environment carries no Claude, Exa or Browser Use
-names. The manager hands its environment to every user unit, every
-`systemd-run --user` transient and every quadlet container, so the names were
+names. The manager hands its environment to every user unit, every transient
+under the user manager and every quadlet container, so the names were
 removed from it in this order:
 
 1. Delete `~/.config/environment.d/50-agent-secrets.conf`.
@@ -481,8 +501,8 @@ The runner environment is the one thing the repo cannot show (the runner
 `.env` and the live `~/.pi/agent` extensions are outside it). If a worker
 engine ever needs one of these names, give that runner a drop-in with the line
 above for the single file it needs; nothing in this repo asks for it today. A
-hand-run `claude -p` or `systemd-run --user` that needs the token passes the
-line above.
+hand-run `claude -p`, or a transient under the user manager, that needs the
+token passes the line above.
 
 ## Unattended Claude runs (fleet-ops#9502)
 
@@ -573,6 +593,11 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+- The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
+  is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
+  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
+  address (fleet-ops#10541). Edit it there, never by hand.
 
 ## Rebuild the box from nothing
 
