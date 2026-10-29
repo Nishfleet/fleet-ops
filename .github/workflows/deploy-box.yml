@@ -26,9 +26,7 @@ jobs:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
-        run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
-      - name: Start fleet-deploy-sync.service (root pulls the deploy clone to main)
-        run: /usr/bin/systemctl start fleet-deploy-sync.service || { /usr/bin/journalctl --no-pager -xeu fleet-deploy-sync.service --lines=60; exit 1; }
+      - name: Start the root deploy units in order (Ansible rootfs/, then the deploy-clone pull)
+        run: for u in fleet-host-config.service fleet-deploy-sync.service; do /usr/bin/systemctl start "$u" || { /usr/bin/journalctl --no-pager -xeu "$u" --lines=60; exit 1; }; done
       - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }

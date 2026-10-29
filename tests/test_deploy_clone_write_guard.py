@@ -58,12 +58,13 @@ def test_fleet_deploy_sync_pulls_the_clone_as_root() -> None:
 
 
 def test_deploy_box_runs_host_config_then_pull_then_user_sync() -> None:
-    steps = [s["name"] for s in BOX["jobs"]["apply"]["steps"] if s.get("run")]
-    assert steps == [
-        "Start fleet-host-config.service (Ansible applies rootfs/ as root)",
-        "Start fleet-deploy-sync.service (root pulls the deploy clone to main)",
+    steps = [s for s in BOX["jobs"]["apply"]["steps"] if s.get("run")]
+    assert [s["name"] for s in steps] == [
+        "Start the root deploy units in order (Ansible rootfs/, then the deploy-clone pull)",
         "Start fleet-sync.service (user-scope deploy steps)",
     ], "host config first, so every pull and link runs with the units and ownership the merge installs"
+    root = steps[0]["run"]
+    assert root.index("fleet-host-config.service") < root.index("fleet-deploy-sync.service")
 
 
 def test_fleet_deploy_chain_matches_deploy_box_order() -> None:
