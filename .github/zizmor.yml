@@ -28,7 +28,7 @@ rules:
   dangerous-triggers:
     ignore:
       # pull_request_target carries dequeued (the ejected job, which runs on
-      # dequeued only) and closed (miss-review-pr); auto_merge_disabled is
+      # dequeued only) and closed (remerge); auto_merge_disabled is
       # still subscribed but starts no job, since a hold or a deliberate
       # disarm must not start a worker. workflow_run carries CI results for
       # claim PRs. Nothing in the file checks out PR code, and the jobs those

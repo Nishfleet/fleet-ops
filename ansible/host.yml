@@ -387,6 +387,11 @@
       - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
 
   tasks:
+    # The review runners' user and registration exist before install-config.yml copies their
+    # drop-ins: a drop-in names a credential the deploy may not have, and a unit whose
+    # LoadCredential= is unreadable does not start.
+    - ansible.builtin.import_tasks: tasks/review-runners.yml
+
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
     - ansible.builtin.import_tasks: tasks/agent-lock.yml

@@ -5,8 +5,16 @@
 # data source and the SQL expression returns 1 only when both windows miss. Routing as
 # queue-stuck.yaml: severity warning, catch-all route files the issue. No data is OK.
 #
-# Only two of the six scorecard numbers have a source today. The failed share counts every
-# non-success finished run, because GitHub run data has no infra-versus-test split.
+# Five of the six scorecard numbers have a source: the failed share (every non-success
+# finished run, because GitHub run data has no infra-versus-test split), products ahead of
+# fleet-ops, idle runner-minutes (fleet-prometheus plus the runs and the ready issues), and
+# the two review clocks (merged pull requests and their reviews). Claude limit per merged PR
+# has no exporter, so no rule can read it.
+#
+# The idle rule's ready-issue search carries archived:false and NOT "grafana alert:" in:title,
+# as every queue-stuck search does: an archived repository rejects every merge, so work in one is
+# not waiting on the pool, and the alert route files its own issues with agent-ready, so without
+# the title filter the rule would count its own filings as waiting work.
 # Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
 apiVersion: 1
 
@@ -203,5 +211,235 @@ groups:
         annotations:
           summary: '{{ if $values }}Product repos merged no more PRs than fleet-ops in each of the last two 24h windows.{{ else }}The fleet cannot read GitHub pull requests for the Fleet scorecard products rule, so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Scorecard target: products ahead of the control plane (fleet-ops#10711). Check whether product work is admitted and unblocked, and say what holds it. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      - uid: scorecard-idle-runners
+        title: Idle agent runners while ready work waits, two days running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent.yml}
+              refId: A
+          - refId: D
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
+              refId: D
+          - refId: B
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Issues
+              owner: Nishfleet
+              repository: ''
+              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              refId: B
+          - refId: P
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-prometheus
+            model:
+              datasource: {type: prometheus, uid: fleet-prometheus}
+              editorMode: code
+              expr: count(node_systemd_unit_state{name=~"actions.runner.Nishfleet.netcup-agent-.*",state="active"} == 1)
+              instant: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              range: true
+              refId: P
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                WITH bounds AS (
+                  SELECT 0 AS w, UNIX_TIMESTAMP() - 86400 AS start_at, UNIX_TIMESTAMP() AS end_at, 1440.0 AS minutes
+                  UNION ALL
+                  SELECT 1, UNIX_TIMESTAMP() - 172800, UNIX_TIMESTAMP() - 86400, 1440.0
+                ), pool AS (SELECT AVG(__value__) AS slots FROM P), slots AS (
+                  SELECT b.w AS w, COALESCE(AVG(P.__value__), (SELECT slots FROM pool)) AS slots
+                  FROM bounds b LEFT JOIN P ON UNIX_TIMESTAMP(P.time) >= b.start_at AND UNIX_TIMESTAMP(P.time) < b.end_at
+                  GROUP BY b.w
+                ), inflight AS (
+                  SELECT UNIX_TIMESTAMP(run_started_at) AS started,
+                         CASE WHEN status = 'completed' THEN UNIX_TIMESTAMP(updated_at) ELSE UNIX_TIMESTAMP() END AS ended
+                  FROM (SELECT run_started_at, status, updated_at FROM A
+                        UNION ALL SELECT run_started_at, status, updated_at FROM D) AS runs
+                  WHERE run_started_at IS NOT NULL
+                ), busy AS (
+                  SELECT b.w AS w,
+                         SUM(CASE WHEN i.ended > b.start_at AND i.started < b.end_at
+                                  THEN (CASE WHEN i.ended < b.end_at THEN i.ended ELSE b.end_at END)
+                                     - (CASE WHEN i.started > b.start_at THEN i.started ELSE b.start_at END)
+                                  ELSE 0 END) / 60.0 AS busy_minutes
+                  FROM bounds b LEFT JOIN inflight i ON i.ended > b.start_at AND i.started < b.end_at
+                  GROUP BY b.w
+                ), waiting AS (
+                  SELECT b.w AS w, COUNT(*) AS ready_issues
+                  FROM bounds b JOIN B ON UNIX_TIMESTAMP(B.created_at) < b.end_at
+                                    AND COALESCE(UNIX_TIMESTAMP(B.closed_at), UNIX_TIMESTAMP()) >= b.start_at
+                  GROUP BY b.w
+                )
+                SELECT CASE WHEN COUNT(*) = 2 THEN 1 ELSE 0 END AS missed
+                FROM bounds b
+                LEFT JOIN slots s ON s.w = b.w
+                LEFT JOIN busy bs ON bs.w = b.w
+                LEFT JOIN waiting wt ON wt.w = b.w
+                WHERE COALESCE(wt.ready_issues, 0) > 0
+                  AND COALESCE(s.slots, 0) * b.minutes - COALESCE(bs.busy_minutes, 0) > 0
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}The agent pool sat idle on both of the last two days while unblocked agent-ready work was waiting.{{ else }}The fleet cannot read the runner metric, the runs or the ready issues for the Fleet scorecard idle rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Scorecard target: 0 idle runner-minutes while ready work waits (fleet-ops#10711). Either the queue stopped admitting work or a lane holds it; say which. Dashboard: Fleet scorecard, idle table.{{ else }}Check the fleet-prometheus and fleet-github data sources in Grafana.{{ end }}'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      - uid: scorecard-verdict-slow
+        title: Head to review verdict over 20 min p50 or 60 min p90, two days running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "is:merged repo:Nishfleet/fleet-ops", timeField: 2}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Request_Reviews
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {query: "is:merged repo:Nishfleet/fleet-ops"}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                WITH pair AS (
+                  SELECT a.number AS pr,
+                         MIN(UNIX_TIMESTAMP(a.created_at)) AS opened_at,
+                         MIN(UNIX_TIMESTAMP(a.merged_at)) AS merged_at,
+                         MAX(CASE WHEN b.review_state = 'APPROVED' AND UNIX_TIMESTAMP(b.review_created_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_created_at) END) AS verdict_at,
+                         MAX(CASE WHEN b.review_state = 'DISMISSED' AND UNIX_TIMESTAMP(b.review_updated_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_updated_at) END) AS dismissed_at
+                  FROM A AS a JOIN B AS b ON b.pull_request_number = a.number
+                  GROUP BY a.number
+                ), minutes AS (
+                  SELECT CASE WHEN merged_at >= UNIX_TIMESTAMP() - 86400 THEN 0 ELSE 1 END AS w,
+                         (verdict_at - CASE WHEN dismissed_at > opened_at AND dismissed_at < verdict_at THEN dismissed_at ELSE opened_at END) / 60.0 AS waiting
+                  FROM pair
+                  WHERE verdict_at IS NOT NULL AND merged_at >= UNIX_TIMESTAMP() - 172800
+                ), ranked AS (
+                  SELECT w, waiting,
+                         ROW_NUMBER() OVER (PARTITION BY w ORDER BY waiting) AS rn,
+                         COUNT(*) OVER (PARTITION BY w) AS c
+                  FROM minutes
+                ), per_window AS (
+                  SELECT w,
+                         ROUND(AVG(CASE WHEN rn >= (c + 1) / 2.0 - 0.5 AND rn <= (c + 1) / 2.0 + 0.5 THEN waiting END), 1) AS p50,
+                         ROUND(MAX(CASE WHEN rn = CEIL(0.9 * c) THEN waiting END), 1) AS p90
+                  FROM ranked GROUP BY w
+                )
+                SELECT CASE WHEN COUNT(*) = 2 THEN 1 ELSE 0 END AS missed
+                FROM per_window WHERE p50 > 20 OR p90 > 60
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Merged fleet-ops PRs waited over 20 min for a verdict at p50, or over 60 min at p90, on each of the last two days.{{ else }}The fleet cannot read the merged pull requests or their reviews for the Fleet scorecard verdict rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Scorecard target: p50 under 20 min, p90 under 60 min (fleet-ops#10711). Find what holds a head before its review starts and fix that. Dashboard: Fleet scorecard, verdict table.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
+        labels: {severity: warning, signal: fleet-scorecard}
+        isPaused: false
+
+      - uid: scorecard-approval-slow
+        title: Approval to merge over 15 min p90, two days running
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "is:merged repo:Nishfleet/fleet-ops", timeField: 2}
+              refId: A
+          - refId: B
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Request_Reviews
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {query: "is:merged repo:Nishfleet/fleet-ops"}
+              refId: B
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                WITH pair AS (
+                  SELECT a.number AS pr,
+                         MIN(UNIX_TIMESTAMP(a.merged_at)) AS merged_at,
+                         MAX(CASE WHEN b.review_state = 'APPROVED' AND UNIX_TIMESTAMP(b.review_created_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_created_at) END) AS verdict_at
+                  FROM A AS a JOIN B AS b ON b.pull_request_number = a.number
+                  GROUP BY a.number
+                ), minutes AS (
+                  SELECT CASE WHEN merged_at >= UNIX_TIMESTAMP() - 86400 THEN 0 ELSE 1 END AS w,
+                         (merged_at - verdict_at) / 60.0 AS waiting
+                  FROM pair
+                  WHERE verdict_at IS NOT NULL AND merged_at >= UNIX_TIMESTAMP() - 172800
+                ), ranked AS (
+                  SELECT w, waiting,
+                         ROW_NUMBER() OVER (PARTITION BY w ORDER BY waiting) AS rn,
+                         COUNT(*) OVER (PARTITION BY w) AS c
+                  FROM minutes
+                ), per_window AS (
+                  SELECT w,
+                         ROUND(AVG(CASE WHEN rn >= (c + 1) / 2.0 - 0.5 AND rn <= (c + 1) / 2.0 + 0.5 THEN waiting END), 1) AS p50,
+                         ROUND(MAX(CASE WHEN rn = CEIL(0.9 * c) THEN waiting END), 1) AS p90
+                  FROM ranked GROUP BY w
+                )
+                SELECT CASE WHEN COUNT(*) = 2 THEN 1 ELSE 0 END AS missed
+                FROM per_window WHERE p90 > 15
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}Approved fleet-ops PRs waited over 15 min to merge at p90 on each of the last two days.{{ else }}The fleet cannot read the merged pull requests or their reviews for the Fleet scorecard approval rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Scorecard target: under 15 min from the approving verdict to the merge (fleet-ops#10711). A PR that goes DIRTY after approval, or a queue that will not admit it, is the usual cause; say which. Dashboard: Fleet scorecard, approval table.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false

@@ -8,12 +8,6 @@ Reasons and switches that used to sit as comments in the workflow files; they mo
 Events that put work on the agent queue. Repo variable AGENT_MODE:
   shadow (default) = only issues also labelled shadow-actions, no rework
   live             = every agent-ready issue, plus rework on red CI
-Repo variable MISS_REVIEW:
-  off (default, unset) = miss-review jobs never start
-  live                 = a miss event starts one different-family review
-To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
-To delete it: revert the miss-review jobs in this file and the miss-review
-path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
 Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
