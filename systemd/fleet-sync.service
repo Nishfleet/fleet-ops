@@ -25,6 +25,23 @@ Type=oneshot
 #    but its wording is quiet; this line is the loud journal marker the
 #    map and RUNBOOK name, and OnFailure= pages.
 ExecStart=/bin/sh -c 'git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --quiet && git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clone diff --cached --quiet || { echo DEPLOY-BLOCKED; exit 1; }'
+# 0a. A clone whose HEAD is on a branch deploys that branch (its unit and config
+#    files are live symlinks into it), so this is a failed deploy, not a quiet one
+#    (fleet-ops#9437): on 2026-10-08 a review session left pr-9426 checked out here
+#    and, until someone switched main 11 minutes later, the live files came from an
+#    unmerged branch; the merge below was what noticed, with the quiet "Not
+#    possible to fast-forward". This check runs before the fetch and prints the
+#    same DEPLOY-BLOCKED marker step 1e prints.
+ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || exit 0; b=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo a detached HEAD); [ "$$b" = main ] || { echo "DEPLOY-BLOCKED: the deploy clone has branch $$b checked out, so no unit or config was updated."; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then review in a worktree, not the deploy clone (fleet-ops#9437)"; exit 1; }'
+# 0b. Install the guard that keeps it on main (fleet-ops#9437): the
+#    reference-transaction hook rejects any HEAD update that is not
+#    refs/heads/main, so an accidental `git checkout` or `git switch --detach` in
+#    this clone fails before it happens instead of deploying an unmerged branch.
+#    `git config` is idempotent and needs no root, and it is set on every sync
+#    because the clone can only be on main, so the hook is always this commit's
+#    copy. Off switch: delete this step and `git -C <clone> config --unset
+#    core.hooksPath`.
+ExecStart=/usr/bin/git -C %h/workspaces/tooling/fleet-ops-deploy-clone config core.hooksPath %h/workspaces/tooling/fleet-ops-deploy-clone/config/git-hooks
 # 1. Fast-forward the clone deterministically (fleet-ops#8893).
 #    `git pull --ff-only origin main` delegates to `git merge --ff-only FETCH_HEAD`,
 #    and a multi-entry `FETCH_HEAD` (e.g. from a concurrent `git fetch` in the
@@ -277,6 +294,17 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
 ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+# 11. The deploy result as a metric (fleet-ops#9437). Nothing paged for a failed
+#    fleet-sync: its OnFailure= healthchecks.io ping is inert on a host without
+#    ~/.config/fleet-ops/keystone-hc.env, and node_exporter's systemd collector
+#    reads system units, not this user unit. The textfile collector reads the
+#    directory the tmpfiles line rootfs/etc/tmpfiles.d/fleet-sync-metric.conf
+#    keeps writable for user nish, and the Prometheus rule FleetSyncFailed pages
+#    when it reads 1. ExecStopPost runs on success and on failure, and
+#    $SERVICE_RESULT is systemd's own verdict, so a timeout and a signal count as
+#    failures too. The leading `-` keeps a metric write that cannot happen (a host
+#    without the tmpfiles line) from becoming a second failure.
+ExecStopPost=-/bin/sh -c 'd=/var/lib/prometheus/node-exporter; test -d "$$d" || exit 0; r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "# TYPE fleet_sync_failed gauge"; echo "fleet_sync_failed $$r"; } > "$$d/.fleet-sync.prom.$$$$" && mv "$$d/.fleet-sync.prom.$$$$" "$$d/fleet-sync.prom"'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

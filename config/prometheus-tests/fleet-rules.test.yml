@@ -611,3 +611,29 @@ tests:
             exp_annotations:
               summary: "Router calls outside any model group keep failing"
               description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
+
+  # FleetSyncFailed (fleet-ops#9437): the deploy clone's textfile metric reads 1
+  # after a failed sync and 0 after a good one, so the page starts 2m later and
+  # clears on the next sync that ends success.
+  - interval: 30s
+    input_series:
+      - series: 'fleet_sync_failed'
+        values: '0x20 1x20 0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FleetSyncFailed
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FleetSyncFailed
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: FleetSyncFailed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "the fleet-ops deploy failed, so no unit or config change reached the box"
+              description: "fleet-sync.service did not end success on its last run. Read `journalctl --user -u fleet-sync.service -n 60`: a DEPLOY-BLOCKED line names the cause and the fix."
+      - eval_time: 25m
+        alertname: FleetSyncFailed
+        exp_alerts: []

@@ -29,13 +29,17 @@ def expand(raw: str, home: Path) -> str:
 
 
 def probe(home: Path) -> list[str]:
+    return exec_line("DEPLOY-BLOCKED: the deploy clone is not at origin/main", home)
+
+
+def exec_line(marker: str, home: Path) -> list[str]:
     for raw in UNIT.read_text().splitlines():
         if not raw.startswith("ExecStart="):
             continue
         expanded = expand(raw[len("ExecStart=") :], home)
-        if "DEPLOY-BLOCKED: the deploy clone is not at origin/main" in expanded:
+        if marker in expanded:
             return shlex.split(expanded)
-    raise AssertionError("no clone-state probe found in systemd/fleet-sync.service")
+    raise AssertionError(f"no {marker!r} line found in systemd/fleet-sync.service")
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -98,3 +102,105 @@ def test_a_clone_behind_origin_main_fails_without_extra_commits_named(tmp_path: 
     assert code != 0
     assert "DEPLOY-BLOCKED" in text
     assert "not-on-main:" not in text
+
+
+HOOK = ROOT / "config" / "git-hooks" / "reference-transaction"
+BRANCH_PROBE = "DEPLOY-BLOCKED: the deploy clone has"
+
+
+def clone_with_hook(tmp_path: Path) -> Path:
+    clone = clone_at(tmp_path)
+    git(clone, "config", "core.hooksPath", str(HOOK.parent))
+    return clone
+
+
+def run_git(cwd: Path, *args: str) -> tuple[int, str]:
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False, env={**os.environ, **GIT_ENV})
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_the_hook_is_executable_and_shipped_as_a_config_file() -> None:
+    assert HOOK.is_file()
+    assert os.access(HOOK, os.X_OK), "git ignores a hook it cannot execute"
+    assert HOOK.read_text().startswith("#!/bin/sh")
+
+
+def test_the_hook_rejects_every_ref_update_that_puts_a_branch_in_the_clone(tmp_path: Path) -> None:
+    clone = clone_with_hook(tmp_path)
+    for args in (
+        ("update-ref", "refs/heads/pr-9426", "refs/heads/main"),
+        ("checkout", "-b", "zz"),
+        ("switch", "--detach", "refs/remotes/origin/main"),
+        ("worktree", "add", "-b", "x", str(tmp_path / "x"), "refs/remotes/origin/main"),
+    ):
+        code, text = run_git(clone, *args)
+        assert code != 0, args
+        assert "DEPLOY-BLOCKED" in text, (args, text)
+        assert "worktree add" in text, args
+    assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_the_hook_blocks_the_fetch_that_created_the_branch(tmp_path: Path) -> None:
+    # The 2026-10-08 shape (fleet-ops#9437): the session fetched the PR head into
+    # a local branch, then checked it out here. The fetch is the part git routes
+    # through the hook, and blocking it leaves no branch to check out.
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    git(remote, "init", "--bare", "-b", "main")
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    git(upstream, "init", "-b", "main")
+    (upstream / "pr.txt").write_text("pr\n")
+    git(upstream, "add", "pr.txt")
+    git(upstream, "commit", "-m", "an unmerged change")
+    git(upstream, "push", str(remote), "HEAD:refs/heads/pr-9426")
+    clone = clone_with_hook(tmp_path)
+    code, text = run_git(clone, "fetch", str(remote), "refs/heads/pr-9426:refs/heads/pr-9426")
+    assert code != 0
+    assert "DEPLOY-BLOCKED" in text
+    assert not (clone / ".git" / "refs" / "heads" / "pr-9426").exists()
+
+
+def test_the_hook_allows_the_deploy_steps(tmp_path: Path) -> None:
+    clone = clone_with_hook(tmp_path)
+    assert run_git(clone, "update-ref", "refs/remotes/origin/main", "HEAD")[0] == 0
+    code, text = run_git(clone, "merge", "--ff-only", "refs/remotes/origin/main")
+    assert code == 0, text
+    code, text = run_git(clone, "checkout", "main")
+    assert code == 0, text
+    assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
+
+
+def test_the_hook_leaves_a_linked_worktree_alone(tmp_path: Path) -> None:
+    clone = clone_with_hook(tmp_path)
+    worktree = tmp_path / "side"
+    code, text = run_git(clone, "worktree", "add", "--detach", str(worktree), "refs/remotes/origin/main")
+    assert code == 0, text
+    assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
+
+
+def test_a_clone_on_a_branch_fails_at_step_0a_before_the_fetch(tmp_path: Path) -> None:
+    clone = clone_at(tmp_path)
+    git(clone, "switch", "-c", "pr-9426")
+    proc = subprocess.run(exec_line(BRANCH_PROBE, tmp_path), capture_output=True, text=True, check=False)
+    assert proc.returncode != 0
+    text = proc.stdout + proc.stderr
+    assert "DEPLOY-BLOCKED" in text
+    assert "branch pr-9426" in text
+    assert "switch main" in text
+
+
+def test_a_clone_on_main_passes_step_0a(tmp_path: Path) -> None:
+    clone_at(tmp_path)
+    proc = subprocess.run(exec_line(BRANCH_PROBE, tmp_path), capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_fleet_sync_installs_the_hook_on_every_sync(tmp_path: Path) -> None:
+    clone = clone_at(tmp_path)
+    line = exec_line("config core.hooksPath", tmp_path)
+    proc = subprocess.run(line, capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert git(clone, "config", "core.hooksPath") == str(tmp_path / CLONE / "config" / "git-hooks")
+
