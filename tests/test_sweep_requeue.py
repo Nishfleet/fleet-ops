@@ -97,6 +97,20 @@ def test_idle_six_hours_requeues_and_fresh_waits(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [1]
 
 
+def test_a_quiet_priority_now_issue_waits_thirty_minutes_not_six_hours(tmp_path):
+    """#10681 carried priority-now and needs-orchestrator and nothing ran for an hour, because this
+    waited 6 h (fleet-ops#10716)."""
+    labelled = ("orchestrator-tried", "priority-now")
+    w = run(tmp_path, [issue(1, hours_idle=0.55, labels=labelled),
+                       issue(2, hours_idle=0.45, labels=labelled)])
+    assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_the_thirty_minute_wait_is_only_for_a_priority_now_issue(tmp_path):
+    w = run(tmp_path, [issue(1, hours_idle=0.55), issue(2, hours_idle=7)])
+    assert edits(w, "--add-label needs-orchestrator") == [2]
+
+
 def test_batch_is_five(tmp_path):
     w = run(tmp_path, [issue(n) for n in range(1, 8)])
     assert len(edits(w, "--add-label needs-orchestrator")) == 5

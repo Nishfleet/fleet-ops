@@ -697,13 +697,15 @@ jobs:
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
+      # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) then 1800 else 21600 end)
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
