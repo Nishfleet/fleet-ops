@@ -1124,6 +1124,18 @@ def test_glue_sweep_user_config_debris_is_retired() -> None:
     assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
 
 
+GLUE_SWEEP_CHECKOUT_CACHES = (
+    "{{ nish_home }}/workspaces/tooling/last30days-skill/.pytest_cache",
+)
+
+
+def test_glue_sweep_checkout_caches_are_retired() -> None:
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
+    assert not missing, f"host.yml does not delete these checkout caches: {missing}"
+
+
 def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
     """A user unit deleted while the user manager holds it stays listed by
     list-unit-files until that manager reloads, which is half of #10544's check."""
