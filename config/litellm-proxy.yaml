@@ -938,7 +938,7 @@ router_settings:
   redis_host: 127.0.0.1
   redis_port: 6379
   redis_password: os.environ/REDIS_PASSWORD
-  # 600 s: the p99 gap inside a session is 214 s, so a live pin holds and a dead-row pin expires in 10 min. The fix is upstream (fleet-ops#9411).
+  # 600 s: the p99 gap inside a session is 214 s, so a live pin holds and a dead-row pin expires in 10 min. The fix is upstream (fleet-ops#9411); the session-hop alert on the SELECT-only grafana_ro source (config/grafana/provisioning/alerting/session-hop.yaml, fleet-ops#9475) bounds the damage meanwhile.
   deployment_affinity_ttl_seconds: 600
   # Worker rows are order 1 (a peer set); judge is order 1 Alibaba, order 2 the OpenCode Go pair. The order filter runs for every strategy (fleet-ops#9374).
   # A desk alias renames the group a job already picked, so the 3-day token trial changes compaction alone (fleet-ops#9330). Long note 14: docs/litellm-router-notes.md
