@@ -163,11 +163,41 @@
         {
           "refId": "H",
           "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "seo-fix-kit",
+          "options": {
+            "query": "is:merged repo:Nishfleet/seo-fix-kit",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "mailbox",
+          "options": {
+            "query": "is:merged repo:Nishfleet/mailbox",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "J",
+          "datasource": {
             "type": "__expr__",
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM C UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM D UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM E UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM F UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM G) AS merged\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM C UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM D UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM E UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM F UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM G UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM H UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM I) AS merged\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {
