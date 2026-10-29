@@ -3,6 +3,8 @@ Description=Agent Tincan wake for cursor-vps (tincan listen -> headless agent dr
 Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=16
 [Service]
 Environment=TINCAN_CONFIG=%h/.config/tincan/cursor-vps.json
 Environment=FLEET_TASK_ID=tincan-cursor-vps

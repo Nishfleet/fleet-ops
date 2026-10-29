@@ -5,6 +5,8 @@
 
 [Unit]
 Description=Fleet LiteLLM Postgres (Quadlet, fleet-ops#8435)
+StartLimitIntervalSec=10min
+StartLimitBurst=160
 
 [Container]
 # Pinned by digest (the image running when this was pinned); the tag is only a label.

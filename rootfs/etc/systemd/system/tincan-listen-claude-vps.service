@@ -4,7 +4,7 @@ Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
 StartLimitIntervalSec=10min
-StartLimitBurst=5
+StartLimitBurst=16
 
 [Service]
 User=nish

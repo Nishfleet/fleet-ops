@@ -3,6 +3,8 @@ Description=Cua daemon for the desk persistent agent (Cua Spaces bundled cua)
 Documentation=https://cua.ai/docs/cua-sdk/reference/spaces/persistent-agents
 After=network-online.target cua-spacesd-host.service
 Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=240
 
 [Service]
 Type=simple

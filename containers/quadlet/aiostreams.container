@@ -1,5 +1,7 @@
 [Unit]
 Description=aiostreams (media streaming aggregator)
+StartLimitIntervalSec=10min
+StartLimitBurst=96
 
 [Container]
 # Pinned by digest; the tag is only a label. Bump the digest in its own PR.

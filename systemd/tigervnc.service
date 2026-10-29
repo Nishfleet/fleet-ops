@@ -1,5 +1,7 @@
 [Unit]
 Description=TigerVNC desktop on :1 (IceWM)
+StartLimitIntervalSec=10min
+StartLimitBurst=32
 
 [Service]
 # Tailnet address only (see ss -ltn 'sport = :5901'). -interface must come before

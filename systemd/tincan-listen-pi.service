@@ -3,6 +3,8 @@ Description=Agent Tincan wake for pi (tincan listen -> headless pi drains the in
 Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=16
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/pi.json
 Environment=FLEET_TASK_ID=tincan-pi

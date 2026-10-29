@@ -57,6 +57,100 @@ def test_systemd_analyze_reports_no_unknown_directive() -> None:
     assert unknown == [], "\n".join(unknown)
 
 
+USER_INSTALLED = ROOT / "rootfs/etc/systemd/user"
+TIME_UNITS = {"": 1, "us": 1e-06, "ms": 1e-03, "s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600, "d": 86400}
+DESIGNED_FLAPPERS = {
+    "claude-remote-control.service (system)": "selfheal.conf turns the limit off and 50-alert-on-stop.conf pages from ExecStopPost=, because OnFailure= cannot fire",
+    "tailscaled.service (system)": "50-restart-always.conf turns the limit off: this link is the way back to the box",
+}
+
+
+def unit_layers() -> dict[str, list[Path]]:
+    """Unit name and its manager to the files systemd reads for it: the base file first, then its drop-ins."""
+    layers: dict[str, list[Path]] = {}
+    managers = {
+        "user": [ROOT / "systemd", USER_INSTALLED],
+        "system": [INSTALLED],
+    }
+    for manager, roots in managers.items():
+        for root in roots:
+            for path in sorted(root.glob("*.service")):
+                layers.setdefault(f"{path.name} ({manager})", []).append(path)
+            for path in sorted(root.glob("*.service.d/*.conf")):
+                layers.setdefault(f"{path.parent.name.removesuffix('.d')} ({manager})", []).append(path)
+    for path in sorted(ROOT.glob("containers/quadlet/*.container")):
+        layers.setdefault(f"{path.stem}.service (user)", []).append(path)
+    return layers
+
+
+def sections(path: Path) -> list[tuple[str, str, str]]:
+    """(section, key, value) for every assignment in the file, in file order. Units repeat keys, so no configparser."""
+    entries: list[tuple[str, str, str]] = []
+    section = ""
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, separator, value = line.partition("=")
+        if separator:
+            entries.append((section, key.strip(), value.strip()))
+    return entries
+
+
+def seconds(value: str) -> float:
+    spans = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*([a-z]+)?", value)
+    assert spans and all(unit in TIME_UNITS for _, unit in spans), f"{value!r} is not a systemd time span"
+    return sum(float(number) * TIME_UNITS[unit] for number, unit in spans)
+
+
+def last(entries: list[tuple[str, str, str]], key: str) -> tuple[str, str] | None:
+    """(section, value) of the key systemd would use, or None."""
+    found = [(section, value) for section, name, value in entries if name == key]
+    return found[-1] if found else None
+
+
+def test_a_restarting_unit_can_spend_its_start_limit() -> None:
+    problems = []
+    for unit, files in unit_layers().items():
+        entries = [entry for path in files for entry in sections(path)]
+        restart = last(entries, "Restart")
+        if restart is None or restart[1] not in ("always", "on-failure"):
+            continue
+        interval = last(entries, "StartLimitIntervalSec")
+        if unit in DESIGNED_FLAPPERS:
+            if interval is None or seconds(interval[1]) != 0:
+                problems.append(f"{unit}: DESIGNED_FLAPPERS names it, so it must turn the limit off with StartLimitIntervalSec=0")
+            continue
+        burst = last(entries, "StartLimitBurst")
+        if interval is None or burst is None:
+            problems.append(
+                f"{unit}: Restart={restart[1]} with no StartLimitIntervalSec=/StartLimitBurst= pair. The default 5 "
+                "starts in 10s cannot be spent at a slower RestartSec, so the unit loops instead of failing, and its "
+                "OnFailure= never fires (fleet-ops#10253)"
+            )
+            continue
+        if interval[0] != "Unit" or burst[0] != "Unit":
+            problems.append(f"{unit}: StartLimitIntervalSec=/StartLimitBurst= outside [Unit] is ignored by systemd")
+            continue
+        if seconds(interval[1]) <= 0:
+            problems.append(
+                f"{unit}: StartLimitIntervalSec={interval[1]} turns the limit off. Name it in DESIGNED_FLAPPERS with the reason instead"
+            )
+            continue
+        restart_sec = last(entries, "RestartSec")
+        spent = seconds(burst[1]) * seconds(restart_sec[1] if restart_sec else "100ms")
+        if spent >= seconds(interval[1]):
+            problems.append(
+                f"{unit}: StartLimitBurst={burst[1]} at RestartSec={restart_sec[1] if restart_sec else '100ms (the default)'} "
+                f"needs {spent}s, which does not fit inside StartLimitIntervalSec={interval[1]}, so the burst is spent by "
+                "restarts that never happen"
+            )
+    assert problems == [], "\n".join(problems)
+
+
 def test_fleet_deploy_verdict_line_names_the_request_the_run_started_with(tmp_path: Path) -> None:
     lines = (INSTALLED / "fleet-deploy.service").read_text().splitlines()
     post = [line.removeprefix("ExecStopPost=") for line in lines if line.startswith("ExecStopPost=/bin/sh -c 'r=")]

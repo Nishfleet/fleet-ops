@@ -3,6 +3,8 @@ Description=Agent Tincan wake for devin-vps (tincan listen -> headless devin dra
 Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=16
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/devin-vps.json
 Environment=FLEET_TASK_ID=tincan-devin-vps

@@ -21,6 +21,8 @@ Description=Agent Tincan wake for claude-vps (tincan listen -> claude -p drains 
 Wants=network-online.target
 After=network-online.target
 OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=16
 
 [Service]
 Environment=TINCAN_CONFIG=/home/nish/.config/tincan/claude-vps.json

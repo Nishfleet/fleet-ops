@@ -235,7 +235,13 @@ dispatcher, find the existing owner. systemd primitives replace the bans:
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
 or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
 owner fits, open a design proposal through the senior-conference channel — do
-not build by fiat.
+not build by fiat. A unit that sets `Restart=always` or `Restart=on-failure`
+also sets `StartLimitIntervalSec=` and `StartLimitBurst=` large enough for the
+burst to fit inside the interval: the default 5 starts in 10s can never be
+spent by a `RestartSec=30`, so such a unit loops forever instead of failing and
+its `OnFailure=` page never fires. The one exception is a unit that means to
+retry without end, which turns the limit off and pages from `ExecStopPost=`
+(fleet-ops#10253, enforced by `tests/test_systemd_unit_keys.py`).
 
 ## CI standard (the parts that stay)
 

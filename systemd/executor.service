@@ -1,6 +1,8 @@
 [Unit]
 Description=Executor MCP hub (executor.sh) - loopback only
 After=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=96
 
 [Service]
 Environment=PATH=/home/nish/.nvm/versions/node/v24.21.0/bin:/usr/local/bin:/usr/bin:/bin

@@ -2,6 +2,8 @@
 Description=Hermes backend server for Desktop app (Tailscale-only)
 After=network-online.target tailscaled.service
 Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=48
 
 [Service]
 User=nish

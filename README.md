@@ -159,7 +159,11 @@ script, or prompt lands unseen.
   does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
   are enabled already (the wants link names the unit, and step 2j keeps the six
   wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. The OpenCode lane will not start without its own key file, so mint
+  restart. A wake service that keeps dying lands `failed` after about eight
+  minutes: `StartLimitBurst=16` at `RestartSec=30` spends
+  `StartLimitIntervalSec=10min`, and only a `failed` unit lets
+  `OnFailure=fleet-unit-failed@%N.service` fire (fleet-ops#10253). The OpenCode
+  lane will not start without its own key file, so mint
   that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
   limit) into the fleet's seat directory before its first start, the way the
   Cursor lane's seat file is provisioned: a missing file fails the unit and

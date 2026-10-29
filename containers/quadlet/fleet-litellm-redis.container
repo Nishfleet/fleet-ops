@@ -4,6 +4,8 @@
 
 [Unit]
 Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
+StartLimitIntervalSec=10min
+StartLimitBurst=240
 
 [Container]
 # Pinned by digest, so it carries no AutoUpdate=registry: a pinned image must not carry that
