@@ -25,18 +25,24 @@ lines carry the count:
   line.
 
 Step 3 may not count anything. It names at most two waiting items from the `ROW`
-lines and copies the overflow number from `WAITING_MORE`, so the count cannot
-drift away from the label it describes. The wording that told the model to keep
-the count to itself, while still printing "and N more waiting", is gone: the same
-run carried both rules, and the model resolved them by writing a number it had no
-source for.
+lines and copies the overflow number from `WAITING_MORE`, so the number it speaks
+is the sweep's own labelled backlog rather than a count of the lines it happened
+to print. The wording that told the model to keep the count to itself, while
+still printing "and N more waiting", is gone: the same run carried both rules,
+and the model resolved them by writing a number it had no source for.
+
+Two bounds stay, and the page states them rather than promising more than the
+command holds. One sweep reads at most 1000 labelled issues per repository, so a
+repository above that cap makes the total too low. The overflow line is written
+only when two items are named, so a run that names one item or none says nothing
+about the rest of the backlog.
 
 Two digest runs put a wrong number in that line. Run `150bb7b3` (2026-10-22)
 stated 13 more waiting while 68 open issues carried the label, so 66 were left
-unnamed. Run `06829ce1` (2026-10-26, from the audit of that day's FAKE case)
-stated "and 5 more waiting" in a run that held no new item. The number was wrong,
-not the sweep: the sweep had already stored every labelled issue. Both are Hermes
-execution ids, and the digest job's history on the host lists each one.
+unnamed. Run `06829ce1` (2026-10-26) stated "and 5 more waiting" in a run that
+held no new item. The number was wrong, not the sweep: the sweep had already
+stored every labelled issue. Both are Hermes execution ids, and the digest job's
+history on the host lists each one.
 
 ## Switch the waiting lines off
 
@@ -49,7 +55,7 @@ The count lines are printed either way. Switch the wording off with these edits.
    `tests/test_digest_checks.py` and the `"and N more waiting"` pin from
    `tests/test_digest_reply_shape.py`, because both assert the wording you just
    removed.
-3. Run both test files, then land the three edits in one PR. The deploy applies
+3. Run both test files, then land all four edits in one PR. The deploy applies
    the new prompt to the live jobs.
 
 `WAITING_TOTAL` and `WAITING_MORE` stay printed either way, and
