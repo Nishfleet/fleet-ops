@@ -72,6 +72,13 @@ GENERIC_SINK = "fleet-alert-dispatch"
 ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
 TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
 AUDIENCE_SINKS = {"nish": "nish-ask-dispatch"}
+# Every worker token is minted with a body that names one repository, so a rule
+# that reads one of these boards gets 404 from every worker lane and its issue
+# parks (fleet-ops#10881).
+WORKER_UNREADABLE = {"nish-vault"}
+# A permanent condition repeats its issue until the seat acts, and only the seat
+# can, so its issue is filed no more often than this.
+SEAT_REPEAT = 86400
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
 # #9857, #9876 and #9897 are one Pareto credit wall across four issues. Paging is
@@ -312,6 +319,29 @@ def selftest():
     audience_bad = []
     audience_check(ask, audience_policy, {}, audience_bad)
     assert audience_bad == [], audience_bad
+    unlabelled = [{"title": "Nish ask sits open with no PR for 4h", "labels": {},
+                   "data": [{"model": {"repository": "nish-vault"}}]}]
+    audience_bad = []
+    audience_check(unlabelled, audience_policy, good_sink, audience_bad)
+    assert audience_bad == ["Nish ask sits open with no PR for 4h: reads ['nish-vault'], which no worker token "
+                            "can reach, so it must carry audience nish"], audience_bad
+    hourly = {"receiver": "root", "routes": [
+        {"receiver": "nish-ask-dispatch", "repeat_interval": "6h",
+         "object_matchers": [["audience", "=", "nish"], ["alertname", "!~", "DatasourceError|DatasourceNoData"]]},
+        {"receiver": "fleet-alert-dispatch"}]}
+    audience_bad = []
+    audience_check(ask, hourly, good_sink, audience_bad)
+    assert audience_bad == ["Nish ask sits open with no PR for 4h: repeat interval is 21600s, under a day, so a "
+                            "condition only the seat can clear files a new issue every day"], audience_bad
+    partial = {name: {"receivers": []} for name in sorted(ISSUE_SINKS)}
+    partial["nish-ask-dispatch"] = {"receivers": [{"disableResolveMessage": True, "settings": dict(
+        settings, payload={"template": '{{ coll.Slice "needs-nish-decision" }}'})}]}
+    shape_bad, audience_bad = [], []
+    sink_shape(partial, shape_bad)
+    audience_check(ask, audience_policy, partial, audience_bad)
+    assert shape_bad == [f"{name}: the contact point has no receiver, so its alert files nothing"
+                         for name in sorted(ISSUE_SINKS - {"nish-ask-dispatch"})], shape_bad
+    assert audience_bad == [], audience_bad
 
 
 def dead_row_shape(rules, points, bad):
@@ -504,9 +534,8 @@ def check_datasource_refs(root, provisioning):
 
 
 def sink_shape(points, bad):
-    """Every issue sink reaches the GitHub issues API with the minted token and POSTs, or
-    its alert files nothing at all: fleet-ops#10881 added nish-ask-dispatch for the ask
-    board's alert, and a sink that cannot deliver is the same as no fix."""
+    """Every issue sink POSTs to the issues API with the minted token, or its alert files
+    nothing at all: a sink that cannot deliver is the same as no fix."""
     for name in sorted(ISSUE_SINKS):
         receivers = points.get(name, {}).get("receivers") or []
         if not receivers:
@@ -523,11 +552,14 @@ def sink_shape(points, bad):
 
 
 def audience_check(rules, policy, points, bad):
-    """Every audience label reaches its own sink, and that sink files an issue the worker
-    queue does not dispatch: fleet-ops#10881 filed the ask board's alert as a dispatchable
-    issue, and the worker it dispatched got 404 on the private board it named."""
+    """A rule that reads a board no worker token can reach files an issue for its own seat,
+    and only for it, and no more often than a day."""
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
+        reads = {d.get("model", {}).get("repository") for d in r.get("data") or []}
+        if reads & WORKER_UNREADABLE and labels.get("audience") != "nish":
+            bad.append(f"{title}: reads {sorted(reads & WORKER_UNREADABLE)}, which no worker token can reach, "
+                       f"so it must carry audience nish")
         audience = labels.get("audience")
         if not audience:
             continue
@@ -542,6 +574,10 @@ def audience_check(rules, policy, points, bad):
         if GENERIC_SINK not in err or want in err:
             bad.append(f"{title}: a read error on it must reach {GENERIC_SINK} and not {want}, "
                        f"because the fleet fixes a broken data source and the seat cannot")
+        repeats = [secs for rc, secs in route(policy, {**labels, "alertname": title}) if rc == want and secs]
+        if repeats and min(repeats) < SEAT_REPEAT:
+            bad.append(f"{title}: repeat interval is {min(repeats)}s, under a day, so a condition only the seat "
+                       f"can clear files a new issue every day")
         for rcv in points.get(want, {}).get("receivers") or []:
             tpl = ((rcv.get("settings") or {}).get("payload") or {}).get("template", "")
             if 'coll.Slice "needs-nish-decision"' not in tpl:

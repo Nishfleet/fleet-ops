@@ -1709,7 +1709,8 @@ jobs:
         # same audience label, so the real audience route and the real
         # nish-ask-dispatch payload template must render a needs-nish-decision
         # issue here, not an agent-ready one: that is the whole fix, and a template
-        # that fails to render files nothing at all.
+        # that fails to render files nothing at all. This proves the route and the
+        # template against a local sink; it does not prove GitHub accepted the issue.
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
