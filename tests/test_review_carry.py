@@ -77,6 +77,16 @@ def repo(tmp_path):
     git(r, "checkout", "-qb", "merged", c["old"])
     git(r, "merge", "-q", "--no-edit", c["b2"])
     c["merged"] = git(r, "rev-parse", "HEAD")
+    # the same conflict, resolved twice inside a merge of main: one kept the PR's own line, one changed it
+    for name, text, msg in (("mkeep", "a\na2\nb\nc\n", "merge main, kept the PR line"), ("mchanged", "a\na2\nb2\nc\n", "merge main, changed the PR line")):
+        git(r, "checkout", "-qb", name, c["old"])
+        subprocess.run([*GIT, "-C", str(r), "merge", "-q", "--no-edit", "--no-commit", c["b1"]], capture_output=True)
+        c[name] = commit(r, {"list.txt": text}, msg)
+    # a PR that changes one line of list.txt only, and a head that puts that line at another place in the file
+    git(r, "checkout", "-qb", "old2", c["b0"])
+    c["old2"] = commit(r, {"list.txt": "a\nb\nc\n"}, "pr, list only")
+    git(r, "checkout", "-qb", "mv2", c["b2"])
+    c["mv2"] = commit(r, {"list.txt": "b\na\nc\n"}, "rebase, the PR line moved, nothing else")
     git(r, "checkout", "-qb", "added", c["old"])
     c["added"] = commit(r, {"new.txt": "n\n"}, "a new commit on top")
     return r, c
@@ -158,11 +168,38 @@ def test_changed_binary_file_does_not_carry(tmp_path, repo):
     assert interdiff(r, said, out, diff, c["old"]) and "blob.bin" in diff, r.stdout + r.stderr + diff
 
 
-@pytest.mark.parametrize("head,base", [("ws", "b2"), ("moved", "b2"), ("both", "b3")])
-def test_whitespace_position_or_own_line_change_does_not_carry(tmp_path, repo, head, base):
+@pytest.mark.parametrize("head,base", [("ws", "b2"), ("both", "b3")])
+def test_whitespace_or_own_line_change_reviews_only_the_interdiff(tmp_path, repo, head, base):
     c = repo[1]
     r, said, out, diff = review(tmp_path, repo, c[base], c[head], [approval(c["old"])])
     assert interdiff(r, said, out, diff, c["old"]), r.stdout + r.stderr + diff
+
+
+def test_range_diff_cannot_see_a_merge_resolution(tmp_path, repo):
+    # why carry() compares the PR's own diff and replays it, and does not use `git range-diff` to decide scope:
+    # for a branch that merged main, range-diff lists the merge as an added commit and marks the PR's own commit
+    # unchanged in both cases, so it reads the same whether the resolution kept the PR's line or changed it
+    origin, c = repo
+    for head in (c["mkeep"], c["mchanged"]):
+        out = git(origin, "range-diff", f"{c['b0']}..{c['old']}", f"{c['b1']}..{head}")
+        assert " = " in out.splitlines()[0] and " ! " not in out and "<" not in out, out
+    kept, changed = tmp_path / "kept", tmp_path / "changed"
+    kept.mkdir()
+    changed.mkdir()
+    r, said, out, _ = review(kept, repo, c["b1"], c["mkeep"], [approval(c["old"])])
+    assert carried(r, said, out, c["old"], c["mkeep"]), r.stdout + r.stderr
+    r, said, out, diff = review(changed, repo, c["b1"], c["mchanged"], [approval(c["old"])])
+    assert interdiff(r, said, out, diff, c["old"]), r.stdout + r.stderr + diff
+
+
+@pytest.mark.parametrize("head,prior", [("moved", "old"), ("mv2", "old2")])
+def test_a_line_moved_with_nothing_else_changed_gets_a_full_review(tmp_path, repo, head, prior):
+    # the two own diffs read the same once the hunk position is dropped, so there is no interdiff to show: the
+    # replay is what tells them apart, and it sends this to a full review
+    c = repo[1]
+    r, said, out, diff = review(tmp_path, repo, c["b2"], c[head], [approval(c[prior])])
+    assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout, r.stdout + r.stderr
+    assert "+b" in diff.splitlines(), diff
 
 
 def verdict(line):
@@ -170,13 +207,13 @@ def verdict(line):
 
 
 @pytest.mark.parametrize("comments", [
-    [approval(MISSING)],  # the approved head cannot be fetched: the range-diff errors
+    [approval(MISSING)],  # the approved head cannot be fetched: carry() fails closed
     [],  # nothing approved before
     [approval("OLD", login="someone")],  # an approval line from another login
     [approval("OLD", edited=True)],  # an edited bot comment
     [verdict("reviewer: 1111111111111111111111111111111111111111 blocked. Fix these.\n\ncoordinator-approval: OLD")],  # an approval line quoted below the first line
     [approval("OLD"), verdict("reviewer: 1111111111111111111111111111111111111111 blocked. Fix these.")],  # a later head was blocked
-], ids=["range-diff-error", "no-prior-approval", "other-login", "edited-comment", "quoted-approval-line", "blocked-after-approval"])
+], ids=["prior-head-unreachable", "no-prior-approval", "other-login", "edited-comment", "quoted-approval-line", "blocked-after-approval"])
 def test_anything_else_gets_a_full_review(tmp_path, repo, comments):
     c = repo[1]
     comments = json.loads(json.dumps(comments).replace("OLD", c["old"]))

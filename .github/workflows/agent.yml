@@ -877,24 +877,29 @@ jobs:
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"; git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
           # Review scope (#10681): an approval follows the change, not the commit. A head whose own diff
           # (merge-base to head) is unchanged since an approved head carries that approval, and a head whose own
-          # diff did change is reviewed only against the approved diff, as range-diff shows it. Anything else is
-          # a full review, including any error below. A guard or workflow head is a full review on both sides of
-          # the comparison: a workflow a PR adds could post the approval as the same bot (see the job comment), so
-          # a later head that dropped it would inherit a forged approval.
+          # diff did change is reviewed only against the approved diff. `git range-diff` cannot decide this: when
+          # the branch merged main, its output is the same whether the conflict resolution kept the PR's own line
+          # or changed it (tests/test_review_carry.py holds that case). Anything else is a full review, including
+          # any error below. A guard or workflow head is a full review on both sides of the comparison: a workflow
+          # a PR adds could post the approval as the same bot (see the job comment), so a later head that dropped
+          # it would inherit a forged approval.
           guard_hits() { jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length'; }
           guard=false; [ "$(guard_hits < "$RUNNER_TEMP/files.txt")" = 0 ] || guard=true
           # The newest verdict this bot posted decides, and only an approval of another head can carry. Only a line
           # that STARTS an unedited body counts, so a hold comment quoting an approval, or a review quoting a diff
-          # line, is not one.
+          # line, is not one. An approved head that no longer exists makes the fetch in carry() fail, a full review.
           prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at) | .body | split("\n")[0] | select(test("^coordinator-approval: [0-9a-f]{40}$|^reviewer: [0-9a-f]{40} (blocked|not approved)\\."))] | last // "" | (capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s // empty) | select(. != $sha)') || prior=
-          own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" > "$RUNNER_TEMP/own.diff"; if [ "${3:-}" = text ]; then sed -E '/^index /d; s/^@@ -[0-9,]+ \+[0-9,]+ @@/@@/' "$RUNNER_TEMP/own.diff"; else git -C "$bt" patch-id --verbatim < "$RUNNER_TEMP/own.diff" | cut -d' ' -f1; fi; }
+          # A head's own diff: merge-base to head, with no blob id and no hunk position, so the same change compares
+          # equal after a rebase. Compared as text, which is stricter than a patch id (a patch id ignores the path a
+          # hunk is in), and needs no git option newer than merge-tree.
+          own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" | sed -E '/^index /d; s/^@@ -[0-9,]+ \+[0-9,]+ @@.*/@@/'; }
           # carry: the approved head's own diff, replayed onto this head's merge-base with union merge (so a line
-          # main added beside it in a conflict is kept), must give this head's tree exactly, and the own +/- lines
-          # must be the same (verbatim -U0 patch-id, so no whitespace change and no position change). Otherwise the
-          # two own diffs are compared as text and what differs is the interdiff to review.
-          carry() { local omb nmb a b t pg rc=0; git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$prior:refs/prior" || return 1; omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) || return 1; pg=$(git -C "$bt" diff --name-only "$omb" refs/prior | guard_hits) && [ "$pg" = 0 ] || return 1; a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] && mkdir -p "$bt/.git/info" && echo '* merge=union' > "$bt/.git/info/attributes" || return 1
+          # main added beside it in a conflict is kept), must give this head's tree exactly, and the two own diffs
+          # must read the same (so no whitespace change, no position change, no file added or dropped). Otherwise what
+          # differs between them is the interdiff to review. The `+` forces refs/prior, so a rerun cannot be refused.
+          carry() { local omb nmb a b t pg rc=0; git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "+$prior:refs/prior" || return 1; omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) || return 1; pg=$(git -C "$bt" diff --name-only "$omb" refs/prior | guard_hits) && [ "$pg" = 0 ] || return 1; a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] && mkdir -p "$bt/.git/info" && echo '* merge=union' > "$bt/.git/info/attributes" || return 1
             if [ "$a" = "$b" ] && t=$(git -C "$bt" merge-tree --write-tree --merge-base="$omb" "$nmb" refs/prior) && [ "$t" = "$(git -C "$bt" rev-parse 'refs/head^{tree}')" ]; then rm -f "$bt/.git/info/attributes"; echo carry; return 0; fi
-            rm -f "$bt/.git/info/attributes"; own "$omb" refs/prior text > "$RUNNER_TEMP/approved.diff" && own "$nmb" refs/head text > "$RUNNER_TEMP/head.diff" || return 1; diff -u --label "approved $prior" --label "head $SHA" "$RUNNER_TEMP/approved.diff" "$RUNNER_TEMP/head.diff" > "$RUNNER_TEMP/interdiff.txt" || rc=$?; [ "$rc" = 1 ] && echo interdiff; }
+            rm -f "$bt/.git/info/attributes"; diff -u --label "approved $prior" --label "head $SHA" <(printf '%s\n' "$a") <(printf '%s\n' "$b") > "$RUNNER_TEMP/interdiff.txt" || rc=$?; [ "$rc" = 1 ] && echo interdiff; }
           scope=full note=; [ -z "$prior" ] || [ "$guard" != false ] || scope=$(carry) || scope=full; case $scope in carry|interdiff) ;; *) scope=full ;; esac; echo "review scope: $scope${prior:+ (approved head $prior)}"
           if [ "$scope" = carry ]; then [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }; approve_say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. Carried over from approved head %s: this PR makes the same change (its own diff is unchanged, and the approved change replayed onto the new base gives this head exactly), so it was not reviewed again. CI still has to pass before it merges.' "$SHA" "$SHA" "$prior")"; echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"; exit 0; fi
           if [ "$scope" = interdiff ]; then printf -v note '\n\nOnly the interdiff against approved head %s was reviewed; the rest of this PR is unchanged since that approval.' "$prior"; { printf '=== INTERDIFF: head %s of this PR was approved. Below is only what changed in the PR own diff since then, as a diff of the approved diff and the head diff (a line starting -+ or -- left the change, ++ or +- joined it); review this change. ===\n' "$prior"; cat "$RUNNER_TEMP/interdiff.txt"; } > "$RUNNER_TEMP/diff.txt"; fi
