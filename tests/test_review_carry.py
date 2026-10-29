@@ -87,6 +87,8 @@ def repo(tmp_path):
     c["old2"] = commit(r, {"list.txt": "a\nb\nc\n"}, "pr, list only")
     git(r, "checkout", "-qb", "mv2", c["b2"])
     c["mv2"] = commit(r, {"list.txt": "b\na\nc\n"}, "rebase, the PR line moved, nothing else")
+    git(r, "checkout", "-qb", "mv3", c["b2"])
+    c["mv3"] = commit(r, {"list.txt": "b\na\nc\n", "note.txt": "n\n"}, "rebase, the PR line moved and a note was added")
     git(r, "checkout", "-qb", "added", c["old"])
     c["added"] = commit(r, {"new.txt": "n\n"}, "a new commit on top")
     return r, c
@@ -192,14 +194,15 @@ def test_range_diff_cannot_see_a_merge_resolution(tmp_path, repo):
     assert interdiff(r, said, out, diff, c["old"]), r.stdout + r.stderr + diff
 
 
-@pytest.mark.parametrize("head,prior", [("moved", "old"), ("mv2", "old2")])
-def test_a_line_moved_with_nothing_else_changed_gets_a_full_review(tmp_path, repo, head, prior):
-    # the two own diffs read the same once the hunk position is dropped, so there is no interdiff to show: the
-    # replay is what tells them apart, and it sends this to a full review
+@pytest.mark.parametrize("head,prior", [("moved", "old"), ("mv2", "old2"), ("mv3", "old2")], ids=["move-only", "move-only-one-file", "move-and-add"])
+def test_a_line_moved_to_another_place_shows_as_the_interdiff(tmp_path, repo, head, prior):
+    # the two own diffs read the same once the hunk position is dropped and the replay onto the new base does not give
+    # this head, so the difference is the hunk position, and the interdiff keeps it: the reviewer reads the move
     c = repo[1]
     r, said, out, diff = review(tmp_path, repo, c["b2"], c[head], [approval(c[prior])])
-    assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout, r.stdout + r.stderr
-    assert "+b" in diff.splitlines(), diff
+    assert interdiff(r, said, out, diff, c[prior]), r.stdout + r.stderr + diff
+    lines = diff.splitlines()
+    assert " +b" in lines and any(x.startswith("-@@ ") for x in lines) and any(x.startswith("+@@ ") for x in lines), diff
 
 
 def verdict(line):
