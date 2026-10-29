@@ -1229,7 +1229,10 @@ jobs:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
-    timeout-minutes: 60
+    # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
+    # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
+    # margin here is slack, not the budget the session runs in (fleet-ops#11059).
+    timeout-minutes: 85
     # GITHUB_TOKEN stays read-only; every write, the session's too, is the App token (fleet-ops#10949).
     permissions:
       issues: read
@@ -1403,7 +1406,12 @@ jobs:
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
-        timeout-minutes: 50
+        # 75, not 50 (fleet-ops#11059): 31 of the 67 failed agent-dispatch runs in the week to 2026-10-29
+        # were this step's kill, 28 of the 32 failing orchestrate jobs ran at least 45 of the 50 minutes,
+        # and the session spends most of that wall in model latency and in the tests its change needs.
+        # The measurements are on #11059. The prompt's Time budget books the last 15 minutes for landing
+        # the PR, keeps its own clock, and tests/test_workflow_caps.py holds its numbers to this one.
+        timeout-minutes: 75
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor's template-injection rule fails the workflow otherwise.
