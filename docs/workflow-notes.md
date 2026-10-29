@@ -117,7 +117,10 @@ The workflow file is 48 lines (fleet-ops#10947). Every reason that used to sit a
   fails, and an `if:` can skip on cancellation or any future condition edit). The authorizer is
   step 1 of the job itself, so a fork PR or an unapproved dispatch candidate fails the required
   check with a real failure: a gate that cannot verify must say no, never render green or skipped.
-  Path optimization lives in step-level conditions only (the fork guard on the scan step).
+  Path optimization lives in step-level conditions only (the fork guard on the scan step). The
+  checkout's `ref:` is `github.sha`, the candidate the authorizer just proved: routing that same
+  commit through a step output changes nothing about which commit is checked out, and CodeQL's
+  `untrusted-checkout` query then reports it as a privileged checkout of untrusted code.
 - The authorizer refuses every event shape it was not written for: only `Nishfleet/fleet-ops`, only
   a 40-hex `GITHUB_SHA`, a `refs/pull/N/merge` PR from this repository, a `refs/heads/main` or
   `master` push, a `gh-readonly-queue/` merge-group ref, or a first-attempt dispatch from `main`
