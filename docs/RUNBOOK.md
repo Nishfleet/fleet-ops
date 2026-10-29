@@ -23,6 +23,130 @@ rail are in `README.md`; design and enforced rules are in
    gauge per deployment (0 healthy, 1 partial, 2 outage).
 5. `uptime` for load; merged-PR counts per repo for throughput.
 
+## The failed-unit check and leftover ad-hoc units
+
+`ansible/update.yml` fails the daily update when `systemctl list-units
+--state=failed` is not empty, for system units and for nish's user units. The
+check is strict and stays strict: a failed unit fails the run, whatever it is
+and whenever it stopped. Nothing is tolerated and nothing is reset.
+
+A leftover is cleared by hand, not by the run. `systemctl --user reset-failed
+<unit>` is one stock line, and it is the only thing that clears it: the run
+calling `reset-failed` itself would drop the record of a unit this run has not
+read yet, and it would turn a red run green without anyone reading the name.
+So the run stays red until the named units are reset. That is what it is for:
+a red daily update is a list of names, and the names are the fix.
+
+The run reads no `Transient` flag and no stop time. A tolerance window needs a
+start it cannot get: the gap between two runs varies (the drain waits up to
+150 min, apt and the tool updates run long, `FLEET_PAUSED` can hold the fleet
+for days), so a window either equals the run period and can miss a red run, or
+is wide enough to hide a failure for days. Both were tried and cut
+(fleet-ops#10211).
+
+The cause of a leftover is a `systemd-run` transient. A unit `systemd-run`
+created stays loaded in `failed` state after it stops, under the user manager
+and the system manager alike, because `systemd-run` leaves `CollectMode=
+inactive` and nothing unloads it. `reset-failed` is the only thing that clears
+it.
+
+What the launcher rule in AGENTS.md "Session-outliving work" changes is the
+detector, not the leftover. It launches a system unit as nish. node_exporter
+reads only the system bus, so a failed system unit fires `SystemUnitFailed`
+and becomes a fix job. A failed user unit is not scraped: of the 212 unit
+names node_exporter exposes, not one is a user-manager unit, and
+`fleet-sync.service`, `fleet-litellm-proxy.service` and `tincan-listen-pi.service`
+are all absent from them. A user unit's one other route is
+`OnFailure=fleet-unit-failed@%N.service`, which every user unit in `systemd/`
+carries and which instantiates a system unit node_exporter does scrape. That
+route is dormant on this box, because the reconcile URL file it reads is mode
+000, root-owned and empty, so the unit SKIPs and exits 0. What hears about a
+failed user unit today is the daily update, and nothing else. A leftover still
+needs a hand `reset-failed`; the difference is that somebody hears about it.
+
+To read a leftover before clearing it, `show` is the one-line form (`status`
+prints the flag too, inside its `Loaded:` and `Transient:` lines, which is not
+something a script can read):
+
+    systemctl --user show -p Transient --value <unit>       # yes = no unit file
+    systemctl --user show -p InactiveEnterTimestamp --value <unit>
+
+Then one line clears it: `systemctl --user reset-failed <unit>`.
+
+The failed-unit check itself has not been what turned a run red lately. The
+three most recent runs that reported it all read `failed units: []`, and all
+three ended red on other checks (an unpinned pi extension, runners resumed,
+one tool update failed), which is the check doing its job. A green run does not
+print the list at all, because the string only exists in the assert's failure
+message. A leftover that appears between runs is named by the next run, and
+only a hand `reset-failed` clears it.
+
+## D1 backups and the monthly restore drill (fleet-ops#10594)
+
+drive's weekly `d1-export.yml` exports every product database, seals each
+dump with `age` to the `AGE_RECIPIENT` repo variable, and uploads it as a
+GitHub artifact kept 90 days. The recipient is a public key, so a public repo's
+artifacts being publicly downloadable is not a leak: a dump without the private
+key is noise. The matrix covers drive's own database plus
+`siterep_payments`, `aiconverter`, `tinystudio_email_signups` and `0509`
+(fleet-ops#10594).
+
+Two rows in that matrix stay red on purpose, and both are open:
+`tinystudio_email_signups` answers HTTP 404 on the export endpoint
+(fleet-ops#10830, the database is not in the account the token names) and
+drive's own job is refused by the D1 export API because of FTS5 virtual tables
+(drive#1027). A missing backup that fails loudly on the run is the point: a
+matrix row that quietly passes would hide it. When the account is sorted, the
+fix is one line. Each database moves into its own repository's workflow once
+that repo has its own export credential (fleet-ops#10829).
+
+The restore drill is the other half, and it is a host unit rather than a
+workflow: the private key at `~/.config/drive/d1-backup-key.txt` lives on this
+box and on no runner, and Nish has ruled out putting it in GitHub Actions
+secrets. `fleet-d1-restore-drill.timer` runs `fleet-d1-restore-drill.service`
+on the 1st of every month at 05:30 IST, and fleet-sync step 2l links and enables
+it on every deploy (a drill that is silently off is the failure it ships to
+fix).
+
+What the drill does, in four steps and no script:
+
+1. Walks the newest completed `d1-export.yml` runs and takes the first that
+   left a `d1-backup-*` artifact. No branch filter, because the thing being
+   restored is the newest backup rather than the newest run: drive's own main
+   matrix still fails on purpose (drive#1027) and the product rows sit on a
+   branch until #10829 and #10830 land, so `-b main` would leave the drill with
+   nothing to restore every month. The escape a bad dump could use is not a
+   branch but a dot-command, so step 3 loads it with `sqlite3 -safe`.
+2. Downloads every `d1-backup-*` artifact of that run in one `gh run download`
+   call, with the one-hour Actions-write App token minted by the token unit's
+   Actions-only instance for drive, which is revoked and whose env file is
+   deleted the moment the run ends.
+3. Decrypts each dump with `age`, loads the SQL into a fresh local SQLite file
+   with `sqlite3 -safe -bail` (the export API hands back SQL text, not a
+   database file, and safe mode is what stops a dump written by anyone who can
+   run that workflow from running a shell command on this host), runs
+   `PRAGMA integrity_check`, and counts every table's rows.
+4. Writes one report to `~/workspaces/agent-state/d1-restore-drill/`.
+
+It never calls the Cloudflare API. The restore target is a local SQLite file, so
+the drill cannot create, import into or delete a D1 database and needs no D1
+token at all. Decrypted dumps never leave a 0700 runtime directory that systemd
+removes when the unit stops, and the report carries counts and integrity results
+only, never a row, a name or an email address.
+
+Read the last drill:
+
+    ls -t ~/workspaces/agent-state/d1-restore-drill/report-*.md | head -1 | xargs cat
+    journalctl --user -u fleet-d1-restore-drill.service -b
+
+Run one by hand, on the host:
+
+    systemctl --user start fleet-d1-restore-drill.service
+
+Switch it off: `systemctl --user disable --now fleet-d1-restore-drill.timer`,
+then drop step 2l and its enable line from `systemd/fleet-sync.service` and
+delete both unit files.
+
 ## Deploy and wiring
 
 `deploy-box.yml` (push to main) → `fleet-sync.service` runs
@@ -46,10 +170,11 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Every root-owned file under `/etc` that the repo
+(full commands in [Install](install.md)). Every root-owned file under `/etc` that the repo
 ships lives in `rootfs/` and is `fleet-host-config.service`'s job (Ansible's
 `ansible-pull` of `ansible/host.yml`, started by deploy-box.yml on every merge
-and by a daily timer). Its `daemon-reload` re-applies a changed slice cap to
+and once after every boot by `fleet-host-config-boot.timer`; the daily timer is
+gone, fleet-ops#10457). Its `daemon-reload` re-applies a changed slice cap to
 the running slice (fleet-ops#8862). A failed run is in
 `journalctl -u fleet-host-config.service`; a `Hand-installed` line names a file
 to add under `rootfs/`, delete, or list in `/etc/fleet-ops/box-only`. What still
@@ -61,13 +186,26 @@ After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
 
+### Version tags
+
+One tag exists, `v1`, on the first auto-merge arm (fleet-ops#4303). Tag when a
+state is worth naming: a release, a point to roll back to, or a container image
+bump. Nothing in `.github/` reads a tag, so a tag deploys and reverts nothing by
+itself: the deploy runs from `main`'s tip, and a rollback is a revert commit on
+`main` (the auto-revert organ writes that one when a deploy goes red). Create
+one with `git tag -a <name> -m "<why>"` and push it, and keep it on `main`.
+
 ### Shell startup files
 
 Interactive shells do not read `~/.config/environment.d`. The systemd user
 manager does, for user units, so a value only a unit needs goes there. Do not
 add a loader for it to `~/.bashrc` or `~/.zshrc`. Work that needs a value from
-a file runs as a unit or `systemd-run --user` transient with `EnvironmentFile=`,
-not from an interactive shell (README, "systemd by default").
+a file runs as a system unit as nish (AGENTS.md "Session-outliving work") with
+`EnvironmentFile=`, never as a `systemd-run` transient under the user manager,
+because a failed user unit is not scraped: node_exporter reads only the system
+bus, so a failed `--user` unit fires no alert and only the daily update sees it
+("The failed-unit check and leftover ad-hoc units" above). Not from an
+interactive shell either (README, "systemd by default").
 
 The loader that ran the systemd environment generator in those files from
 2026-10-07 carried the pi-grok `PI_XAI_CLIENT_VERSION` pin into shells. The pin
@@ -368,8 +506,8 @@ Rollback (follow-up): delete the three `.container` files in
 ## Claude session credentials (fleet-ops#9020)
 
 The systemd `--user` manager environment carries no Claude, Exa or Browser Use
-names. The manager hands its environment to every user unit, every
-`systemd-run --user` transient and every quadlet container, so the names were
+names. The manager hands its environment to every user unit, every transient
+under the user manager and every quadlet container, so the names were
 removed from it in this order:
 
 1. Delete `~/.config/environment.d/50-agent-secrets.conf`.
@@ -408,8 +546,8 @@ names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
 the shared one.
 
 Readers of the shared file in this repo: none (re-audited for every unit,
-drop-in, quadlet, workflow, prompt and recipe that starts `claude`, `pi`,
-`devin`, `opencode`, `cursor-agent` or a fleet worker). One unit reads a
+drop-in, quadlet, workflow, prompt and recipe that starts `claude`,
+`pi` or a fleet worker). One unit reads a
 single-name file of its own instead (fleet-ops#10222):
 
 - `claude-remote-control.service` is a system unit. A system manager never saw
@@ -424,8 +562,7 @@ single-name file of its own instead (fleet-ops#10222):
   tracked, never printed; check it with `test -s` and `stat -c %a`.
 - `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
-  user manager either. The worker engines read their own credentials: devin and
-  opencode their own logins, cursor `seats/cursor.env`, pi the `litellm`
+  user manager either. The pi worker reads its own credentials: the `litellm`
   provider with per-group keys plus `seats/mobbin-mcp.env`.
 - `fleet-litellm-proxy.container` took the whole manager environment through
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.
@@ -439,13 +576,14 @@ The runner environment is the one thing the repo cannot show (the runner
 `.env` and the live `~/.pi/agent` extensions are outside it). If a worker
 engine ever needs one of these names, give that runner a drop-in with the line
 above for the single file it needs; nothing in this repo asks for it today. A
-hand-run `claude -p` or `systemd-run --user` that needs the token passes the
-line above.
+hand-run `claude -p`, or a transient under the user manager, that needs the
+token passes the line above.
 
 ## Unattended Claude runs (fleet-ops#9502)
 
 Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
-(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the tincan inbox drainer; its user-level copy was retired in
+fleet-ops#10125) and `claude-remote-control.service`
 (system unit, the Remote Control server). Both used to pass
 `--permission-mode bypassPermissions`, which skips every check, so the
 `permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
@@ -499,9 +637,9 @@ dontAsk on Remote Control is intended: Nish cannot approve a one-off command
 from the phone. A denied call is reported in the session and there is no
 prompt to tap.
 
-The tincan unit goes live after merge, when fleet-sync has the new file and
-the user unit is reloaded (`systemctl --user daemon-reload && systemctl
---user restart tincan-listen-claude-vps.service`). Remote Control stays on
+The tincan unit goes live after merge, when fleet-host-config has the new file and
+the root unit is reloaded (`sudo systemctl daemon-reload && sudo systemctl
+restart tincan-listen-claude-vps.service`). Remote Control stays on
 the old `ExecStart` until Nish restarts it.
 
 **Where denials show.** Each denied call is reported twice: in the unit's
@@ -531,6 +669,11 @@ cost: the netcup provider VNC console.
 - It is not a second SSH listener, not a standing open console, and not a
   live-tailscaled kill (a lockout, not an experiment — that stays a Nish
   game-day). Panel login lives in Nish's password manager; never here.
+- The bind is repo config: `rootfs/etc/systemd/system/ssh.socket.d/override.conf`
+  is installed to `/etc/systemd/system/ssh.socket.d/override.conf` by
+  `ansible/host.yml`, which restarts `ssh.socket` when it changes, and
+  `tests/test_systemd_unit_keys.py` fails if the file ever names a wildcard
+  address (fleet-ops#10541). Edit it there, never by hand.
 
 ## Rebuild the box from nothing
 

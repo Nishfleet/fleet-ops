@@ -17,11 +17,21 @@ SUDO = ["sudo", "-n"] if IN_CI else []
 SCOPE = [] if IN_CI else ["--user"]
 RUN_DIR = pathlib.Path("/run" if IN_CI else os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"))
 UNIT_DIR = pathlib.Path("/etc/systemd/system" if IN_CI else pathlib.Path.home() / ".config/systemd/user")
-ENV_DIR = RUN_DIR / "fleet-worker-github-token"
+# The test copies use their own runtime directory: on a host whose live units use
+# fleet-worker-github-token, removing or recreating that directory hands the token
+# to every running agent runner (the jail hides only the inode it saw at start).
+ENV_NAME = "fleet-worker-github-token-pytest"
+ENV_DIR = RUN_DIR / ENV_NAME
 pytestmark = pytest.mark.skipif(
     shutil.which("systemd-run") is None or not (IN_CI or (RUN_DIR / "bus").exists()),
     reason="needs a systemd manager",
 )
+
+
+def own_dir(text):
+    text = text.replace("RuntimeDirectory=fleet-worker-github-token\n", f"RuntimeDirectory={ENV_NAME}\n").replace("%t/fleet-worker-github-token/", f"%t/{ENV_NAME}/")
+    assert not re.search(r"fleet-worker-github-token(/|\n)", text), "a test unit still names the live token directory"
+    return text
 
 
 def sh(cmd, **kw):
@@ -49,7 +59,7 @@ def mint(tmp_path_factory):
             if s.connect_ex(("127.0.0.1", port)) == 0:
                 break
         time.sleep(0.25)
-    text = UNIT.read_text()
+    text = own_dir(UNIT.read_text())
     text = text.replace("%h/.config/fleet-worker/nishfleet-worker.private-key.pem", str(d / "app.pem"))
     text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.M)
     text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{port}", text, flags=re.M)
@@ -157,7 +167,7 @@ def test_pr_sweep_unit_revokes_its_token_then_deletes_it(mint):
     gh.chmod(0o755)
     sh(["chmod", "a+w", str(calls)])
     text = (ROOT / "systemd/fleet-pr-sweep@.service").read_text()
-    text = text.replace("fleet-worker-github-token@", NAME).replace("/usr/bin/env gh", str(gh))
+    text = own_dir(text.replace("fleet-worker-github-token@", NAME).replace("/usr/bin/env gh", str(gh)))
     text = re.sub(r"^(OnFailure|Restart|RestartSec)=.*\n", "", text, flags=re.M)
     if IN_CI:
         text = text.replace("[Service]\n", f"[Service]\nUser={os.environ['USER']}\n")

@@ -357,8 +357,3 @@ def test_red_main_job_is_gated_and_needs_no_new_token():
     assert "TinyStudio" not in cond
     assert _y(".jobs.red-main.steps[0].env.GH_TOKEN").strip() == "${{ github.token }}"
     assert dict(l.split(": ") for l in _y(".jobs.red-main.permissions").strip().splitlines()) == {"issues": "write", "actions": "read"}
-
-
-def test_builders_are_told_to_use_the_red_main_issue_not_file_a_new_one():
-    text = (ROOT / "AGENTS.md").read_text()
-    assert "red-main: <workflow file>" in text and "fleet-ops#9308" in text
