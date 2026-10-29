@@ -20,7 +20,7 @@ LIST = ROOT / "config/risky-paths.json"
 
 def _env(name):
     out = subprocess.run(
-        ["yq", f'.env.{name} // .jobs["hold-risky"].env.{name}', str(WORKFLOW)],
+        ["yq", f".env.{name}", str(WORKFLOW)],
         check=True, capture_output=True, text=True, timeout=120)
     value = out.stdout.strip()
     assert value and value != "null", f"agent-dispatch.yml env {name} is missing"
@@ -54,7 +54,7 @@ def approve():
 
     def run(case):
         done = subprocess.run(
-            ["jq", "-r", "--arg", "c", context, "--arg", "who", " ".join(case["approvers"]), program],
+            ["jq", "-r", "--arg", "c", context, "--arg", "who", " ".join(case.get("approvers", [])), program],
             input=json.dumps({k: case.get(k) for k in ("sha", "statuses", "comments")}),
             capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
@@ -64,7 +64,8 @@ def approve():
 
 
 def test_every_case_classifies_as_its_want(config, classify):
-    assert config["paths"]["*"], "risky-paths.json holds no '*' path, so nothing is held"
+    assert config.get("paths", {}).get("*"), "risky-paths.json holds no '*' path, so nothing is held"
+    assert config["cases"], "risky-paths.json holds no case, so the classifier is untested"
     wrong = []
     for case in config["cases"]:
         cfg = {"paths": case["paths"]} if "paths" in case else config
@@ -75,6 +76,7 @@ def test_every_case_classifies_as_its_want(config, classify):
 
 
 def test_every_approval_case_answers_its_want(config, approve):
+    assert config["approval_cases"], "risky-paths.json holds no approval case, so the program is untested"
     wrong = []
     for case in config["approval_cases"]:
         assert isinstance(case["want"], bool), f"{case['id']}: want is not a bool"
