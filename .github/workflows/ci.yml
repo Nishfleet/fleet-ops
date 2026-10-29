@@ -1347,9 +1347,11 @@ jobs:
               grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"
               grep -q -- " token=$tok\$" "$STATE/merge" || problem="$problem arm token is not $tok"
             fi
-            # The approval is the worker App's comment on this head, and only for a head this run reviewed: the
-            # job token's github-actions[bot] is no approver, and a dispatch or a stale approved_sha never writes one.
-            want_ap=no; [ "$reviewed" != sha ] || [ "$got" != yes ] || want_ap=yes
+            # The approval is the worker App's comment on this head, written once the PR passed the open, head,
+            # draft and armed checks of a head this run reviewed. It comes before the file-list read and the arm,
+            # so a failed arm still leaves it, and the job token's github-actions[bot] is no approval at all.
+            live=yes; [ -z "$head$draft$armed$closed" ] || live=no
+            want_ap=no; [ "$reviewed" != sha ] || [ "$live" != yes ] || want_ap=yes
             got_ap=no; grep -qx "coordinator-approval: $SHA" "$STATE/comments" && grep -qx 'token=set' "$STATE/comments" && got_ap=yes
             [ "$got_ap" = "$want_ap" ] || problem="$problem approval comment=$got_ap (want $want_ap)"
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi

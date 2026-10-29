@@ -1124,6 +1124,12 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
+          # The approval hold-risky and the coordinator-approval gate count: an unedited comment naming this head,
+          # written as the worker App, because the job's GITHUB_TOKEN posts as github-actions[bot] and a PR that adds
+          # its own workflow can post as that bot too (fleet-ops#9521). Only this run's own review of this exact head
+          # turns it on; a dispatch input or a stale approval never does. It comes before the file-list read and the
+          # arm, so a failed arm still leaves the approval on the head that was reviewed, and the sweep can arm it.
+          if [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then GH_TOKEN=$ARM_TOKEN gh pr comment "$PR" -R "$REPO" --body "coordinator-approval: $SHA"; echo "approved #$PR at $SHA as the worker App"; fi
           # This job's App token is minted without the workflows permission, so GitHub refuses its arm on a PR that edits
           # .github/workflows/**. For such a PR the arm uses the runner user's gh login
           # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
@@ -1131,11 +1137,6 @@ jobs:
           # input switches it on, any other arm keeps the App token, and a failed file-list read
           # fails the step instead of falling to the wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          # The approval hold-risky and the coordinator-approval gate count: an unedited comment naming this head,
-          # written as the worker App, because the job's GITHUB_TOKEN posts as github-actions[bot] and a PR that adds
-          # its own workflow can post as that bot too (fleet-ops#9521). Only this run's own review of this exact head
-          # turns it on; a dispatch input or a stale approval never does.
-          if [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then GH_TOKEN=$ARM_TOKEN gh pr comment "$PR" -R "$REPO" --body "coordinator-approval: $SHA"; echo "approved #$PR at $SHA as the worker App"; fi
           if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
             echo "armed #$PR at $SHA (workflow edit, runner login)"
