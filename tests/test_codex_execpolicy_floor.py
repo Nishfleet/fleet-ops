@@ -13,6 +13,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/codex/rules/fleet-floor.rules"
@@ -167,7 +168,7 @@ def test_every_class_has_match_examples():
 
 def test_host_play_installs_the_file_for_nish():
     play = json.loads(subprocess.run(
-        ["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True,
+        ["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True,
     ).stdout)[0]
     tasks = {t["name"]: t for t in play["tasks"]}
     install = tasks["Install the Codex execpolicy floor"]

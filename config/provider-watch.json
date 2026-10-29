@@ -1,5 +1,5 @@
 {
-  "cline": {"watch": "(:free|-free|/free)$|^cline|^deepseek/|^z-ai/"},
   "minimax": {"billing": "flat"},
-  "straitly": {"listing": "none"}
+  "straitly": {"listing": "none"},
+  "anthropic": {"listing": "none"}
 }

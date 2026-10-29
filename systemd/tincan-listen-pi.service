@@ -1,0 +1,20 @@
+[Unit]
+Description=Agent Tincan wake for pi (tincan listen -> headless pi drains the inbox)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+# A crash loop must reach `failed` for the hook above to run: the default
+# 5 starts in 10 s is never spent at RestartSec=30 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/pi.json
+Environment=FLEET_TASK_ID=tincan-pi
+StateDirectory=tincan-listen-pi
+WorkingDirectory=%S/tincan-listen-pi
+ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/pi --print --provider litellm --model worker-cheap < /home/nish/.config/tincan/prompts/pi.txt'
+Restart=always
+RestartSec=30
+[Install]
+WantedBy=default.target

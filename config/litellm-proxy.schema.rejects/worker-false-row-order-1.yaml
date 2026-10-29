@@ -13,5 +13,7 @@ model_list:
     supports_prompt_caching: false
     cache_proof: "Cannot cache: own-path probe 2026-10-07, 8 streamed calls on a ~20k prefix, cached_tokens 0 on all 8 completed calls (https://github.com/Nishfleet/fleet-ops/issues/9365)"
 router_settings:
-  redis_url: redis://127.0.0.1:6379
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
   cooldown_time: 60

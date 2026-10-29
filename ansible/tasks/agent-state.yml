@@ -1,0 +1,104 @@
+# Local agent state (audit follow-up): the session databases and the runner
+# credential files are for nish alone. Mode only, never owner, and each task
+# does nothing when its files are absent. These run as nish, not root: the
+# directories are nish's to write, so a root chmod could be steered through
+# a symlink onto a file nish does not own. Checked 2026-10-22: all 26
+# actions.runner.* units have User=nish and every runner process is nish's,
+# so owner-only modes keep the runners working; no other user or group
+# reads these files. SQLite gives a new -wal/-shm the
+# mode of the main database, so fixing the main file covers them.
+# The Grafana database is covered too. The
+# Grafana container runs UserNS=keep-id, so its process is nish (uid 1000) on
+# the host and needs no group access; its data directory is already 0700.
+- name: Look for the agent state directories
+  become: true
+  become_user: nish
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    # Pi worker session logs live under here (directory mode only; the
+    # files inside are nish's and stay as the tool writes them).
+    - "{{ nish_home }}/.pi"
+    # The directories the session-database scan below reads: their own 0700
+    # mode is what keeps a SQLite -journal/-wal/-shm file private, since the
+    # scan skips those files (fleet-ops#10390).
+    - "{{ agent_share }}/leviathan"
+    - "{{ agent_share }}/fleet-grafana"
+  register: agent_state_dirs
+
+- name: Keep the agent state directories private
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    mode: "0700"
+  loop: "{{ agent_state_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish'
+
+- name: Find the agent session databases
+  become: true
+  become_user: nish
+  ansible.builtin.find:
+    paths:
+      - "{{ agent_share }}/fleet-grafana"
+    patterns:
+      - sessions.db*
+      - pi.db*
+      - claude.db*
+      - grafana.db*
+    # SQLite creates and removes its own -journal, -wal and -shm files while
+    # it writes, so a listing can catch one and the chmod below then fail
+    # with 'is absent' (fleet-ops#10390). Skip them: SQLite gives a new one
+    # the mode of the main database, and the directories the scan reads are
+    # kept 0700, so the main file's 0600 plus the directory cover them
+    # (https://sqlite.org/tempfiles.html).
+    excludes:
+      - "*-journal"
+      - "*-wal"
+      - "*-shm"
+    file_type: file
+  register: agent_state_dbs
+
+- name: Keep the agent session databases private
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: file
+    mode: "0600"
+  loop: "{{ agent_state_dbs.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  # A file nish does not own is skipped: nish cannot chmod it.
+  when: item.pw_name == 'nish'
+
+- name: Find the runner credential files
+  become: true
+  become_user: nish
+  ansible.builtin.find:
+    paths:
+      - "{{ agent_share }}/actions-runner"
+      - "{{ agent_share }}/agent-runner"
+      - "{{ agent_share }}/fleet-ci-runner"
+    patterns: ".credentials*"
+    hidden: true
+    recurse: true
+    depth: 2
+    file_type: file
+  register: runner_credentials
+
+- name: Keep the runner credential files private
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: file
+    mode: "0600"
+  loop: "{{ runner_credentials.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  # A file nish does not own is skipped: nish cannot chmod it.
+  when: item.pw_name == 'nish'

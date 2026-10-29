@@ -1,0 +1,801 @@
+# Tether (fleet-ops#9980, phase 1): a system unit with its own service user,
+# because per-user units silently ignore sandbox settings on this box. This
+# run never enables or starts tether-agent.service: it stays disabled until
+# the tasks below put a pinned, checksummed release at /opt/tether/current
+# (root-owned, so the service user cannot rewrite its own code). The marker
+# file is the lasting off-switch: while it exists this run creates nothing
+# for tether, removes its firewall rule and keeps the unit disabled and
+# stopped. The marker path is a var so the test in
+# tests/test_systemd_unit_keys.py can run these tasks under --check.
+- name: Look for the tether off marker
+  tags: [tether, tether-release]
+  ansible.builtin.stat:
+    path: "{{ tether_off_marker }}"
+  register: tether_off
+
+# tether-agent.service is enabled by hand (this run never enables it), so
+# the release-change restart handler fires only when that wants symlink
+# exists. Read-only, so it runs with and without the marker.
+- name: Look for an enabled tether-agent unit
+  tags: [tether, tether-release]
+  ansible.builtin.stat:
+    path: /etc/systemd/system/multi-user.target.wants/tether-agent.service
+    follow: false
+  register: tether_agent_enabled
+
+- name: Create the tether group
+  tags: [tether]
+  ansible.builtin.group:
+    name: tether
+    system: true
+  when: not tether_off.stat.exists
+
+- name: Create the tether service user
+  tags: [tether]
+  ansible.builtin.user:
+    name: tether
+    group: tether
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+  when: not tether_off.stat.exists
+
+- name: Create the tether config directory
+  tags: [tether]
+  ansible.builtin.file:
+    path: /etc/tether
+    state: directory
+    owner: root
+    group: tether
+    mode: "0750"
+  when: not tether_off.stat.exists
+  # Under --check the group above was not really created yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Create the tether app directory, root-owned
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_release_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not tether_off.stat.exists
+
+# Node for the unit: the official linux-x64 tarball, pinned by version and
+# sha256, unpacked into a root-owned versioned directory. The unit's
+# ExecStart names that binary by absolute path. The distro nodejs package
+# is not used and is not touched.
+- name: Download the pinned Node tarball for tether
+  tags: [tether]
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ tether_node_version }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    dest: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    checksum: "sha256:{{ tether_node_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: not tether_off.stat.exists
+  # A --check run by a user that cannot write /var/cache (the test) fails here.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Create the versioned Node directory, root-owned
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_node_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not tether_off.stat.exists
+
+- name: Unpack the pinned Node for tether
+  tags: [tether]
+  ansible.builtin.unarchive:
+    src: "{{ tether_node_cache }}/node-v{{ tether_node_version }}-linux-x64.tar.xz"
+    dest: "{{ tether_node_dir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    owner: root
+    group: root
+    creates: "{{ tether_node_dir }}/bin/node"
+  when: not tether_off.stat.exists
+  # Under --check the download above did not really happen.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The tether release. Download, verify, unpack and link share one block, so a
+# GitHub or download failure cannot abort the host-config tasks after it: the
+# rescue leaves `current` where it was and records the failure, and the last
+# task of the play fails the run loudly once everything else is done.
+# Order inside the block: download as nish (the only user with a GitHub login;
+# the token stays in gh's own config), verify by copying into a root-owned
+# file under the pinned sha256, unpack into a root-owned staging directory,
+# check its layout and modes, rename it into place (atomic), and only then
+# point `current` at it. A directory named <version>-<sha12> therefore only
+# ever appears whole and verified; one that fails the check is removed and
+# unpacked fresh. Under --check a task that cannot work without the real
+# download is ignored, as for the Node tarball above.
+- name: Install the pinned tether release, or record why it failed
+  tags: [tether, tether-release]
+  when: not tether_off.stat.exists
+  block:
+    - name: Create the tether release cache, root-owned
+      ansible.builtin.file:
+        path: "{{ tether_release_cache }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Create the nish download directory for tether releases
+      ansible.builtin.file:
+        path: "{{ tether_release_cache }}/nish"
+        state: directory
+        owner: nish
+        group: nish
+        mode: "0755"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for this tether release directory
+      ansible.builtin.stat:
+        path: "{{ tether_release_dir }}"
+      register: tether_rel_dir
+
+    # Every file, directory and hidden entry below the release, symlinks not
+    # followed. The result is filtered below for group- or other-writable
+    # entries and for owners other than root (uid 0); links are skipped,
+    # their mode is not theirs to set.
+    - name: Scan this tether release for writable or non-root files
+      ansible.builtin.find:
+        paths: "{{ tether_release_dir }}"
+        file_type: any
+        recurse: true
+        hidden: true
+        follow: false
+      register: tether_rel_scan
+      check_mode: false  # read-only; runs under --check too
+      when: tether_rel_dir.stat.isdir | default(false)
+
+    - name: Record the writable or non-root files in this tether release
+      ansible.builtin.set_fact:
+        tether_rel_unsafe: "{{ ((tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_rel_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+
+    - name: Look for the entry point of this tether release
+      ansible.builtin.stat:
+        path: "{{ tether_release_dir }}/dist/index.js"
+      register: tether_rel_entry
+
+    # Complete means: a real directory, a regular dist/index.js, and nothing
+    # in it that is group or other writable or not owned by root.
+    - name: Record whether this tether release is already installed whole
+      ansible.builtin.set_fact:
+        tether_rel_ok: "{{ (tether_rel_dir.stat.isdir | default(false)) and (tether_rel_entry.stat.isreg | default(false)) and (tether_rel_dir.stat.uid | default(1) == 0) and not (tether_rel_dir.stat.wgrp | default(true)) and not (tether_rel_dir.stat.woth | default(true)) and (tether_rel_unsafe | default(['x']) | length == 0) }}"
+
+    - name: Look for the verified tether tarball
+      ansible.builtin.stat:
+        path: "{{ tether_release_tarball }}"
+        checksum_algorithm: sha256
+      register: tether_rel_tar
+
+    - name: Record whether the tether release must be downloaded
+      ansible.builtin.set_fact:
+        tether_rel_fetch: "{{ not tether_rel_ok and not (tether_rel_tar.stat.exists and tether_rel_tar.stat.checksum == tether_sha256) }}"
+
+    # gh keeps nish's login in a file, so it works under become_user. When the
+    # login has lapsed `gh auth token` prints nothing, and this says so.
+    - name: Read whether gh is logged in for nish
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ tether_gh }}", auth, token]
+      register: tether_gh_token
+      changed_when: false
+      failed_when: false
+      no_log: true
+      check_mode: false  # read-only; runs under --check too
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Require nish's gh login before the download
+      ansible.builtin.assert:
+        that: tether_gh_token.rc == 0 and (tether_gh_token.stdout | length) > 0
+        fail_msg: "gh not authenticated for nish: run `gh auth login` as nish, then the next host-config run installs tether v{{ tether_version }}"
+        quiet: true
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Download the pinned tether release as nish
+      become: true
+      become_user: nish
+      environment: "{{ nish_env }}"
+      ansible.builtin.command:
+        argv: ["{{ tether_gh }}", release, download, "v{{ tether_version }}", -R, Nishfleet/tether, -p, "tether-v{{ tether_version }}.tar.gz", -D, "{{ tether_release_cache }}/nish", --clobber]
+        chdir: "{{ tether_release_cache }}/nish"
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # nish writes this directory (gh cannot write into a root-owned one), so
+    # root reads only a plain file there: a link to another file is refused
+    # before get_url follows it.
+    - name: Look at the unverified tether download
+      ansible.builtin.stat:
+        path: "{{ tether_release_download }}"
+      register: tether_rel_dl
+      when: tether_rel_fetch | bool
+
+    - name: Require the tether download to be a plain file
+      ansible.builtin.assert:
+        that: tether_rel_dl.stat.isreg | default(false)
+        fail_msg: "{{ tether_release_download }} is missing or is not a plain file; it is not read"
+        quiet: true
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Verify the tether release against the pinned sha256
+      ansible.builtin.get_url:
+        url: "file://{{ tether_release_download }}"
+        dest: "{{ tether_release_tarball }}"
+        checksum: "sha256:{{ tether_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Remove the unverified tether download
+      ansible.builtin.file:
+        path: "{{ tether_release_download }}"
+        state: absent
+      when: tether_rel_fetch | bool
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Clear the tether staging directory
+      ansible.builtin.file:
+        path: "{{ tether_release_stage }}"
+        state: absent
+      when: not tether_rel_ok
+
+    - name: Create the tether staging directory, root-owned
+      ansible.builtin.file:
+        path: "{{ tether_release_stage }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: not tether_rel_ok
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # The tarball root holds dist/, package.json, package-lock.json and
+    # node_modules/ (no top folder). `mode` removes group and other write from
+    # every extracted file, whatever the archive says.
+    - name: Unpack the verified tether release into staging
+      ansible.builtin.unarchive:
+        src: "{{ tether_release_tarball }}"
+        dest: "{{ tether_release_stage }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "u=rwX,go=rX"
+      when: not tether_rel_ok
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the entry point in the staged tether release
+      ansible.builtin.stat:
+        path: "{{ tether_release_stage }}/dist/index.js"
+      register: tether_stage_entry
+      when: not tether_rel_ok
+
+    - name: Scan the staged tether release for writable or non-root files
+      ansible.builtin.find:
+        paths: "{{ tether_release_stage }}"
+        file_type: any
+        recurse: true
+        hidden: true
+        follow: false
+      register: tether_stage_scan
+      check_mode: false  # read-only; runs under --check too
+      when: not tether_rel_ok
+
+    - name: Record the writable or non-root files in the staged tether release
+      ansible.builtin.set_fact:
+        tether_stage_unsafe: "{{ ((tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('uid', 'ne', 0) | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('wgrp') | list) + (tether_stage_scan.files | default([]) | rejectattr('islnk') | selectattr('woth') | list)) | map(attribute='path') | list }}"
+      when: not tether_rel_ok
+
+    - name: Require the expected layout and modes before the release is moved into place
+      ansible.builtin.assert:
+        that:
+          - tether_stage_entry.stat.isreg | default(false)
+          - tether_stage_unsafe | length == 0
+        fail_msg: "The staged tether release has no dist/index.js, or has a group- or other-writable or non-root file ({{ tether_stage_unsafe | default([]) | join(', ') | truncate(200) }}): the tarball does not have the expected layout"
+        quiet: true
+      when: not tether_rel_ok
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # Only now, with a verified, checked replacement staged: a failure earlier
+    # in the block leaves whatever `current` points at in place.
+    - name: Remove a tether release directory that is incomplete or unsafe
+      ansible.builtin.file:
+        path: "{{ tether_release_dir }}"
+        state: absent
+      when: tether_rel_dir.stat.exists and not tether_rel_ok
+
+    - name: Move the staged tether release into place
+      ansible.builtin.command:
+        argv: [/usr/bin/mv, -T, "{{ tether_release_stage }}", "{{ tether_release_dir }}"]
+      when: not tether_rel_ok
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look at where tether current points now
+      ansible.builtin.stat:
+        path: "{{ tether_release_root }}/current"
+      register: tether_cur
+
+    - name: Point tether current at the verified release
+      ansible.builtin.file:
+        src: "{{ tether_release_dir }}"
+        dest: "{{ tether_release_root }}/current"
+        state: link
+        owner: root
+        group: root
+      register: tether_link
+      # The running agent keeps the old release until it restarts (v0.1.2
+      # landed on 23 Oct and the unit kept running 0.1.1), so the link move
+      # notifies the restart handler.
+      notify: Restart tether-agent after its release changed
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # Keep the new release and the one `current` pointed at before: one
+    # rollback step. Only when `current` moved, so a repeat run never trims
+    # the previous release away.
+    - name: List the tether releases and staging leftovers
+      ansible.builtin.find:
+        paths: "{{ tether_release_root }}"
+        file_type: directory
+        hidden: true
+        use_regex: true
+        patterns: ['^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$', '^\.tmp-.*$']
+      register: tether_old_dirs
+      when: tether_link.changed | default(false)
+
+    - name: Remove tether releases older than the previous one
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ tether_old_dirs.files | default([]) | map(attribute='path') | difference([tether_release_dir, tether_cur.stat.lnk_source | default('')]) }}"
+      when: tether_link.changed | default(false)
+
+    - name: List the cached tether tarballs
+      ansible.builtin.find:
+        paths: "{{ tether_release_cache }}"
+        patterns: ['tether-v*.tar.gz']
+      register: tether_old_tars
+      when: tether_link.changed | default(false)
+
+    - name: Remove cached tether tarballs of releases that were removed
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ tether_old_tars.files | default([]) | map(attribute='path') | difference([tether_release_tarball, tether_release_cache ~ '/tether-v' ~ (tether_cur.stat.lnk_source | default('') | basename) ~ '.tar.gz']) }}"
+      when: tether_link.changed | default(false)
+
+  rescue:
+    - name: Record that the tether release did not install
+      ansible.builtin.set_fact:
+        tether_install_failure: "{{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('failed') }}"
+
+    - name: Say that tether current was left alone
+      ansible.builtin.debug:
+        msg: "tether v{{ tether_version }} did not install ({{ tether_install_failure }}). {{ tether_release_root }}/current was not changed; the run goes on and fails at its last task."
+
+# The credentials file is placed by hand and never created or written here:
+# this only sets owner, group and mode, and only once the file exists. The
+# unit's EnvironmentFile=- treats it as optional, so its absence must not
+# fail the run and hold back every task after it.
+- name: Look for the tether Photon credentials file
+  tags: [tether]
+  ansible.builtin.stat:
+    path: "{{ tether_photon_env }}"
+  register: tether_photon
+
+- name: Let the tether group read the Photon credentials file
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_photon_env }}"
+    state: file
+    owner: root
+    group: tether
+    mode: "0640"
+  when: not tether_off.stat.exists and tether_photon.stat.exists
+  # Under --check the group above was not really created yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Look for the tether calendar credentials file
+  tags: [tether]
+  ansible.builtin.stat:
+    path: "{{ tether_calendar_env }}"
+  register: tether_calendar
+
+- name: Let the tether group read the calendar credentials file
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_calendar_env }}"
+    state: file
+    owner: root
+    group: tether
+    mode: "0640"
+  when: not tether_off.stat.exists and tether_calendar.stat.exists
+  # Under --check the group above was not really created yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# #10102 gave tether a fixed-port route to the Cua daemon with a token. The
+# daemon ignores a supplied token, so nothing ever used the route. Its
+# leftovers are removed by name here; the drop-in is in `retired`.
+# The first task runs as root and carries the tether tag. The two that
+# run as nish do not: CI runs `--tags tether --check` as an unprivileged
+# user, where becoming nish fails.
+- name: Remove the retired Cua daemon token file
+  tags: [tether]
+  ansible.builtin.file:
+    path: /etc/fleet-ops/cua-daemon-token
+    state: absent
+
+- name: Remove the retired Cua daemon env file
+  become: true
+  become_user: nish
+  ansible.builtin.file:
+    path: "{{ nish_config }}/fleet-ops/cua/daemon.env"
+    state: absent
+
+# Only the named file above is deleted. The directory goes only when
+# nothing else is in it: rmdir refuses a directory that holds anything.
+- name: Remove the retired Cua daemon env directory when it is empty
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [rmdir, "{{ nish_config }}/fleet-ops/cua"]
+  environment:
+    LC_ALL: C
+  register: cua_env_dir_rmdir
+  changed_when: cua_env_dir_rmdir.rc == 0
+  failed_when:
+    - cua_env_dir_rmdir.rc != 0
+    - "'Directory not empty' not in cua_env_dir_rmdir.stderr"
+    - "'No such file or directory' not in cua_env_dir_rmdir.stderr"
+
+# tether's own Cua Space (Nish, 2026-10-23): a key that opens that one
+# Space's spacesd and nothing else. It is created once and never recreated
+# (its files and its token are its own), started when it is not running,
+# and read for its live address and token. Docker restart policy is `no`,
+# so a reboot leaves it stopped, and a start gives it a new published port
+# while the Cua daemon keeps answering with the old one; `--embedded` reads
+# Docker's live port. These tasks run as nish, like the other Cua tasks, and
+# carry no tether tag (CI's `--tags tether --check` cannot become nish). A
+# failure is recorded here and fails the run at its last tether task, so the
+# rest of the host config still applies. tether.nft is then rendered with no
+# Space port (it fails closed), the env file stays as it was, and the last
+# rendered fence file (tether-space.nft) stays as it was: it is rendered
+# inside the block, only from an address read this run, and never removed.
+# The waits add up to about 110 s, well inside the deploy job's 10 minutes.
+- name: Ready tether's own Cua Space, or record why it failed
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  when: not tether_off.stat.exists
+  block:
+    - name: Wait until the Cua daemon answers
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+      register: tether_space_ls
+      until: tether_space_ls.rc == 0
+      retries: 6
+      delay: 10
+      changed_when: false
+
+    - name: Create tether's Cua Space when it does not exist
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", spaces, create, linux, --name, "{{ tether_space_name }}", --on, local]
+      when: tether_space_ref not in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+
+    - name: Start tether's Cua Space when it exists and is not running
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", spaces, start, "{{ tether_space_ref }}"]
+      when:
+        - tether_space_ref in (tether_space_ls.stdout | from_json | map(attribute='id') | list)
+        - (tether_space_ls.stdout | from_json | selectattr('id', 'equalto', tether_space_ref) | map(attribute='state') | first) != 'running'
+
+    - name: Read tether's Cua Space address
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", --embedded, sandbox, info, "{{ tether_space_ref }}", --json]
+      register: tether_space_info
+      until: tether_space_info.rc == 0 and ((tether_space_info.stdout | from_json).endpoints.env | default('')) is match('^http://127\.0\.0\.1:[0-9]+$')
+      retries: 4
+      delay: 3
+      changed_when: false
+      no_log: true
+
+    - name: Require a container id before it reaches docker
+      ansible.builtin.assert:
+        that: (tether_space_info.stdout | from_json).provider_details.container_id is match('^[0-9a-f]{64}$')
+        quiet: true
+      no_log: true
+
+    # What the fence below depends on, read in one inspect: one network with
+    # one IPv4 address, no IPv6 (the fence is IPv4 only), and Docker's restart
+    # policy `no` (a reboot leaves the Space stopped until the boot run starts
+    # it, so the address in the rendered fence is never one Docker hands to
+    # another container before then). Anything else fails the step, which
+    # pages, and leaves the last rendered fence as it is.
+    - name: Read the network and restart policy of tether's Cua Space container
+      ansible.builtin.command:
+        argv:
+          - "{{ docker_cli }}"
+          - inspect
+          - --format
+          - "{% raw %}{\"restart\":{{json .HostConfig.RestartPolicy.Name}},\"privileged\":{{json .HostConfig.Privileged}},\"pid\":{{.State.Pid}},\"networks\":{{json .NetworkSettings.Networks}}}{% endraw %}"
+          - "{{ (tether_space_info.stdout | from_json).provider_details.container_id }}"
+      register: tether_space_net
+      until: >-
+        tether_space_net.rc == 0 and
+        (tether_space_net.stdout | trim | from_json).networks | length == 1 and
+        (tether_space_net.stdout | trim | from_json).pid | int > 1 and
+        ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress | length > 0
+      retries: 4
+      delay: 3
+      changed_when: false
+
+    - name: Require one IPv4 address, no IPv6, restart policy no and no privileged mode
+      ansible.builtin.assert:
+        that:
+          - (tether_space_net.stdout | trim | from_json).restart == 'no'
+          - (tether_space_net.stdout | trim | from_json).privileged == false
+          - (tether_space_net.stdout | trim | from_json).networks | length == 1
+          - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).GlobalIPv6Address == ''
+        fail_msg: "tether's Cua Space container must have restart policy no, no privileged mode, exactly one network, an IPv4 address and no IPv6 address."
+        quiet: true
+
+    # The host-side end of the container's veth, which a forged source
+    # address cannot change. Its eth0 in its own network namespace names the
+    # peer's index (link_index); the host interface with that index is the
+    # veth. Checked live with a runsc Space: the namespace layout is a plain
+    # veth pair on docker0. NET_RAW cannot be dropped through Cua (it sets no
+    # CapDrop), but a runsc container's root has no NET_RAW or NET_ADMIN, and
+    # the interface match holds either way.
+    - name: Read the peer interface index of tether's Cua Space container
+      become_user: root
+      ansible.builtin.command:
+        argv: ["{{ nsenter_cli }}", -t, "{{ (tether_space_net.stdout | trim | from_json).pid | int }}", -n, "{{ ip_cli }}", -j, link, show, eth0]
+      register: tether_space_peer
+      until: tether_space_peer.rc == 0 and (tether_space_peer.stdout | trim | from_json | first).link_index | default(0) | int > 0
+      retries: 2
+      delay: 3
+      changed_when: false
+
+    - name: Read the host interfaces
+      ansible.builtin.command:
+        argv: ["{{ ip_cli }}", -j, link, show]
+      register: tether_space_links
+      changed_when: false
+
+    - name: Require exactly one host veth for that index, enslaved to a bridge
+      ansible.builtin.assert:
+        that:
+          - tether_space_veths | length == 1
+          - (tether_space_veths | first).ifname is match('^veth[0-9a-f]{1,11}$')
+          - (tether_space_veths | first).master | default('') is match('^[A-Za-z0-9_-]{1,15}$')
+        quiet: true
+      vars:
+        tether_space_veths: "{{ tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | list }}"
+
+    - name: Keep the address and interface of tether's Cua Space container
+      ansible.builtin.set_fact:
+        tether_space_ip: "{{ ((tether_space_net.stdout | trim | from_json).networks.values() | list | first).IPAddress }}"
+        tether_space_veth: "{{ (tether_space_links.stdout | from_json | selectattr('ifindex', 'equalto', (tether_space_peer.stdout | trim | from_json | first).link_index | int) | first).ifname }}"
+
+    # Rendered and loaded here, right after the address is known and before
+    # the token read and the env file, so a new address is fenced within
+    # seconds. A step above that fails never reaches this: the last rendered
+    # file stays. Not tagged tether and not tied to the tether marker.
+    - name: Render the fence around tether's Cua Space
+      become_user: root
+      ansible.builtin.template:
+        src: "{{ tether_space_nft_src }}"
+        dest: "{{ tether_space_nft }}"
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "{{ nft_cli }} -c -f %s"
+
+    - name: Load the fence around tether's Cua Space
+      become_user: root
+      ansible.builtin.command:
+        argv: ["{{ nft_cli }}", -f, "{{ tether_space_nft }}"]
+      changed_when: false
+
+    - name: Record that the fence is loaded for tether's Cua Space
+      ansible.builtin.set_fact:
+        tether_space_fenced: true
+
+    - name: Read tether's Cua Space token, which also waits until the Space answers
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", --embedded, sandbox, exec, "{{ tether_space_ref }}", "cat /run/cua/env-token"]
+      register: tether_space_token_out
+      until: tether_space_token_out.rc == 0 and (tether_space_token_out.stdout | trim | length) > 0
+      retries: 8
+      delay: 3
+      changed_when: false
+      no_log: true
+
+    - name: Require a sane port and token before they are kept or written anywhere
+      ansible.builtin.assert:
+        that:
+          - (tether_space_info.stdout | from_json).endpoints.env is match('^http://127\.0\.0\.1:[0-9]+$')
+          - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) > 1024
+          - ((tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int) < 65536
+          - (tether_space_token_out.stdout | trim) is match('^[A-Za-z0-9._~+=-]{16,128}$')
+        quiet: true
+      no_log: true
+
+    - name: Keep the address and token of tether's Cua Space
+      ansible.builtin.set_fact:
+        tether_space_port: "{{ (tether_space_info.stdout | from_json).endpoints.env | regex_replace('^.*:', '') | int }}"
+        tether_space_token: "{{ tether_space_token_out.stdout | trim }}"
+      no_log: true
+  # Only the failed task's name is recorded: the messages of the no_log
+  # tasks above must not reach the run log. A Space that is not fenced for
+  # its current address (the fence was not loaded this run) is stopped here,
+  # through Cua and, when the daemon is the failure, through Docker, so a
+  # failed step never leaves it running open. A failure after the fence was
+  # loaded leaves it running and fenced.
+  rescue:
+    - name: Stop tether's Cua Space, which this run did not fence
+      ansible.builtin.command:
+        argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
+      register: tether_space_stop_cua
+      ignore_errors: true
+      when: tether_space_fenced is not defined
+
+    - name: Stop tether's Cua Space container through Docker when Cua could not
+      ansible.builtin.command:
+        argv: ["{{ docker_cli }}", stop, "{{ tether_space_name }}"]
+      register: tether_space_stop_docker
+      ignore_errors: true
+      when: tether_space_fenced is not defined and tether_space_stop_cua is failed
+
+    - name: Record that tether's Cua Space did not come up
+      ansible.builtin.set_fact:
+        tether_space_failure: >-
+          {{ ansible_failed_task.name }}{{ ' (the Space was stopped)' if tether_space_fenced is not defined and tether_space_stop_cua is not failed
+          else ' (the Space was stopped through Docker)' if tether_space_fenced is not defined and tether_space_stop_docker is not failed
+          else ' (the Space could NOT be stopped and is running unfenced)' if tether_space_fenced is not defined
+          else '' }}
+
+# Under the tether off marker the Space block above does not run, so the
+# fence file keeps the address of the last run, and the Space is stopped here:
+# the switch contains the Space too. Nothing here removes the fence file. The
+# listing may fail (daemon down: the Space is then down too); the stop may not.
+- name: List the Cua Spaces while the tether marker exists
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ cua_cli }}", sandbox, ls, --local, --json, --no-size]
+  register: tether_space_marker_ls
+  changed_when: false
+  failed_when: false
+  when: tether_off.stat.exists
+
+- name: Stop tether's Cua Space while the tether marker exists
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ cua_cli }}", spaces, stop, "{{ tether_space_ref }}"]
+  when:
+    - tether_off.stat.exists
+    - tether_space_marker_ls.rc == 0
+    - tether_space_ref in (tether_space_marker_ls.stdout | from_json | map(attribute='id') | list)
+    - (tether_space_marker_ls.stdout | from_json | selectattr('id', 'equalto', tether_space_ref) | map(attribute='state') | first) == 'running'
+
+# The unit reads this at start, so a change notifies the restart handler.
+# Written only from a live read, never from a default.
+- name: Render tether's Cua Space env file
+  tags: [tether]
+  ansible.builtin.copy:
+    content: "TETHER_SPACE_URL=http://127.0.0.1:{{ tether_space_port }}\nTETHER_SPACE_TOKEN={{ tether_space_token }}\n"
+    dest: "{{ tether_cua_env }}"
+    owner: root
+    group: tether
+    mode: "0640"
+  no_log: true
+  diff: false
+  ignore_errors: "{{ ansible_check_mode }}"
+  when: not tether_off.stat.exists and tether_space_port is defined and tether_space_token is defined
+  notify: Restart tether-agent after its release changed
+
+- name: Remove tether's Cua Space env file while the marker exists
+  tags: [tether]
+  ansible.builtin.file:
+    path: "{{ tether_cua_env }}"
+    state: absent
+  when: tether_off.stat.exists
+
+# tether's egress firewall: its own table, loaded by the host's existing
+# nftables.service (nftables.conf includes /etc/nftables.d/*.nft, so a boot
+# or `systemctl reload nftables` re-applies it). The rule matches the
+# numeric uid, so a later `deluser tether` cannot break the file's load.
+- name: Look up the tether uid
+  tags: [tether]
+  ansible.builtin.getent:
+    database: passwd
+    key: tether
+    fail_key: false
+  when: not tether_off.stat.exists
+
+- name: Read the host's addresses and bridges
+  tags: [tether]
+  ansible.builtin.setup:
+    gather_subset: ["!all", "!min", network]
+  when: not tether_off.stat.exists
+
+- name: Create the nftables drop-in directory
+  tags: [tether]
+  ansible.builtin.file:
+    path: /etc/nftables.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the tether egress rule
+  tags: [tether]
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/tether.nft.j2"
+    dest: /etc/nftables.d/tether.nft
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  vars:
+    tether_uid: "{{ getent_passwd.tether[1] }}"
+  # Always rendered, from what this run read: a failed Space step leaves
+  # tether_space_port and tether_space_ip undefined, so the rule has no Space
+  # port allow (a port a Docker-published service may reuse after a reboot)
+  # and no fence.
+  when: not tether_off.stat.exists and getent_passwd is defined and getent_passwd.tether is not none
+  notify: Reload nftables
+
+# Runner egress (fleet-ops canary: fleet-ci-2). A plain file: the table and an
+# empty set need no cgroup to exist, so `nft -c` passes on any host. The runner
+# unit's own NFTSet= line (rootfs/etc/systemd/system/*/40-egress.conf) fills
+# the set. Nothing here starts a unit, so a failure here cannot stop the run.
+- name: Install the runner egress rule
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/nftables.d/runners.nft"
+    dest: /etc/nftables.d/runners.nft
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: Reload nftables
+
+- name: Remove the tether egress rule while the marker exists
+  tags: [tether]
+  ansible.builtin.file:
+    path: /etc/nftables.d/tether.nft
+    state: absent
+  when: tether_off.stat.exists
+  notify: Reload nftables
+
+- name: Keep tether disabled and stopped while the marker exists
+  tags: [tether]
+  ansible.builtin.systemd_service:
+    name: tether-agent.service
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when: tether_off.stat.exists
+  # Under --check the copy above did not really install the unit yet.
+  ignore_errors: "{{ ansible_check_mode }}"

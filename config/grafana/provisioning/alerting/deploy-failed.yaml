@@ -51,15 +51,25 @@
 #    it orders by run id. inish-site has no 24h rule: its ci.yml runs tests
 #    before the deploy job, and a run's result cannot say which failed.
 #
-# The nish3451 repos moved to Nishfleet on 2026-10-16. seo-fix-kit,
-# fleet-console-worker and inish-mail-filter are covered from fleet-github,
-# whose installation datasources/fleet.yaml records as all Nishfleet repos; its
-# read of these three was not tested live before they were added, so a repo it
-# cannot read files a "cannot read GitHub runs" issue. The last two are in
-# the deploy-failed group only, with no 24h rule: their deploys have never
-# succeeded (no Cloudflare key until 2026-10-16) and their fix PRs (#10, #8)
-# are not merged, so a 24h page would only repeat a known red. Add their 24h
-# rules once a deploy of theirs succeeds.
+# The nish3451 repos moved to Nishfleet on 2026-10-16. seo-fix-kit and
+# fleet-console-worker are covered from fleet-github, whose installation
+# datasources/fleet.yaml records as all Nishfleet repos; its read of these two
+# was not tested live before they were added, so a repo it cannot read files a
+# "cannot read GitHub runs" issue. seo-fix-kit is in both groups: its deploy
+# has succeeded since 2026-10-16 (newest 2026-10-23), so its 24h rule is live.
+# fleet-console-worker is in the deploy-failed group only, with no 24h rule: it
+# got its Cloudflare key on 2026-10-20 and its deploy succeeded for the first
+# time the same day, with every run since green (newest 2026-10-24), so it has
+# no red history to page on yet. Adding its 24h rule is a separate decision,
+# because a 24h rule pages Nish.
+#
+# A repo with no production deploy left gets no rule, in either group. Nothing
+# here checks that, so this is the record of an intent and not a gate.
+# inish-mail-filter kept one after its deploy path was deleted on 2026-10-23
+# (fleet-ops#9855). Drop the rule with the deploy path it watches, never pause
+# it: a paused rule still shows in the list and the next reader learns nothing
+# from it. Dropping it means two edits, the rule and its uid in deleteRules
+# below.
 #
 # One rule per repo: the plugin reads its queries one after another, so one
 # rule for all repos took 21 s of Grafana's 30 s evaluation timeout, and a repo
@@ -86,6 +96,15 @@
 # the real plugin against a stub GitHub, in a non-UTC zone.
 # Rule labels are plain strings: provisioning expands a $ in a label.
 apiVersion: 1
+
+# File provisioning never deletes a rule that merely leaves the file: Grafana
+# keeps the provisioned copy and keeps evaluating it, so removing the rule above
+# leaves it live on a Grafana whose database outlives the container.
+# paid-plan-idle.yaml carries the same block for ppi-pareto, ppi-ollama and
+# ppi-cline, which fired after they left their file (fleet-ops#10198, #10206).
+deleteRules:
+  - orgId: 1
+    uid: deploy-failed-inish-mail-filter
 
 groups:
   - orgId: 1
@@ -309,31 +328,6 @@ groups:
           summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/fleet-console-worker did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/fleet-console-worker, so its deploy check is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Production is not running main. A fleet issue; it does not page.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/fleet-console-worker/actions/workflows/deploy-production.yml?query=branch%3Amain'
         labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/fleet-console-worker, workflow: deploy-production.yml}
-        isPaused: false
-
-      - uid: deploy-failed-inish-mail-filter
-        title: Production deploy failed Nishfleet/inish-mail-filter
-        condition: C
-        data:
-          - &q-inish-mail-filter
-            refId: A
-            relativeTimeRange: {from: 604800, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Workflow_Runs
-              owner: Nishfleet
-              repository: "inish-mail-filter"
-              options: {owner: Nishfleet, repository: "inish-mail-filter", workflow: deploy-production.yml, branch: main}
-              refId: A
-          - *deploy-failed-latest
-        noDataState: OK
-        execErrState: Error
-        for: 30m
-        annotations:
-          summary: '{{ if $values }}Production deploy failing: the latest run of deploy-production.yml on main in Nishfleet/inish-mail-filter did not succeed.{{ else }}The fleet cannot read GitHub runs for Nishfleet/inish-mail-filter, so its deploy check is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}Production is not running main. A fleet issue; it does not page.{{ else }}Check the GitHub data source in Grafana; the nishfleet-worker App installation must include this repo.{{ end }} Runs: https://github.com/Nishfleet/inish-mail-filter/actions/workflows/deploy-production.yml?query=branch%3Amain'
-        labels: {severity: warning, signal: deploy-failed, repo: Nishfleet/inish-mail-filter, workflow: deploy-production.yml}
         isPaused: false
 
   - orgId: 1

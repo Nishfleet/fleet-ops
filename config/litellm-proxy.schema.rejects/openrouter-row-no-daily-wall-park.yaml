@@ -13,5 +13,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 router_settings:
-  redis_url: redis://127.0.0.1:6379
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
   cooldown_time: 60

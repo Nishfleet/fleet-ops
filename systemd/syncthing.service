@@ -1,9 +1,15 @@
 [Unit]
 Description=Syncthing - private Nish vault sync
 Documentation=https://docs.syncthing.net/
+# A crash loop must reach `failed`, which only the user-manager failed list
+# (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
+# the node_systemd_unit_state gauge reads system units only. The default 5
+# starts in 10 s is never spent at RestartSec=5 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Service]
-ExecStart=/home/nish/.local/bin/syncthing serve --no-browser --no-restart --no-upgrade --home=/home/nish/.config/syncthing
+ExecStart=/usr/bin/syncthing serve --no-browser --no-restart --no-upgrade --home=/home/nish/.config/syncthing
 Restart=on-failure
 RestartSec=5
 SuccessExitStatus=3 4

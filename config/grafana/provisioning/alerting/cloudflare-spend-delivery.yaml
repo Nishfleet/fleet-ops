@@ -43,6 +43,6 @@ groups:
         for: 0s
         annotations:
           summary: The cost alarm could not open its GitHub issue.
-          description: 'Grafana failed {{ with index $values "A" }}{{ .Value | printf "%.0f" }}{{ end }} webhook deliveries to the GitHub issues API in the last hour. A cost rule fired and no priority-now issue exists; check the Grafana log and `systemctl --user status fleet-grafana-github-token.service`.'
+          description: 'Grafana failed {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} webhook deliveries to the GitHub issues API in the last hour. A cost rule fired and no priority-now issue exists; check the Grafana log and `systemctl --user status fleet-grafana-github-token.service`.'
         labels: {severity: critical, signal: cloudflare-spend-delivery}
         isPaused: false

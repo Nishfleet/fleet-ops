@@ -1,10 +1,5 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
-# user-scope deploy steps), then the fleet-host-config.service system oneshot
-# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
-# this runner's user start that one system unit, so no step uses sudo.
-# The unit's own guards still gate every step. fleet-ops#8519
-# The probe runs last, so its verdict cannot skip a deploy step and a red probe
-# still fails the run (fleet-ops#10046; tests/test_deploy_box_trigger.py).
+# Runs two systemd oneshots on the fleet runner; each exit code is a verdict. Reasons: docs/workflow-notes.md.
+# The probe runs last: its failure still fails the run, and it can no longer skip a deploy step (fleet-ops#10046).
 name: deploy-box
 
 on:
@@ -21,8 +16,11 @@ permissions:
 
 jobs:
   apply:
+    name: apply
     runs-on: [self-hosted, fleet-ci]
-    timeout-minutes: 15  # fleet-sync allows 300s and fleet-host-config 600s
+    # The unit allows TimeoutStartSec=300 for the steps alone; 10 min leaves
+    # headroom without letting a hung step park a runner.
+    timeout-minutes: 10
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
@@ -30,5 +28,4 @@ jobs:
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
-      - name: Probe the runner's jail for readable credential paths
-        uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main

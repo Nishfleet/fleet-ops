@@ -1,0 +1,30 @@
+{
+  "name": "org-required-workflows",
+  "target": "branch",
+  "enforcement": "evaluate",
+  "bypass_actors": [],
+  "conditions": {
+    "repository_name": {
+      "include": ["~ALL"],
+      "exclude": []
+    },
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "workflows",
+      "parameters": {
+        "workflows": [
+          {
+            "repository_id": 1345146853,
+            "path": ".github/workflows/ratchet.yml",
+            "ref": "refs/heads/main"
+          }
+        ]
+      }
+    }
+  ]
+}
