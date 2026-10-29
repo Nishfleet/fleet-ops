@@ -22,7 +22,7 @@ case "$*" in
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
   "api repos/"*"/issues/"*) echo 0 ;;
   "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PULLS" ;;
-  "issue edit"*|"issue comment"*) if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then echo "403 Resource not accessible by integration: $*" >&2; exit 1; fi ;;
+  "issue edit"*|"issue comment"*) if [ -n "${ISSUE_TOKEN:-}" ] && [ "${GH_TOKEN:-}" != "$ISSUE_TOKEN" ]; then echo "403 the write must carry the App token, so its label fires the dispatch: $*" >&2; exit 1; fi ;;
 esac
 exit 0
 """
@@ -77,7 +77,8 @@ OTHER = "b" * 40
 def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels="", cross=False):
     body = "".join(f"{s}\n" for s in reviews)
     pr = json.dumps({"headRefName": ref, "isCrossRepository": cross})
-    return _env(tmp_path, PR="5", SHA=SHA, GH_PR_JSON=pr, GH_REVIEWS=body, GH_LABELS=labels)
+    return _env(tmp_path, PR="5", SHA=SHA, GH_PR_JSON=pr, GH_REVIEWS=body, GH_LABELS=labels,
+                GH_TOKEN="job-token", ISSUE_TOKEN="app-token")
 
 
 SEND = ("agent.yml", "review", "Send a blocked orch PR back to the orchestrator")
@@ -107,8 +108,10 @@ def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
     assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
 
 
-def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_on_the_runner_login():
+def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_as_the_app():
     assert _y(f'.jobs.review.steps[] | select(.name == "{SEND[2]}") | .env.GH_TOKEN') == "${{ github.token }}"
+    assert _y(f'.jobs.review.steps[] | select(.name == "{SEND[2]}") | .env.ISSUE_TOKEN') == "${{ steps.rework-token.outputs.token }}"
+    assert _y('.jobs.review.steps[] | select(.id == "rework-token") | .with."permission-issues"') == "write"
     assert _y('.jobs.review.permissions."issues"') in ("read", "write")
     assert _y('.jobs.review.permissions."pull-requests"') in ("read", "write")
     lines = _block(*SEND).splitlines()
@@ -117,8 +120,8 @@ def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_on_the_run
     reads = [line for line in lines if any(read in line for read in ("gh pr view", "gh api ", "gh issue view"))]
     others = [line for line in lines if "gh " in line and line not in reads]
     assert others
-    assert [line for line in reads if "env -u" in line] == []
-    assert [line for line in others if not line.strip().startswith("env -u GH_TOKEN -u GITHUB_TOKEN gh ")] == []
+    assert [line for line in reads if "GH_TOKEN=$ISSUE_TOKEN" in line] == []
+    assert [line for line in others if not line.strip().startswith("GH_TOKEN=$ISSUE_TOKEN gh ")] == []
 
 
 def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):
@@ -198,13 +201,11 @@ def test_an_ended_branch_parks_the_issue_on_agent_blocked_and_names_its_pr(tmp_p
     assert not out.exists() or "go=true" not in out.read_text()
 
 
-def test_the_stub_refuses_the_parking_writes_it_would_get_from_the_jobs_own_token(tmp_path):
-    env, _ = _env(tmp_path, ISSUE="77")
-    env["GH_TOKEN"] = env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
+def test_the_stub_refuses_a_parking_write_that_does_not_carry_the_app_token(tmp_path):
+    env, _ = _env(tmp_path, ISSUE="77", ISSUE_TOKEN="app-token", GH_TOKEN="the-jobs-token")
     refused = subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env, capture_output=True, text=True)
     assert refused.returncode == 1 and "403" in refused.stderr
-    env.pop("GH_TOKEN")
-    env.pop("GITHUB_TOKEN")
+    env["GH_TOKEN"] = "app-token"
     assert subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env).returncode == 0
 
 
