@@ -1,5 +1,5 @@
 """Fleet scorecard alerts (fleet-ops#10711): each rule's real SQL, read out with yq and run in
-sqlite, fires only when both consecutive 24h windows miss."""
+sqlite, fires only when both windows miss."""
 import json
 import pathlib
 import re
@@ -37,19 +37,20 @@ def _missed(uid, tables, columns):
     return db.execute(sql).fetchone()[0]
 
 
-def _runs(good_today, bad_today, good_yday, bad_yday):
-    return [(1, "success")] * good_today + [(2, "failure")] * bad_today + [(30, "success")] * good_yday + [(31, "failure")] * bad_yday
+def _runs(good_new, bad_new, good_prev, bad_prev):
+    return [(1, "success")] * good_new + [(2, "failure")] * bad_new, [(25, "success")] * good_prev + [(26, "failure")] * bad_prev
 
 
-@pytest.mark.parametrize("today,yday,missed", [((90, 5, 0, 0), (0, 0, 90, 5), 1), ((100, 0, 90, 5), None, 0), ((90, 5, 100, 0), None, 0), ((0, 0, 0, 0), None, 0)])
-def test_failure_share_fires_only_when_both_days_miss(today, yday, missed):
-    rows = _runs(*today) if yday is None else _runs(today[0], today[1], yday[2], yday[3])
-    assert _missed("scorecard-run-failure-share", {"A": rows, "B": []}, "created_at TEXT, conclusion TEXT") == missed
+@pytest.mark.parametrize("new,prev,missed", [((90, 5), (90, 5), 1), ((100, 0), (90, 5), 0), ((90, 5), (100, 0), 0), ((0, 0), (0, 0), 0), ((90, 5), (0, 0), 0)])
+def test_failure_share_fires_only_when_both_windows_miss(new, prev, missed):
+    now_rows, day_ago_rows = _runs(*new, *prev)
+    assert _missed("scorecard-run-failure-share", {"A": now_rows, "B": day_ago_rows, "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == missed
 
 
 def test_failure_share_ignores_cancelled_and_skipped():
-    rows = _runs(98, 2, 98, 2) + [(3, "cancelled")] * 50 + [(30, "skipped")] * 50
-    assert _missed("scorecard-run-failure-share", {"A": rows, "B": []}, "created_at TEXT, conclusion TEXT") == 0
+    now_rows, day_ago_rows = _runs(98, 2, 98, 2)
+    rows = now_rows + [(1, "cancelled")] * 50 + day_ago_rows + [(25, "skipped")] * 50
+    assert _missed("scorecard-run-failure-share", {"A": rows, "B": [], "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == 0
 
 
 def _merged(own_today, prod_today, own_yday, prod_yday):
@@ -121,6 +122,23 @@ def test_every_pull_request_search_reads_the_closed_timestamp(targets):
 def test_the_rule_searches_the_three_days_its_two_windows_divide():
     targets = [d for d in _rules()["scorecard-products-behind"]["data"] if d["model"].get("queryType") == "Pull_Requests"]
     assert {json.dumps(d["relativeTimeRange"], sort_keys=True) for d in targets} == {json.dumps({"from": 259200, "to": 0})}
+
+
+def _failure_share_reads():
+    rule = _rules()["scorecard-run-failure-share"]
+    return rule, [d for d in rule["data"] if d["model"].get("queryType") == "Workflow_Runs"]
+
+
+def test_the_failure_share_reads_each_window_with_its_own_target():
+    _, reads = _failure_share_reads()
+    now, day_ago = json.dumps({"from": 10800, "to": 0}), json.dumps({"from": 97200, "to": 86400})
+    assert sorted(json.dumps(d["relativeTimeRange"], sort_keys=True) for d in reads) == sorted([now, now, day_ago, day_ago])
+
+
+def test_the_failure_share_expression_windows_match_the_ranges_its_targets_read():
+    rule, reads = _failure_share_reads()
+    sql = next(d for d in rule["data"] if d["refId"] == rule["condition"])["model"]["expression"]
+    assert {int(n) for n in re.findall(r"age [<>]=? (\d+)", sql)} | {0} == {d["relativeTimeRange"][edge] for d in reads for edge in ("from", "to")}
 
 
 @pytest.mark.parametrize("targets,expression", [(_dashboard_targets, _dashboard_products_expression), (_rule_targets, _rule_products_expression)])
