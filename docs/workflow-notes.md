@@ -176,3 +176,17 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
 
+### coordinator-approval.yml: the merge-queue gate
+
+The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
+`merge_group`, where the job name is the single-segment check `coordinator-approval`; 0509 and
+drive call it and require `coordinator-approval / coordinator-approval`. A caller grants
+`contents: read`, `pull-requests: read` and `statuses: read` and triggers on `merge_group`
+itself: the token is the caller's, and a narrower grant fails every entry with a read error
+rather than an approval. The rules come from fleet-ops main (the base commit on fleet-ops), so a
+PR cannot loosen what judges it, and every failed read fails the check. On `pull_request` it
+passes, so the check reports and a PR can be enqueued; the queue does the rejecting. The base
+commit of this workflow's own first queue entry is main before the move, where the rules still
+sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
+a fake `gh` with each read failing.
+

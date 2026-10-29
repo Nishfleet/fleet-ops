@@ -1057,6 +1057,8 @@ jobs:
           mkdir -p "$t/bin"
           yq '.jobs.coordinator-approval.steps[] | select(.name == "Fail a risky PR in the queue whose head has no coordinator approval") | .run' .github/workflows/coordinator-approval.yml > "$t/gate.sh"
           [ -s "$t/gate.sh" ] && ! grep -qx null "$t/gate.sh"
+          # A job-level permissions block replaces the workflow-level one, so the gate would lose contents: read and fail every entry. Assert the effective map.
+          yq -e '(.jobs."coordinator-approval".permissions // .permissions) | (."contents" == "read" and ."pull-requests" == "read" and ."statuses" == "read")' .github/workflows/coordinator-approval.yml >/dev/null
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           args="$*"

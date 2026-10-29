@@ -1,10 +1,6 @@
 name: Coordinator approval
 
-# The risky-change gate as a required check (fleet-ops#9383, #10292): fleet-ops
-# runs it on merge_group, where the job name is the single-segment check; 0509 and
-# drive call it and require `coordinator-approval / coordinator-approval`. The
-# rules are read from fleet-ops main (the base commit on fleet-ops), so a PR
-# cannot loosen what judges it, and every failed read fails the check.
+# The risky-change gate as a required check (fleet-ops#9383, #10292). Reasons and switches: docs/workflow-notes.md.
 on:
   workflow_call:
   pull_request:
@@ -12,15 +8,14 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
+  statuses: read
 
 jobs:
   coordinator-approval:
     name: coordinator-approval
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      pull-requests: read
-      statuses: read
     steps:
       - name: Pass outside the merge queue
         if: github.event_name != 'merge_group'
@@ -48,7 +43,9 @@ jobs:
         run: |
           set -euo pipefail
           src="$BASE_DIR/.github/workflows/agent-dispatch.yml"
-          [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && [ -s "$src" ] || { src=$(mktemp); curl -fsSL --max-time 20 --retry 2 "$RULES" > "$src" || { echo "::error::coordinator-approval: rules unreadable"; exit 1; }; }
+          # fleet-ops reads the base commit and fails on a failed read; a caller repo has no copy.
+          [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] || { src=$(mktemp); curl -fsSL --max-time 20 --retry 2 "$RULES" > "$src" || { echo "::error::coordinator-approval: rules unreadable"; exit 1; }; }
+          [ -s "$src" ] || { echo "::error::coordinator-approval: rules unreadable"; exit 1; }
           # The base commit of this workflow's own first queue entry is main before the
           # move, where the rules still sit under the hold-risky job; read either layout.
           for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
@@ -56,7 +53,8 @@ jobs:
             [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: $v unreadable"; exit 1; }
             export "$v=$val"
           done
-          [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || cfg=$(curl -fsSL --max-time 20 --retry 2 "$(yq '.env.RISKY_PATHS_URL' "$src")" | jq -c .) || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
+          if [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ]; then cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json"); else cfg=$(curl -fsSL --max-time 20 --retry 2 "$(yq '.env.RISKY_PATHS_URL' "$src")" | jq -c .); fi
+          [ -n "$cfg" ] || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
           [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] || { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
           nums=${BASH_REMATCH[1]}
           gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" || { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
@@ -76,8 +74,7 @@ jobs:
             sha=$(jq -r .head.sha <<<"$pr")
             gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" || { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
             jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
-            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
-              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
+            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
             verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") || { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
             echo "coordinator-approval: #$n at $sha: $verdict"
             jq -e .risky <<<"$verdict" >/dev/null || continue
