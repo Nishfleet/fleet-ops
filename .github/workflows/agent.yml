@@ -142,8 +142,11 @@ jobs:
             if [ "$engine" = cursor ]; then
               [ "$(live cursor-agent)" -lt 1 ] || miss_full
             else
-              # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
-              slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+              # The worker-capable row count is the dispatch headroom. No row carries a slot
+              # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
+              # rows. One lane per seat is a lower bound on the group's concurrency and sits
+              # above the 22 measured runners, so this stays a safety valve, not a throttle.
+              slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
               [ "$(live pi)" -lt "$slots" ] || miss_full
             fi
             printf '%s\n' miss=true "issue=$i" "engine=$engine" go=true >> "$GITHUB_OUTPUT"
@@ -225,13 +228,16 @@ jobs:
           # only that CLI, fleet-ops#8790), else Devin SWE-2 Max while fewer than 4 run ($0); all three full
           # waits (lanes-full), no Cursor fallback (fleet-ops#8740). Live count: distinct worker or pi session dirs on bwrap lines, host-wide.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # pi has a free slot while its live workers are fewer than the summed
-          # max_parallel_requests of the router's worker-capable seats. No seat is
-          # ever counted out for failing (Nish 2026-09-28: no benching); a failed
-          # request re-picks another seat inside the router.
+          # pi has a free slot while its live workers are fewer than the router's
+          # worker-capable rows. No seat is ever counted out for failing (Nish
+          # 2026-09-28: no benching); a failed request re-picks another seat inside
+          # the router.
           pi_free() {
-            # shellcheck disable=SC2016 # $n is yq's variable, not the shell's
-            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            # The worker-capable row count is the dispatch headroom. No row carries a slot
+            # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
+            # rows. One lane per seat is a lower bound on the group's concurrency and sits
+            # above the 22 measured runners, so this stays a safety valve, not a throttle.
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
           # Devin is free while fewer than 4 run.
@@ -309,6 +315,10 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
+          # fleet-ops#9330 2x2 trial: the arm is a pure function of the issue number, so the pi lane below computes
+          # it from the same $id it already parses for the session dir, and nothing here records it: any reader
+          # recovers a run's arm from its issue number (odd -> no skills menu, (n/2) odd -> desk), the rule Note 14
+          # states. No comment carries a suffix, so the attempt cap above and the strike probe below are untouched.
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
@@ -543,7 +553,10 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
-            mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public
+            # fleet-ops#9330 2x2 trial arm, from the issue number ($id is claim/issue-<n>, exactly as the Cursor seat
+            # parity above reads it): odd n -> no skills menu, (n/2) odd -> desk, the alias group with earlier
+            # compaction. The miss branch below uses neither, so miss-review is not an arm.
+            mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public; arm_flags=(); [ $(( ${id##*-} % 2 )) = 1 ] && arm_flags+=(--no-skills)
             if [ "$MISS" = true ]; then
               echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
@@ -552,12 +565,12 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             else
-              cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
+              [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-                --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
+                --exclude-tools subagent "${arm_flags[@]}" --provider litellm --model "$pi_model" >/dev/null
             fi
           elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ] && [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2
@@ -866,8 +879,11 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # shellcheck disable=SC2016 # $n is yq's variable
-          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable") | .litellm_params.max_parallel_requests // 0] | .[] as $n ireduce (0; . + $n)' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+          # The worker-capable row count is the dispatch headroom. No row carries a slot count
+          # since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29 rows. One
+          # lane per seat is a lower bound on the group's concurrency and sits above the 22
+          # measured runners, so this stays a safety valve, not a throttle.
+          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
           strong_free=false; regular_free=false
           # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
           # falls through to Cursor (cap 1) or pi in the Worker.
@@ -1015,7 +1031,7 @@ jobs:
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"
           git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
-          [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }
+          [ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ] && { gh api -X POST "repos/$REPO/issues/$PR/labels" -f 'labels[]=needs-split' --silent || retry "the needs-split label could not be added"; say "blocked-on: needs-split. The diff is over 250 KB, too large for one review to read whole, so $SHA is not reviewed. Split it: one behaviour per PR, each PR under 250 KB of diff, then push the smaller heads."; exit 0; }; ! jq -e 'any(.labels[].name; . == "needs-split")' <<<"$pr" >/dev/null || gh api -X DELETE "repos/$REPO/issues/$PR/labels/needs-split" --silent || retry "the needs-split label could not be removed"
           # The context is the base tree's copy of the changed files, the paths the diff names, and the modules that import one.
           git -C "$bt" ls-tree -r --name-only refs/base > "$RUNNER_TEMP/tree.txt"
           { cat "$RUNNER_TEMP/files.txt"; grep -oE '[A-Za-z0-9_./@-]+\.[A-Za-z0-9]+' "$RUNNER_TEMP/diff.txt" | sort -u; } | sort -u | grep -Fxf "$RUNNER_TEMP/tree.txt" > "$RUNNER_TEMP/ctx-files.txt" || true

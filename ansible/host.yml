@@ -151,6 +151,24 @@
       - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
+      # The Leviathan session-log index and the Executor MCP hub (#10625):
+      # removed from the repo, and Nish's runtime cut stopped and disabled them
+      # on 2026-10-28. Stop and disable does not remove a hand `ln -s` link or
+      # the files fleet-sync copied, and those live paths point at
+      # ~/.local/share/leviathan, which this list also deletes: a surviving link
+      # would dangle and fail the LINK-GUARD pass in fleet-sync.service. The
+      # index files hold session text, so deleting the directory is also the
+      # last 0700/0600 guard on it (agent-state.yml no longer scans it).
+      - "{{ nish_home }}/.config/systemd/user/executor.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/executor.service"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.service"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.timer"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.service.d/20-umask.conf"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@claude.timer"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@pi.timer"
+      - "{{ nish_home }}/.local/bin/leviathan"
+      - "{{ nish_home }}/.local/share/leviathan"
+      - "{{ nish_home }}/.config/user-tmpfiles.d/leviathan.conf"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
@@ -190,6 +208,50 @@
       # repo stopped shipping it. `copy` never deletes, so the live file is
       # retired here or it keeps loading a plugin id no marketplace lists.
       - /etc/claude-code/managed-settings.d/60-chrome-devtools.json
+      # The 2026-10-28 glue sweep's user-config debris (#10544). Every one is a
+      # finished one-off probe or a .bak copy of a file the repo does not ship,
+      # so the fix is the deletion and nothing is rebuilt. The two .d
+      # directories hold only NoNewPrivileges=no drop-ins, which would undo the
+      # units' own hardening if anything ever started them.
+      - "{{ nish_home }}/.config/systemd/user/nish-root.service"
+      - "{{ nish_home }}/.config/systemd/user/nish-root.exec"
+      - "{{ nish_home }}/.config/systemd/user/nish-root.service.d"
+      - "{{ nish_home }}/.config/systemd/user/nnp-probe.service"
+      - "{{ nish_home }}/.config/systemd/user/nnp-probe.service.d"
+      - /tmp/nish-root
+      # A copy of a unit fleet-ops now manages: the live name is a symlink into
+      # the deploy clone, and this .bak predates it.
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service.bak-20261024"
+      # Backups of live settings files, taken by hand and never read again.
+      - "{{ nish_home }}/.pi/agent/settings.json.bak-20261004-ysk"
+      - "{{ nish_home }}/.pi/agent/settings.json.bak-20261005"
+      - "{{ nish_home }}/.pi/agent/mcp-adapter.json.bak-executor"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-8766-20260925T200306Z"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-autoskills-20261009"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20260929"
+      - "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20261008"
+      - "{{ nish_home }}/.hermes/sandbox.conf.bak-8766"
+      - "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23"
+      # The daily Hermes reminder about the GitHub App from #9676 (#10137): the
+      # 2026-10-23 glue audit named it, and #9676 carries the reminder now, so the
+      # job's work is done. Only the file is named: this playbook cannot list
+      # ~/.hermes/scripts, and retiring a directory blind would delete files no
+      # one has looked at. The job that ran it is in hermes_retired_jobs.
+      - "{{ nish_home }}/.hermes/scripts/remind-orchestrator-app.sh"
+      # The 2025 Node install the 2026-10-28 glue sweep found (G11, #10548): a
+      # second unversioned tree beside the live ~/.local/lib/node_modules. The
+      # npm launcher and its npm-exec alias in ~/.local/bin are symlinks to
+      # ~/.hermes/node/bin, and the node binary at the top of this tree was a
+      # byte-identical copy of /usr/local/bin/node, so PATH still resolves once
+      # the tree is gone.
+      - "{{ nish_home }}/.local/bin/bin"
+      - "{{ nish_home }}/.local/bin/include"
+      - "{{ nish_home }}/.local/bin/lib"
+      - "{{ nish_home }}/.local/bin/node"
+      - "{{ nish_home }}/.local/bin/README.md"
+      - "{{ nish_home }}/.local/bin/CHANGELOG.md"
+      - "{{ nish_home }}/.local/bin/LICENSE"
+      - "{{ nish_home }}/.local/bin/share"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -209,11 +271,14 @@
     # Jobs the vendor store must not carry (fleet-ops#10545). Hermes keeps every job
     # it is given, so a job whose work is done stays until something deletes it.
     # Listed by id and never searched for: a worker's fresh proof job is legitimate,
-    # and a rule that matched names would delete it on the next deploy. The live
-    # digest, scorecard, audit, reminder and security jobs are never listed here.
+    # and a rule that matched names would delete it on the next deploy. Every job the
+    # host still needs is absent from this list.
     # Deleting a job keeps no copy of its prompt or schedule, so ~/.hermes is in
     # config/restic/include.txt.
     hermes_retired_jobs:
+      # The daily reminder about the GitHub App (#10137): #9676 carries it now.
+      # The script it ran is in the retired list above.
+      - 527a50bfda03
       # The two proof jobs from the digest runs (#9579, #9717). Both were still
       # enabled on a schedule that fires once a year, so they would have run 1 Jan.
       - 13d3db49b9c5
@@ -237,6 +302,9 @@
       - --no-performance-crux
     chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
+    drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
+    drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
+    drive_mcp_servers: "{{ {'drive': drive_mcp_entry | combine({'args': drive_mcp_words[1:]})} }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
     commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
@@ -294,6 +362,12 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
+    - name: Restart ssh.socket
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        state: restarted
 
     # systemd_service scope=user would reload root's user manager, not nish's.
     - name: Reload nish's user manager
@@ -366,12 +440,17 @@
         state: reloaded
       when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
 
-    # The options file is read only at start.
+    # The options file and the web config it names are read only at start, so a
+    # restart happens only when both the API credential and the web config that
+    # switches auth on are in place. Without the pair the old loopback-only
+    # options stay and Alertmanager keeps answering, so paging never stops.
     - name: Restart alertmanager
       ansible.builtin.systemd_service:
         name: prometheus-alertmanager.service
         state: restarted
-      when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+      when:
+        - alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+        - alertmanager_auth_ready | default(false) | bool
 
     - name: Reload blackbox exporter
       ansible.builtin.systemd_service:

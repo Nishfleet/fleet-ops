@@ -53,6 +53,11 @@
       "required": ["litellm_params"],
       "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
     },
+    "stepfunRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.stepfun.ai/step_plan/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -213,6 +218,22 @@
           "contains": { "$ref": "#/$defs/judgeRow" },
           "minContains": 2,
           "maxContains": 2
+        },
+        {
+          "$comment": "fleet-ops#10762: no StepFun row carries max_parallel_requests. Cause and measurements: note 13 in docs/litellm-router-notes.md. fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.",
+          "contains": { "$ref": "#/$defs/stepfunRow" },
+          "minContains": 0,
+          "maxContains": 10,
+          "items": {
+            "if": { "$ref": "#/$defs/stepfunRow" },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "not": { "required": ["max_parallel_requests"] }
+                }
+              }
+            }
+          }
         }
       ],
       "items": {
@@ -343,6 +364,15 @@
             "TimeoutErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
+          }
+        },
+        "model_group_alias": {
+          "$comment": "fleet-ops#9330 desk arm of the 3-day token trial, and nothing else: an alias renames a group Pi already picks, so Pi's compaction.modelOverrides (keyed provider/model) can shorten that arm's context without moving a single call to another seat. Only a worker group a Pi job can pick has one, which is why worker-public is here and assistant is not. Pinned as a closed map because an alias also renames the fallback chain: Router._get_model_from_alias resolves the name before routing, but fallback_lookup_groups keys on the requested name, so an alias with no fallbacks entry of its own inherits nothing and a failed row ends the call (the 'No fallback model group' shape of fleet-ops#9290). tests/test_workflow_caps.py asserts each pair here is real, that no alias name shadows a model_name, and that the desk name agent.yml builds is listed.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "worker-capable-desk": { "const": "worker-capable" },
+            "worker-public-desk": { "const": "worker-public" }
           }
         },
         "fallbacks": {

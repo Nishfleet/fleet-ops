@@ -141,7 +141,7 @@
     # Hermes's own install dir keeps a driver the owner declined; an update or
     # an install must never bring it back.
     hermes_banned_tool_glob: "cua-driver-*"
-    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, leviathan, syncthing]
+    version_checks: [claude, node, npm, gh, uv, bun, cursor-agent, devin, opencode, rclone, syncthing]
 
   tasks:
     - name: Check for Nish's deliberate fleet pause
