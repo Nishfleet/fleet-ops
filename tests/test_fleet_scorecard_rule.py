@@ -12,6 +12,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/fleet-scorecard.yaml"
+ALERTING = ROOT / "config/grafana/provisioning/alerting"
+CONTAINER = ROOT / "containers/quadlet/fleet-grafana.container"
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
 FMT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -121,6 +123,13 @@ def test_every_pull_request_search_reads_the_closed_timestamp(targets):
 def test_the_rule_searches_the_three_days_its_two_windows_divide():
     targets = [d for d in _rules()["scorecard-products-behind"]["data"] if d["model"].get("queryType") == "Pull_Requests"]
     assert {json.dumps(d["relativeTimeRange"], sort_keys=True) for d in targets} == {json.dumps({"from": 259200, "to": 0})}
+
+
+def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
+    line = next(l for l in CONTAINER.read_text().splitlines() if l.startswith("Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT="))
+    scale = {"s": 1, "m": 60, "h": 3600}
+    intervals = [int(n) * scale[u] for p in ALERTING.glob("*.yaml") for n, u in re.findall(r"^\s+interval: (\d+)([smh])$", p.read_text(), re.M)]
+    assert 30 < int(line.split("=")[2].removesuffix("s")) < min(intervals)
 
 
 @pytest.mark.parametrize("targets,expression", [(_dashboard_targets, _dashboard_products_expression), (_rule_targets, _rule_products_expression)])
