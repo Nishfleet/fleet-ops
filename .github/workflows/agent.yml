@@ -126,7 +126,7 @@ jobs:
             skip workflow-files
           fi
 
-          # Cap: 3 runs per issue since the newest park: label; an infra-failed run does not count.
+          # Cap: 3 runs per issue since the newest park: comment; an infra-failed run does not count.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
@@ -136,7 +136,7 @@ jobs:
           fi
 
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # Headroom is the worker-capable row count: a safety valve, not a throttle (fleet-ops#10762).
+          # Headroom is the worker-capable row count over the bwrap sessions live() counts: a safety valve, not a throttle (fleet-ops#10762).
           pi_free() {
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
@@ -202,6 +202,7 @@ jobs:
       - name: Worker clock
         id: clock
         if: steps.gate.outputs.go == 'true'
+        # A separate step, because a step killed at its timeout may not flush its own outputs (fleet-ops#9291).
         run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Worker
         id: worker
@@ -216,6 +217,7 @@ jobs:
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
+          # --unshare-pid kills what the worker daemonized past the runner's orphan cleanup (actions/runner#4601; a Chrome ran 13h).
           # Every engine but claude hides both seat logins; claude sees only its own seat.
           # ci.yml runs these jail lines verbatim and fails if a hidden path is readable (fleet-ops#9274).
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
@@ -268,6 +270,7 @@ jobs:
             echo "claude lane: seat=$claude_seat auth=$claude_auth issue=${id##*-} runner=${RUNNER_NAME:-unknown}"
             mark claude
             rc=0
+            # The last 3 lines only: the model's own text mentions rate limits, and a turn-cap stop is a failed run.
             refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
             claude_cfg_root=
             claude_try() {
@@ -283,6 +286,7 @@ jobs:
               ) >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
               [ -z "$cfg" ] || rm -rf "$cfg"
             }
+            # A revoked seat fails every job, so a 401 retries the other seat once, and only while nothing is pushed.
             authfail() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'api error: 401|authentication[_ ]error|unauthorized|invalid (api key|bearer|token|authentication)|token (has )?(expired|been revoked|revoked)|please run /login|not logged in'; }
             claude_try "$claude_tok"
             if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
@@ -310,6 +314,7 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
+            # fleet-ops#9330 2x2 trial arm from the issue number: odd n -> no skills menu, (n/2) odd -> desk.
             mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public; arm_flags=(); [ $(( ${id##*-} % 2 )) = 1 ] && arm_flags+=(--no-skills)
             [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
             echo "/worker $id" | $jail pi --print --no-context-files --continue \
@@ -364,6 +369,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
+          # A 402/400 dead seat is the provider, not the packet (fleet-ops#9007, #9011). Bare 400 stays out: pi's own BadRequestError must strike.
           grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
           [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           # shellcheck disable=SC2016 # $v is a jq variable
@@ -372,7 +378,8 @@ jobs:
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
-      # Close the issue through a keyword, then arm unless the diff leaves the safe allowlist (fleet-ops#9315).
+      # Close the issue through a keyword, then arm unless the diff leaves the safe allowlist (fleet-ops#9315);
+      # a red required check disarms and fails this step, which is what feeds the strike below.
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
@@ -465,7 +472,8 @@ jobs:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
-      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator.
+      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator. A cancelled
+      # run, a router 429/500 and an overload verdict requeue as infra instead, up to INFRA_REQUEUE_CAP.
       - name: Strike or requeue
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
         env:
