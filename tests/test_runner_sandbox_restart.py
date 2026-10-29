@@ -1,7 +1,17 @@
-"""A runner reads its sandbox at unit start, so the deploy restarts the pool when it changes."""
+"""A sandbox drop-in reaches a runner at its next start, never by cutting a running job.
 
-from fnmatch import fnmatch
+The deploy installs the drop-in and reloads systemd. It restarts no runner: a
+restart waits TimeoutStopSec (5 min) for a job and then kills it, and the pool
+restart that shipped with fleet-ops#10892 cut three hand-offs mid-session on its
+own merge, 2026-10-29 11:57Z (fleet-ops#10898). A runner reads the drop-in at its
+next start, which the nightly update performs after it drains the runners, and
+that run reads the read-only clone bind back on a runner it restarted, so the
+guard still gets its live proof (fleet-ops#10866).
+"""
+
 from pathlib import Path
+
+import yaml
 
 from ansible_host import play
 
@@ -10,29 +20,24 @@ SYSTEM = ROOT / "rootfs/etc/systemd/system"
 POOL = "actions.runner.Nishfleet.netcup-agent-.service.d"
 CLONE = "fleet-ops-deploy-clone"
 RELOAD = "Reload systemd"
-TOPIC = "Restart the agent runners"
-CANARY = "Restart one agent runner"
-READ_PID = "Read the main pid of that runner"
-READ_CLONE = "Fail unless that runner mounts the deploy clone read-only"
-POOL_RESTART = "Restart the rest of the agent runners"
-CHAIN = [CANARY, READ_PID, READ_CLONE, POOL_RESTART]
-PILOT = "Leave the pilot runner stopped while it carries the agent label"
+DRAIN = "Wait until those jobs finish"
+STOP = "Stop the runner services, so no CI job starts mid-update"
+START = "Start the runner services this run stopped"
+UP = "Wait for every runner service to be up again"
+PICK = "Pick the agent runner this run restarted"
+READ_PID = "Read the main pid of a runner this run restarted"
+READ_BIND = "Fail unless that runner mounts the deploy clone read-only"
+ASSERT = "Fail loudly if any step or check went wrong"
+BIND_PATTERN = "fleet-ops-deploy-clone ro(,|$)"
+AGENT_PREFIX = "^actions\\.runner\\.Nishfleet\\.netcup-agent-"
 
 
 def handlers() -> list[dict]:
     return play()["handlers"]
 
 
-def handler(name: str) -> dict:
-    found = [h for h in handlers() if h["name"] == name]
-    assert len(found) == 1, name
-    return found[0]
-
-
-def task(name: str) -> dict:
-    found = [t for t in play()["tasks"] if isinstance(t, dict) and t.get("name") == name]
-    assert len(found) == 1, name
-    return found[0]
+def install_config() -> list[dict]:
+    return yaml.safe_load((ROOT / "ansible/tasks/install-config.yml").read_text())
 
 
 def copy_task() -> dict:
@@ -42,18 +47,23 @@ def copy_task() -> dict:
     return found[0]
 
 
-def canary() -> str:
-    return handler(CANARY)["ansible.builtin.systemd_service"]["name"]
+def update() -> dict:
+    playbook = yaml.safe_load((ROOT / "ansible/update.yml").read_text())
+    blocks = [t for t in playbook[0]["tasks"] if isinstance(t, dict) and "always" in t]
+    found = [b for b in blocks if START in [t["name"] for t in b["always"]]]
+    assert len(found) == 1, [len(b["always"]) for b in found]
+    return found[0]
 
 
-def pool_patterns() -> list[str]:
-    argv = handler(POOL_RESTART)["ansible.builtin.command"]["argv"]
-    assert argv[:2] == ["/usr/bin/systemctl", "try-restart"], argv
-    return argv[2:]
+def always() -> dict:
+    return {t["name"]: t for t in update()["always"]}
 
 
-def matched(unit: str) -> bool:
-    return any(fnmatch(unit, pattern) for pattern in pool_patterns())
+def in_order(names: list[str], *wanted: str) -> None:
+    missing = [name for name in wanted if name not in names]
+    assert not missing, missing
+    positions = [names.index(name) for name in wanted]
+    assert positions == sorted(positions), positions
 
 
 def clone_pools() -> list[str]:
@@ -63,42 +73,42 @@ def clone_pools() -> list[str]:
 
 
 def test_the_agent_pool_is_the_only_pool_that_binds_the_deploy_clone() -> None:
-    assert clone_pools() == [POOL], "a pool that binds the deploy clone needs its own restart, and its own canary runner"
+    assert clone_pools() == [POOL], "a second pool that binds the deploy clone needs the read-back in ansible/update.yml"
 
 
-def test_a_sandbox_change_notifies_the_restart_after_the_reload() -> None:
-    notify = copy_task()["notify"]
-    assert notify.index(RELOAD) < notify.index(TOPIC)
+def test_a_sandbox_change_is_installed_and_the_daemon_reloaded() -> None:
+    notified = copy_task()["notify"]
+    assert set(notified if isinstance(notified, list) else [notified]) == {RELOAD}
 
 
-def test_every_handler_in_the_chain_listens_to_the_notified_topic() -> None:
-    for name in CHAIN:
-        assert handler(name).get("listen") == TOPIC, f"nothing notifies {name}, so it never runs"
+def test_the_sandbox_install_restarts_no_unit() -> None:
+    text = yaml.safe_dump(install_config())
+    assert "restarted" not in text
+    assert "try-restart" not in text
 
 
-def test_the_canary_is_a_runner_the_deploy_leaves_running() -> None:
-    service = handler(CANARY)["ansible.builtin.systemd_service"]
-    assert service["state"] == "restarted"
-    stopped = task(PILOT)["ansible.builtin.systemd_service"]["name"]
-    assert service["name"] != stopped, "restarted starts a stopped unit, and the pilot takes jobs it cannot run"
+def test_the_deploy_signals_no_agent_runner() -> None:
+    signals = yaml.safe_dump(handlers())
+    assert "actions.runner." not in signals, "the deploy would restart a runner and cut its running job"
 
 
-def test_the_canary_is_read_back_before_the_rest_restart() -> None:
-    names = [h["name"] for h in handlers()]
-    assert names.index(RELOAD) < names.index(CANARY)
-    assert names.index(CANARY) < names.index(READ_PID) < names.index(READ_CLONE) < names.index(POOL_RESTART)
-    assert handler(READ_PID)["ansible.builtin.command"]["argv"][-1] == canary()
-    assert handler(READ_CLONE)["ansible.builtin.command"]["argv"][-1] == "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"
+def test_the_nightly_update_drains_before_it_stops_the_runners() -> None:
+    block = update()
+    in_order([t["name"] for t in block["block"]], DRAIN, STOP)
+    assert START in always()
 
 
-def test_the_pool_restart_covers_every_runner_the_canary_and_the_pilot_do_not() -> None:
-    assert matched("actions.runner.Nishfleet.netcup-agent-3.service")
-    assert matched("actions.runner.Nishfleet.netcup-agent-9.service")
-    assert matched("actions.runner.Nishfleet.netcup-agent-10.service")
-    assert matched("actions.runner.Nishfleet.netcup-agent-30.service")
+def test_the_nightly_update_reads_the_clone_bind_back_on_a_runner_it_restarted() -> None:
+    tasks = always()
+    in_order(list(tasks), START, UP, PICK, READ_PID, READ_BIND, ASSERT)
+    assert "select('match', '" + AGENT_PREFIX + "')" in tasks[PICK]["ansible.builtin.set_fact"]["agent_runner"], "a fleet-ci or vault runner mounts no clone bind"
+    assert tasks[READ_PID]["ansible.builtin.command"]["argv"][-1] == "{{ agent_runner }}"
+    assert tasks[READ_BIND]["ansible.builtin.command"]["argv"][2:] == [BIND_PATTERN, "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"]
+    for name in (READ_PID, READ_BIND):
+        assert tasks[name]["when"] == "agent_runner | length > 0", "the read would fail a run that restarted no agent runner"
 
 
-def test_the_pool_restart_names_no_runner_already_restarted_and_no_other_pool() -> None:
-    assert not matched(canary()), "the pool restart would restart the canary a second time"
-    assert not matched(task(PILOT)["ansible.builtin.systemd_service"]["name"]), "the pool restart would start the pilot"
-    assert not matched("actions.runner.Nishfleet.netcup-fleet-ci-1.service"), "the deploy job runs on fleet-ci"
+def test_a_run_that_read_no_bind_fails_unless_no_agent_runner_was_up() -> None:
+    checks = [check for check in always()[ASSERT]["ansible.builtin.assert"]["that"] if "agent_runner_clone_bind" in check]
+    assert len(checks) == 1, "a skipped read and a failed read would both pass the assert"
+    assert "agent_runner" in checks[0], "a run that restarted an agent runner has to have read the bind"
