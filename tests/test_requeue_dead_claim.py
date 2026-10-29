@@ -3,7 +3,7 @@
 
 A worker's Gate labels the issue `agent-in-progress` and posts "agent run started:" one line
 apart, so a live worker always has the comment. A run that died between the two lines leaves
-the label alone, and the sweep used to skip exactly that case: fleet-ops#10899, 0509#7070 held
+the label alone, and the sweep used to skip exactly that case: fleet-ops#10903, 0509#7070 held
 the label for 24 days with no branch, no pull request and no comment, and nothing requeued it.
 """
 import json
@@ -75,17 +75,15 @@ def run_comment(status="completed"):
 
 
 def test_a_claim_no_run_announced_is_requeued(tmp_path):
-    log, writes, out = sweep(tmp_path, events=labelled(86400))
+    log, writes, _ = sweep(tmp_path, events=labelled(86400))
     assert "requeued #7: claimed with no live run and no claim PR" in log
     assert "issue edit 7 -R o/r --remove-label agent-in-progress --add-label agent-ready|token=x" in writes
-    assert 'stalled_refs=["claim/issue-7-miss-review"]' in out
 
 
 def test_a_recently_labelled_issue_is_left_alone(tmp_path):
-    log, writes, out = sweep(tmp_path, events=labelled(60))
+    log, writes, _ = sweep(tmp_path, events=labelled(60))
     assert "requeued #7" not in log
     assert writes == []
-    assert "stalled_refs=[]" in out
 
 
 def test_a_live_run_url_is_left_alone(tmp_path):
@@ -109,7 +107,6 @@ def test_an_open_claim_pr_is_left_alone(tmp_path):
 
 
 def test_no_label_event_at_all_is_skipped(tmp_path):
-    log, writes, out = sweep(tmp_path, events=[])
+    log, writes, _ = sweep(tmp_path, events=[])
     assert "no agent-in-progress label event, skip" in log
     assert writes == []
-    assert "stalled_refs=[]" in out

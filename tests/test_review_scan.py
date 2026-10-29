@@ -215,7 +215,7 @@ def test_both_posting_paths_scan_before_they_post():
 
 
 def test_every_place_that_installs_gitleaks_pins_the_secret_scan_release():
-    scan = (ROOT / ".github/workflows/secret-scan.yml").read_text()
+    scan = (ROOT / ".github/actions/secret-scan/action.yml").read_text()
     version = re.search(r"GITLEAKS_VERSION: (\S+)", scan).group(1)
     digest = re.search(r"GITLEAKS_SHA256: (\w+)", scan).group(1)
     release = f"gitleaks/releases/download/v{version}/gitleaks_{version}_linux_x64.tar.gz"

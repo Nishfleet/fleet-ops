@@ -255,10 +255,15 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row: the rule is gone, so the proxy-level naming shape is no longer held anywhere")
         return
     expr = " ".join(next((d for d in rule.get("data") or [] if d.get("refId") == "A"), {}).get("model", {}).get("expr", "").split())
-    row_side = 'sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))'
-    proxy_side = 'or sum by (requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))'
+    row_side = 'sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))'
+    proxy_side = 'or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))'
     if row_side not in expr or proxy_side not in expr:
         bad.append("router-dead-row: the query must fire per router row (model_id) and per proxy-level series (requested_model) separately, so a page with no router row id still names the model it probed (fleet-ops#10069)")
+    gate = '* on(model_id,requested_model) (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)'
+    if gate not in expr:
+        bad.append("router-dead-row: A must multiply in a 10-minute recency gate, so a row that answered 402/403/404 for a minute and healed reads 0 instead of paging for the rest of the hour (fleet-ops#9562)")
+    if rule.get("for") != "15m":
+        bad.append(f"router-dead-row: the rule holds for {rule.get('for')!r}, not 15m, so a one-minute flap that still sits in the 10-minute gate pages on the first evaluation (fleet-ops#9562)")
     annotations = rule.get("annotations") or {}
     summary = annotations.get("summary", "")
     if '{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}' not in summary:
@@ -268,6 +273,10 @@ def dead_row_shape(rules, points, bad):
         bad.append("router-dead-row: the journal grep must fall back to the requested_model when the series carries no model_id")
     if "Do NOT remove or bench it without Nish's explicit yes" not in description or "{{ if $labels" in description:
         bad.append("router-dead-row: the description must keep the remove-or-bench gate for every series, proxy-level included")
+    for issue in ("#9050", "#9417"):
+        if issue in description:
+            continue
+        bad.append(f"router-dead-row: the page text must link {issue}, so a responder reads that the retry-side fix is tracked and a healed flap needs no action (fleet-ops#9562)")
     template = (points.get("router-dead-row-dispatch", {}).get("receivers") or [{}])[0].get("settings", {}).get("payload", {}).get("template", "")
     if ".Labels.requested_model" not in template or "proxy-level" not in template or "unnamed proxy request" not in template:
         bad.append("router-dead-row-dispatch: the issue title must name a proxy-level series by its requested_model instead of filing an empty row name")
