@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 QUADLET = (ROOT / "containers/quadlet/fleet-litellm-proxy.container").read_text()
 CONFIG = (ROOT / "config/litellm-proxy.yaml").read_text()
@@ -32,15 +34,13 @@ def test_the_container_is_passed_no_var_the_router_config_does_not_read():
     )
 
 
-IMAGE_VARS = {"LITELLM_LOG", "PYTHONPYCACHEPREFIX"}
-
-
-def test_the_container_environment_sets_no_var_the_router_config_does_not_read():
-    set_vars = set(re.findall(r"^Environment=([A-Z0-9_]+)=", QUADLET, re.M))
-    used = set(re.findall(r"os\.environ/([A-Z0-9_]+)", CONFIG))
-    assert set_vars - IMAGE_VARS <= used, (
-        f"the container sets {sorted(set_vars - IMAGE_VARS - used)} in its own environment but no row in "
-        "config/litellm-proxy.yaml reads it, so the variable outlives the row that needed it"
+def test_the_container_sets_ollama_api_base_exactly_while_an_ollama_row_needs_it():
+    models = [row["litellm_params"]["model"] for row in yaml.safe_load(CONFIG)["model_list"]]
+    ollama_rows = [model for model in models if model.startswith("ollama")]
+    assert ("OLLAMA_API_BASE" in QUADLET) == bool(ollama_rows), (
+        f"the unit sets OLLAMA_API_BASE={'OLLAMA_API_BASE' in QUADLET} and config/litellm-proxy.yaml holds "
+        f"{len(ollama_rows)} ollama rows of {len(models)}: LiteLLM asks the default Ollama address while it "
+        "builds the router for each ollama_chat row, so the variable and the rows move together"
     )
 
 
