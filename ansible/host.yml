@@ -253,10 +253,15 @@
       - "{{ nish_home }}/.local/bin/LICENSE"
       - "{{ nish_home }}/.local/bin/share"
       # The five plugins agents loaded straight from working-tree checkouts
-      # through an env override (G1, #10540). auto-handoff now comes from its
-      # marketplace (85-auto-handoff.json). The four mods are cut: none was in an
-      # enabled list, and both upstreams name their marketplace
-      # claude-code-mods, so Claude Code can register only one of them.
+      # through an env override (G1, #10540). All five are cut rather than
+      # carried: an outside marketplace cannot be pinned to a commit in Claude
+      # Code 2.1.312 (extraKnownMarketplaces rejects a ref, and plugin
+      # marketplace add takes no ref argument), so registering one would let
+      # every upstream push reach each agent through root-owned settings. The
+      # two mods also collide: both manifests name their marketplace
+      # claude-code-mods, and none of the four was in an enabled list. Each
+      # checkout was clean, held no stash, and its HEAD was on origin/main and
+      # on local main, so the delete loses no work.
       - "{{ nish_home }}/workspaces/tooling/auto-handoff"
       - "{{ nish_home }}/workspaces/tooling/claude-code-mods-onewave"
       - "{{ nish_home }}/workspaces/tooling/claude-code-mods-hamzafer"
