@@ -448,6 +448,8 @@
         # servers run as `npm exec @modelcontextprotocol/server-filesystem ...`, so
         # matching every npm made this check fail the 2026-10-23 runs and aborted
         # the rest of the block with it.
+        # The pattern takes a flag before the subcommand too (`npm -g install`,
+        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082).
         - name: Find stale npm staging dirs a stopped self-update left behind
           ansible.builtin.find:
             paths: "{{ npm_global_root.stdout }}"
@@ -460,7 +462,7 @@
           become: true
           become_user: nish
           ansible.builtin.command:
-            argv: [pgrep, -u, nish, -f, '(^|/)npm (i|install|ci|update)( |$)|npm-cli\.js (i|install|ci|update)( |$)']
+            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|prune)( |$)']
           register: npm_running
           failed_when: npm_running.rc not in [0, 1]
           changed_when: false
