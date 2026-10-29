@@ -791,6 +791,7 @@ jobs:
               LANE) got=$(jq -r "$lane" <<<"$(jq -c .labels <<<"$in")") ;;
             esac
             [ "$got" = "$(jq -r .want <<<"$c")" ] && [ "$got_run" = "$(jq -r '.want_run // ""' <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got [$got|$got_run], want [$(jq -r .want <<<"$c")|$(jq -r '.want_run // ""' <<<"$c")]"; bad=1; }
+            echo "case $(jq -r .id <<<"$c"): ${got:-(silent)}${got_run:+ (run $got_run)}"
           done < <(jq -c '.cases[]' config/quiet-issue-cases.json)
           pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_priority_now_quiet_rule.py || bad=1
           test "$bad" -eq 0
