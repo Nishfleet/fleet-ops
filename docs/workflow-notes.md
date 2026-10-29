@@ -73,3 +73,31 @@ with no verdict (a review job that died before it wrote one) the
 head is stuck: STUCK re-asks once the marker is 15 minutes old.
 config/stuck-pr-cases.json runs this program in CI.
 
+### The weekly engine scorecard: closed, and the gate that closed it
+
+#10560 (branch `fix/issue-10515`, for #10515) added
+`.github/workflows/engine-scorecard.yml`: one Monday run that walked the repo's
+merged PRs over GraphQL, built per-engine numbers from the `builder-engine:`
+comments, posted them on the tracking issue #10521, and filed an alert when an
+engine fell below its 4-week median. It is closed as superseded, and no head of
+that branch can go green, for one reason: the ratchet.
+
+The ratchet (`.github/workflows/ratchet.yml`, called by `ci.yml`, required
+check `ratchet / ratchet`) allows 0 or fewer net added code lines under
+`.github/workflows`, `.github/actions`, `scripts` and `bin`. Measured on the
+PR's head `1047d5f7` against its base `490fff3b`:
+
+```
+ratchet: net added code lines under .github/workflows, .github/actions, scripts, bin: 184
+```
+
+The deliverable is one new workflow file, so editing it cannot bring that
+number down, and merging `main` cannot either: the ratchet diffs
+`merge-base(base, head)` to `head`, and a merge leaves that merge base where it
+was. Two independent reviews blocked the same head on the same defect, that the
+alert close loop matched every open issue whose body contains
+`engine-quality-alert:`, so a human issue quoting the marker was closed by the
+workflow.
+
+What would unblock the measurement is the ratchet's own error text: "Delete as many as you add, or build the mechanism in its own repo behind an official extension point." Both halves need a decision above a worker, because deleting an equal number of workflow code lines is a product call, and a second repo is a new organ. The tracking issue #10521 has been closed since the 2026-10-29 pro-dev cut ("Reopen if it blocks a product"), so #10515 waits on that decision, not on a worker.
+
