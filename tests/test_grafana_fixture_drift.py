@@ -16,7 +16,16 @@ FIXTURED_RULES = [
     ("paid-plan-idle.yaml", "ppi-alibaba", "paid-plan-idle.test.rules.yml", "AlibabaTokenPlanSgIdle"),
     ("paid-plan-idle.yaml", "ppi-commandcode", "paid-plan-idle.test.rules.yml", "CommandCodeIdle"),
     ("paid-plan-idle.yaml", "ppi-minimax", "paid-plan-idle.test.rules.yml", "MiniMaxIdle"),
+    ("router-dead-row.yaml", "router-dead-row", "router-dead-row.test.rules.yml", "RouterRowAnswers402403404"),
 ]
+GUARD = (
+    "prompt-cache-share-guard.yaml",
+    "prompt-cache-share-guard",
+    "prompt-cache-share-guard.test.rules.yml",
+    "PromptCacheShareBelowBaseline",
+)
+GUARD_INLINED = "prompt-cache-share-guard.test.yml"
+FLOOR = re.compile(r'vector\(([0-9.]+)\),"vendor","([^"]+)"')
 
 
 def _yq(expr, path):
@@ -46,10 +55,14 @@ def _threshold(rule_file, uid):
     return f"> {evaluator['params'][0]:g}"
 
 
-def _fixture_expr(fixture, alert):
+def _fixture_rule(fixture, alert):
     rules = _yq(f'[.groups[].rules[] | select(.alert == "{alert}")]', FIXTURES / fixture)
     assert len(rules) == 1, f"{fixture} has {len(rules)} rules alerting {alert}, want 1"
-    return rules[0]["expr"]
+    return rules[0]
+
+
+def _fixture_expr(fixture, alert):
+    return _fixture_rule(fixture, alert)["expr"]
 
 
 QUOTED = re.compile(r'("[^"]*")')
@@ -57,6 +70,10 @@ QUOTED = re.compile(r'("[^"]*")')
 
 def _flatten(expr):
     return "".join(part if part.startswith('"') else "".join(part.split()) for part in QUOTED.split(expr))
+
+
+def _floors(expr):
+    return sorted(set((vendor, value) for value, vendor in FLOOR.findall(_flatten(expr))))
 
 
 @pytest.mark.parametrize(("rule_file", "uid", "fixture", "alert"), FIXTURED_RULES)
@@ -70,3 +87,35 @@ def test_fixture_carries_the_deployed_a_expression(rule_file, uid, fixture, aler
         f"want {PROVISIONING.name}/{rule_file} {uid} A:\n{expected}\n"
         f"got {FIXTURES.name}/{fixture} {alert}:\n{actual}"
     )
+
+
+@pytest.mark.parametrize(("rule_file", "uid", "fixture", "alert"), FIXTURED_RULES)
+def test_fixture_carries_the_deployed_hold(rule_file, uid, fixture, alert):
+    deployed = _rule(rule_file, uid).get("for") or "0s"
+    actual = _fixture_rule(fixture, alert).get("for") or "0s"
+    assert actual == deployed, (
+        f"{fixture} evaluates {alert} with a {actual} hold while {rule_file}'s {uid} deploys {deployed}, so "
+        f"promtool replays a different rule: the fixture stays green while the deployed hold shrinks back to a "
+        f"page on the first burst. Copy the deployed `for` into the fixture."
+    )
+
+
+def test_prompt_cache_floors_match_across_the_three_copies():
+    rule_file, uid, fixture, alert = GUARD
+    deployed = f"{PROVISIONING.name}/{rule_file} {uid} A"
+    copies = {
+        deployed: _deployed_a(rule_file, uid),
+        f"{FIXTURES.name}/{fixture}": _fixture_expr(fixture, alert),
+        f"{FIXTURES.name}/{GUARD_INLINED} promql_expr_test": "\n".join(
+            _yq("[.tests[].promql_expr_test[].expr]", FIXTURES / GUARD_INLINED)
+        ),
+    }
+    expected = _floors(copies[deployed])
+    assert expected, f"{deployed} carries no vendor floor"
+    for name, expr in copies.items():
+        got = _floors(expr)
+        assert got == expected, (
+            f"{name} floors {got} where {deployed} floors {expected}. promtool never reads the provisioning file "
+            f"and no case exercises every vendor, so a floor that moves in one copy and not the others leaves the "
+            f"fixture green while the deployed rule judges by another bar. Copy the deployed floors into {name}."
+        )

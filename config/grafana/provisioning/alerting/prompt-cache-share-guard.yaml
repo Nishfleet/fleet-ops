@@ -8,14 +8,15 @@
 # report the count (fleet-ops#9385 point 2).
 #
 # The bar: no vendor in use may fall more than 2 points below the share it read
-# in the 48h after the bump (opencodego and synthetic excepted, below). That reading was taken on this box at
-# 2026-10-25T08:12Z, and the floors below are it minus 0.02, except those two:
+# in the 48h after the bump (opencodego, synthetic and commandcode excepted,
+# below). That reading was taken on this box at 2026-10-25T08:12Z, and the
+# floors below are it minus 0.02, except those three:
 #
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.7700
 #   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
 #   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
 #   opencodego   0.9421 -> 0.8800      anthropic   0.4531 -> 0.4331
-#   commandcode  0.9298 -> 0.9098
+#   commandcode  0.9298 -> 0.8660
 #   zai          0.9256 -> 0.9056
 #
 # opencodego's floor is 6.2 points down, not 2 (fleet-ops#10757, after #10630's
@@ -57,6 +58,53 @@
 # worker-capable row at about 0.91 now passes (about 4.6 points more full-price
 # input on 86 to 91% of the tokens); one at 0.90 beside the usual small rows
 # reads 0.861 and fires (a test case below).
+#
+# minimax's floor is NOT moved for fleet-ops#10955, and this is the record of
+# why. The rule fired 2026-10-29T14:36Z with 7d 0.926 and 48h 0.917 against the
+# 0.9259 floor. The vendor still caches: all four rows report cached_tokens, a
+# session's first call reads 0.27 cached (another session's prefix still warm on
+# the vendor's side), and the median prompt held at 65k to 75k tokens. The fall
+# is ours. Per row over the 48h the floor was cut from
+# (10-23T08:12Z to 10-25T08:12Z, LiteLLM_SpendLogs): m31-worker-capable 50.8M at
+# 0.9434, m31-worker-cheap 41.4M at 0.9506, m31b-worker-capable 22.8M at 0.9084,
+# m31b-worker-cheap 43.8M at 0.9578, so the cheap rows were 54% of the tokens
+# at 0.95. Over the 48h that fired (10-27T14:36Z to 10-29T14:36Z): 160.2M at
+# 0.9172, 4.3M at 0.9056, 159.6M at 0.9130 and 5.2M at 0.9500, so the cheap
+# rows are 3% and the vendor reads the two big rows' 0.91 to 0.92. Session
+# shape did the rest. The two capable rows ran 29 sessions of 36.7 calls each in
+# the baseline window with 1.9% of their tokens inside a session of 20 calls or
+# fewer; in the window that fired they ran 236 of 21.3 calls with 10.6% inside
+# 20 calls (4.3% inside 5). A call reads 0.26 on its session's first turn and
+# 0.84 by the fifth against 0.95 once warm, and that mix alone takes m31 from
+# 0.9434 to 0.9231, which is 2 of its 2.6 points. The warm share itself slid
+# (0.9553 to 0.9426 at 21-plus calls, 0.9722 to 0.9515 at 6 to 20) with the
+# prefix: the 3-day token trial drops the skills menu from half the plain-pi
+# workers (#10444, 2026-10-29T06:27Z), AGENTS.md was cut to 1,498 words (#10561,
+# 08:55Z), the Cursor and Devin lanes were retired onto pi (#10580, 10:26Z) and
+# the worker and hand-off lanes moved seat (#10870, 10:50Z). Input tokens per
+# request fell from 65k to 56k over the same hours while uncached input per
+# request rose from 4.0k to 6.9k, so the prefix cut lands as share. The router
+# sends the rows unchanged: same api_base, no temperature, no timestamp.
+#
+# Moving the floor for that would follow the fleet's own mix down, which is the
+# drift the opencodego and commandcode notes above already warn against, so the
+# floor stays 0.9259 and the alert stays open. Minimax is re-cut at the re-base
+# the "why both windows" note below schedules for after 2026-10-30, from a 48h
+# read taken after the trial's three days end 2026-11-01T06:27Z; #11011 carries
+# that reading. The cost of waiting is one issue a day on 335M tokens per 48h at
+# 0.915 to 0.917, and a case below pins that shape so the re-cut has a fixture.
+#
+# commandcode's floor is 6.4 points down, not 2 (fleet-ops#10894). The 48h read
+# was 0.886 (7d 0.908) on 118M tokens, with every row still reporting
+# cached_tokens. Per row over 48h: glm53flashb-worker-capable 69.6M at 0.896;
+# glm53flash-worker-capable 48.2M at 0.873; the two worker-cheap rows 0.3M. Daily
+# share 2026-10-25 to 10-28 read 0.926, 0.940, 0.957 and 0.902. The worker-capable
+# rows are bursty: 3h windows read 0.88 on 37M tokens, then 0.70 on 1.1M and 0.49
+# on 2.0M after idle gaps, so the fall is cold caches at the start of a burst, not
+# a changed prefix (the cause #10757 found on opencodego). The floor is the fresh
+# 48h read minus 2 points. The cost: a 2 to 6 point drift on commandcode now
+# passes; the 1-hour paging rule covers a total loss. A second filing means look
+# at the burst pattern before moving the floor again.
 #
 # synthetic's floor is 12 points down, not 2 (fleet-ops#10654). Its senior row
 # (glm53flash-senior, 16.7M of 44.8M input tokens in the 48h to 2026-10-28)
@@ -168,7 +216,7 @@ groups:
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
                     or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
                     or label_replace(vector(0.9259), "vendor", "minimax", "", "")
-                    or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+                    or label_replace(vector(0.8660), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
                     or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
                     or label_replace(vector(0.8231), "vendor", "straitly", "", "")
@@ -233,6 +281,6 @@ groups:
         for: 15m
         annotations:
           summary: 'Prompt-cache share on {{ with $labels.vendor }}{{ . }}{{ else }}unknown vendor{{ end }} is under its post-bump floor'
-          description: 'It served {{ with $values.B }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points (about 6 for opencodego and 12 for synthetic, see the file header). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
+          description: 'It served {{ with $values.B }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} of its input tokens from its prompt cache over 7 days and {{ with $values.D }}{{ if .Value }}{{ .Value | printf "%.3f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} over 48 hours, under the floor in config/grafana/provisioning/alerting/prompt-cache-share-guard.yaml, which is the share the vendor read at 2026-10-25T08:12Z minus 2 points, or more where the table in that file shows a wider margin (opencodego 6.2, commandcode 6.4, synthetic 12). Every miss pays the full input price. Check that its deployments still receive usage.prompt_tokens_details.cached_tokens and that the prompt prefix is stable (temperature, a timestamp, tool order): docs/prompt-cache-routes.md has the per-vendor verdicts. If the vendor itself stopped caching, motivating it is Nish''s call (spend), so open a needs-nish-decision issue with the numbers.'
         labels: {severity: warning, signal: prompt-cache-share-guard}
         isPaused: false

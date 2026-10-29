@@ -16,3 +16,9 @@ the commits a PR adds are scanned, so old history cannot fail a PR. The job is
   that name by itself and the full-history scans would start failing on old
   commits.
 
+The risky-PR review (`agent.yml`, job `review`) runs the same binary and the
+same rules over its own comment text before it posts it, and before it
+approves. A line that matches is replaced by `[a line was withheld: it matched
+a private-detail rule]`, so the rest of the review still posts. If the scan
+cannot run, the review posts no text and approves nothing.
+

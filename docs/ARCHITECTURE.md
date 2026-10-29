@@ -147,11 +147,13 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed. Coordinator approval is a **required status check**: the
   `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
-  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
-  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  15368, alongside `ci` and `Gitleaks`), and `.github/workflows/coordinator-approval.yml`'s
+  job of that name — on `main` since 6c8667075 (PR #9389, 2026-10-07; its own
+  workflow file since #10292) — runs on `merge_group`,
   resolves every PR in the queue entry from the group ref, reads the CLASSIFY
   and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
-  commit, and fails a risky PR whose current head sha carries no approval. A
+  commit (a caller repo, which has no copy, reads fleet-ops main by URL), and
+  fails a risky PR whose current head sha carries no approval. A
   hand enqueue is caught by it as well, because a queue entry cannot merge
   while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
   unapproved before the check existed; the job ran from 2026-10-07 but the
@@ -177,9 +179,13 @@ The rules still in force:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
   To switch it off, give those two runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
+  Those two runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
+  and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
+  so no unit other than these two and no job on another runner can read it (fleet-ops#10950).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools Claude call for findings (on the runner's own login:
+  through the API, asks a no-tools Claude call for findings (on the review user's own
+  seat token, `fleet-reviewer` with `claude-seat-b.env` and never nish's login, fleet-ops#10950:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
@@ -201,6 +207,9 @@ The rules still in force:
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
+  the programs live in agent-dispatch.yml's workflow-level `env`, which
+  `coordinator-approval.yml` reads, so removing the `hold-risky` job leaves the
+  check intact (fleet-ops#10292);
   agent-authored PRs self-land green. The reviewer also runs by hand, so a
   dispatch that cannot start never needs a person to approve: `gh workflow run
   agent.yml -f review_pr=<N> -f review_sha=<sha>` runs the same job, from
@@ -209,6 +218,27 @@ The rules still in force:
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+- **fleet-ops gets runners first (fleet-ops#10717).** GitHub hands queued
+  self-hosted jobs out first come, first served, so a product burst put
+  fleet-ops work behind it. Every agent runner carries the label `fleet-ops`,
+  and `netcup-agent-20` to `-30` (not the offline `-23`) do not carry `agent`,
+  so no build can take those 10; they keep `review`. agent.yml's
+  `work`, `stuck` and `inish-daily` jobs and agent-dispatch.yml's `orchestrate`
+  job ask for `[self-hosted, fleet-ops]` when `github.repository` (the caller)
+  is fleet-ops, and `[self-hosted, agent]` for every other caller, so fleet-ops
+  can use every live runner while products share the rest, and no product
+  repo can request the reserved label. `agent` has to come off, for the reason
+  the two review runners record above: GitHub hands a queued build to any idle
+  runner that matches, so a shared label empties the reservation during a
+  burst. The cost is 10 of 28 runners that no longer take product work. The
+  labels live at GitHub, not in ansible:
+  Applied 2026-10-29 with org-owner scope (the runner PAT gets 403): every
+  agent runner got `fleet-ops` (`gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`),
+  and runners 20 to 30 lost `agent` (`gh api -X DELETE .../runners/<id>/labels/agent`).
+  They already carried `review`, so product review jobs can still use them.
+  To switch it off, set those three `runs-on` lines and the `orchestrate` line
+  back to `[self-hosted, agent]`, put `agent` back on runners 20 to 30, and the
+  `fleet-ops` label can stay (nothing else asks for it).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
@@ -233,9 +263,13 @@ Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
 `Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
-owner fits, open a design proposal through the senior-conference channel — do
-not build by fiat.
+or Pi's stock dispatch (`.github/workflows/agent.yml`). Set the start limit so
+the restart cadence can spend it. A unit whose cadence never fills the budget
+restarts for ever and never becomes `failed`, so its one reader (an `OnFailure=`
+hook, the `node_systemd_unit_state` gauge on a system unit, or the manager's
+failed list) sees nothing, and `tests/test_systemd_unit_keys.py` gates this. If
+no existing owner fits, open a design proposal through the senior-conference
+channel — do not build by fiat.
 
 ## CI standard (the parts that stay)
 

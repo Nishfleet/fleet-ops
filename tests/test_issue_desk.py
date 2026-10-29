@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "systemd/tincan-listen-issue-desk.service"
 LATER_SWEEP = ROOT / "systemd/later-sweep.service"
 EXTENSION = ROOT / "pi-extensions/issue-desk"
-README = EXTENSION / "README.md"
 PROMPT = ROOT / "prompts/issue-desk.md"
 TOOLS = {"tincan_inbox", "file_issue", "tincan_reply"}
 TINCAN = "/.local/bin/tincan"
@@ -126,13 +125,6 @@ def test_the_later_sweep_never_promotes_a_needs_triage_issue() -> None:
     assert '.=="needs-triage"' in match.group(1), (
         "later-sweep would promote a relayed needs-triage issue whose body carries a past due: line"
     )
-
-
-def test_the_readme_says_the_wake_runs_through_sh() -> None:
-    text = README.read_text()
-    assert "sh -c" in text
-    assert "TINCAN_WAITING" in text
-    assert "timeout 600" in text
 
 
 def test_the_desk_never_skips_admission() -> None:

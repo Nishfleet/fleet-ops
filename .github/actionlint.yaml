@@ -4,3 +4,4 @@ self-hosted-runner:
     - agent
     - fleet-ci
     - review
+    - fleet-ops

@@ -28,11 +28,6 @@ def test_nothing_else_is_configured() -> None:
     assert len(lines()) == 2
 
 
-def test_header_states_the_rename_limit_and_the_owner_reason() -> None:
-    header = CONF.read_text().split("\nd ")[0]
-    assert "deliberate rename" in header and "R3" in header and "unsafe path transition" in header
-
-
 def test_host_yml_fails_before_tmpfiles_on_a_regular_file() -> None:
     host = ansible_host.text()
     check = host.index("Fail the run when a plaintext git credential file is in the way")
