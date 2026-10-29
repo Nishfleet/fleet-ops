@@ -32,6 +32,7 @@ def test_one_stock_stale_step_closes_a_seven_day_idle_pr_and_keeps_the_branch():
     steps = stale_steps()
     assert len(steps) == 1, "one stock step, not a second rot rule beside it"
     assert steps[0]["uses"] == STALE_V9_1_0, "pinned to the v9.1.0 tag commit, not a moving ref"
+    assert steps[0]["continue-on-error"] is True, "a stale failure must not empty the sweep's outputs"
     settings = steps[0]["with"]
     assert settings["days-before-pr-stale"] == 6
     assert settings["days-before-pr-close"] == 1
