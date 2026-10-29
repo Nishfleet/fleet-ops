@@ -25,7 +25,7 @@ credential file does not hold them back.
 
 | Agent | How it gets the tool |
 |---|---|
-| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
+| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Playwright is off in every session (server chats included) by `85-no-playwright.json`. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
 | Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
 | OpenCode | the play writes `/etc/opencode/opencode.json`, OpenCode's managed config. |
 | Devin, command-code | `devin mcp add` and `cmd mcp add --scope user`, run by the play when the entry is missing or its output lacks the command or any argument; a CLI that is not installed is skipped. |
@@ -33,6 +33,15 @@ credential file does not hold them back.
 | Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
 | Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
 
+- No browser plugin, only the MCP server: `rootfs/etc/claude-code/managed-settings.d/85-no-playwright.json`
+  sets `playwright@claude-plugins-official` to `false`, and managed settings
+  beat the user's `enabledPlugins`, so no Claude Code session (server chats
+  included) loads the Playwright tools (fleet-ops#10529). The drive filesystem
+  server stays: it is an MCP entry in `config/drive-mcp.json`, not a plugin
+  ([Drive filesystem server](drive-filesystem-server.md)). Switch Playwright
+  back on: delete the drop-in and add
+  `/etc/claude-code/managed-settings.d/85-no-playwright.json` to `retired` in
+  `ansible/host.yml`, because `copy` never deletes.
 - The Devin, OpenCode and Pi worker lines in `agent.yml` pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so those workers get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it.
 - Verify: `chrome-devtools-mcp --version` prints the pin; `devin mcp get chrome-devtools`, `opencode mcp list`, `cursor-agent mcp list`.
 - Switch off for one agent: remove its task (Claude Code has no plugin left to

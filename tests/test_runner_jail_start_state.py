@@ -286,3 +286,21 @@ def test_systemd_analyze_finds_no_syntax_error_in_the_dropins(tmp_path: Path, st
     out = proc.stdout + proc.stderr
     # Syntax only: user@1000.service does not exist on a CI host, so the dependency itself is not resolved here.
     assert not re.search(r"Unknown key|Unknown section|Failed to parse|Invalid|Executable", out), out
+
+
+def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
+    """Home is an empty tmpfs and only bound paths show, so no runner drop-in hides a path under home (fleet-ops#10453).
+
+    The assertions name the tail of a path, not its absolute form: a credential path spelled out in a test is the public-repo detail this issue removes.
+    """
+    units = runner_units()
+    for name, dirs in units.items():
+        hidden = [t.lstrip("-+") for v in merged_values(dirs, "InaccessiblePaths") for t in shlex.split(v)]
+        assert [p for p in hidden if p.startswith("/home/")] == [], name
+        assert "/etc/restic" in hidden, name
+    agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M"]
+    bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
+    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
+    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+        assert tail in bound, tail
