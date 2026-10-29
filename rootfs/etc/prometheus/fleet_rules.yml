@@ -292,7 +292,7 @@ groups:
       # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
       # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
       # requested_model="other" is the proxy's bucket for calls that name no model group, such as /jev with a bad key;
-      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788).
+      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788); RouterOtherBucketFailing below watches that bucket.
       - alert: RouterGroupJammed
         expr: |
           (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total{requested_model!="other"}[10m]))
@@ -304,6 +304,22 @@ groups:
         annotations:
           summary: "Router group {{ $labels.requested_model }} fails nearly every call"
           description: "90% or more of the calls to {{ $labels.requested_model }} failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+      # The calls RouterGroupJammed skips: the proxy files calls that name no model group (/jev, a bad key, a rejected
+      # master key) under requested_model="other". A one-off burst ends inside the hour, as the 50 curl 401s on /jev
+      # did on 2026-10-28 (fleet-ops#10788); a stale key or auth fault on a fleet component keeps failing, so the
+      # 30 minute hold separates the two.
+      - alert: RouterOtherBucketFailing
+        expr: |
+          (sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="other"}[10m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 0.9)
+          and (sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 3)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Router calls outside any model group keep failing"
+          description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
 
   - name: fleet_router_downgrade
     interval: 5m

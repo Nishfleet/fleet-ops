@@ -560,10 +560,6 @@ tests:
         values: '0+2x30'
       - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
         values: '0+1x30'
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
-        values: '0+5x30'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
-        values: '0+5x30'
     alert_rule_test:
       - eval_time: 8m
         alertname: RouterGroupJammed
@@ -577,3 +573,41 @@ tests:
             exp_annotations:
               summary: "Router group senior fails nearly every call"
               description: "90% or more of the calls to senior failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+  # requested_model="other" (fleet-ops#10788): RouterGroupJammed ignores it; RouterOtherBucketFailing warns only once the
+  # failures last 30 minutes. A 10 minute burst, as the /jev 401s were, never warns.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
+        values: '0+5x10 50+0x50'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
+        values: '0+5x10 50+0x50'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: RouterOtherBucketFailing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
+        values: '0+5x60'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: RouterOtherBucketFailing
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: RouterOtherBucketFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Router calls outside any model group keep failing"
+              description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
