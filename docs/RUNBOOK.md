@@ -474,11 +474,10 @@ on the .path, both from the deploy clone (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
-miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
-not that key; the cap takes effect when the key is minted and that seat file
-holds it. LiteLLM v1.98 has no declarative key list, so minting is one
-admin-API call, not a config edit.
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
+`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
+takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
 into `agent-state/backups/litellm.dump` before every run, and that dump is the
@@ -495,8 +494,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service

@@ -15,10 +15,10 @@ After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # Keep restarting for a few minutes, then enter failed and page
 # (OnFailure=, fleet-ops#9033). Measured 2026-10-01: podman exit 125
 # dies in ~2s; a healthy start reaches uvicorn in ~38s and readiness
-# in ~75s. Measured 2026-10-23 with OLLAMA_API_BASE set (see below): about 30 s to readiness on
-# v1.105.0 (about 5 min without it), plus the ExecStartPre= steps: the dump check (a no-op after
-# the first start of a schema state) and the migration job (25 s when it migrates; its no-op
-# repeat on an up-to-date schema is the same import plus an empty prisma migrate deploy).
+# in ~75s. Measured 2026-10-23 on v1.105.0: about 30 s to readiness, plus the ExecStartPre= steps:
+# the dump check (a no-op after the first start of a schema state) and the migration job (25 s when
+# it migrates; its no-op repeat on an up-to-date schema is the same import plus an empty prisma
+# migrate deploy).
 # Burst 20 × (RestartSec 10s + about 2 min) = 2600s, so the window must be 1h or the burst never
 # fills and OnFailure never fires.
 StartLimitIntervalSec=1h
@@ -29,12 +29,6 @@ OnFailure=fleet-unit-failed@%N.service
 Image=ghcr.io/berriai/litellm:v1.105.0@sha256:60947db020b57e204823d3fbc8bb295c85be890d7c9adcc77fb4f5fc2fe410b2
 # general_settings.disable_prisma_schema_update stays true: the proxy itself never migrates, it only
 # logs "prisma schema out of sync". The migration is the ExecStartPre= job in [Service] below.
-# LiteLLM asks the default Ollama address (localhost:11434) for model info while it builds the
-# router for each ollama_chat row, and on this host that connect hangs: startup measured about
-# 5 min on both v1.98.0 and v1.105.0, and about 30 s with OLLAMA_API_BASE set (the stock variable
-# for that default). Every ollama_chat row in config/litellm-proxy.yaml sets its own api_base
-# (https://ollama.com), so no request changes.
-Environment=OLLAMA_API_BASE=https://ollama.com
 Network=host
 Volume=%h/.config/fleet-ops/litellm-proxy.yaml:/app/config.yaml:ro
 # DATABASE_URL carries the database password, so it comes from a 0600 file, not this
