@@ -311,6 +311,68 @@ The bucket's Infrequent Access transition was removed: that class bills a
 The first prune under this policy was run by hand, after a dry run that was
 compared with the run, so the first scheduled run deletes nothing unusual.
 
+## Monthly full restore drill
+
+`restic-r2-restore-test.service` restores two files: it is the smoke test. It
+cannot answer the question a rebuild asks, which is whether the *whole*
+snapshot comes back and whether what comes back is still what the box holds.
+`restic-r2-restore-drill.service` restores the whole latest snapshot once a
+month and checks it.
+
+It runs `restic restore latest --host netcup-rs2000 --target
+/var/tmp/restic-restore-drill --verify`. `--host` keeps it to this box's
+snapshot, and `--verify` re-reads every restored byte against the snapshot, so
+a clean exit means the repository still holds what it wrote.
+
+The restore never lands on a live path. `TemporaryFileSystem=/var/tmp:size=5G`
+makes the workspace a 5 GiB tmpfs inside the unit's own namespace, so the
+decrypted copies of `~/.ssh` and `~/.config` exist only in RAM while the unit
+runs and are gone when it ends, and a crash or power loss mid-drill leaves
+nothing on disk. The cap also bounds the blast radius: a restore that outgrows
+it fails inside the mount instead of filling the root disk. The workspace is
+bounded by the backup side: `restic-r2-size-guard` refuses a snapshot that
+would restore past 4 GiB, the tmpfs gets 5G (that cap plus slack), and
+`MemoryMax=6G` is that 5G plus restic's own buffers, because tmpfs pages count
+against the unit's cgroup. Raise the three together, or a bigger snapshot is
+killed mid-restore.
+
+The drill then compares one file per path in `include.txt` with the live copy
+(`cmp`), and fails on a mismatch or on nothing being compared. The file it picks
+is older than 7 days and smaller than 1 MiB, because a file rewritten since the
+snapshot (the nightly `litellm.dump`, a `-wal`) is expected to differ and would
+report a false mismatch. restic keeps mtimes, so the restored copy carries the
+file's mtime at snapshot time: a live copy newer than that was edited after the
+snapshot and is skipped as churn, and a live copy that is gone is skipped too.
+A mismatch therefore means the content differs at the same or an older mtime.
+The journal keeps restic's own summary, `Summary: Restored N files/dirs
+(X B) in M:SS` — the size and duration the drill exists to record — followed by
+the drill's counts line, `ok compared, skip skipped, bad mismatched`, with each
+file's own `ok`/`MISMATCH`/`skip` line ahead of it. The unit's own start and
+finish lines in the same journal give the wall time of the whole drill.
+
+The schedule is the 1st at 10:00 IST. The first drill runs at the first 1st
+after install, because a timer with no stored trigger replays nothing;
+`Persistent=true` replays a month the box spent switched off at the next boot
+once a trigger is stored. 10:00 sits between the 06:15 locked copy and the next
+day's 03:27 verify, so the drill's hold on the one restic lock is nowhere near
+a backup.
+
+Read the last runs, or start one now:
+
+```
+journalctl -u restic-r2-restore-drill | grep -E 'Summary:|restore drill:'
+sudo systemctl start restic-r2-restore-drill.service   # holds the restic lock for the run
+```
+
+A failed drill is not a page. It is visible as a failed unit
+(`SystemUnitFailed`, a warning) and, if it stops running at all,
+`RestoreDrillStale` fires after 35 days past its last real trigger, also a
+warning: the backup itself is still running and the data is still on R2, so
+this is readiness, not an outage.
+
+This proves the data, not the box. How to rebuild the host from nothing is the
+rebuild plan in the private vault playbooks, rehearsed once on a scratch VM.
+
 ## Not deployed from here
 
 The restic units themselves are box-only, installed by root under
@@ -326,6 +388,10 @@ and changes one thing:
   hardening and heartbeat stay.
 - `restic-r2-size-guard.service` is the dry run and the two limits. It is
   started by the drop-in, never by a timer.
+- `restic-r2-restore-drill.service` and `restic-r2-restore-drill.timer` are the
+  one pair with no box-only predecessor: the drill is new, so both files are
+  shipped whole instead of as a drop-in, and `tasks/services.yml` enables the
+  timer.
 - `restic-r2-backup.service.d/20-retention.conf` and
   `restic-r2-maintenance.service.d/10-retention.conf` replace the box-only
   forget lines with the policy from `retention.env`.
@@ -371,3 +437,8 @@ hand-installed copies with the tracked ones on the next
 Until that run happens the daily drift check fails again on every merge. That
 is the intended signal that a root-owned file changed by hand, and the merge
 is what stops it: `fleet-host-config.service` runs on every push to `main`.
+
+The drill's timer needs no operator step. `tasks/services.yml` enables and
+starts it, and the first drill runs at the first 1st after that deploy;
+`Persistent=true` catches up only a month the box spent switched off once a
+trigger is stored.

@@ -40,7 +40,7 @@ def _missed(uid, tables, columns):
 
 
 def _runs(good_new, bad_new, good_prev, bad_prev):
-    return [(1, "success")] * good_new + [(2, "failure")] * bad_new, [(25, "success")] * good_prev + [(26, "failure")] * bad_prev
+    return [(1.5, "success")] * good_new + [(1.75, "failure")] * bad_new, [(25.5, "success")] * good_prev + [(25.75, "failure")] * bad_prev
 
 
 @pytest.mark.parametrize("new,prev,missed", [((90, 5), (90, 5), 1), ((100, 0), (90, 5), 0), ((90, 5), (100, 0), 0), ((0, 0), (0, 0), 0), ((90, 5), (0, 0), 0)])
@@ -51,7 +51,7 @@ def test_failure_share_fires_only_when_both_windows_miss(new, prev, missed):
 
 def test_failure_share_ignores_cancelled_and_skipped():
     now_rows, day_ago_rows = _runs(98, 2, 98, 2)
-    rows = now_rows + [(1, "cancelled")] * 50 + day_ago_rows + [(25, "skipped")] * 50
+    rows = now_rows + [(1.5, "cancelled")] * 50 + day_ago_rows + [(25.5, "skipped")] * 50
     assert _missed("scorecard-run-failure-share", {"A": rows, "B": [], "C": [], "D": []}, "created_at TEXT, conclusion TEXT") == 0
 
 
@@ -133,14 +133,37 @@ def _failure_share_reads():
 
 def test_the_failure_share_reads_each_window_with_its_own_target():
     _, reads = _failure_share_reads()
-    now, day_ago = json.dumps({"from": 10800, "to": 0}), json.dumps({"from": 97200, "to": 86400})
+    now, day_ago = json.dumps({"from": 7200, "to": 3600}), json.dumps({"from": 93600, "to": 90000})
     assert sorted(json.dumps(d["relativeTimeRange"], sort_keys=True) for d in reads) == sorted([now, now, day_ago, day_ago])
+
+
+def test_the_failure_share_windows_stay_under_githubs_1000_row_cap():
+    # GitHub returns at most 1,000 results for a search that filters on created, and the plugin
+    # pages 100 at a time:
+    # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+    _, reads = _failure_share_reads()
+    peak_runs_an_hour = 400
+    assert all(
+        (d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]) * peak_runs_an_hour <= 1000 * 3600
+        for d in reads
+    )
 
 
 def test_the_failure_share_expression_windows_match_the_ranges_its_targets_read():
     rule, reads = _failure_share_reads()
     sql = next(d for d in rule["data"] if d["refId"] == rule["condition"])["model"]["expression"]
-    assert {int(n) for n in re.findall(r"age [<>]=? (\d+)", sql)} | {0} == {d["relativeTimeRange"][edge] for d in reads for edge in ("from", "to")}
+    assert {int(n) for n in re.findall(r"age [<>]=? (\d+)", sql)} == {d["relativeTimeRange"][edge] for d in reads for edge in ("from", "to")}
+
+
+def test_every_prometheus_range_query_stays_under_the_11000_points_prometheus_allows():
+    queries = [(r["uid"], d) for r in _rules().values() for d in r["data"] if d["model"].get("range")]
+    assert queries
+    for uid, d in queries:
+        model = d["model"]
+        assert model.get("intervalMs") and model.get("maxDataPoints"), uid
+        span = d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]
+        step = max(model["intervalMs"] / 1000, span / model["maxDataPoints"])
+        assert span / step + 1 <= 11000, uid
 
 
 def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
