@@ -14,6 +14,7 @@ operational prose to the topic's own file, not here.
 - [Daily update](docs/daily-update.md)
 - [Mac daily update](docs/mac-daily-update.md)
 - [Tether: our own always-on agent (fleet-ops#9980)](docs/tether.md)
+- [Agent lock (fleet-ops#9977)](docs/agent-lock.md)
 - [Remote Control stays on (OOM storm 2026-10-09)](docs/remote-control.md)
 - [Managed-settings defaults](docs/managed-settings-defaults.md)
 - [Agent autonomy drop-in](docs/agent-autonomy-drop-in.md)

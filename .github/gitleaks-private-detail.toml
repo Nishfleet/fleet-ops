@@ -47,6 +47,18 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
+description = "The agent lock must name real paths: every relay listener unit is a system unit, where %h is /root and is not influenced by User= (systemd.unit(5)), so the units and the shared drop-in spell out /home/nish paths, and the contract and the drop-ins list each agent's home paths because the lock is a list of paths. fleet-ops#9985 wrote them absolute in its first commit and a PR scan reads every commit, so both spellings stay in the range."
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/systemd/system/tincan-listen-.*\.service(\.d/.*)?$''', '''(^|/)rootfs/etc/systemd/system/fleet-agent-lock\.service\.d/''', '''(^|/)config/agent-locks\.json$''']
+
+[[allowlists]]
+description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)systemd/fleet-sync\.service$''']
+regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
+condition = "AND"
+
+[[allowlists]]
 description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']

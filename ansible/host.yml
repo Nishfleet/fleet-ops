@@ -331,6 +331,8 @@
   tasks:
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
+    - ansible.builtin.import_tasks: tasks/agent-lock.yml
+
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
     - ansible.builtin.import_tasks: tasks/system.yml
