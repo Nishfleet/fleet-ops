@@ -434,8 +434,8 @@ jobs:
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-    # fleet-ops' own sweep runs on its runners: the re-queue writes need the worker App key there (fleet-ops#10949).
-    runs-on: ${{ fromJSON(inputs.runner || (github.repository == 'Nishfleet/fleet-ops' && '["self-hosted","fleet-ops"]' || '"ubuntu-latest"')) }}
+    # Every sweep runs where its re-queue writes find the worker App key.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     # contents: read is required because `statusCheckRollup` on a private repository
     # needs it as well as checks: read; without it GitHub answers "Resource not
     # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"

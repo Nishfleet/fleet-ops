@@ -170,7 +170,7 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
 
-### agent-dispatch.yml: hold-risky and list
+### agent-dispatch.yml: hold-risky, review-risky and list
 
 hold-risky (0509#7092: a risky PR was armed, gained commits after the
 coordinator approved a different head, and merged on ci-ok alone; its
@@ -242,8 +242,12 @@ contents: read is required because `statusCheckRollup` on a private repository
 needs it as well as checks: read, or GitHub answers "Resource not accessible by
 integration (repository.pullRequest.statusCheckRollup.nodes.0)" and the sweep dies on
 the first claim PR (tether#56); a public repo never asks for it. actions: read,
-not write, is `gh run view` liveness
-(fleet-ops#8777); write startup-failed their sweeps (fleet-ops#10638).
+not write, is `gh run view` liveness (fleet-ops#8777); actions: write made
+their sweeps fail at startup (fleet-ops#10638). Every sweep runs where its
+re-queue writes find the worker App key: fleet-ops on its own runners, a caller
+on its agent runners, because a hosted runner has no ~/.config/gh and the
+`env -u GH_TOKEN` re-queue writes only print "re-queue refused" there
+(fleet-ops#10963).
 
 A split parent never closed on its own, so everything blocked by it waited
 forever (0509, 2026-09-24: ~140 issues); the job closes each open ancestor
