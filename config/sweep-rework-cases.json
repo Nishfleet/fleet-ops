@@ -1,5 +1,5 @@
 {
- "_": "Cases for the RED_REWORK program in agent-dispatch.yml's list job (ci.yml runs them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the reason the program must return. the base CI failure completed at 05:47:44Z, the newest agent run started at 05:00:00Z, so the base case is a go.",
+ "_": "Cases for redRework in control-plane/src/sweep.ts, the program the agent-dispatch list job runs (control-plane/test/sweep.test.ts replays them). Each case merges its `set` over `base` (objects merge, arrays replace) and names the reason the program must return. the base CI failure completed at 05:47:44Z, the newest agent run started at 05:00:00Z, so the base case is a go.",
  "base": {
   "pr": {
    "headRefName": "claim/issue-765",

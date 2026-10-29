@@ -10,8 +10,8 @@ One job per PR; the YAML copy is deleted in the same PR.
 Node 24 runs the `.ts` files directly (type stripping), so there is no build step. Keep to
 erasable syntax: no enums, namespaces or constructor parameter properties.
 
-Tests: `npm ci && npm test`. CI runs them in the `ci` job. They replay
-`config/sweep-rework-cases.json` and `config/sweep-liveness-events.json` against the code, and run
-the whole sweep against a fake `gh`.
+Tests: `npm ci && npm test`. CI runs them in the `ci` job, through
+`tests/test_control_plane_sweep.py`. The suite replays `config/sweep-rework-cases.json` and
+`config/sweep-liveness-events.json` against the code, and runs the whole sweep against a fake `gh`.
 
 Switch off: delete this directory and restore the `list` job's `run:` block from git history.

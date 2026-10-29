@@ -1,5 +1,5 @@
 {
- "description": "Sweep liveness cases (fleet-ops#9275). Each case feeds the RUN_LIVE_JQ filter from agent-dispatch.yml a `gh run view --json status,jobs` payload (job names, statuses and the run status as GitHub reports them; the name shape is from 0509 run 37258490012). want is whether the sweep counts the run as live. jobs are [name, status] pairs.",
+ "description": "Sweep liveness cases (fleet-ops#9275). Each case feeds a `gh run view --json status,jobs` payload (job names, statuses and the run status as GitHub reports them; the name shape is from 0509 run 37258490012) to the RUN_LIVE_JQ filter still in agent-dispatch.yml and to runLive in control-plane/src/sweep.ts (control-plane/test/sweep.test.ts replays these). want is whether the sweep counts the run as live. jobs are [name, status] pairs.",
  "cases": [
   {
    "name": "queued-run-work-completed",

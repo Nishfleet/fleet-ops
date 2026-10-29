@@ -25,3 +25,6 @@ crash.log
 
 # Pi extension test dependencies, installed by `npm ci`; the lockfile is the record.
 pi-extensions/*/node_modules/
+
+# Control-plane test dependencies, likewise; the lockfile is the record.
+control-plane/node_modules/

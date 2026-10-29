@@ -1,5 +1,11 @@
-# fleet-ops#10040: senior is one row with no fallback, so no entry may be keyed senior. senior -> judge with judge -> senior is the cycle the old layout guarded against.
-# Built from the live config's judge and senior rows and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
+# fleet-ops#10762: a StepFun row carrying a slot count. No StepFun row may carry max_parallel_requests, because litellm v1.105.0
+# never returns a streamed call's slot when its client is gone before the first chunk, so the first leak jams a capped row until the
+# router restarts: the live router logged 3,453 slot rejections in the 101 min to 2026-10-28 22:15Z, 2,808 of them on the seven 1-slot
+# rows and 645 on the three 2-slot rows, against 22 provider 429s. The Step Plan Pro cap of 15 concurrent stays enforced by demand
+# (the router's own aggregate on the key measured 3.93 concurrent) and by the provider's own 429, which cools the row for
+# cooldown_time and retries by itself (#8653); fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.
+# Built from the live config's judge rows, one stepfun worker-capable row and its router_settings, which pass the schema
+# alone, so this file breaks only the rule named above.
 model_list:
 - model_name: judge
   litellm_params:
@@ -23,22 +29,23 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-- model_name: senior
+- model_name: worker-capable
   litellm_params:
-    model: openai/hf:zai-org/GLM-5.3-Flash
-    api_base: https://api.synthetic.new/openai/v1
-    api_key: os.environ/SYNTHETIC_API_KEY
+    model: openai/step-5-preview
+    api_base: https://api.stepfun.ai/step_plan/v1
+    api_key: os.environ/STEPFUN_API_KEY
     tags:
     - prepaid
-    - senior
+    - stepfun
     order: 1
+    weight: 1
     max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap).'
-    id: synthetic-glm53flash-senior
+    cache_proof: '2026-10-07 #9357 scoreboard: 94.8% cache-read 7d on real router traffic.'
+    id: stepfun-step5previewd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: judge
@@ -74,10 +81,6 @@ router_settings:
   redis_password: os.environ/REDIS_PASSWORD
   deployment_affinity_ttl_seconds: 600
   fallbacks:
-  - judge:
-    - senior
-  - senior:
-    - judge
   - worker-cheap:
     - worker-capable
   cooldown_time: 60
@@ -86,12 +89,14 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    AuthenticationErrorRetries: 0
-    RateLimitErrorRetries: 1
+    AuthenticationErrorRetries: 1
+    RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
   allowed_fails_policy:
     AuthenticationErrorAllowedFails: 0
     RateLimitErrorAllowedFails: 1
