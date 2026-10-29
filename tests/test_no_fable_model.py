@@ -1,4 +1,4 @@
-"""Fable is never a default model: it is the second reviewer of guard and workflow heads only.
+"""Fable is never a default model: it is the second reviewer of guard heads only.
 
 Sonnet 5.5 is the worker; Opus 5.5 is the senior escalation and the first reviewer.
 As the default first reviewer, Fable 5.1 used 44% of a seat's weekly Fable limit

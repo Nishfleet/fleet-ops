@@ -53,13 +53,20 @@
     {"id": "prod-deploy", "hold_no_patch": true, "files": "^\\.github/|(^|/)(wrangler|infra|deploy)[^/]*", "pattern": "(wrangler(@\\S+)?\\s+(deploy|publish)|cloudflare/wrangler-action|environment:\\s*\\W*prod|--env\\s+prod|d1 (execute|migrations apply)[^\\n]*--remote)"}
   ],
   "guard": [
-    "^\\.github/",
     "^config/risky-paths\\.json$",
     "^prompts/risky-review\\.md$",
     "^credentials/",
-    "^(?!tests/).*\\.(sh|py|bash|zsh)$",
-    "(^|/)bin/",
-    "(^|/)scripts/"
+    "(^|/)\\.env",
+    "(^|/)\\.dev\\.vars",
+    "(^|/)[^/]*(secret|credential|api[_-]?key)[^/]*$",
+    "billing",
+    "entitlement",
+    "pricing",
+    "payments?([/._-]|$)",
+    "(^|[/._-])top-?up([/._-]|$)",
+    "(^|/)(dodo|stripe|checkout|invoice|refund|subscription|wallet)[^/]*([/.]|$)",
+    "\\.sql$",
+    "(^|/)migrations/"
   ],
   "cases": [
     {"id": "drive-docs-only", "want": false, "repo": "Nishfleet/drive", "labels": [], "changed_files": 2, "files": ["docs/guide.md", "README.md"], "patches": [{"file": "docs/guide.md", "patch": "@@ -1 +1 @@\n-a\n+b"}, {"file": "README.md", "patch": "@@ -1 +1 @@\n+x"}]},
