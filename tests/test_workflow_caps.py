@@ -245,3 +245,24 @@ def test_every_group_the_pi_lane_picks_has_a_desk_alias():
     assert set(aliases) <= offered, (
         f"config/pi-models.json does not offer {sorted(set(aliases) - offered)}, so Pi cannot select the desk arm"
     )
+
+
+def test_the_orchestrate_session_books_its_wall_for_landing():
+    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
+    wall = int(step["timeout-minutes"])
+    text = (ROOT / "prompts/orchestrator-handoff.md").read_text()
+    booked = int(re.search(r"cuts it off at (\d+) minutes", text).group(1))
+    land = int(re.search(r"At (\d+) minutes, land what you have", text).group(1))
+    assert booked == wall, (
+        f"prompts/orchestrator-handoff.md says the session is cut off at {booked} minutes and the step's wall "
+        f"is {wall}: a session that plans against the wrong number runs into the kill (fleet-ops#11059)"
+    )
+    assert int(job["timeout-minutes"]) > wall, (
+        f"the orchestrate job's {job['timeout-minutes']}-minute timeout has to cover the {wall}-minute session "
+        "step and the cleanup after it, or the job kills the run where the always() cleanup never runs"
+    )
+    assert wall - land >= 10, (
+        f"the session lands at {land} minutes of a {wall}-minute wall: under 10 minutes is not enough for the "
+        "commit, the push, the PR body and the report"
+    )
