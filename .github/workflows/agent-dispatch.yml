@@ -647,7 +647,7 @@ jobs:
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
-                | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker[bot]")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
+                | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([12 - $queued, 0] | max)] | .[]
@@ -1309,7 +1309,7 @@ jobs:
           if [ "$DAILY_MAX" -gt 0 ]; then
             since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
             retry() { local o i; for i in 1 2 3; do o=$("$@") && { printf '%s\n' "$o"; return 0; }; sleep $((i * 5)); done; return 1; }
-            if pages=$(retry gh api --method GET --paginate "repos/$REPO/issues/comments" -f since="$since" -f per_page=100 --jq "[.[] | select(.created_at >= \"$since\" and ((.author_association | IN(\"OWNER\", \"MEMBER\", \"COLLABORATOR\")) or (.author.login == \"nishfleet-worker[bot]\")) and (.body | startswith(\"orchestrator hand-off started:\")))] | length"); then
+            if pages=$(retry gh api --method GET --paginate "repos/$REPO/issues/comments" -f since="$since" -f per_page=100 --jq "[.[] | select(.created_at >= \"$since\" and ((.author_association | IN(\"OWNER\", \"MEMBER\", \"COLLABORATOR\")) or (.user.login == \"nishfleet-worker[bot]\")) and (.body | startswith(\"orchestrator hand-off started:\")))] | length"); then
               count=$(printf '%s\n' "$pages" | jq -s 'add // 0')
               if [ "$count" -ge "$DAILY_MAX" ]; then
                 echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-offs since 00:00 IST in $REPO); #$ISSUE keeps needs-orchestrator; dispatch task=orchestrate issue=$ISSUE after midnight IST"
@@ -1438,7 +1438,7 @@ jobs:
           # with the App token in GH_TOKEN (fleet-ops#10949). The prompt
           # goes on stdin: its `---` front matter parses as an option as an argument.
           # The session never sees the App key the token above came from (fleet-ops#9521, #10949).
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --die-with-parent --)
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).

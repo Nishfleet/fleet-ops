@@ -36,9 +36,18 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
 
 
 def test_the_orchestrator_session_cannot_read_the_app_key():
-    """The orchestrate job mints an org-wide token with workflows: write; the session it starts must not see the key."""
+    """The orchestrate job mints a workflows: write token; the session it starts must not see the key or the step-output files."""
     wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
     step = wf[wf.index("- name: Run the orchestrator session"):wf.index("- name: Clean up and mark a PR-less hand-off")]
-    assert '--tmpfs "$HOME/.config/fleet-worker"' in step and '--tmpfs "$CREDENTIALS_DIRECTORY"' in step
+    jail = next(line for line in step.splitlines() if line.strip().startswith("jail=(bwrap"))
+    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"', '"$CREDENTIALS_DIRECTORY"'):
+        assert f"--tmpfs {hidden}" in jail, hidden
     starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
     assert starts and all('"${jail[@]}"' in line for line in starts), starts
+
+
+def test_app_posted_handoff_comments_still_count():
+    """The App posts the hand-off markers now: REST comments name it user.login "...[bot]", gh GraphQL author.login without it."""
+    wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
+    assert '.user.login == \\"nishfleet-worker[bot]\\"' in wf
+    assert '.author.login == "nishfleet-worker")' in wf
