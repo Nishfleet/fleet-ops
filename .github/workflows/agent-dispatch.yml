@@ -720,6 +720,7 @@ jobs:
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           # The retired label's open issues move here rather than by hand: nothing below
           # lists orchestrator-tried, so a leftover would lose its only restart path.
+          gh label create agent-blocked -R "$GITHUB_REPOSITORY" --force --color BFD4F2 --description "Blocked, or a hand-off that ended without a PR; the sweep restarts a parked hand-off after 6 h" || echo "::warning::the agent-blocked label is missing and could not be created; each relabel below warns"
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" -L 300 --json number --jq '.[].number' | xargs -rI{} gh issue edit {} -R "$GITHUB_REPOSITORY" --add-label agent-blocked --remove-label orchestrator-tried || echo "::warning::the orchestrator-tried relabel failed; those issues wait for the next sweep"
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:agent-blocked,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
@@ -1423,7 +1424,6 @@ jobs:
           # hand-off already ran and produced no PR: both end the loop here
           # rather than in the always() step, so nothing is built.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
-          case $labels in *,agent-blocked,*) echo "orchestrate: #$ISSUE is agent-blocked; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
           # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
@@ -1690,7 +1690,7 @@ jobs:
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
           # credential, the same one the session pushes with).
-          env -u GH_TOKEN -u GITHUB_TOKEN gh label create agent-blocked -R "$REPO" 2>/dev/null || true
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create agent-blocked -R "$REPO" --force --color BFD4F2 --description "Blocked, or a hand-off that ended without a PR; the sweep restarts a parked hand-off after 6 h" 2>/dev/null || true
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           echo "orchestrate: #$ISSUE marked agent-blocked (no PR)"
