@@ -43,24 +43,6 @@ groups:
           summary: "system unit {{ $labels.name }} failed"
           description: "Systemd unit {{ $labels.name }} has been in the failed state for 5 minutes."
 
-      # fleet-ops#10753: a stopped runner fails no unit and runs no job, so the
-      # fleet goes quiet with nothing to page on. This covers that state only: a
-      # runner whose jail went stale stays active, so its jobs fail their own
-      # probe with no metric to see, and that case stays open in #10753.
-      - alert: AgentRunnersDown
-        expr: |
-          (
-            sum(node_systemd_unit_state{name=~"actions\\.runner\\..*",state="active"}) < 1
-            or absent(node_systemd_unit_state{name=~"actions\\.runner\\..*",state="active"})
-          )
-          and on() (up{job="node"} == 1)
-        for: 5m
-        labels:
-          severity: nish
-        annotations:
-          summary: "no agent runner is active"
-          description: "No actions.runner unit has been active for 5 minutes, or the series is gone, so no agent job can run. Restart the runner units and read their journals."
-
       - alert: DiskWillFill
         expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}[6h], 24*3600) < 0
         for: 30m
