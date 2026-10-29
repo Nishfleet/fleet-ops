@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "nish-mods": {
+      "source": {
+        "source": "github",
+        "repo": "Nishfleet/claude-mods"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "model-lanes@nish-mods": true,
+    "wake-check@nish-mods": true
+  }
+}

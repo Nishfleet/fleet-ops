@@ -1,0 +1,342 @@
+{
+  "uid": "fleet-scorecard",
+  "title": "Fleet scorecard",
+  "description": "Is the fleet beating a pro team: merged per day, run failure share and idle runner minutes, 14 days.",
+  "tags": [
+    "fleet"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "1h",
+  "time": {
+    "from": "now-14d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "schemaVersion": 41,
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "text",
+      "id": 1,
+      "title": "Scorecard status, 2026-10-29",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Fleet-ops#10711. The one number this dashboard can compute today is **idle agent-runner minutes while ready work waits**, at the bottom: runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures.\n\nNo data source yet (follow-up issue): pushed head to review verdict, approval to merge, Claude limit per merged PR. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+      }
+    },
+    {
+      "type": "table",
+      "id": 2,
+      "title": "Merged per day, products versus fleet-ops, last 14 days",
+      "description": "Target: products ahead of fleet-ops. Alert: scorecard-products-behind.",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "0509",
+          "options": {
+            "query": "is:merged repo:Nishfleet/0509",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "aiconverter-app",
+          "options": {
+            "query": "is:merged repo:Nishfleet/aiconverter-app",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "rera-report-card",
+          "options": {
+            "query": "is:merged repo:Nishfleet/rera-report-card",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "siterep-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/siterep-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "tether",
+          "options": {
+            "query": "is:merged repo:Nishfleet/tether",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "TinyStudio.io-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/TinyStudio.io-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM C UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM D UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM E UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM F UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM G) AS merged\nGROUP BY d ORDER BY d"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 3,
+      "title": "Failed share of agent runs per day, last 14 days",
+      "description": "agent.yml and agent-dispatch.yml in fleet-ops, finished runs. Target: under 2%. Alert: scorecard-run-failure-share.",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent.yml"
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent-dispatch.yml"
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTRING(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 4,
+      "title": "Idle agent-runner minutes while ready work waits, per day, last 14 days",
+      "description": "Target: 0. Runner-minutes on the agent pool with no agent run in flight, on days when an open agent-ready issue was waiting that is not blocked, parked or waiting on a decision. The runner count is the day's mean over online runners. A run's minutes are its own span, booked on the day it started and counted to now while it still runs. Days are UTC. The issue search reads 30 days of issues updated in that window and reads today's labels, so a long-silent wait falls outside it. An empty table means the runner metric is missing.",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "30d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent.yml"
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "P",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "expr": "count(node_systemd_unit_state{name=~\"actions.runner.Nishfleet.netcup-agent-.*\",state=\"active\"} == 1)",
+          "instant": false,
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "WITH days AS (\n  SELECT FLOOR(UNIX_TIMESTAMP() / 86400) * 86400 - 86400 * n AS day_start,\n         CASE WHEN n = 0 THEN (UNIX_TIMESTAMP() - FLOOR(UNIX_TIMESTAMP() / 86400) * 86400) / 60.0 ELSE 1440 END AS minutes\n  FROM (SELECT 0 AS n UNION ALL SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n UNION ALL SELECT 4 AS n UNION ALL SELECT 5 AS n UNION ALL SELECT 6 AS n UNION ALL SELECT 7 AS n UNION ALL SELECT 8 AS n UNION ALL SELECT 9 AS n UNION ALL SELECT 10 AS n UNION ALL SELECT 11 AS n UNION ALL SELECT 12 AS n UNION ALL SELECT 13 AS n) AS spine\n), inflight AS (\n  SELECT UNIX_TIMESTAMP(run_started_at) AS started,\n         CASE WHEN status = 'completed' THEN UNIX_TIMESTAMP(updated_at) ELSE UNIX_TIMESTAMP() END AS ended\n  FROM A\n  WHERE run_started_at IS NOT NULL\n), busy AS (\n  SELECT FLOOR(started / 86400) AS day_index, SUM(CASE WHEN ended > started THEN ended - started ELSE 0 END) / 60.0 AS busy_minutes\n  FROM inflight\n  GROUP BY FLOOR(started / 86400)\n), slots AS (\n  SELECT FLOOR(UNIX_TIMESTAMP(time) / 86400) AS day_index, AVG(__value__) AS slots FROM P GROUP BY FLOOR(UNIX_TIMESTAMP(time) / 86400)\n), pool AS (SELECT AVG(__value__) AS slots FROM P), waiting AS (\n  SELECT d.day_start AS day_start, COUNT(*) AS ready_issues\n  FROM days d JOIN B ON UNIX_TIMESTAMP(B.created_at) < d.day_start + 86400 AND COALESCE(UNIX_TIMESTAMP(B.closed_at), UNIX_TIMESTAMP()) >= d.day_start\n  GROUP BY d.day_start\n)\nSELECT DATE_FORMAT(FROM_UNIXTIME(d.day_start), '%Y-%m-%d') AS day,\n       COALESCE(w.ready_issues, 0) AS ready_issues,\n       CASE WHEN COALESCE(w.ready_issues, 0) = 0 THEN 0\n            WHEN COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0) < 0 THEN 0\n            ELSE ROUND(COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0), 0) END AS idle_minutes\nFROM days d\nCROSS JOIN pool\nLEFT JOIN busy bs ON bs.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN slots sl ON sl.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN waiting w ON w.day_start = d.day_start\nORDER BY d.day_start"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

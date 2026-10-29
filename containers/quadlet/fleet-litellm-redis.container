@@ -4,12 +4,18 @@
 
 [Unit]
 Description=Fleet LiteLLM Redis (Quadlet, fleet-ops#8435)
+# A crash loop must reach `failed`, which only the user-manager failed list
+# (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
+# the node_systemd_unit_state gauge reads system units only. At RestartSec=2s
+# the default 5-in-10s budget is spent only at its edge, so the budget is
+# stated here instead of inherited (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Container]
-Image=docker.io/library/redis:7
-# Floating tag, so `podman auto-update` moves it inside the weekly paused window
-# (ansible/update.yml). A pinned tag must not carry this line (fleet-ops#9254).
-AutoUpdate=registry
+# Pinned by digest, so it carries no AutoUpdate=registry: a pinned image must not carry that
+# line (fleet-ops#9254). Bump the digest in its own PR.
+Image=docker.io/library/redis:7@sha256:44960b3100c48159a66d28c18b0588c193492e25f7551d60e51dd464fc3eca5b
 Network=host
 Volume=%h/.local/share/fleet-litellm-redis:%h/.local/share/fleet-litellm-redis:ro
 # Password: a 0600 one-line `requirepass` fragment pulled in with --include, so the value never sits
@@ -26,6 +32,7 @@ Exec=redis-server %h/.local/share/fleet-litellm-redis/redis.conf --include /run/
 [Service]
 Slice=app-litellm-redis.slice
 ManagedOOMPreference=avoid
+# Measured: unit cgroup peak 23 MB, so 256M is about 10x headroom.
 MemoryMax=256M
 Restart=on-failure
 RestartSec=2s

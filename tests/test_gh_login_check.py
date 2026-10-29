@@ -59,7 +59,7 @@ def test_one_blip_then_ok_passes(tmp_path):
 
 
 def _jail_step():
-    q = '.jobs.ci.steps[] | select(.name | test("^Worker jail hides the gh login")) | .run'
+    q = '.jobs.unit.steps[] | select(.name | test("^Worker jail hides the gh login")) | .run'
     run = subprocess.run(["yq", q, str(CI)], capture_output=True, text=True, check=True).stdout
     assert "planted" in run
     return run

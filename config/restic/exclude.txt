@@ -25,8 +25,7 @@
 /home/nish/.config/opencode
 
 # Session transcripts and logs. The durable memory is the vault
-# (_system/agent-memory) and the searchable index is leviathan's, both of
-# which are kept; the transcripts are derived data.
+# (_system/agent-memory), which is kept; the transcripts are derived data.
 /home/nish/.pi/agent/sessions
 
 # Pi agent's own npm cache.
@@ -60,11 +59,23 @@
 # Rebuildable or superseded copies inside kept directories. The stale
 # Postgres datadir copy is 1.2 GiB and the live dump is the real backup; the
 # skills-prune tarballs are rollback copies of skills already in git; the
+# litellm-<label>.dump files are one-off pre-migration rollback copies (six of
+# them, about 140 MiB each, 22-23 Oct 2026; fleet-ops#10240), while litellm.dump
+# is the live dump and is kept; the
 # litellm pycache volume is bytecode the proxy writes again; the Hermes hub
-# index-cache is a downloaded index.
+# index-cache is a downloaded index. The named volume below is the old
+# pre-migration LiteLLM Postgres cluster (3.2 GiB, last written 13:20 on
+# 23 Oct 2026, minutes before the first pre-migration dump was taken): the
+# 23 Oct migration moved the live cluster to a bind-mounted data dir that is
+# deliberately not in the backup set (the nightly pg_dump is its backup), so
+# no container mounts this volume any more and its state is superseded by the
+# kept dumps. It was nearly all of the 3.6 GiB of new data that tripped the
+# size guard on 24 and 25 Oct (fleet-ops#10258).
 {{ nish_home }}/workspaces/agent-state/backups/litellm-postgres-2026-09-25
 {{ nish_home }}/workspaces/agent-state/backups/skills-prune-*.tgz
+{{ nish_home }}/workspaces/agent-state/backups/litellm-*.dump
 {{ nish_home }}/.local/share/containers/storage/volumes/fleet-litellm-pycache
+{{ nish_home }}/.local/share/containers/storage/volumes/df8174087bdeeeed5649a5e3fdd1131eb661feff13ff153ec7d9de74a253dc11
 {{ nish_home }}/.hermes/skills/.hub/index-cache
 
 # Grafana plugins are installed from the plugin catalog; the state is not.

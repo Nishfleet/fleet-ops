@@ -14,8 +14,10 @@ Description=Daily check of each router provider's model list against the host sn
 # REPO: the snapshot, the lists of changed ids and an optional ignore.txt (extended regexes,
 # one per line, for ids to hide) all live in the state directory.
 # - First run for a provider: the snapshot is seeded and nothing is filed.
-# - HTTP 401 or 403: the key or login is dead. The unit fails (OnFailure= pages) with one
-#   plain line naming the provider and what Nish must do. No issue is filed for that.
+# - HTTP 401 or 403: the key or login is dead. One plain line names the provider and what Nish
+#   must do, every run until the key is renewed (fleet-ops#9912: the unit does not fail on it,
+#   because a standing state re-failed the unit on every daily run and kept the failed-unit
+#   list never empty). No issue is filed for that.
 # - An added or removed id: the ids go to changes/<UTC date>-<provider>.txt in the state
 #   directory, then ONE issue per changed provider is filed on Nishfleet/fleet-ops with the
 #   labels provider-watch and needs-orchestrator (fleet-ops#8304 says control-plane work is
@@ -43,8 +45,8 @@ Description=Daily check of each router provider's model list against the host sn
 # only that provider (a plain line names it); every other provider is still checked.
 #
 # Credentials: the issues-only token of the worker App (fleet-grafana-github-token.service
-# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so the human
-# gh login is never read, as retro-weekly.service files its issues. The provider keys come
+# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so gh finds no
+# config file at all and the human gh login under ~/.config/gh is never read. The provider keys come
 # from the same per-provider key files the LiteLLM container reads, listed one by one so the
 # master key and the Claude logins are not in this unit's environment. A key goes to curl
 # through a 0600 header file in the runtime dir (-H @file, a form AGENTS.md lists), never argv.
@@ -79,7 +81,6 @@ Environment=YQ=%h/.local/bin/yq
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
-EnvironmentFile=-%E/fleet-ops/seats/opencode-2.env
 EnvironmentFile=-%E/fleet-ops/seats/pareto.env
 EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%E/fleet-ops/seats/zai.env
@@ -90,6 +91,7 @@ EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
 EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
 # Straitly (fleet-ops#9788): its key lives in %h/.config/straitly/straitly.env, not a seat file, and config/provider-watch.json marks it listing none, so the watch skips it before it looks for a key. The line keeps tests/test_provider_watch.py::test_every_router_key_has_an_environment_file_in_the_unit true.
 EnvironmentFile=-%E/fleet-ops/seats/straitly.env
+EnvironmentFile=-%E/fleet-ops/seats/anthropic.env
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; d="$$RUNTIME_DIRECTORY"; st="$$STATE_DIRECTORY"; snap="$$st/catalog.json"; ign="$$st/ignore.txt"; re="^~?[A-Za-z0-9._:/-]{1,64}$$"; bad=0; ready=0; filed=0; mkdir -p "$$d/gh" "$$st/changes"; \
 test -s "$$WATCH_CONFIG" || { echo "provider-watch: config/provider-watch.json missing"; exit 1; }; \
 test -s "$$snap" || echo "{}" > "$$snap"; \
@@ -110,7 +112,7 @@ echo "Authorization: Bearer $$k" > "$$d/hdr"; \
 code=$$(curl -sS -m 30 --retry 2 --retry-delay 20 -o "$$d/body" -w "%%{http_code}" -H "@$$d/hdr" "$$url" 2>/dev/null) || code=000; \
 rm -f "$$d/hdr"; \
 case $$code in \
-401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; bad=1; continue;; \
+401|403) echo "provider-watch: $$name key rejected (HTTP $$code): Nish must renew the $$name key or log in to $$name again"; continue;; \
 200) ;; \
 000|408|429|5??) echo "provider-watch: $$name listing unavailable (HTTP $$code), skipped; outages page through litellm_deployment_state"; continue;; \
 *) echo "provider-watch: $$name listing request failed (HTTP $$code): the listing path or the api_base may be wrong"; bad=1; continue;; \

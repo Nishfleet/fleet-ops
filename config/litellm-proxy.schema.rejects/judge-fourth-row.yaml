@@ -27,14 +27,6 @@ model_list:
   litellm_params:
     model: openai/deepseek-v4.1-flash
     api_base: https://opencode.ai/zen/go/v1
-    api_key: os.environ/OPENCODE_API_KEY_2
-    order: 2
-  model_info:
-    id: opencodego2-ds41flash-judge
-- model_name: judge
-  litellm_params:
-    model: openai/deepseek-v4.1-flash
-    api_base: https://opencode.ai/zen/go/v1
     api_key: os.environ/OPENCODE_API_KEY_3
     order: 2
   model_info:
