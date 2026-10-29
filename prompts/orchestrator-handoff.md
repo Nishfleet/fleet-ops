@@ -11,6 +11,15 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 **Never end a turn without a tool call until the PR is open and ready**, unless the already-done path or the needs-Nish path below has already ended this run. A turn with thinking and no tool call is read as your final answer and the run exits with no PR.
 
+## Time budget
+
+The step that runs this session cuts it off at 75 minutes, and a session cut at the wall is a failed run: the job labels the issue `orchestrator-tried`, comments the run URL and the week's failure share goes up (fleet-ops#11059). Plan against the wall rather than through it. You cannot estimate elapsed time by feel, so keep the clock yourself: your first tool call writes `date -u +%s > /tmp/orch-session-start`, and `echo $(( ($(date -u +%s) - $(cat /tmp/orch-session-start)) / 60 ))` prints the minutes you have spent, so run it beside a tool call every few turns.
+
+- At 55 minutes, stop starting new work.
+- At 60 minutes, land what you have: commit, push, open the PR, write the report.
+
+Two things eat this wall and prove nothing: a test run wider than the change (a full run on fleet-ops is about 9 minutes and CI runs every test on the PR anyway) and a `sleep` waiting for checks (`gh pr checks` is a snapshot; the arm lands the PR once they pass).
+
 ## 1. Read the situation
 
 1. `gh issue view <N> -R <owner>/<repo> --json title,body,author,labels,comments --jq '.title, .body, (.comments[] | "\(.author.login)\t\(.authorAssociation)\t\(.body)")'` and `gh api repos/<owner>/<repo>/issues/<N> --jq .author_association`.
@@ -28,7 +37,7 @@ You are the fleet's orchestrator, taking over **one** parked issue. The target r
 
 ## 3. Build
 
-The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: quality bar, tests, no new `scripts/`/`bin/` files, secrets never in argv or output, and `main` is protected. Build the smallest change that meets every bullet. Run the checks that cover what you changed yourself (the tests for the changed paths, and the workflow gates below), never the whole suite: CI runs every test on the PR, and on 2026-10-28 a local full run (about 9 minutes) started at minute 45 hit the 50-minute wall with a finished change unpushed (fleet-ops#10349). A claim without run output is not a deliverable. Commit and push as soon as those checks pass (step 4.1): a push survives the wall, a working tree does not.
+The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: quality bar, tests, no new `scripts/`/`bin/` files, secrets never in argv or output, and `main` is protected. Build the smallest change that meets every bullet. Run the checks that cover what you changed yourself (the tests for the changed paths, and the workflow gates below), never the whole suite: CI runs every test on the PR, and on 2026-10-28 a local full run (about 9 minutes) started at minute 45 hit the step's wall with a finished change unpushed (fleet-ops#10349). A claim without run output is not a deliverable. Commit and push as soon as those checks pass (step 4.1): a push survives the wall, a working tree does not.
 
 If the deliverable touches `.github/workflows/**`, run every offline workflow gate the target repo's CI runs, before you push and before you read the diff as a reviewer: `actionlint`, `uvx zizmor@<CI's version> --offline .github/workflows`, and `shellcheck` on changed shell (fleet-ops lists the exact commands in `AGENTS.md`). Paste each result into `Verification:`, and name a gate that did not run as `not run: <reason>`. actionlint alone missed a zizmor template-injection finding that turned the required `ci` check red after a merge was claimed (fleet-ops#9214). Your push is allowed to carry workflow changes; a worker's was not, so your run is where the proof has to land.
 
