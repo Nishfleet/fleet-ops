@@ -1152,31 +1152,31 @@
           changed_when: false
           ignore_errors: true
 
+        # The stop loop names every active `actions.runner.*` unit, and only the agent pool
+        # binds the deploy clone: a read from a fleet-ci or vault runner would look for a
+        # bind those never mount (fleet-ops#10866).
+        - name: Pick the agent runner this run restarted
+          ansible.builtin.set_fact:
+            agent_runner: "{{ (runners_stopped | default({})).results | default([]) | map(attribute='item') | select('match', '^actions\\.runner\\.Nishfleet\\.netcup-agent-') | list | first | default('', true) }}"
+
         # A runner reads its sandbox (TemporaryFileSystem=, BindReadOnlyPaths=,
         # InaccessiblePaths=) at unit start, so the start above is where a drop-in
         # installed since this run last ran reaches a runner, and it waits for the
         # pause-time jobs instead of cutting one. The deploy restarts no runner
         # (fleet-ops#10898), which makes this read the live proof that the read-only
-        # deploy-clone bind reaches a running runner (fleet-ops#10866). Position one is
-        # a runner this run restarted: the stop loop names the pilot runner 1 never,
-        # because it is stopped, and the wait above left every started runner up.
+        # deploy-clone bind reaches a running runner (fleet-ops#10866). The wait above
+        # left every started runner up, so the pid read below is a live one.
         - name: Read the main pid of a runner this run restarted
           ansible.builtin.command:
-            argv:
-              - systemctl
-              - show
-              - -p
-              - MainPID
-              - --value
-              - "{{ (runners_stopped | default({})).results | default([]) | map(attribute='item') | list | first }}"
+            argv: [systemctl, show, -p, MainPID, --value, "{{ agent_runner }}"]
           register: agent_runner_pid
           changed_when: false
-          when: (runners_stopped | default({})).results | default([]) | length > 0
+          when: agent_runner | length > 0
 
         # The clone is bound with a `-` prefix, so a missing clone directory lets a
         # runner start without the bind. ignore_errors only so the checks below still
-        # run: the assert at the end pages unless this grep passed, or no runner was up
-        # for a read to prove anything.
+        # run: the assert at the end pages unless this grep passed, or no agent runner
+        # was up for a read to prove anything.
         - name: Fail unless that runner mounts the deploy clone read-only
           ansible.builtin.command:
             argv:
@@ -1187,7 +1187,7 @@
           register: agent_runner_clone_bind
           changed_when: false
           ignore_errors: true
-          when: (runners_stopped | default({})).results | default([]) | length > 0
+          when: agent_runner | length > 0
 
         - name: List failed system units
           ansible.builtin.command:
@@ -1351,7 +1351,7 @@
               - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
               - "(online | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not (runners_up | default({})).failed | default(false)"
-              - "((runner_units | default({'stdout_lines': []})).stdout_lines | length == 0) or not (agent_runner_clone_bind | default({'failed': true})).failed"
+              - "(agent_runner | default('') | length == 0) or not (agent_runner_clone_bind | default({'failed': true})).failed"
               - "failed_system.stdout_lines | length == 0"
               - "failed_user.stdout_lines | length == 0"
               - "not (router | default({})).failed | default(false)"

@@ -24,10 +24,12 @@ DRAIN = "Wait until those jobs finish"
 STOP = "Stop the runner services, so no CI job starts mid-update"
 START = "Start the runner services this run stopped"
 UP = "Wait for every runner service to be up again"
+PICK = "Pick the agent runner this run restarted"
 READ_PID = "Read the main pid of a runner this run restarted"
 READ_BIND = "Fail unless that runner mounts the deploy clone read-only"
 ASSERT = "Fail loudly if any step or check went wrong"
 BIND_PATTERN = "fleet-ops-deploy-clone ro(,|$)"
+AGENT_PREFIX = "^actions\\.runner\\.Nishfleet\\.netcup-agent-"
 
 
 def handlers() -> list[dict]:
@@ -98,14 +100,15 @@ def test_the_nightly_update_drains_before_it_stops_the_runners() -> None:
 
 def test_the_nightly_update_reads_the_clone_bind_back_on_a_runner_it_restarted() -> None:
     tasks = always()
-    in_order(list(tasks), START, UP, READ_PID, READ_BIND, ASSERT)
-    assert tasks[READ_PID]["ansible.builtin.command"]["argv"][-1].startswith("{{ (runners_stopped")
+    in_order(list(tasks), START, UP, PICK, READ_PID, READ_BIND, ASSERT)
+    assert "select('match', '" + AGENT_PREFIX + "')" in tasks[PICK]["ansible.builtin.set_fact"]["agent_runner"], "a fleet-ci or vault runner mounts no clone bind"
+    assert tasks[READ_PID]["ansible.builtin.command"]["argv"][-1] == "{{ agent_runner }}"
     assert tasks[READ_BIND]["ansible.builtin.command"]["argv"][2:] == [BIND_PATTERN, "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"]
     for name in (READ_PID, READ_BIND):
-        assert "runners_stopped" in tasks[name]["when"], "the read would fail a run that restarted no runner"
+        assert tasks[name]["when"] == "agent_runner | length > 0", "the read would fail a run that restarted no agent runner"
 
 
-def test_a_run_that_read_no_bind_fails_unless_no_runner_was_up() -> None:
+def test_a_run_that_read_no_bind_fails_unless_no_agent_runner_was_up() -> None:
     checks = [check for check in always()[ASSERT]["ansible.builtin.assert"]["that"] if "agent_runner_clone_bind" in check]
     assert len(checks) == 1, "a skipped read and a failed read would both pass the assert"
-    assert "runner_units" in checks[0], "a run that restarted a runner has to have read the bind"
+    assert "agent_runner" in checks[0], "a run that restarted an agent runner has to have read the bind"
