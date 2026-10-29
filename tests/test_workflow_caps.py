@@ -167,3 +167,58 @@ def test_hand_summons_reaches_the_orchestrate_job():
     orchestrate = cfg["jobs"]["orchestrate"]["if"]
     assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
+
+
+def test_the_started_comment_arm_suffix_has_one_format_and_both_readers_strip_it():
+    text = AGENT.read_text()
+    strip = 'sub(" · arm: menu=(on|off) desk=(on|off)$"; "")'
+    assert text.count(strip) == 2, (
+        "both readers of the started comment must strip the arm suffix before comparing: the attempt cap "
+        "(fleet-ops#9330 would otherwise count arm runs as unstarted) and the strike probe (a suffix breaks its "
+        f"endswith). Found {text.count(strip)} strippers."
+    )
+    assert 'arm=" · arm: menu=$arm_menu desk=$arm_desk"' in text, (
+        "the started comment's arm suffix changed shape; update the two strippers with it"
+    )
+    assert "actions/runs/$GITHUB_RUN_ID$arm" in text, "the started comment no longer appends the arm suffix it records"
+    assert re.search(r'if \[ "\$miss" = false \] && \[ "\$engine" = pi \]; then', text), (
+        "the Gate no longer limits the arm to a plain Pi run, so a lane that never reads ARM_MENU or ARM_DESK "
+        "would still wear an arm on the issue and skew the trial"
+    )
+
+
+def test_every_desk_alias_falls_exactly_where_its_group_falls():
+    router = yaml_json(ROUTER)["router_settings"]
+    aliases = router["model_group_alias"]
+    fallbacks = router["fallbacks"]
+    rows = {row["model_name"] for row in yaml_json(ROUTER)["model_list"]}
+    assert not [a for a, t in aliases.items() if t not in rows], (
+        f"model_group_alias renames a group with no row: {sorted(a for a, t in aliases.items() if t not in rows)}"
+    )
+    assert not set(aliases) & rows, f"an alias name is also a model_name, so the alias is dead config: {sorted(set(aliases) & rows)}"
+    for alias, group in aliases.items():
+        own = [entry[alias] for entry in fallbacks if alias in entry]
+        base = [entry[group] for entry in fallbacks if group in entry]
+        assert own == base, (
+            f"{alias} falls to {own} but {group} falls to {base}: LiteLLM keys the fallback lookup on the requested "
+            "name, so an alias with no entry of its own has no chain at all when its row fails"
+        )
+
+
+def test_every_group_the_pi_lane_picks_has_a_desk_alias():
+    text = AGENT.read_text()
+    assert "pi_model=$pi_model-desk" in text, "the pi lane no longer renames the model for the desk arm"
+    picked = set(re.findall(r"pi_model=(worker-[a-z-]+)", text))
+    assert picked, "no pi_model=<worker group> literal left in agent.yml, so this gate would pass vacuously"
+    aliases = yaml_json(ROUTER)["router_settings"]["model_group_alias"]
+    missing = sorted(f"{name}-desk" for name in picked if f"{name}-desk" not in aliases)
+    assert not missing, (
+        f"the desk arm renames {sorted(picked)} to $pi_model-desk, but config/litellm-proxy.yaml has no alias for "
+        f"{missing}: a desk run would then ask the router for a group that does not exist"
+    )
+    offered = {
+        m["id"] for m in json.loads((ROOT / "config/pi-models.json").read_text())["providers"]["litellm"]["models"]
+    }
+    assert set(aliases) <= offered, (
+        f"config/pi-models.json does not offer {sorted(set(aliases) - offered)}, so Pi cannot select the desk arm"
+    )

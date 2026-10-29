@@ -400,9 +400,9 @@ jobs:
           grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
             systemd rootfs || rc=$?
           test "$rc" -eq 1
-      - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
+      - name: pi seat ids resolve to a litellm-proxy.yaml model_name or model_group_alias (fleet-ops#8332, fleet-ops#9330)
         if: always()
-        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '([.model_list[].model_name] + ((.router_settings.model_group_alias // {}) | keys)) | unique' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
       # Native provider only (#9253): openai/ on ollama.com/v1 reply ids collide in LiteLLM_SpendLogs.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
