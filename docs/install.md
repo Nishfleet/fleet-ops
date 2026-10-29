@@ -214,33 +214,34 @@ There is no timer for it — the weekly skills-update timer was deleted on
 `fleet-knowledge-base`, `fo-seat-spillover`, `tether`, its four `tether-p2-*`
 copies and `fleet-ops-tether-p2`, `agent-skills`, `claude-mods` and
 `last30days-skill`. The 2026-10-28 glue sweep (G9) read `git status
---porcelain` in each, and every one was dirty: nish-vault 84,
-fleet-knowledge-base 63, fo-seat-spillover 17, tether 6, and one untracked
-entry each in the rest. None of it is fleet-ops work, so no sweep deletes it,
-and the disposition below is what stops the next one reading the same count as
-pending work.
+--porcelain` in each, and every one was dirty as of that day: nish-vault 84
+entries, fleet-knowledge-base 63, fo-seat-spillover 17, tether 6, and one
+untracked entry each in the rest. None of it is fleet-ops work, so no sweep
+commits it, and the disposition below is what stops the next one reading the
+same count as pending work.
 
-- **nish-vault (84 modified).** Memory is written in place, one fact per file.
-  It is banked by a vault sweep PR in `Nishfleet/nish-vault`, never by a
-  fleet-ops PR and never by a timer: nish-vault#22 (2026-10-15, "vault sweep
-  2026-10-15: agent-memory updates, new notes, retro, agent-drop") is the
-  shape. **Cadence: at least once a week, and before any change that rewrites
-  or deletes memory files.** The gap loses nothing, because restic backs the
+- **nish-vault.** Memory is written in place, one fact per file. It is banked
+  by a vault sweep PR in `Nishfleet/nish-vault`, never by a fleet-ops PR and
+  never by a timer: nish-vault#22 (2026-10-15, "vault sweep 2026-10-15:
+  agent-memory updates, new notes, retro, agent-drop") is the shape.
+  **Cadence: at least once a week, and before any change that rewrites or
+  deletes memory files.** The gap loses nothing, because restic backs the
   checkout up from its working tree (`config/restic/include.txt`), so an
   uncommitted memory file is already in the backup set.
-- **fleet-knowledge-base (63), tether (6), agent-skills (`.claude/`),
-  claude-mods (`docs/`), tether-p2-remind, -calendar, -computer, -askfirst and
-  fleet-ops-tether-p2 (one entry each).** Abandoned as fleet-ops work: each is
-  a change to that repo's own content, made by a session doing that repo's
-  work, so landing it belongs to a PR in that repo. Nothing is deleted here,
-  because an untracked file is the only copy of what it holds.
-- **fo-seat-spillover (17).** Abandoned, and left untouched: the count includes
+- **fleet-knowledge-base, tether, agent-skills (`.claude/`), claude-mods
+  (`docs/`), tether-p2-remind, -calendar, -computer, -askfirst and
+  fleet-ops-tether-p2.** Abandoned as fleet-ops work: each is a change to that
+  repo's own content, made by a session doing that repo's work, so landing it
+  belongs to a PR in that repo. Nothing is deleted here, because an untracked
+  file is the only copy of what it holds.
+- **fo-seat-spillover.** Abandoned, and left untouched: the count includes
   untracked `.env*` files, which hold credentials. No sweep commits or deletes
-  them, and a PR that adds one is held as risky (`config/risky-paths.json`).
-- **last30days-skill (`.pytest_cache/`).** The one deletion: the cache carries
-  nothing but a test run's own output and the next run recreates it, so
-  `retired` in `ansible/host.yml` names it and the next config run removes it.
-  Deleting it by hand would be the drift the next sweep finds again.
+  them.
+- **last30days-skill (`.pytest_cache/`).** The one deletion, and the one entry
+  a sweep may see again: the cache holds a test run's own output and the next
+  `pytest` run recreates it, so `retired` in `ansible/host.yml` names it and
+  every config run removes it. A repeat between two config runs is that cache
+  coming back, not a new finding.
 
 No check is added, and none would work: a workflow runs in a fresh clone and
 sees no dirty checkout, and reading `git status` in the tooling tree takes a

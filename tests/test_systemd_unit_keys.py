@@ -1130,10 +1130,7 @@ GLUE_SWEEP_CHECKOUT_CACHES = (
 
 
 def test_glue_sweep_checkout_caches_are_retired() -> None:
-    """G9 (#10546): a cache left untracked in a tooling checkout comes back with
-    the next test run, and only a config run may delete it, so the reviewed
-    retired line is what keeps it out. Repeats are free: an absent path is the
-    state the removal task leaves behind."""
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
     entries = retired_paths()
     missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
     assert not missing, f"host.yml does not delete these checkout caches: {missing}"
