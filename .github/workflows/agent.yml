@@ -720,7 +720,7 @@ jobs:
         with:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
-          owner: Nishfleet
+          owner: Nishfleet  # zizmor: ignore[github-app] actions: write alone, to start the sweep in every enrolled repo
           permission-actions: write
       - name: Start the next ready issue
         # A builder that finishes frees a lane, and GitHub sends no event for

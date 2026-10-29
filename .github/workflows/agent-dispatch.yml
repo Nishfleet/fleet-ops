@@ -1271,19 +1271,12 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-          owner: Nishfleet
           permission-workflows: write
           permission-actions: read
-      # Every later gh and git call, and the session, authenticate with this token; a job-level
-      # env cannot read steps.*, so it goes through GITHUB_ENV. Nothing here reads the runner
-      # user's gh login (fleet-ops#10949).
-      - name: Use the App token for the rest of the job
-        env:
-          TOKEN: ${{ steps.app-token.outputs.token }}
-        run: echo "GH_TOKEN=$TOKEN" >> "$GITHUB_ENV"
       - name: Check the issue is still parked
         id: issue
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Raw values: the defaults live in bash, so a literal 0 survives.
           DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
@@ -1345,6 +1338,8 @@ jobs:
         id: worktree
         if: steps.issue.outputs.go == 'true'
         # Every git call here authenticates with the job-level App token.
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
         run: |
           set -euo pipefail
           # Never in /tmp or the deploy clone: a checkout a session can re-clone is no base.
@@ -1419,6 +1414,7 @@ jobs:
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         timeout-minutes: 50
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor's template-injection rule fails the workflow otherwise.
           ISSUE_N: ${{ github.event.issue.number || inputs.issue }}
           REPO_NAME: ${{ github.repository }}
@@ -1470,6 +1466,7 @@ jobs:
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor template-injection, as with WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
         run: |
