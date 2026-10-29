@@ -70,6 +70,30 @@ over the org secret, so the new tokens take over with no workflow change. The or
 `CLOUDFLARE_API_TOKEN` stays in place as the fallback for any repo this config
 does not manage; delete it by hand once every consumer is proven on its own token.
 
+## Retirement of the hand-made keys
+
+The tokens this config replaced were made by hand and held the same repo and
+environment secret slots before 2026-10-09. The retirement is decided
+(fleet-ops#9504: Nish approved the deletions on 2026-10-29):
+
+- Retired: the hand-made per-repo tokens. This config rewrote every repo and
+  environment secret it covers on 2026-10-09 (and created `seo-fix-kit`'s on
+  2026-10-22), so nothing reads the old values. They are deleted in the
+  Cloudflare dashboard by the owner, because the key-maker token may not delete
+  standing tokens (repo rules) and no runner lane can reach the token list.
+  Nishfleet/drive's deploy run on 2026-10-29 (dispatch of main head, run
+  40838134670) is the proof the minted token carries a full production deploy:
+  migrations, both Workers, queues, custom domains.
+- Retired: the disabled account-admin token from 2026-09-25, deleted the same
+  way. The expired token that used to live in the VPS `deploy.env` file died on
+  its expiry date; only the file was ever deleted.
+- Kept: the VPS `deploy-ci` token (D1 drills, preview uploads, analytics from
+  the VPS), the VPS `email` token (Email Routing and Sending, R2, Turnstile,
+  locked to the VPS IPs), the key-maker token itself, and the org
+  `CLOUDFLARE_API_TOKEN` fallback (repos not in `main.tf`; its replacement is
+  tracked in fleet-ops#10169). Moving the two VPS tokens under this config is
+  a separate task.
+
 ## State
 
 State holds every token value in plain text, so it never sits in the repo. The
