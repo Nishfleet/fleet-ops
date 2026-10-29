@@ -330,6 +330,10 @@ unit's real ExecStart under systemd against a stub that checks the JWT the way G
 
     gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
 
+Dispatch `.github/workflows/ci-runner-probe.yml` (Actions -> ci-runner-probe -> Run workflow) and
+read `CI_RUNNER=` and `runner=` in its log: the first is the value the job saw, the second is the
+runner the job took. It is dispatch-only and non-required, so it reports and never gates.
+
 `-v all` keeps the public repos on it; the default is private-only. While it is set, read
 `blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
 `runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
