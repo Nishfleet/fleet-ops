@@ -98,6 +98,45 @@
     and 'not loaded' not in retired_index_executor_disable.stderr | lower
     and 'does not exist' not in retired_index_executor_disable.stderr | lower
 
+# The four CLI listener lanes (#44 item 9): their unit files leave the repo in
+# this release, and Restart=always would keep `cursor-agent --yolo`, `devin
+# --permission-mode dangerous` and the rest reading the inbox until something
+# stopped them. The root-scope units take systemd_service, the user-scope copies
+# step 2j of fleet-sync.service linked take nish's user manager. A unit that is
+# already gone is the state this leaves behind.
+- name: Stop and disable the retired CLI listener units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_off
+  failed_when:
+    - retired_cli_listener_off.failed | default(false)
+    - "'Could not find' not in (retired_cli_listener_off.msg | default(''))"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Stop and disable the retired CLI listeners in nish's user manager
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_user_off
+  changed_when: retired_cli_listener_user_off.rc == 0
+  failed_when: >-
+    retired_cli_listener_user_off.rc != 0
+    and 'not loaded' not in retired_cli_listener_user_off.stderr | lower
+    and 'does not exist' not in retired_cli_listener_user_off.stderr | lower
+  notify:
+    - Reload nish's user manager
+
 # Files the repo used to leave live and now removes, and files a session
 # hand-installed that the repo or a product repo now owns. Each path is named,
 # so a deletion is always a reviewed line in this file. system.control

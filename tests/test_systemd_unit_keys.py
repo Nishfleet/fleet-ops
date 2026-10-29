@@ -458,7 +458,7 @@ def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
     scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
     assert not scan.get("use_regex")
     assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
-    assert {"sessions.db*", "pi.db*", "claude.db*", "opencode.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert {"sessions.db*", "pi.db*", "claude.db*", "grafana.db*"} <= set(scan["patterns"])
     assert "failed_when" not in tasks["Keep the agent session databases private"]
     kept_private = tasks["Look for the agent state directories"]["loop"]
     assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
@@ -1454,24 +1454,6 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
         unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
 
 
-# Units whose output files hold agent session text. The user manager default is
-# UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/tincan-listen-devin-vps.service.d",)
-
-
-@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
-def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
-    dropin = ROOT / dropin_dir / "20-umask.conf"
-    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
-    lines = [line.strip() for line in dropin.read_text().splitlines()]
-    assert "[Service]" in lines
-    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
-    unit = ROOT / dropin_dir.removesuffix(".d")
-    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-        f"{unit.name} sets UMask itself; keep it in the drop-in only"
-    )
-
-
 GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
 GPG_AGENT_OOM_DROPIN = "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
 GPG_AGENT_HOST_COPY = '"{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"'
@@ -1994,11 +1976,7 @@ def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> 
 
 
 WAKE_UNITS = (
-    "systemd/tincan-listen-command-code.service",
-    "systemd/tincan-listen-cursor-vps.service",
-    "systemd/tincan-listen-devin-vps.service",
     "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-opencode.service",
     "systemd/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
@@ -2006,11 +1984,7 @@ WAKE_UNITS = (
 # fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
 # claude-vps is the one narrowed unit because it had permissions.ask rules to honour (#9502). Revisit per vendor, units and pins together.
 WAKE_AGENT = {
-    "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
-    "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
-    "tincan-listen-devin-vps": ("devin -p", "--permission-mode dangerous"),
     "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
-    "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
 DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
@@ -2055,21 +2029,11 @@ def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
         assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
 
 
-def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own() -> None:
-    cursor = effective_directives(ROOT / "systemd/tincan-listen-cursor-vps.service")
-    assert "%h/.config/fleet-ops/seats/cursor.env" in cursor["EnvironmentFile"]
+def test_the_desk_daemon_loads_its_own_seat_file() -> None:
     desk = effective_directives(ROOT / DESK_UNIT)
     assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
     assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
-
-
-def test_the_opencode_listener_loads_its_own_router_key() -> None:
-    opencode = effective_directives(ROOT / "systemd/tincan-listen-opencode.service")
-    assert opencode["EnvironmentFile"] == ["%h/.config/fleet-ops/seats/tincan-opencode.env"], (
-        "this lane is woken by mail from other agents, so a prompt-injected message can read its "
-        "environment: the key in it must be the lane's own worker-cheap virtual key (fleet-ops#10221)"
-    )
 
 
 def test_no_unit_loads_the_litellm_master_key() -> None:
