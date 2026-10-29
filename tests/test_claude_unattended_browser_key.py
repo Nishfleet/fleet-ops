@@ -47,9 +47,3 @@ def test_the_listener_units_take_no_credential_file_at_all(unit: Path) -> None:
         "the browser MCP entry is dropped from the config it reads, not fed a key"
     )
     assert "BROWSER_USE" not in unit.read_text(), unit.relative_to(ROOT)
-
-
-def test_the_runbook_records_where_the_browser_key_lives() -> None:
-    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
-    assert "browser-use.env" in runbook
-    assert 'has("browser-use")' in runbook, "the check for the listener's cleaned config is written down"

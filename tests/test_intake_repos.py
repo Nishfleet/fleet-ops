@@ -1,8 +1,20 @@
 """config/intake-repos.json: the 0509-only admission freeze is lifted."""
 import json
 import pathlib
+import re
+import shutil
+import subprocess
 
-CFG = json.loads((pathlib.Path(__file__).parent.parent / "config" / "intake-repos.json").read_text())
+import pytest
+import yaml
+
+if not shutil.which("jq"):
+    pytest.skip("jq missing", allow_module_level=True)
+
+ROOT = pathlib.Path(__file__).parent.parent
+CFG_PATH = ROOT / "config" / "intake-repos.json"
+AGENT = ROOT / ".github/workflows/agent.yml"
+CFG = json.loads(CFG_PATH.read_text())
 ENROLLED = {r["name"]: r for r in CFG["repos"]}
 DEFERRED = {r["name"]: r for r in CFG["deferred"]}
 SWEEP_ONLY = {r["name"] for r in CFG["sweep_only"]}
@@ -107,5 +119,9 @@ def test_sweep_only_repos_get_the_top_up_sweep_but_no_intake():
     assert SWEEP_ONLY == {"fleet-ops", "drive"}
     assert not SWEEP_ONLY & set(ENROLLED)
     assert "fleet-ops" in DEFERRED and "drive" not in DEFERRED
-    agent = (pathlib.Path(__file__).parent.parent / ".github" / "workflows" / "agent.yml").read_text()
-    assert ".sweep_only[]?.name" in agent
+    runs = [s["run"] for j in yaml.safe_load(AGENT.read_text())["jobs"].values() for s in j.get("steps", []) if "run" in s]
+    listing = next(run for run in runs if ".repos[].name" in run)
+    line = next(ln for ln in listing.splitlines() if ".repos[].name" in ln)
+    program = re.search(r"jq -r '([^']+)'", line).group(1)
+    listed = subprocess.run(["jq", "-r", program, str(CFG_PATH)], capture_output=True, text=True, check=True).stdout.split()
+    assert set(SWEEP_ONLY) <= set(listed)

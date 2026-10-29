@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml
 
 WF = Path(__file__).parents[1] / ".github/workflows/agent.yml"
+THIRD_SEAT_CALL = re.compile(r"seat_try\s+(\S+)\s+third\b")
 
 OK_HEADERS = "HTTP/1.1 200 OK\r\nx-litellm-call-id: 7c943b89\r\nx-litellm-model-id: alibaba-qwen38max-judge\r\nx-litellm-model-name: openai/qwen3.8-max\r\n\r\n"
 OK_BODY = '{"id":"x","model":"judge","object":"chat.completion","choices":[{"finish_reason":"stop","index":0,"message":{"content":"APPROVE","role":"assistant"}}]}'
@@ -12,8 +13,12 @@ ERR_HEADERS = "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\
 ERR_BODY = '{"error":{"message":"Too many concurrent requests","type":"None","param":"None","code":"429"}}'
 
 
+def review_run() -> str:
+    return next(s["run"] for j in yaml.safe_load(WF.read_text())["jobs"].values() for s in j.get("steps", []) if s.get("id") == "review")
+
+
 def functions():
-    run = next(s["run"] for j in yaml.safe_load(WF.read_text())["jobs"].values() for s in j.get("steps", []) if s.get("id") == "review")
+    run = review_run()
     return run[run.index("family_of() {"):run.index("# After every retry")]
 
 
@@ -50,9 +55,7 @@ def test_family_that_already_reviewed_is_refused(tmp_path):
 
 
 def test_fallback_is_asked_through_the_assistant_seat_not_the_judge_seat():
-    text = WF.read_text()
-    assert 'seat_try assistant third "" "$used"' in text
-    assert 'seat_try "$THIRD_SEAT" third "" "$used"' not in text
+    assert THIRD_SEAT_CALL.findall(review_run()) == ['"$THIRD_SEAT"', "assistant"]
 
 
 def test_assistant_row_is_a_new_family_after_claude_reviewed(tmp_path):

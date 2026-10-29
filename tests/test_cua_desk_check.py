@@ -10,6 +10,8 @@ UNIT = ROOT / "systemd/fleet-cua-desk-check.service"
 
 READY = [{"id": "local:desk", "kind": "container", "location": "local", "status": "ready"}]
 OK_ROUTINE = [{"botID": "desk", "title": "0509 daily walk", "lastOutcome": "ok"}]
+DESK = "local:desk"
+FAILED = "failed"
 
 
 def _exec_start():
@@ -27,7 +29,25 @@ def _env(tmp_path, sandboxes, routines):
     path = tmp_path / "routines.json"
     if routines is not None:
         path.write_text(routines if isinstance(routines, str) else json.dumps(routines))
-    return {"CUA": str(cua), "ROUTINES": str(path), "DESK": "local:desk", "FAILED": "failed", "PATH": "/usr/bin:/bin"}
+    return {"CUA": str(cua), "ROUTINES": str(path), "DESK": DESK, "FAILED": FAILED, "PATH": "/usr/bin:/bin"}
+
+
+def keys(path: pathlib.Path) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for line in path.read_text().splitlines():
+        if line.startswith(("#", "[")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        found.setdefault(key, []).append(value.strip('"'))
+    return found
+
+
+def environment(path: pathlib.Path) -> dict[str, str]:
+    found = {}
+    for value in keys(path).get("Environment", []):
+        key, _, setting = value.partition("=")
+        found[key] = setting
+    return found
 
 
 def _run(env):
@@ -35,12 +55,13 @@ def _run(env):
 
 
 def test_unit_env_defaults_match_the_test():
-    text = UNIT.read_text()
-    assert 'Environment="CUA=/opt/Cua Spaces/resources/native/cua"' in text
-    assert "Environment=ROUTINES=%h/.cua/persistent/routines.json" in text
-    assert "Environment=DESK=local:desk" in text
-    assert "Environment=FAILED=failed" in text
-    assert "OnFailure=fleet-unit-failed@%N.service" in text
+    assert environment(UNIT) == {
+        "CUA": "/opt/Cua Spaces/resources/native/cua",
+        "ROUTINES": "%h/.cua/persistent/routines.json",
+        "DESK": DESK,
+        "FAILED": FAILED,
+    }
+    assert keys(UNIT)["OnFailure"] == ["fleet-unit-failed@%N.service"]
 
 
 @pytest.mark.parametrize(

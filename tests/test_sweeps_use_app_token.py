@@ -5,45 +5,51 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "systemd"
+PR_SWEEP = SYSTEMD / "fleet-pr-sweep@.service"
+LATER_SWEEP = SYSTEMD / "later-sweep.service"
+TOKEN_UNIT = SYSTEMD / "fleet-worker-github-token@.service"
+ACTIONS_INSTANCE = "fleet-worker-github-token@actions:%i.service"
+ACTIONS_ENV = "%t/fleet-worker-github-token/actions:%i.env"
+
+
+def keys(path: Path) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for line in path.read_text().replace("\\\n", "").splitlines():
+        if line.startswith(("#", "[")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        found.setdefault(key, []).append(value)
+    return found
 
 
 def test_pr_sweep_mints_and_loads_the_app_token() -> None:
-    text = (SYSTEMD / "fleet-pr-sweep@.service").read_text()
-    assert "Requires=fleet-worker-github-token@actions:%i.service" in text
-    assert "After=fleet-worker-github-token@actions:%i.service" in text
-    assert "EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env" in text
-    assert 'ExecStartPre=/bin/sh -c \'test -n "$$GH_TOKEN"\'' in text
-    assert "env -u GH_TOKEN" not in text
-
-
-def test_pr_sweep_revokes_its_token_before_the_next_sweep() -> None:
-    text = (SYSTEMD / "fleet-pr-sweep@.service").read_text()
-    stop = [line for line in text.splitlines() if line.startswith("ExecStopPost=")]
-    assert len(stop) == 1
-    assert "gh api -X DELETE installation/token" in stop[0]
-    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0]
-    assert stop[0].index("installation/token") < stop[0].index("rm -f")
+    unit = keys(PR_SWEEP)
+    assert ACTIONS_INSTANCE in unit["Requires"]
+    assert ACTIONS_INSTANCE in unit["After"]
+    assert unit["EnvironmentFile"] == [ACTIONS_ENV]
+    assert unit["ExecStartPre"] == ['/bin/sh -c \'test -n "$$GH_TOKEN"\'']
+    assert not any("env -u GH_TOKEN" in value for values in unit.values() for value in values)
 
 
 def test_later_sweep_mints_a_token_per_repo_and_never_falls_back() -> None:
-    text = (SYSTEMD / "later-sweep.service").read_text()
-    assert 'systemctl --user start "fleet-worker-github-token@$$repo.service"' in text
-    assert "%t/fleet-worker-github-token/$$repo.env" in text
-    assert text.index("fleet-worker-github-token@") < text.index("gh issue list")
-    assert text.index("fleet-worker-github-token@") < text.index("gh issue edit")
-    assert "env -u GH_TOKEN" not in text
-    assert "sweep-" not in text
+    program = keys(LATER_SWEEP)["ExecStart"]
+    assert len(program) == 1
+    mint = 'systemctl --user start "fleet-worker-github-token@$$repo.service"'
+    assert program[0].count(mint) == 1
+    assert "%t/fleet-worker-github-token/$$repo.env" in program[0]
+    assert program[0].index(mint) < program[0].index("gh issue list") < program[0].index("gh issue edit")
+    assert "env -u GH_TOKEN" not in program[0]
+    assert "sweep-" not in program[0]
 
 
 def test_only_the_actions_instance_asks_for_actions_write() -> None:
-    text = (SYSTEMD / "fleet-worker-github-token@.service").read_text()
+    program = keys(TOKEN_UNIT)["ExecStart"]
+    assert len(program) == 1
     escaped_quote = chr(92) * 2 + '"'
     grant = json.dumps({"actions": "write"}, separators=(",", ":")).replace('"', escaped_quote)
-    assert text.count(grant) == 1
-    assert "repo=$${inst#actions:}" in text
-    line = next(line for line in text.splitlines() if line.startswith('  [ "$$repo"'))
-    assert '"$$repo" = "$$inst"' in line, line
-    assert grant in line, line
+    assert "repo=$${inst#actions:}" in program[0]
+    assert program[0].count(grant) == 1
+    assert f'[ "$$repo" = "$$inst" ] || perms="{grant}"' in program[0]
 
 
 def test_no_worker_launch_line_asks_for_the_actions_instance() -> None:

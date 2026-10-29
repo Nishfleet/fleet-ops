@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import yaml
@@ -5,7 +6,7 @@ import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAY = ansible_host.play()
-UNIT = (ROOT / "rootfs/etc/systemd/system/fleet-host-config.service").read_text()
+UNIT = ROOT / "rootfs/etc/systemd/system/fleet-host-config.service"
 
 
 def _task() -> dict:
@@ -27,5 +28,7 @@ def test_checkout_is_readable_by_all_and_writable_by_root_only() -> None:
 
 
 def test_checkout_is_the_directory_the_unit_pulls_into() -> None:
-    assert "--directory /var/lib/fleet-ops/repo" in UNIT
-    assert "--clean" in UNIT
+    line = next(ln for ln in UNIT.read_text().splitlines() if ln.startswith("ExecStart="))
+    argv = shlex.split(line[len("ExecStart="):])
+    assert argv[argv.index("--directory") + 1] == "/var/lib/fleet-ops/repo"
+    assert "--clean" in argv

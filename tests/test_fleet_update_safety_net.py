@@ -1,10 +1,13 @@
 """The daily update's safety net: a restic snapshot before any update step and the update's healthchecks ping."""
 import json
 import pathlib
+import re
+import shlex
 import shutil
 import subprocess
 
 import pytest
+import yaml
 import ansible_host
 
 if not shutil.which("yq"):
@@ -61,8 +64,11 @@ def test_host_config_builds_the_healthchecks_curl_config_from_the_box():
     assert HOST_TASKS["Read the healthchecks ping URLs nish keeps for the box"]["no_log"] is True
     assert HOST_TASKS["Make the directory for the update unit's root-only files"]["ansible.builtin.file"]["path"] == "/etc/fleet-ops"
     assert "HC_URL_UPDATE=" in hc["vars"]["hc_update_lines"]
-    assert "update-hc.curl" in UNIT
+    ping = shlex.split(next(l for l in UNIT.splitlines() if l.startswith("ExecStartPost="))[len("ExecStartPost="):])
+    assert ping[ping.index("--config") + 1] == "/etc/fleet-ops/update-hc.curl"
 
 
 def test_semgrep_blocks_the_return_of_yt_dlp_self_update():
-    assert "no-yt-dlp-self-update" in (ROOT / ".semgrep/no-glue.yml").read_text()
+    rule = next(r for r in yaml.safe_load((ROOT / ".semgrep/no-glue.yml").read_text())["rules"] if r["id"] == "no-yt-dlp-self-update")
+    assert re.search(rule["pattern-regex"], "yt-dlp --update")
+    assert not re.search(rule["pattern-regex"], "uv tool upgrade --all")
