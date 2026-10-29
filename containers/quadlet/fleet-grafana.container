@@ -79,6 +79,12 @@ Environment=GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
 Environment=GF_NEWS_NEWS_FEED_ENABLED=false
 Environment=GF_PLUGINS_PREINSTALL_SYNC=grafana-github-datasource@2.9.2,yesoreyeram-infinity-datasource@4.1.1
 Environment=GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/fleet.json
+# Grafana cancels a datasource fetch at its evaluation timeout, and the 30s default is too
+# short for the alert rules that read GitHub: GitHub caps a workflow-run list at 1,000 rows, so
+# the stock plugin pages 10 requests and today's reads took 26.2s at the median (max 30.0s, 63
+# cancelled at exactly 30.000s, fleet-ops#10913). 45s is above that read and below the 1m
+# interval of the shortest rule group, so a hung datasource cannot overlap the next tick.
+Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT=45s
 
 [Service]
 # The token directory and file must exist before the container mounts them and

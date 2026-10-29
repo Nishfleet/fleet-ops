@@ -299,7 +299,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M"]
+    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M", "/home/nish/.config/cloudflare:ro"]  # the empty mount point the worker jail masks (#10934)
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree, the App key dir and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
