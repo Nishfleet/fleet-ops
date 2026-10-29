@@ -780,6 +780,13 @@ jobs:
       rework: ${{ steps.find.outputs.rework }}
       file: ${{ steps.find.outputs.file }}
     steps:
+      # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
+      # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
+      # A close by this step fires no workflow (github.token), so the list job is the way
+      # back: it requeues the issue (no live run, no open claim PR) and adds its miss-review.
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
+        continue-on-error: true
+        with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
@@ -921,10 +928,7 @@ jobs:
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
-          echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
-          {
-            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
-          } >> "$GITHUB_OUTPUT"
+          { echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"; } | tee -a "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
   # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.
@@ -1385,7 +1389,7 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 60
     # issues: read is the whole grant: the steps read the issue, and the
     # orchestrator session does its own writes as the runner login. The GITHUB_TOKEN
@@ -1412,7 +1416,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Raw values: the defaults live in bash, so a literal 0 survives.
           DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX }}
-          MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
         run: |
           set -euo pipefail
@@ -1461,17 +1464,12 @@ jobs:
           else
             echo "orchestrate: daily cap off (ORCHESTRATE_DAILY_MAX=0)"
           fi
-          # Sonnet unless the issue asks for Opus or ORCHESTRATE_MODEL is off.
-          # An empty model leaves the session default (Opus) in place.
-          MODEL_VAR=${MODEL_VAR:-claude-sonnet-5-5}
-          if [[ $labels == *,needs-opus,* || $MODEL_VAR == off ]]; then
-            { echo "model="; echo "turns=80"; } >> "$GITHUB_OUTPUT"
-          else
-            { echo "model=$MODEL_VAR"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
-          fi
-          # Pi on a LiteLLM seat unless the issue asks for Opus or
-          # ORCHESTRATE_RUNNER is claude (fleet-ops#9407: Claude burn).
-          if [[ $labels == *,needs-opus,* || $MODEL_VAR == off || ${RUNNER_VAR:-pi} == claude ]]; then
+          # Sonnet for every hand-off: Opus, Fable and Qwen are reviewer and judge
+          # models only, and a bare `claude -p` would run the Opus default (#10750).
+          { echo "model=claude-sonnet-5-5"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
+          # Pi on a LiteLLM seat unless ORCHESTRATE_RUNNER is claude
+          # (fleet-ops#9407: Claude burn).
+          if [ "${RUNNER_VAR:-pi}" = claude ]; then
             echo "runner=claude" >> "$GITHUB_OUTPUT"
           else
             echo "runner=pi" >> "$GITHUB_OUTPUT"
@@ -1580,23 +1578,23 @@ jobs:
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Sonnet by default; the session default (Opus) only for a needs-opus issue, where MODEL
-          # is empty (fleet-ops#9351). --output-format json puts modelUsage in the log, the proof
-          # of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the session authenticates
-          # as the runner user, whose gh login can push .github/workflows/**. The prompt goes on
-          # stdin: it opens with `---` front matter, which as an argument the CLI parses as an option.
+          # Sonnet for every hand-off; there is no empty-model path, which would
+          # run the session default (Opus, fleet-ops#9351, #10750). --output-format
+          # json puts modelUsage in the log, the proof of which model ran. GH_TOKEN
+          # and GITHUB_TOKEN are unset so the session authenticates as the runner
+          # user, whose gh login can push .github/workflows/**. The prompt goes on
+          # stdin: it opens with `---` front matter, which as an argument the CLI
+          # parses as an option.
           if [ "$ORCH_RUNNER" = pi ]; then
             # Pi on a LiteLLM seat: no Claude spend, no turn cap; the step's timeout-minutes is the wall
             # (fleet-ops#10349). The litellm provider reads FLEET_TASK_ID and exits 1 without it.
-            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
+            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude.
             env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
               "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
           fi
-          model_args=()
-          [ -z "$MODEL" ] || model_args=(--model "$MODEL")
           # The repo's hooks are for interactive and worker sessions; here they
           # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
           hook_args=(--settings '{"disableAllHooks":true}')
@@ -1607,7 +1605,7 @@ jobs:
           # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
           # delete the three flags below.
           env -u GH_TOKEN -u GITHUB_TOKEN "$HOME/.local/bin/claude" -p \
-            "${model_args[@]}" \
+            --model "$MODEL" \
             "${hook_args[@]}" \
             --strict-mcp-config \
             --disable-slash-commands \

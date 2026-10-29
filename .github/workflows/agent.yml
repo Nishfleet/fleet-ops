@@ -55,7 +55,7 @@ permissions: {}
 jobs:
   work:
     if: inputs.ref
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 60
     # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
     # else here uses it. No job outputs: the strike runs in this job (below),
@@ -187,8 +187,7 @@ jobs:
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
-            gh label create needs-opus -R "$REPO" --force --color D4C5F9 --description "Orchestrator hand-off runs on Opus with 80 turns instead of Sonnet with 40" >/dev/null
-            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator,needs-opus --remove-label agent-ready,agent-in-progress
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
           fi
@@ -234,8 +233,11 @@ jobs:
           # and body: p >= 0.9 that completing it needs engineering judgment sends
           # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
           # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, the one free harness. Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the issue number's parity (fleet-ops#9696):
+          # free order is pi, the one free harness. Claude is always Sonnet: Opus,
+          # Fable and Qwen are reviewer and judge models only, never a worker
+          # (#10750), and a packet that failed twice escalates to the
+          # worker-capable pool. The seat follows the issue number's parity
+          # (fleet-ops#9696):
           # an odd issue runs seat a, an even issue the default login (seat b), so the jobs split across both seats and a job
           # never changes seat (no clock, and the prompt cache holds). A seat at its usage limit shows up
           # as a rate limit in the Worker, which falls through (below). There is no
@@ -263,10 +265,11 @@ jobs:
           }
           claude_model=claude-sonnet-5-5
           senior=false
+          escalated=false
           # shellcheck disable=SC2016 # $v is a jq variable
           failed=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" elif (.body | startswith("agent run failed: ")) and ((.author.login == "nishfleet-worker") or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | not) then "untrusted" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
-          case $labels in *,needs-opus,*) claude_model=claude-opus-5-5 ;; esac
-          [ "$failed" -lt 2 ] || claude_model=claude-opus-5-5
+          # Two failed runs escalate off the Claude lane to the worker-capable pool (#10750).
+          [ "$failed" -lt 2 ] || escalated=true
           # The audit line goes to the log and to the job summary.
           judged() { echo "judgment: p=$1 -> $2 ($3)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
           want_claude=false
@@ -288,7 +291,8 @@ jobs:
               fi ;;
           esac
           claude_ok=$want_claude
-          if [ "$claude_ok" = true ]; then
+          if [ "$escalated" = true ] && pi_free; then engine=pi
+          elif [ "$claude_ok" = true ]; then
             engine=claude
           elif pi_free; then engine=pi
           else skip lanes-full
@@ -328,9 +332,8 @@ jobs:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          # Claude lane: Sonnet, or Opus for a packet that failed twice or has
-          # needs-opus (the Gate decides). The other lanes have no turn cap, only
-          # the 55 minute step wall; this is a backstop under it.
+          # Claude lane: Sonnet always (the Gate decides). The other lanes have no
+          # turn cap, only the 55 minute step wall; this is a backstop under it.
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
           # true for strong-only work; a judgment job that claude cannot take goes to pi.
@@ -898,13 +901,19 @@ jobs:
           THIRD_FAMILY: Qwen
         run: |
           set -euo pipefail
-          say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          # No review text goes public unscanned (fleet-ops#9528): every post runs gitleaks over it with the PR scan's own rules and binary,
+          # a matched line is withheld behind a note instead of being posted, and a scan that cannot run posts no review text at all.
+          scan() { local r=$RUNNER_TEMP/rules.toml j=$RUNNER_TEMP/scan.json rc=0 PATH=$RUNNER_TEMP/gl:$PATH
+            command -v gitleaks >/dev/null || { mkdir -p "$RUNNER_TEMP/gl" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$RUNNER_TEMP/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/g.tgz" | sha256sum --check --strict --status - && tar -xzf "$RUNNER_TEMP/g.tgz" -C "$RUNNER_TEMP/gl" gitleaks; } >&2
+            curl -fsSL --retry 3 --max-time 60 -o "$r" https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/gitleaks-private-detail.toml || return 1
+            printf '%s\n' "$1" | gitleaks stdin --config "$r" --ignore-gitleaks-allow --redact -f json -r "$j" --exit-code 2 --no-banner --log-level error >/dev/null || rc=$?
+            case $rc in 0) printf '%s\n' "$1" ;; 2) jq -er '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$j" | awk 'NR == FNR { b[$1] = 1; next } FNR in b { if (!p) print "[a line was withheld: it matched a private-detail rule]"; p = 1; next } { p = 0; print }' - <(printf '%s\n' "$1") ;; *) return 1 ;; esac; }
+          scan_failed() { echo "::error::the private-detail scan could not run, so nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not read its rules or run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
+          say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; gh pr comment "$PR" -R "$REPO" --body "$out"; }
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
-          retry() {
-            say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
-            exit 1
-          }
+          retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
           # Blocker lines: a line starting with blocker(s), with or without markup (not the echoed header "blocker/risk/nit"),
           # unless only a none-variant follows (none, no blockers, n/a, a dash, then markup or a sentence). blk_re and none_re
           # are the only copies (grep here, jq in the already-reviewed check); none_re is anchored at both ends, so
@@ -913,11 +922,8 @@ jobs:
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
           blockers_of() { { grep -iE "$blk_re" <<<"$1" | grep -ivE "$none_re" || true; } | head -c 1500; }
-          # A review is posted whole up to a cap; past it the blocker lines go first, because they are the part the author acts on and a byte cut would drop them.
-          cut_text() { # $1 = the review text
-            t=$(printf '%s' "$1" | head -c 3500); b=$(printf '%s' "$1" | wc -c)
-            [ "$b" -le 3500 ] || t=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$b" "$(blockers_of "$1")" "$t")
-            printf '%s' "$t"; }
+          # $1 = the review text. A review is posted whole up to a cap; past it the blocker lines go first, because they are the part the author acts on and a byte cut would drop them.
+          cut_text() { t=$(printf '%s' "$1" | head -c 3500); b=$(printf '%s' "$1" | wc -c); [ "$b" -le 3500 ] || t=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$b" "$(blockers_of "$1")" "$t"); printf '%s' "$t"; }
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review
@@ -965,9 +971,7 @@ jobs:
           # runner's key files and the review is posted publicly (claude honors an empty --tools,
           # checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did
           # not finish: retry. No fallback to another family, no approval without this review. The guard head's second review (Fable) is the same call.
-          ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence \
-            --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' \
-            --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
+          ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
           review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
@@ -984,7 +988,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve_say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1005,8 +1009,7 @@ jobs:
                 -H 'content-type: application/json' -H "x-litellm-session-id: $FLEET_TASK_ID-pr$PR-$pre-$seat" -D "$RUNNER_TEMP/$pre-headers.txt" -o "$RUNNER_TEMP/$pre-body.json" --data-binary "@$RUNNER_TEMP/$pre-req.json"; } || rc=$?
             [ "$rc" = 0 ] || { : > "$RUNNER_TEMP/$pre-body.json"; : > "$RUNNER_TEMP/$pre-headers.txt"; }; return "$rc"; }
           # An extra reviewer may be answered by any row of its family; the family comes from the row id.
-          family_of() { case "${1,,}" in
-            *claude*) echo Claude ;; *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
+          family_of() { case "${1,,}" in *claude*) echo Claude ;; *glm*) echo GLM ;; *qwen*) echo Qwen ;; *deepseek*|*ds4*) echo DeepSeek ;; *step*) echo StepFun ;; *minimax*) echo MiniMax ;; *) echo "family_of: unknown row id '$1'" >&2 ;; esac; }
           # One extra review, asked again after each REVIEW_BACKOFF delay while the failure is infrastructure. $3 is the family that must answer (empty: any not in $4). Success leaves <pre>.txt and <pre>-row, failure <pre>-why.
           seat_try() { local seat=$1 pre=$2 want=$3 used=$4 d rc served fam content why rerr
             for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do
@@ -1023,12 +1026,9 @@ jobs:
             done
             return 1; }
           # After every retry and the fallback family: one loud issue (never a silent stall), a PR comment without a re-run request, and a red job.
-          give_up() {
-            ttl="review of PR #$PR head ${SHA:0:12} could not finish after retries"
-            n=$(gh issue list -R "$REPO" --label review-retry --state open --json number,title --jq "map(select(.title == \"$ttl\"))[0].number // empty" || true)
-            [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
-            say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."
-            exit 1; }
+          give_up() { ttl="review of PR #$PR head ${SHA:0:12} could not finish after retries"
+            n=$(gh issue list -R "$REPO" --label review-retry --state open --json number,title --jq "map(select(.title == \"$ttl\"))[0].number // empty" || true); [ -n "$n" ] || n=$(gh issue create -R "$REPO" --label review-retry --title "$ttl" --body "$(printf 'The risky-PR review of %s at %s ran out of retries (backoff %s s, then another non-Claude family). Nothing was approved or blocked.\n\n%s\n\nRun: %s/%s/actions/runs/%s' "$REPO#$PR" "$SHA" "$REVIEW_BACKOFF" "$1" "${GITHUB_SERVER_URL:-https://github.com}" "$REPO" "${GITHUB_RUN_ID:-}")" | sed 's|.*/||')
+            say "review of $SHA did not finish after retries: $1. Nothing was approved or blocked. Issue #$n is filed; a new head also gets a fresh review."; exit 1; }
           { r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt") && [ -n "${r2//[[:space:]]/}" ] && printf '%s' "$r2" > "$RUNNER_TEMP/second.txt" && printf '%s' "$SECOND_MODEL" > "$RUNNER_TEMP/second-row"; } & p2=$!
           seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
           [ "$rc_second" = 0 ] || retry "the second review ($SECOND_MODEL) gave no answer"
@@ -1046,7 +1046,7 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change touches money, secrets, data, .github/ or the review rules, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
+            approve_say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change touches money, secrets, data, .github/ or the review rules, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
@@ -1143,7 +1143,7 @@ jobs:
   # fires the orchestrate job. One open issue per PR: a new head comments on it, the same head does nothing.
   stuck:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions: {pull-requests: read, issues: read}
     concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
@@ -1164,7 +1164,7 @@ jobs:
     # 07:30, the first step is a cheap live check, and a review summons (review_pr set, job at its default) publishes
     # nothing.
     if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 150
     concurrency:
       group: agent-${{ github.repository }}-scheduled-inish-daily

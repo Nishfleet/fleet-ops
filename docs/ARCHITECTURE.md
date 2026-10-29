@@ -89,9 +89,10 @@ The rules still in force:
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi. `strong-only` (senior) issues go to Claude
-  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the issue number's parity
-  (fleet-ops#9696): in the claude lane
+  Code first (`claude-sonnet-5-5`, the only worker model: Opus, Fable and Qwen
+  are reviewer and judge models only, fleet-ops#10750). A packet that failed
+  twice escalates to the worker-capable pool, never to Opus. The seat is set by
+  the issue number's parity (fleet-ops#9696): in the claude lane
   step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
   keeps seat a. The seat follows the issue, not the runner, so a retry of the
@@ -119,7 +120,7 @@ The rules still in force:
   title and body: does completing this need engineering judgment (a design
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
-  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
+  the issue goes to the claude lane (Sonnet); at 0.1
   or less it goes to the free pi lane. Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
   pi lane; `strong-only` always goes to claude. The decision is written as
@@ -208,6 +209,27 @@ The rules still in force:
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+- **fleet-ops gets runners first (fleet-ops#10717).** GitHub hands queued
+  self-hosted jobs out first come, first served, so a product burst put
+  fleet-ops work behind it. Every agent runner carries the label `fleet-ops`,
+  and `netcup-agent-20` to `-30` (not the offline `-23`) do not carry `agent`,
+  so no build can take those 10; they keep `review`. agent.yml's
+  `work`, `stuck` and `inish-daily` jobs and agent-dispatch.yml's `orchestrate`
+  job ask for `[self-hosted, fleet-ops]` when `github.repository` (the caller)
+  is fleet-ops, and `[self-hosted, agent]` for every other caller, so fleet-ops
+  can use every live runner while products share the rest, and no product
+  repo can request the reserved label. `agent` has to come off, for the reason
+  the two review runners record above: GitHub hands a queued build to any idle
+  runner that matches, so a shared label empties the reservation during a
+  burst. The cost is 10 of 28 runners that no longer take product work. The
+  labels live at GitHub, not in ansible:
+  Applied 2026-10-29 with org-owner scope (the runner PAT gets 403): every
+  agent runner got `fleet-ops` (`gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`),
+  and runners 20 to 30 lost `agent` (`gh api -X DELETE .../runners/<id>/labels/agent`).
+  They already carried `review`, so product review jobs can still use them.
+  To switch it off, set those three `runs-on` lines and the `orchestrate` line
+  back to `[self-hosted, agent]`, put `agent` back on runners 20 to 30, and the
+  `fleet-ops` label can stay (nothing else asks for it).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
@@ -232,9 +254,13 @@ Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
 `Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
-owner fits, open a design proposal through the senior-conference channel — do
-not build by fiat.
+or Pi's stock dispatch (`.github/workflows/agent.yml`). Set the start limit so
+the restart cadence can spend it. A unit whose cadence never fills the budget
+restarts for ever and never becomes `failed`, so its one reader (an `OnFailure=`
+hook, the `node_systemd_unit_state` gauge on a system unit, or the manager's
+failed list) sees nothing, and `tests/test_systemd_unit_keys.py` gates this. If
+no existing owner fits, open a design proposal through the senior-conference
+channel — do not build by fiat.
 
 ## CI standard (the parts that stay)
 

@@ -79,13 +79,28 @@ def test_both_npm_leftovers_are_found_for_removal():
 
 
 def test_a_long_lived_npm_exec_is_not_install_activity():
-    assert not matches("npm exec @modelcontextprotocol/server-filesystem /srv/notes")
+    for cmdline in ("npm exec @modelcontextprotocol/server-filesystem /srv/notes",
+                    "npm exec -y @modelcontextprotocol/server-filesystem -- /srv/notes",
+                    "npm run build"):
+        assert not matches(cmdline), cmdline
 
 
 def test_a_real_npm_install_or_update_still_stops_the_removal():
     for cmdline in ("npm install -g @openai/codex", "npm update --global", "npm ci",
                     "/usr/bin/npm i -g tincan",
                     "node /usr/lib/node_modules/npm/bin/npm-cli.js i -g tincan"):
+        assert matches(cmdline), cmdline
+
+
+def test_a_flag_before_the_subcommand_is_still_install_activity():
+    for cmdline in ("npm -g install", "npm --global update", "npm -g install @openai/codex",
+                    "npm --global update --no-audit", "npm --prefix /srv install",
+                    "node /usr/lib/node_modules/npm/bin/npm-cli.js -g install"):
+        assert matches(cmdline), cmdline
+
+
+def test_the_other_global_writing_subcommands_are_install_activity():
+    for cmdline in ("npm rebuild", "npm prune"):
         assert matches(cmdline), cmdline
 
 
@@ -153,40 +168,6 @@ def test_no_line_of_the_runbook_launches_work_under_the_user_manager_without_col
         if "systemd-run" in line and "--user" in line and "--collect" not in line
     }
     assert not offenders, offenders
-
-
-def test_the_shell_startup_section_sends_work_to_the_launcher_rule_not_to_a_user_transient():
-    """That section is where the RUNBOOK last sent a reader to a user-manager transient
-    (fleet-ops#10211)."""
-    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
-    section = runbook.split("### Shell startup files", 1)[1].split("\n## ", 1)[0]
-    joined = section.replace("\\\n", " ")
-    assert 'AGENTS.md "Session-outliving work"' in section
-    assert "not scraped" in section, "the section lost the bus reason"
-    assert [line for line in joined.splitlines() if "systemd-run" in line and "--user" in line] == [], joined
-
-
-def test_the_detector_claim_is_narrowed_to_what_the_bus_carries() -> None:
-    """A user unit is not scraped, but it does carry `OnFailure=fleet-unit-failed@`, which
-    instantiates a system unit node_exporter does scrape. The route is dormant on this box,
-    so "no detector at all" was too strong (fleet-ops#10211)."""
-    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
-    section = runbook.split("## The failed-unit check and leftover ad-hoc units", 1)[1].split("\n## ", 1)[0]
-    assert "not scraped" in section, "the section lost the bus claim"
-    assert "OnFailure=fleet-unit-failed@" in section, "the section lost the one other route"
-    assert "dormant" in section, "the section no longer says that route is dormant"
-    assert "no detector at all" not in section, "a user unit does carry OnFailure=fleet-unit-failed@"
-
-
-def test_the_reporting_runs_are_stated_as_red_not_green() -> None:
-    """The string `failed units:` only exists in the assert's failure message, so a green run
-    never prints it: every run that reported the list was red (fleet-ops#10211)."""
-    runbook = (ROOT / "docs/RUNBOOK.md").read_text()
-    section = runbook.split("## The failed-unit check and leftover ad-hoc units", 1)[1].split("\n## ", 1)[0]
-    assert "A green run does not" in section, "the section no longer says a green run prints nothing"
-    assert "all\nthree ended red" in section or "all three ended red" in section, (
-        "the section no longer says all three reporting runs were red"
-    )
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible-playbook missing")

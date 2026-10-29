@@ -1,0 +1,23 @@
+# The deployed router-dead-row A expression, inlined verbatim from
+# router-dead-row.yaml, wrapped in `(...) > 5` (Grafana's C threshold) and carrying
+# the deployed `for: 15m`, so a case that fires here is a case Grafana calls
+# Alerting and a case that stays quiet here stays quiet there (fleet-ops#9562).
+#
+# The 10-minute recency gate is multiplied in, not joined with `and`: `and` keeps
+# the left value while the right side still has a matching series, whatever that
+# series reads, so a row that went quiet after its burst would fire for the rest of
+# the hour. router-dead-row.test.yml pins A at 0 once the burst leaves the window.
+#
+# tests/test_grafana_fixture_drift.py holds this expr and its `for` to the deployed
+# rule, so promtool cannot pass on a copy that drifted from it.
+groups:
+- interval: 5m
+  name: router-dead-row
+  rules:
+  - alert: RouterRowAnswers402403404
+    expr: "((sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id!=\"\"}[1h]))\nor sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id=\"\"}[1h])))\n* on(model_id,requested_model)\n(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\"}[10m])) > bool 0))\n> 5"
+    for: 15m
+    labels:
+      grafana_folder: fleet
+      severity: warning
+      signal: router-dead-row

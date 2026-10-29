@@ -92,15 +92,18 @@ jobs:
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - name: zizmor over .github/workflows/
+      - name: zizmor over .github/workflows/ and .github/actions/
         # Stock security audit for workflows: dangerous triggers, template injection, persisted
         # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
-        # Policy and its kept exceptions: .github/zizmor.yml.
+        # Policy and its kept exceptions: .github/zizmor.yml. .github/actions/ is in the path because
+        # a composite action holds the same injections a workflow does, and the discovery steps below
+        # never reach it: actionlint reads workflows only, and shellcheck finds files by extension or
+        # shebang, so neither one sees a run block in an action (fleet-ops#10723).
         if: always()
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
         with:
-          args: --offline --format plain .github/workflows
+          args: --offline --format plain .github/workflows .github/actions
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
@@ -139,7 +142,7 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /usr/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
@@ -244,10 +247,14 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: gitleaks for the review-comment scan test (fleet-ops#9528)
+        # The real binary and the real rules run the review step's scanner in tests/test_review_scan.py.
+        if: always()
+        run: d=$RUNNER_TEMP/gitleaks; mkdir -p "$d" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$d/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $d/g.tgz" | sha256sum --check --strict - && tar -xzf "$d/g.tgz" -C "$d" gitleaks
       - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
         # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
       - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
         if: always()
         run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
@@ -575,7 +582,7 @@ jobs:
             [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
-              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
               [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
@@ -705,10 +712,10 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
-          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          prog=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.APPROVERS' "$f")
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
-          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          run=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
@@ -1153,6 +1160,7 @@ jobs:
           cat > "$t/bin/curl" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
+            *gitleaks-private-detail*) while [ $# -gt 0 ]; do [ "$1" = -o ] && echo "[extend]" > "$2"; shift; done ;;
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
             *4000/v1/chat/completions*) # the third reviewer: the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
@@ -1181,6 +1189,7 @@ jobs:
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude"
+          printf '#!/bin/sh\nexit 0\n' > "$t/bin/gitleaks"; chmod +x "$t/bin/gitleaks"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y
           none=

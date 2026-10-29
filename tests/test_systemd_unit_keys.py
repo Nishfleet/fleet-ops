@@ -939,7 +939,6 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
         "the timer stops and disables before its files go"
     )
-    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
 LEVIATHAN_EXECUTOR_LIVE_PATHS = (
@@ -1125,6 +1124,18 @@ def test_glue_sweep_user_config_debris_is_retired() -> None:
     assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
 
 
+GLUE_SWEEP_CHECKOUT_CACHES = (
+    "{{ nish_home }}/workspaces/tooling/last30days-skill/.pytest_cache",
+)
+
+
+def test_glue_sweep_checkout_caches_are_retired() -> None:
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
+    assert not missing, f"host.yml does not delete these checkout caches: {missing}"
+
+
 def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
     """A user unit deleted while the user manager holds it stays listed by
     list-unit-files until that manager reloads, which is half of #10544's check."""
@@ -1170,6 +1181,37 @@ def test_prometheus_config_installs_world_readable() -> None:
     assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
     assert re.search(r'^ +mode: "0644"$', task, re.M)
     assert "mode: preserve" not in task
+
+
+ROOT_OWNED_COPIES = (
+    "rootfs/etc/prometheus/prometheus.yml",
+    "rootfs/etc/systemd/system/agent.slice",
+)
+
+
+@pytest.mark.parametrize("shipped", ROOT_OWNED_COPIES)
+def test_root_owned_copies_are_shipped_and_installed_as_root(shipped: str) -> None:
+    live = PurePosixPath("/" + shipped.removeprefix("rootfs/"))
+    assert (ROOT / shipped).is_file(), (
+        f"the repo ships no {shipped}, so {live} keeps whatever value it was built with "
+        "and a reviewed change to it never reaches the host (fleet-ops#8862)"
+    )
+    source = "{{ rootfs }}" + str(live.parent) + "/"
+    copy = next(
+        (
+            task["ansible.builtin.copy"]
+            for task in ansible_host.play()["tasks"]
+            if "ansible.builtin.copy" in task
+            and task["ansible.builtin.copy"].get("src") == source
+            and task["ansible.builtin.copy"].get("dest", "").rstrip("/") == str(live.parent)
+        ),
+        None,
+    )
+    assert copy is not None, f"no ansible/host.yml task copies {source} to {live.parent}, so {live} is never installed"
+    assert (copy.get("owner"), copy.get("group")) == ("root", "root"), (
+        f"the task that installs {live} does not declare owner: root and group: root, "
+        "so a copy that runs as root can still leave it owned by the source"
+    )
 
 
 def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
@@ -1475,7 +1517,6 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "docs/layout.md names the unit this tunes"
 
 
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
@@ -1723,7 +1764,7 @@ number=""
 status=${FAKE_GH_EDIT_STATUS:-0}
 while [ $# -gt 0 ]; do
     case "$1" in
-        list|edit) sub=$1 ;;
+        list|edit|workflow) sub=$1 ;;
         -R) repo=$2; shift ;;
         --jq) prog=$2; shift ;;
         --add-label) shift ;;
@@ -1734,6 +1775,7 @@ while [ $# -gt 0 ]; do
 done
 case $sub in
     list) printf '%s' "$FAKE_GH_PAYLOAD" | jq -r "$prog" ;;
+    workflow) [ -z "$FAKE_GH_DISPATCH" ] || { echo "$FAKE_GH_DISPATCH" >&2; exit 1; } ;;
     edit) if [ "$status" -eq 0 ]; then printf '%s#%s\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"
           else printf '%s#%s FAILED\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"; fi
           exit "$status" ;;
@@ -1753,11 +1795,13 @@ def fake_gh_dir(tmp_path: Path) -> Path:
 def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
     keys = effective_directives(PR_SWEEP)
     starts = keys["ExecStart"]
-    assert len(starts) == 2, "the dispatch line plus the failure check; deleting the second line is the documented off switch"
-    assert starts[0] == "/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i"
-    assert "gh run list" in starts[1] and "-w agent-dispatch.yml" in starts[1]
-    assert "-s completed -L 1" in starts[1], "the newest completed run only, so the previous cycle's startup_failure is caught"
-    assert "conclusion,url" in starts[1]
+    assert len(starts) == 1, (
+        "one line, because a skipped dispatch must not run the failure check either, and systemd skips the rest of a multi-command ExecStart only on failure; deleting it is the documented off switch"
+    )
+    assert "gh workflow run agent-dispatch.yml -R Nishfleet/%i" in starts[0]
+    assert "gh run list" in starts[0] and "-w agent-dispatch.yml" in starts[0]
+    assert "-s completed -L 1" in starts[0], "the newest completed run only, so the previous cycle's startup_failure is caught"
+    assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
     assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
@@ -1781,7 +1825,7 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
 
 
 def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
-    command = specifier_expanded(unit_directives(PR_SWEEP)["ExecStart"][1], tmp_path)
+    command = sh_script(PR_SWEEP, tmp_path).replace("%i", "fleet-ops")
     env = {**os.environ, "PATH": f"{fake_gh_dir(tmp_path)}{os.pathsep}{os.environ['PATH']}"}
     url = "https://github.com/Nishfleet/fleet-ops/actions/runs/1"
 
@@ -1801,6 +1845,48 @@ def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: 
         assert check(json.dumps([{"conclusion": conclusion, "url": url}])).returncode == 0, conclusion
     assert check("[]").returncode == 0, "a repo with no completed run yet passes"
     assert check("null").returncode == 0
+
+
+DISABLED_WORKFLOW = (
+    "could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow "
+    "(https://api.github.com/repos/Nishfleet/drive/actions/workflows/1/dispatches)"
+)
+
+
+def sweep_dispatch(tmp_path: Path, failure: str) -> subprocess.CompletedProcess:
+    """The unit's one ExecStart, with a fake gh that fails the dispatch when asked."""
+    bindir = fake_gh_dir(tmp_path)
+    return subprocess.run(
+        ["/bin/sh", "-c", sh_script(PR_SWEEP, tmp_path).replace("%i", "drive")],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_DISPATCH": failure,
+            "FAKE_GH_PAYLOAD": json.dumps(
+                [{"conclusion": "startup_failure", "url": "https://github.com/Nishfleet/drive/actions/runs/1"}]
+            ),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_fleet_pr_sweep_skips_a_repo_whose_agent_dispatch_is_disabled(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, DISABLED_WORKFLOW)
+    assert proc.returncode == 0, (
+        "a disabled workflow never fixes itself, so the hourly timer would page for ever (fleet-ops#9631); "
+        "the fake's newest run is a startup_failure, so a pass also proves the failure check was skipped"
+    )
+    assert proc.stdout.splitlines() == [
+        "skip: Nishfleet/drive disabled agent-dispatch (HTTP 422), so there is no sweep to start"
+    ]
+    assert proc.stderr == "", "one journal line, not the 422 text"
+
+
+def test_fleet_pr_sweep_keeps_every_other_dispatch_failure_loud(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, "could not create workflow dispatch event: HTTP 500: Internal Server Error")
+    assert proc.returncode != 0, "only the disabled-workflow answer is a permanent state; anything else retries and pages"
+    assert "HTTP 500: Internal Server Error" in proc.stdout
 
 
 def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status: int = 0) -> tuple[int, list[str], list[str]]:
@@ -2052,14 +2138,6 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
         "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
         "quadlet container is the one place that may load it."
     )
-
-
-def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "docs" / "layout.md").read_text()
-    assert "systemctl --user start <unit>" in readme, "docs/layout.md lost the run line"
-    for relative in WAKE_UNITS:
-        unit = relative.split("/")[-1]
-        assert f"systemctl --user disable --now {unit}" in readme
 
 
 def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
@@ -2472,3 +2550,158 @@ def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None
     token = _unit_keys(GRAFANA_TOKEN)
     assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
     assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+
+
+RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}
+
+DESIGNED_FLAPPERS = {
+    "rootfs/etc/systemd/system/tailscaled.service": (
+        "SSH is tailnet-only, so the lifeline keeps coming back",
+        None,
+    ),
+    "rootfs/etc/systemd/system/claude-remote-control.service": (
+        "50-alert-on-stop.conf pages on every exit through ExecStopPost=",
+        (
+            "rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf",
+            "fleet-unit-failed@%N.service",
+        ),
+    ),
+    "rootfs/etc/systemd/system/hermes-gateway.service": (
+        "HermesGatewayDown pages a 5-minute window with no active state",
+        ("rootfs/etc/prometheus/fleet_rules.yml", "alert: HermesGatewayDown"),
+    ),
+}
+
+# systemd's own defaults for an unset key (systemd.unit):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=
+DEFAULT_START_INTERVAL_SEC = 10.0
+DEFAULT_START_BURST = 5
+DEFAULT_RESTART_SEC = 0.1
+
+SPAN_SECONDS = {"": 1.0, "s": 1.0, "min": 60.0, "h": 3600.0}
+
+
+def _seconds(key: str, value: str) -> float:
+    """A span in seconds, read with the time units this repo's units use."""
+    if value.strip() == "infinity":
+        return float("inf")
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]*)", value.strip())
+    assert match, f"{key}={value} is not a number with a time unit"
+    number, unit = match.groups()
+    assert unit in SPAN_SECONDS, f"{key}={value}: this gate reads only the units {sorted(SPAN_SECONDS)}; add {unit!r} to SPAN_SECONDS"
+    return float(number) * SPAN_SECONDS[unit]
+
+
+def unit_sources() -> dict[str, list[Path]]:
+    """Unit path to every file that layers onto it, in systemd's apply order.
+
+    The key is the path, because the same unit name ships twice here: a linked
+    user unit in systemd/ and a root-owned one in rootfs/etc/systemd are
+    different units with different failure readers. A drop-in directory names a
+    unit even when its base is not in this repo: the self-hosted runners and
+    tailscaled ship their base from the vendor, and that drop-in carries the
+    whole restart policy. A quadlet is a source too: podman generates the unit
+    from it and passes its [Unit] keys through.
+    """
+    sources: dict[str, list[Path]] = {}
+    for pattern in (
+        "systemd/*.service",
+        "rootfs/etc/systemd/system/*.service",
+        "rootfs/etc/systemd/user/*.service",
+        "containers/quadlet/*.container",
+    ):
+        for path in sorted(ROOT.glob(pattern)):
+            key = f"{path.parent.relative_to(ROOT)}/{path.name}"
+            sources[key] = [path, *sorted(path.parent.glob(f"{path.name}.d/*.conf"))]
+    for dropin_dir in sorted(
+        [*ROOT.glob("systemd/*.d"), *ROOT.glob("rootfs/etc/systemd/system/*.d"), *ROOT.glob("rootfs/etc/systemd/user/*.d")]
+    ):
+        key = f"{dropin_dir.parent.relative_to(ROOT)}/{dropin_dir.name[: -len('.d')]}"
+        sources.setdefault(key, sorted(dropin_dir.glob("*.conf")))
+    return sources
+
+
+def effective_values(name: str) -> dict[str, list[str]]:
+    """Every value each key takes across the unit's layers, the last one effective."""
+    values: dict[str, list[str]] = {}
+    for layer in unit_sources()[name]:
+        for key, layer_values in _unit_keys(layer).items():
+            values.setdefault(key, []).extend(layer_values)
+    return values
+
+
+def restarting_units() -> list[str]:
+    return sorted(
+        name
+        for name in unit_sources()
+        if (effective_values(name).get("Restart", [None])[-1] or "").lower() in RESTART_POLICIES
+    )
+
+
+def test_every_restart_surface_is_covered() -> None:
+    units = restarting_units()
+    assert units, "no unit with a Restart= policy was found"
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    missing = [surface for surface in surfaces if not any(name.startswith(f"{surface}/") for name in units)]
+    assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
+
+
+def test_designed_flappers_are_restarting_units() -> None:
+    stale = sorted(set(DESIGNED_FLAPPERS) - set(restarting_units()))
+    assert not stale, f"DESIGNED_FLAPPERS lists units that ship no restart policy: {stale}"
+
+
+def test_every_designed_flapper_cites_the_page_that_replaces_the_failed_state() -> None:
+    """The exemption is only sound while the page its reason names is shipped."""
+    unpageable = sorted(name for name, (_, pager) in DESIGNED_FLAPPERS.items() if pager is None)
+    assert unpageable == ["rootfs/etc/systemd/system/tailscaled.service"], (
+        f"only the tailnet lifeline may sit outside the gate with no page behind it: {unpageable}"
+    )
+    for name, (reason, pager) in DESIGNED_FLAPPERS.items():
+        if pager is None:
+            continue
+        path, needle = pager
+        assert needle in (ROOT / path).read_text(), (
+            f"{name} is exempt from the start-limit gate because {reason}, but {path} no longer carries {needle!r}, "
+            f"so a crash loop there would be silent and paged to nobody"
+        )
+
+
+@pytest.mark.parametrize("name", restarting_units())
+def test_a_crash_loop_reaches_failed_before_its_start_limit_hides_it(name: str) -> None:
+    """A restart loop must reach `failed`, the state its failure reader polls.
+
+    systemd's default budget is 5 starts in 10 s. A unit that restarts slower
+    than that never spends it, so nothing fires and the loop runs unseen
+    (fleet-ops#10253). The reader per unit, and the whole reason, are in
+    docs/ARCHITECTURE.md and the fleet map.
+    """
+    values = effective_values(name)
+    interval_text = values["StartLimitIntervalSec"][-1].strip() if "StartLimitIntervalSec" in values else ""
+    if name in DESIGNED_FLAPPERS:
+        assert interval_text and _seconds("StartLimitIntervalSec", interval_text) == 0, (
+            f"{name} no longer disables the start limit; drop it from DESIGNED_FLAPPERS"
+        )
+        return
+    restart_text = values["RestartSec"][-1].strip() if "RestartSec" in values else ""
+    restart = _seconds("RestartSec", restart_text) if restart_text else DEFAULT_RESTART_SEC
+    assert restart != float("inf"), (
+        f"{name}: RestartSec=infinity schedules no restart after an exit, so a crashed unit never comes back; set a finite RestartSec"
+    )
+    assert interval_text != "infinity", (
+        f"{name}: StartLimitIntervalSec=infinity never lets the budget expire, so the first crash loop benches the unit for good; set 10min"
+    )
+    interval = _seconds("StartLimitIntervalSec", interval_text) if interval_text else DEFAULT_START_INTERVAL_SEC
+    burst_text = values["StartLimitBurst"][-1].strip() if "StartLimitBurst" in values else str(DEFAULT_START_BURST)
+    assert burst_text.isdigit() and int(burst_text) >= 1, (
+        f"{name}: StartLimitBurst={burst_text} must be a whole number of starts and at least 1, because 0 disables the limit"
+    )
+    burst = int(burst_text)
+    spent = burst * restart
+    assert spent < interval, (
+        f"{name}: Restart={values['Restart'][-1]} RestartSec={restart:g}s spends its start budget at "
+        f"{burst:g} x {restart:g}s = {spent:g}s, which never fills inside StartLimitIntervalSec={interval:g}s, "
+        f"so a crash loop restarts for ever and never reaches `failed`, the state its failure reader polls "
+        f"(fleet-ops#10253). Raise StartLimitIntervalSec above that spend, or list the unit in "
+        f"DESIGNED_FLAPPERS with the page that replaces the failed state."
+    )

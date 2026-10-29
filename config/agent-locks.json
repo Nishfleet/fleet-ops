@@ -113,21 +113,14 @@
     }
   },
   "stale_user_units": {
-    "systemd/tincan-listen-claude-vps.service": "The unlocked user form of a listener that now runs as a system unit. The required ci check still reads this file for its StateDirectory and WorkingDirectory, so removing it is #9984, not this PR.",
-    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; removing the file is the same follow-up as the claude-vps one, #9984.",
-    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; removing the file is the same follow-up as the claude-vps one, #9984."
+    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912.",
+    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912."
   },
   "gaps": [
     {
-      "agent": "amp-runner-nish and amp-runner-rajeev",
-      "unit": null,
-      "reason": "Still user units under ~/.config/systemd/user, so their settings are ignored on this box. They need the same move to system units with a service user, and their own live probe, before they can be switched.",
-      "issue": "#9982"
-    },
-    {
       "agent": "issue-desk",
-      "unit": null,
-      "reason": "Still a user unit under systemd/, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
+      "unit": "systemd/tincan-listen-issue-desk.service",
+      "reason": "Still a user unit, systemd/tincan-listen-issue-desk.service, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
       "issue": "#10813"
     },
     {

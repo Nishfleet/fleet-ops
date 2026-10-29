@@ -1,7 +1,7 @@
 {
   "uid": "fleet-scorecard",
   "title": "Fleet scorecard",
-  "description": "Is the fleet beating a pro team: merged per day, run failure share and idle runner minutes, 14 days.",
+  "description": "Is the fleet beating a pro team: merged per day, run failure share, idle runner minutes, head to verdict and approval to merge, 14 days.",
   "tags": [
     "fleet"
   ],
@@ -34,7 +34,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Fleet-ops#10711. The one number this dashboard can compute today is **idle agent-runner minutes while ready work waits**, at the bottom: runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above are provisioned but show an error box: their day buckets call a function the expression engine blocks, and the merged table's two targets return the same org-wide rows (Fleet-ops#10853). Do not read them until that lands; the failed share counts every non-success finished run, not only infra failures.\n\nNo data source yet (follow-up issue): pushed head to review verdict, approval to merge, Claude limit per merged PR. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+        "content": "Fleet-ops#10711. Four tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, and the two at the bottom, head to review verdict and approval to merge (Fleet-ops#10887). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (follow-up issue): Claude limit per merged PR. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
       }
     },
     {
@@ -63,7 +63,7 @@
           },
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
-          "repository": "",
+          "repository": "fleet-ops",
           "options": {
             "query": "is:merged repo:Nishfleet/fleet-ops",
             "timeField": 2
@@ -78,9 +78,9 @@
           },
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
-          "repository": "",
+          "repository": "0509",
           "options": {
-            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public",
+            "query": "is:merged repo:Nishfleet/0509",
             "timeField": 2
           },
           "hide": true
@@ -88,11 +88,116 @@
         {
           "refId": "C",
           "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "aiconverter-app",
+          "options": {
+            "query": "is:merged repo:Nishfleet/aiconverter-app",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "rera-report-card",
+          "options": {
+            "query": "is:merged repo:Nishfleet/rera-report-card",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "siterep-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/siterep-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "tether",
+          "options": {
+            "query": "is:merged repo:Nishfleet/tether",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "TinyStudio.io-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/TinyStudio.io-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "H",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "seo-fix-kit",
+          "options": {
+            "query": "is:merged repo:Nishfleet/seo-fix-kit",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "mailbox",
+          "options": {
+            "query": "is:merged repo:Nishfleet/mailbox",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "J",
+          "datasource": {
             "type": "__expr__",
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTR(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTR(closed_at, 1, 10), 'products' FROM B) AS merged\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM C UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM D UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM E UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM F UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM G UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM H UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM I) AS merged\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {
@@ -165,7 +270,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTR(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTR(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTRING(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {
@@ -248,6 +353,142 @@
           },
           "type": "sql",
           "expression": "WITH days AS (\n  SELECT FLOOR(UNIX_TIMESTAMP() / 86400) * 86400 - 86400 * n AS day_start,\n         CASE WHEN n = 0 THEN (UNIX_TIMESTAMP() - FLOOR(UNIX_TIMESTAMP() / 86400) * 86400) / 60.0 ELSE 1440 END AS minutes\n  FROM (SELECT 0 AS n UNION ALL SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n UNION ALL SELECT 4 AS n UNION ALL SELECT 5 AS n UNION ALL SELECT 6 AS n UNION ALL SELECT 7 AS n UNION ALL SELECT 8 AS n UNION ALL SELECT 9 AS n UNION ALL SELECT 10 AS n UNION ALL SELECT 11 AS n UNION ALL SELECT 12 AS n UNION ALL SELECT 13 AS n) AS spine\n), inflight AS (\n  SELECT UNIX_TIMESTAMP(run_started_at) AS started,\n         CASE WHEN status = 'completed' THEN UNIX_TIMESTAMP(updated_at) ELSE UNIX_TIMESTAMP() END AS ended\n  FROM A\n  WHERE run_started_at IS NOT NULL\n), busy AS (\n  SELECT FLOOR(started / 86400) AS day_index, SUM(CASE WHEN ended > started THEN ended - started ELSE 0 END) / 60.0 AS busy_minutes\n  FROM inflight\n  GROUP BY FLOOR(started / 86400)\n), slots AS (\n  SELECT FLOOR(UNIX_TIMESTAMP(time) / 86400) AS day_index, AVG(__value__) AS slots FROM P GROUP BY FLOOR(UNIX_TIMESTAMP(time) / 86400)\n), pool AS (SELECT AVG(__value__) AS slots FROM P), waiting AS (\n  SELECT d.day_start AS day_start, COUNT(*) AS ready_issues\n  FROM days d JOIN B ON UNIX_TIMESTAMP(B.created_at) < d.day_start + 86400 AND COALESCE(UNIX_TIMESTAMP(B.closed_at), UNIX_TIMESTAMP()) >= d.day_start\n  GROUP BY d.day_start\n)\nSELECT DATE_FORMAT(FROM_UNIXTIME(d.day_start), '%Y-%m-%d') AS day,\n       COALESCE(w.ready_issues, 0) AS ready_issues,\n       CASE WHEN COALESCE(w.ready_issues, 0) = 0 THEN 0\n            WHEN COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0) < 0 THEN 0\n            ELSE ROUND(COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0), 0) END AS idle_minutes\nFROM days d\nCROSS JOIN pool\nLEFT JOIN busy bs ON bs.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN slots sl ON sl.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN waiting w ON w.day_start = d.day_start\nORDER BY d.day_start"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 5,
+      "title": "Head to review verdict, p50 and p90 minutes per day, last 14 days",
+      "description": "Target: p50 under 20 min, p90 under 60 min. One row per merged fleet-ops PR, on the day it merged: from the newest head the GitHub export can date to the APPROVED verdict that merged it. Days are UTC. The verdict is the last APPROVED review at or before merged_at, so a verdict that arrives after the merge does not count. The head is the PR opening, or the push that dismissed the previous approval when that is later. The export carries no head commit timestamp, so a push that lands while no approval is live is folded into the wait and a PR pushed repeatedly between verdicts shows the whole rework wait. A PR merged without an APPROVED review is absent.",
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Request_Reviews",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops"
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "WITH pair AS (\n  SELECT a.number AS pr,\n         MIN(UNIX_TIMESTAMP(a.created_at)) AS opened_at,\n         MIN(UNIX_TIMESTAMP(a.merged_at)) AS merged_at,\n         MAX(CASE WHEN b.review_state = 'APPROVED' AND UNIX_TIMESTAMP(b.review_created_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_created_at) END) AS verdict_at,\n         MAX(CASE WHEN b.review_state = 'DISMISSED' AND UNIX_TIMESTAMP(b.review_updated_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_updated_at) END) AS dismissed_at\n  FROM A AS a JOIN B AS b ON b.pull_request_number = a.number\n  GROUP BY a.number\n), minutes AS (\n  SELECT DATE_FORMAT(FROM_UNIXTIME(merged_at), '%Y-%m-%d') AS day,\n         (verdict_at - CASE WHEN dismissed_at > opened_at AND dismissed_at < verdict_at THEN dismissed_at ELSE opened_at END) / 60.0 AS waiting\n  FROM pair WHERE verdict_at IS NOT NULL\n), ranked AS (\n  SELECT day, waiting,\n         ROW_NUMBER() OVER (PARTITION BY day ORDER BY waiting) AS rn,\n         COUNT(*) OVER (PARTITION BY day) AS c\n  FROM minutes\n)\nSELECT day, COUNT(*) AS prs,\n       ROUND(AVG(CASE WHEN rn >= (c + 1) / 2.0 - 0.5 AND rn <= (c + 1) / 2.0 + 0.5 THEN waiting END), 1) AS p50_minutes,\n       ROUND(MAX(CASE WHEN rn = CEIL(0.9 * c) THEN waiting END), 1) AS p90_minutes\nFROM ranked GROUP BY day ORDER BY day"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "id": 6,
+      "title": "Approval to merge, p50 and p90 minutes per day, last 14 days",
+      "description": "Target: under 15 min. One row per merged fleet-ops PR, on the day it merged: from the APPROVED verdict that armed the merge to merged_at. Days are UTC. The verdict is the last APPROVED review at or before merged_at, so a PR merged without an APPROVED review is absent.",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "14d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Request_Reviews",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops"
+          },
+          "hide": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "WITH pair AS (\n  SELECT a.number AS pr,\n         MIN(UNIX_TIMESTAMP(a.created_at)) AS opened_at,\n         MIN(UNIX_TIMESTAMP(a.merged_at)) AS merged_at,\n         MAX(CASE WHEN b.review_state = 'APPROVED' AND UNIX_TIMESTAMP(b.review_created_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_created_at) END) AS verdict_at,\n         MAX(CASE WHEN b.review_state = 'DISMISSED' AND UNIX_TIMESTAMP(b.review_updated_at) <= UNIX_TIMESTAMP(a.merged_at) THEN UNIX_TIMESTAMP(b.review_updated_at) END) AS dismissed_at\n  FROM A AS a JOIN B AS b ON b.pull_request_number = a.number\n  GROUP BY a.number\n), minutes AS (\n  SELECT DATE_FORMAT(FROM_UNIXTIME(merged_at), '%Y-%m-%d') AS day,\n         (merged_at - verdict_at) / 60.0 AS waiting\n  FROM pair WHERE verdict_at IS NOT NULL\n), ranked AS (\n  SELECT day, waiting,\n         ROW_NUMBER() OVER (PARTITION BY day ORDER BY waiting) AS rn,\n         COUNT(*) OVER (PARTITION BY day) AS c\n  FROM minutes\n)\nSELECT day, COUNT(*) AS prs,\n       ROUND(AVG(CASE WHEN rn >= (c + 1) / 2.0 - 0.5 AND rn <= (c + 1) / 2.0 + 0.5 THEN waiting END), 1) AS p50_minutes,\n       ROUND(MAX(CASE WHEN rn = CEIL(0.9 * c) THEN waiting END), 1) AS p90_minutes\nFROM ranked GROUP BY day ORDER BY day"
         }
       ],
       "options": {

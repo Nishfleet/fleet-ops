@@ -184,6 +184,36 @@ ExecStart=-/bin/sh -c 'w=%h/.config/systemd/user/default.target.wants/cua-desk-d
 ExecStart=/bin/sh -c 'for f in fleet-d1-restore-drill.service fleet-d1-restore-drill.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user daemon-reload
+# 2l. A quadlet edit never reaches a running container (fleet-ops#10820).
+#    The daemon-reload above regenerates fleet-grafana.service from
+#    containers/quadlet/fleet-grafana.container, but nothing restarts the
+#    container, so a `Secret=` line added to a quadlet lands only at the
+#    container's next start. On 2026-10-29 that left the Grafana data source the
+#    session-hop rule reads unable to provision, and the rule failed its
+#    evaluation with DatasourceError from 07:15Z.
+#    The marker holds the quadlet bytes the running container was started
+#    from, and `cmp -s` is the guard, the same one the proxy unit uses so an
+#    attribute touch cannot restart the router: a sync that changed nothing
+#    restarts nothing. The first sync after this step lands finds no marker,
+#    so it restarts Grafana once with the mounts the quadlet already carries,
+#    which is the live fix. The marker is a copy of the quadlet, so it is
+#    written 0600: a quadlet can carry `Environment=` and `Secret=` lines.
+#    The order is restart, then record. A `try-restart` that fails leaves no
+#    marker, so the next sync tries again, and the failed step is a page
+#    (OnFailure=) rather than a silent "already applied".
+#    `try-restart` acts only on a running container, so a Grafana stopped on
+#    purpose stays stopped, and a stopped or failed Grafana that is later
+#    started starts from the current quadlet either way
+#    (fleet-litellm-proxy-config.service does the same).
+#    This is not the Ansible handler's job: `Restart fleet-grafana` is notified
+#    by the grafana_secrets loop when a secret is created or replaced, and a
+#    quadlet mount edit is neither.
+#    Grafana only. A loop over containers/quadlet/ would also restart the
+#    LiteLLM router, its Redis and its Postgres the next time one of those
+#    quadlets changes, and the first sync after this step lands would restart
+#    every container at once. That blast radius is a wider call than this issue.
+#    Off switch: delete this step and ~/.config/fleet-ops/grafana-quadlet.container.
+ExecStart=/bin/sh -c 'test -f %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container && { cmp -s %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container || { /usr/bin/systemctl --user try-restart fleet-grafana.service && /usr/bin/install -C -D -m 0600 %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container; }; }'
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
 ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
@@ -246,7 +276,7 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
-ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan %h/.local/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

@@ -102,7 +102,11 @@
 - `systemd/syncthing.service` and `tigervnc.service` — stock vendor
   binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
-  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  nothing. Syncthing's binary is a package now, from Syncthing's own apt
+  repository (`ansible/tasks/syncthing.yml`), so the daily dist-upgrade keeps it
+  current and `ExecStart` names `/usr/bin/syncthing`; the hand-placed copy under
+  `~/.local/bin` was retired (#10844). TigerVNC's binary is still hand-placed.
+  The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
   `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`
@@ -216,7 +220,14 @@
   by hand from the deploy clone (link, then `enable --now`): it is not enabled by
   `fleet-sync.service`.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
-  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` and
+  `pi-extensions/token-redact/` so far.
+- `pi-extensions/token-redact/` — a Pi extension that rewrites token-shaped strings out of
+  the session file before Pi writes them, so a raw token never reaches
+  `~/.pi/agent/sessions` (fleet-ops#10157, audit item W1c). Two `pi.on` handlers in
+  `index.ts`, no wrapper, no poller, no script. Load it with `pi -e <path>` or
+  `pi install`, and turn it off with `TOKEN_REDACT=off`. Its README has the six
+  shapes, the tests and the delete steps.
 - `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
   `gpg-agent.service`, the stock GPG credential cache every signing unit loads
   (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
