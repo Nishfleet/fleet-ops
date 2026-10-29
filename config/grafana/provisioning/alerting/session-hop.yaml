@@ -13,8 +13,8 @@
 # stayed on, and 90.4M already-cached tokens were re-read in 5.6 days.
 #
 # The pin is a routing decision, so this rule measures routing, not answers:
-# a session that stays on one row is healthy, a session that changes vendor
-# mid-run has lost its cache and is the incident.
+# a session that stays on one row key is healthy, a session whose answering
+# row key changes mid-run has lost that key's cache and is the incident.
 #
 # The session id and the answering row both live only in PostgreSQL
 # (LiteLLM_SpendLogs.session_id, model_id), so a Prometheus rule cannot express
@@ -22,12 +22,12 @@
 # (provisioning/datasources/litellm-postgres.yaml) and #9357's
 # prompt-cache-hit.yaml stays on Prometheus.
 #
-# Rule: per clock hour, the share of non-first calls whose answering vendor
-# differs from the same session's previous call (gap under 5 minutes, so an
-# idle session that resumed later is not a hop). Hours with fewer than 50
-# non-first calls are dropped by the HAVING floor: a 2-hourly probe lane would
-# otherwise read 0 calls one hour and 1 hop the next, and 100% would page.
-# Fire above 2%.
+# Rule: per clock hour, the share of non-first calls whose answering row key
+# (split_part of model_id: opencodego, stepfun, ...) differs from the same
+# session's previous call (gap under 5 minutes, so an idle session that
+# resumed later is not a hop). Hours with fewer than 50 non-first calls are
+# dropped by the HAVING floor: a 2-hourly probe lane would otherwise read 0
+# calls one hour and 1 hop the next, and 100% would page. Fire above 45%.
 #
 # SELECT only hop_pct (fleet-ops#9475 acceptance). A threshold expression over
 # the frame evaluates every numeric column the frame carries, so diagnostic
@@ -37,32 +37,44 @@
 #   psql "host=127.0.0.1 dbname=litellm user=grafana_ro" -- SELECT-only reader
 #     WITH calls AS (
 #       SELECT session_id, model_id, "startTime",
-#              lag(split_part(model_id, '-', 1)) OVER w AS prev_vendor,
+#              lag(split_part(model_id, '-', 1)) OVER w AS prev_key,
 #              lag("startTime") OVER w AS prev_ts
-#       FROM "LiteLLM_SpendLogs"
+#       FROM session_hop_logs
 #       WHERE call_type = 'acompletion' AND status = 'success'
-#         AND "startTime" > NOW() - INTERVAL '6 hours'
+#         AND "startTime" > (NOW() AT TIME ZONE 'UTC') - INTERVAL '6 hours'
 #       WINDOW w AS (PARTITION BY session_id ORDER BY "startTime")
 #     )
 #     SELECT session_id, count(*) AS calls,
 #            count(*) FILTER (
-#              WHERE prev_vendor IS DISTINCT FROM split_part(model_id, '-', 1)
+#              WHERE prev_key IS DISTINCT FROM split_part(model_id, '-', 1)
 #                AND "startTime" - prev_ts < INTERVAL '5 minutes'
 #            ) AS hops
 #     FROM calls
-#     WHERE prev_vendor IS NOT NULL
+#     WHERE prev_key IS NOT NULL
 #     GROUP BY session_id
 #     HAVING count(*) FILTER (
-#              WHERE prev_vendor IS DISTINCT FROM split_part(model_id, '-', 1)
+#              WHERE prev_key IS DISTINCT FROM split_part(model_id, '-', 1)
 #                AND "startTime" - prev_ts < INTERVAL '5 minutes'
 #            ) > 0
 #     ORDER BY hops DESC LIMIT 20;
 #
-# Why 2%: a healthy session hops once when it loses its row to a cooldown and
-# then re-pins on the fallback, which is the behaviour the upstream fix is
-# meant to give. That single hop is a rounding error on a run of 151 calls;
-# 17.1% is the leak this issue measures. 2% leaves the single-hop case silent
-# and the leak deafening.
+# session_hop_logs is the view that is grafana_ro's whole grant
+# (provisioning/datasources/litellm-postgres.yaml); a query against
+# LiteLLM_SpendLogs itself is denied.
+#
+# Why 45%, not lower: the bar has to stay silent on everything measured since
+# the 600 s TTL shipped (2026-10-13) and page only when the hop rate returns
+# to the level the TTL change was meant to remove. Calibrated on the live
+# table 2026-10-29 over the 28 days to that date: leak-era days (2026-10-01
+# to 10-09) averaged 13.3-24.5% per hour with worst hours of 39-65%; since
+# the TTL shipped the worst hour in any day is 40.5% (2026-10-28, a burst
+# day) and daily averages top out at 9.1%. 45% sits above every hour measured
+# since the TTL shipped and inside the leak-era band, so a page means the
+# leak behaviour is back, not that the fleet had a busy day. After #9411
+# ships and its 3-day measurement lands, tighten this bar to the fixed
+# fleet's ceiling in the same PR. A lower bar (the 2% this file carried when
+# drafted) would page on settled hours (0-7.1% today) and on every burst
+# day, for a known issue with no action Nish can take before #9411.
 #
 # Lookback is 6 hours (relativeTimeRange 21600s and the SQL's INTERVAL match
 # on purpose: the query hard-codes its own window, so both must be edited
@@ -72,17 +84,27 @@
 # floor at any evaluation minute. Recovery is at most 6 hours, which is what
 # the fix's own 3-day measurement window comfortably covers.
 #
+# startTime is a naive timestamp stored in UTC (verified 2026-10-29: the
+# newest row trails UTC now by seconds, and the server session TimeZone is
+# Asia/Kolkata), so the window bound converts NOW() with AT TIME ZONE 'UTC'
+# and never reads the session's TimeZone: the unconverted form compared UTC
+# wall times against Kolkata wall time and the 6-hour lookback silently
+# shrank to about 30 minutes. Hourly buckets stay UTC wall time for the same
+# reason.
+#
 # The newest bucket is a partial hour. At this fleet's rate (~450 non-first
 # calls/h) it passes the 50-call floor within the first minutes, so max(B)
-# normally reads the running partial hour and the rule values within about
-# 7 minutes of a burst starting, not a full hour late. Bounded small-
-# denominator noise is the price: the floor is 50 calls, so worst case a burst
-# of 6 hops above 51 calls reads ~12%. Live proof on this host 2026-10-25:
-# the bucket under evaluation read 11.2% mid-hour and settled at 10.0% once
-# the hour closed.
+# normally reads the running partial hour and the rule values within minutes
+# of a leak-scale burst starting. The bounded small-denominator noise stays
+# far under the bar: the floor is 50 calls, so worst case a burst of 6 hops
+# above 51 calls reads ~12%, against the 45% bar. Live proof on this host
+# 2026-10-29: settled hours read 0.0-7.1%, the running partial hour read
+# 10.5-14.9% mid-hour, and the worst hour in the 28-day window is 40.5% —
+# none of them reach the bar; leak-era hours reach 39-65% and do.
 #
-# Cost: the SQL runs on LiteLLM_SpendLogs_startTime_idx in ~6.4 ms on the live
-# 618k-row table (EXPLAIN ANALYZE, 2026-10-25, fleet-ops#9475), inside the 5m
+# Cost: the SQL runs through the session_hop_logs view on
+# LiteLLM_SpendLogs_startTime_idx in ~3.7 ms on the live 618k-row table
+# (EXPLAIN ANALYZE as grafana_ro, 2026-10-29, fleet-ops#9475), inside the 5m
 # group interval with room to spare; the time bound keeps it index-bounded as
 # the table grows.
 #
@@ -90,10 +112,13 @@
 # silence the alert): severity critical routes to the hermes-urgent Telegram
 # page (tests/alert_routes_check.py lists this title in URGENT, repeat 1h), and
 # the policy tree's catch-all continues the walk to the fleet-alert-dispatch
-# webhook, which files a fleet-ops issue for the same alert. Data-supply
-# failures (DatasourceError, DatasourceNoData) page the same way through the
-# severity critical route. No notification_settings here: the policy tree is
-# the only router.
+# webhook, which files a fleet-ops issue for the same alert. A broken supply
+# (view dropped, grant lost, database down) turns DatasourceError and pages
+# the same way through the severity critical route; empty qualifying traffic
+# (a quiet 6 hours) is NoData, which stays OK on purpose — silence means no
+# ≥50-call hour, and a proxy that stopped taking traffic entirely is caught by
+# the router and cost alarms. No notification_settings here: the policy tree
+# is the only router.
 apiVersion: 1
 
 groups:
@@ -103,7 +128,7 @@ groups:
     interval: 5m
     rules:
       - uid: session-hop-rate
-        title: Session hop rate above 2%
+        title: Session hop rate above 45%
         condition: C
         data:
           - refId: A
@@ -120,20 +145,20 @@ groups:
               rawSql: |-
                 SELECT date_trunc('hour', "startTime") AS "time",
                        round(100.0 * count(*) FILTER (
-                         WHERE prev_vendor IS DISTINCT FROM split_part(model_id, '-', 1)
+                         WHERE prev_key IS DISTINCT FROM split_part(model_id, '-', 1)
                            AND "startTime" - prev_ts < INTERVAL '5 minutes'
                        ) / count(*), 1) AS hop_pct
                 FROM (
                   SELECT session_id, model_id, "startTime",
-                         lag(split_part(model_id, '-', 1)) OVER w AS prev_vendor,
+                         lag(split_part(model_id, '-', 1)) OVER w AS prev_key,
                          lag("startTime") OVER w AS prev_ts
-                  FROM "LiteLLM_SpendLogs"
+                  FROM session_hop_logs
                   WHERE call_type = 'acompletion'
                     AND status = 'success'
-                    AND "startTime" > NOW() - INTERVAL '6 hours'
+                    AND "startTime" > (NOW() AT TIME ZONE 'UTC') - INTERVAL '6 hours'
                   WINDOW w AS (PARTITION BY session_id ORDER BY "startTime")
                 ) calls
-                WHERE prev_vendor IS NOT NULL
+                WHERE prev_key IS NOT NULL
                 GROUP BY 1
                 HAVING count(*) >= 50
                 ORDER BY 1;
@@ -164,7 +189,7 @@ groups:
               refId: C
               expression: B
               conditions:
-                - evaluator: {params: [2], type: gt}
+                - evaluator: {params: [45], type: gt}
                   operator: {type: and}
                   query: {params: [C]}
                   reducer: {params: [], type: gt}
@@ -174,8 +199,8 @@ groups:
         for: 0s
         annotations:
           summary: 'Session hop rate {{ $values.B.Value | printf "%.1f" }}% in the worst hour of the last 6 h'
-          description: 'A router session is answering on a different vendor than its previous call. A session pin is first-writer-wins and is refreshed only when the row it names is chosen again, so a pin held by a row in cooldown scatters every later call in that session across the group and throws away the prompt cache the previous call built. This is the fleet-ops#9361 leak: 17.1% of non-first calls, 90.4M cached tokens re-read in 5.6 days. Replay the diagnostic SQL in config/grafana/provisioning/alerting/session-hop.yaml for the session ids, and check the live pins with `redis-cli --scan --pattern "deployment_affinity:*" | head` (read-only). Do NOT remove or bench a router row without Nish''s explicit yes (2026-10-02 rule). Re-ordering rows needs Nish.'
+          description: 'A router session is answering on a different row key than its previous call. A session pin is first-writer-wins and is refreshed only when the row it names is chosen again, so a pin held by a row in cooldown scatters every later call in that session across the group and throws away the prompt cache the previous call built. This is the fleet-ops#9361 leak: 17.1% of non-first calls, 90.4M cached tokens re-read in 5.6 days. Replay the diagnostic SQL in config/grafana/provisioning/alerting/session-hop.yaml for the session ids, and check the live pins with `redis-cli --scan --pattern "deployment_affinity:*" | head` (read-only). Do NOT remove or bench a router row without Nish''s explicit yes (2026-10-02 rule). Re-ordering rows needs Nish.'
           value: '{{ $values.B.Value | printf "%.1f" }}% of non-first calls'
-          threshold: 'more than 2% in any hour with 50 or more non-first calls'
+          threshold: 'more than 45% in any hour with 50 or more non-first calls'
         labels: {severity: critical, signal: session-hop}
         isPaused: false

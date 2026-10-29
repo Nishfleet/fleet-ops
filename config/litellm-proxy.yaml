@@ -1130,7 +1130,8 @@ router_settings:
   # re-selected, so a pin held by a row in cooldown can never move) plus its PR and a second image bump,
   # tracked as fleet-ops#9411, until which the TTL above and the session-hop
   # Grafana alert (config/grafana/provisioning/alerting/session-hop.yaml,
-  # fleet-ops#9475, on the SELECT-only grafana_ro Postgres data source) bound
+  # fleet-ops#9475, on the SELECT-only grafana_ro Postgres data source through
+  # the session_hop_logs view) bound
   # the damage.
   deployment_affinity_ttl_seconds: 600
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
