@@ -54,8 +54,8 @@ gate. Both end retired, but for different reasons, and the difference matters.
 
   **Hand-off superseded.** fleet-ops#9527 asked for a weekly export in that
   repo's own CI, using the `cf` CLI and the Cloudflare token that repo already
-  holds. Nothing is built: that repo deleted the script two weeks after the
-  issue was filed, and a CI job would rebuild the same weekly, partial,
+  holds. Nothing is built: the issue was filed on 2026-10-09, that repo deleted
+  the script on 2026-10-23, and a CI job would rebuild the same weekly, partial,
   same-account dump it had just removed. The token would not have carried it
   either — the managed `seo-fix-kit` entry in `infra/cloudflare-tokens` grants
   Workers Scripts, D1, Queues and Account Settings and no R2 permission, so an
@@ -127,8 +127,8 @@ command).
 
 ## Checked, not assumed
 
-Every reason above was checked against live state during the run that added this
-page. The live-state commands and their output:
+Every reason above was checked against live state, in the run that added this
+page or in the run that corrected it. The live-state commands and their output:
 
 - `tar -tf mac-rescue-20261009/claude-scheduled-tasks.tar` → the 11 task
   directories, each holding the `SKILL.md` quoted above. `sha256sum -c
@@ -160,8 +160,8 @@ page. The live-state commands and their output:
   the nightly copy target of the snapshot-backup Workflow below" (0509#5802)
 - `gh api repos/Nishfleet/seo-fix-kit/contents/ops?ref=main` → HTTP 404, and
   `gh api "repos/Nishfleet/seo-fix-kit/commits?path=ops/seofixkit-d1-backup.service"`
-  → `[]`, so the export script and the unit pair that stood in for it are in no
-  commit of that repo
+  → `[]`, so the unit pair that stood in for the Mac task is in no commit of
+  that repo
 - `gh api repos/Nishfleet/seo-fix-kit/contents/docs/restore-runbook.md?ref=main`
   → the page, whose only restore path is D1 Time Travel, and which records the
   2026-06-12 `SQLITE_TOOBIG` rehearsal
