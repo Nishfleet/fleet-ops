@@ -254,7 +254,7 @@ jobs:
       - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
         # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx jinja2' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
       - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
         if: always()
         run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
