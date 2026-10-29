@@ -44,20 +44,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 0}
-      # fleet-ops#8724: the router config's hard rules (no bench list, a per-row
-      # cooldown_time <=900 s, router cooldown <=60 s; Nish 2026-09-28) live in the schema.
-      # Each file under rejects/ breaks one rule and must fail, so a loosened schema goes red.
+      # fleet-ops#8724: the router config's hard rules (no bench list, per-row cooldown_time <=900 s,
+      # router cooldown <=60 s) live in the schema; each rejects/ file breaks one and must fail.
       - run: |
           pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json config/litellm-proxy.yaml
           for f in config/litellm-proxy.schema.rejects/*.yaml; do
             ! pipx run check-jsonschema==0.38.2 --schemafile config/litellm-proxy.schema.json "$f" || { echo "schema accepted $f"; exit 1; }
           done
       - run: pipx install semgrep==1.170.0
-      # No glue, held by a machine (Nish 2026-09-29). One rule file; 0509 reads it by URL.
-      - run: semgrep scan --config .semgrep/no-glue.yml --metrics=off --error
+      # No glue (Nish 2026-09-29; 0509 reads no-glue.yml by URL), no host cua-driver plus its fixtures (#9297).
+      - run: semgrep scan --config .semgrep/no-glue.yml --config .semgrep/no-host-cua-driver.yml --metrics=off --error && semgrep --test --metrics=off --config .semgrep/no-host-cua-driver.yml .semgrep/no-host-cua-driver.txt
       - name: No agent attribution in the PR's commits or body
-        # pull_request only: GitHub's own squash adds a Co-authored-by line, so a
-        # merge_group check would fail every agent PR. Gates what a session writes (#9205, #9240).
+        # pull_request only: GitHub's squash adds a Co-authored-by line, failing merge_group (#9205, #9240).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -67,6 +65,16 @@ jobs:
         run: |
           log=$(git log --format=%B "$BASE_SHA..$HEAD_SHA")
           ! printf '%s\n%s\n' "$log" "$PR_BODY" | grep -iEn '^(co-authored-by|claude-session):|^[^[:alpha:]]*generated with'
+      - name: A new component links a design note
+        # Design-it-twice (#10556): a PR that adds a unit, quadlet or Pi extension carries `design-note: docs/design/<file>.md` (or a URL).
+        if: github.event_name == 'pull_request'
+        env: {BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_BODY: "${{ github.event.pull_request.body }}"}
+        shell: bash
+        run: |
+          new=$(git diff --name-only --diff-filter=A --no-renames "$BASE_SHA...$HEAD_SHA")
+          grep -E '^(systemd/[^/]+\.(service|timer|socket)|containers/quadlet/[^/]+\.container|pi-extensions/[^/]+/package\.json)$' <<<"$new" >/dev/null || exit 0
+          n=$(sed -nE 's/\r?$//; s/^design-note: *//p' <<<"$PR_BODY"); n=${n%%$'\n'*}
+          [[ $n == https://* || ( $n == docs/design/*.md && -f $n ) ]] || { echo "::error::new component: add a line 'design-note: docs/design/<file>.md' (or a URL) to the PR body"; exit 1; }
       - name: No long-lived PAT in any workflow
         run: "! grep -rEn 'secrets\\.[A-Za-z_][A-Za-z0-9_]*PAT\\b' .github/workflows/"
       - name: No secret variable expanded into an output command
@@ -80,15 +88,13 @@ jobs:
           test "$rc" -eq 1
         env:
           SPAT: (echo|printf|printenv|console\.(log|error|warn|info))[^|;]*(\$\{?|process\.env\.)([A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASS(WORD|WD)?|CREDENTIALS?|PRIVATE|_KEY)[A-Za-z0-9_]*|SK_[A-Z][A-Z0-9_]*)
-      # the gates below are independent linters: `if: always()` so one red run
-      # lists every violated gate instead of fail-fast hiding the rest.
+      # the gates below are independent linters: `if: always()` lists every violated gate.
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
       - name: zizmor over .github/workflows/
-        # Stock security audit for workflows: dangerous triggers, template
-        # injection, persisted credentials, unpinned actions, over-broad
-        # permissions and App tokens. Offline, so it needs no token and cannot
+        # Stock security audit for workflows: dangerous triggers, template injection, persisted
+        # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
         # Policy and its kept exceptions: .github/zizmor.yml.
         if: always()
@@ -108,7 +114,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server nftables ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
@@ -133,20 +139,20 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.amp/bin/amp /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
-        # Root-owned units live in rootfs/etc/systemd/system/; this covers the slices (no
-        # Exec line, so no stub), the host-config and update units and the Remote Control
-        # server. rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
-        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so awk
-        # fails the step on any verify line that names the unit. A [Install] target naming
-        # no target prints nothing, so it stays unseen.
+        # Root-owned units live in rootfs/etc/systemd/system/; the globs cover every root
+        # service, timer and path unit (the slices have no Exec line, so they need no
+        # stub). rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
+        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so the
+        # step fails on any output line from any unit (fleet-ops#10286). A [Install]
+        # target naming no target prints nothing, so it stays unseen.
         if: always()
         run: |
           shopt -s nullglob; set -o pipefail
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-deploy.service rootfs/etc/systemd/system/fleet-deploy.path rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config-boot.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer rootfs/etc/systemd/system/claude-remote-control.service 2>&1 | awk 'BEGIN { bad = 0 } /claude-remote-control[.]service:/ { bad = 1 } { print } END { exit bad }'
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
@@ -224,40 +230,27 @@ jobs:
         # a parse error would stop every root config change at deploy time.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
+      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
-      - name: Chrome DevTools wiring, hand-off cleanup, Claude lanes and managed settings
-        # Runs the real cleanup step from agent-dispatch.yml against a real git
-        # worktree with a stub systemctl: busy tree survives, idle tree goes.
-        # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
-        # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
-        # pi. The same file runs the real bwrap and proves the claude lane
-        # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
-        # or a backup.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync, gh login check, needs-triage and Mac topgrade tests (fleet-ops#9967, #9706, #9308, #9932, #10508)
-        # Runs fleet-sync.service's own agent installs and its link check against a temp home.
-        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
-        # and the jail step below with plain bash in a temp home, with no
-        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
-        # touching a file.
-        # Runs the admit job's own exclusion program, band program and run block,
-        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
+      - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
+        # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py
+        run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+      - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
+        if: always()
+        run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -385,30 +378,24 @@ jobs:
           rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
-        # systemd expands ${...} and % specifiers itself, before any interpreter
-        # runs, so the shell never sees them. Refused on Exec*= lines: `${` + a
-        # digit/#/% operator, and a bare %s, %u or %h in a `sh -c` string not
-        # written `%%`. `$VAR`, `${NAME}`, %i and `%h/` stay legal. rc: 0 is a
-        # match and 2 is a broken pattern — both fail; only rc 1 passes. Scope
-        # is #8382's: Exec*= lines only, continuation lines are #8393.
+        # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
+        # `${` + digit/#/%, and a bare %s, %u or %h in a `sh -c` string. rc 1 passes; 0 and 2 fail.
+        # Scope is #8382's: Exec*= lines only, continuation lines are #8393.
         if: always()
         run: |
           rc=0
           grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
             systemd rootfs || rc=$?
           test "$rc" -eq 1
-      - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
+      - name: pi seat ids resolve to a litellm-proxy.yaml model_name or model_group_alias (fleet-ops#8332, fleet-ops#9330)
         if: always()
-        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
-      # Native provider only (fleet-ops#9253): openai/ on ollama.com/v1 returns reply ids
-      # chatcmpl-<0..999> that collide in LiteLLM_SpendLogs, so its calls never log.
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '([.model_list[].model_name] + ((.router_settings.model_group_alias // {}) | keys)) | unique' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+      # Native provider only (#9253): openai/ on ollama.com/v1 reply ids collide in LiteLLM_SpendLogs.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
         run: yq -o=json '[.model_list[] | select(((.litellm_params.api_base // "") | test("ollama")) or ((.litellm_params.model // "") | test("^ollama"))) | select(.litellm_params.model != "ollama_chat/deepseek-v4.1-flash" or .litellm_params.api_base != "https://ollama.com") | (.litellm_params.model + " @ " + (.litellm_params.api_base // ""))]' config/litellm-proxy.yaml | jq -e 'if length==0 then true else error("ollama rungs must be ollama_chat/deepseek-v4.1-flash @ https://ollama.com - \(join(","))") end'
-      # A drop-in that does not parse stops Claude Code from starting on the
-      # whole box, and an autoMode array without "$defaults" replaces the
-      # built-in safety rules instead of adding to them. To switch this gate
-      # off, delete this step.
+      # A drop-in that does not parse stops Claude Code on the whole box; an autoMode array
+      # without "$defaults" replaces the built-in safety rules. To switch off, delete this step.
       - name: Claude Code managed-settings drop-ins parse and keep the autoMode defaults
         if: always()
         shell: bash
@@ -541,7 +528,7 @@ jobs:
       - name: Orchestrate cap and session args (fleet-ops#9351)
         # Runs the orchestrate job's own scripts, read out of the workflow with
         # yq, never a copy: the "Check the issue is still parked" step against
-        # a fake gh that serves each cap_cases entry's runs and jobs, and the
+        # a fake gh that serves each cap_cases entry's issue comments, and the
         # "Run the orchestrator session" step against a fake claude that
         # records its argv. Remove the daily cap, the model or turns pin, or
         # --settings disableAllHooks from the workflow and a case here fails.
@@ -552,30 +539,25 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           cfg="$PWD/config/orchestrate-events.json"
           chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
-          cap=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .env.CAP_COUNT' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
-          for v in "$chk" "$cap" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
+          for v in "$chk" "$ses"; do [ -n "$v" ] && [ "$v" != null ]; done
           t=$(mktemp -d); mkdir "$t/bin"
           cat > "$t/bin/gh" <<'FAKE'
           #!/usr/bin/env bash
           # Fake gh: answers from $FAKE_DIR and applies the caller's --jq.
-          q=; ev=
+          # Any call it does not know exits 99, so a cap that reads this
+          # workflow's runs again fails every capped case (fleet-ops#10641).
+          q=
           flaky() { n=$(<"$FAKE_DIR/$1"); [ "$n" -eq 0 ] || { echo $((n - 1)) > "$FAKE_DIR/$1"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; }
           for ((i = 1; i <= $#; i++)); do
-            a=${!i}
-            case $a in
-              --jq) j=$((i + 1)); q=${!j} ;;
-              event=*) ev=${a#event=} ;;
-            esac
+            [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }
           done
           case "$*" in
+            *repos/o/r/issues/comments*) flaky fail
+              jq -c '[_nwise(100)][]' "$FAKE_DIR/comments.json" | while IFS= read -r page; do jq -c "$q" <<<"$page"; done ;;
+            "issue comment 5 -R o/r --body orchestrator hand-off started: "*) [ ! -f "$FAKE_DIR/failpost" ] || exit 1; echo "$*" >> "$FAKE_DIR/posted" ;;
             "issue view"*|"api repos/o/r/issues/5"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
             *git/ref/heads/*) exit 1 ;;
-            *actions/runs/*/jobs*) flaky failj; all="$*"; id=${all#*actions/runs/}; id=${id%%/*}
-              if [ -f "$FAKE_DIR/jobs-$id.json" ]; then jq -c "$q" "$FAKE_DIR/jobs-$id.json"; else echo '{"jobs":[]}' | jq -c "$q"; fi ;;
-            *actions/workflows/*/runs*) flaky fail
-              jq -c --arg ev "$ev" '.workflow_runs |= map(select(.event == $ev))' "$FAKE_DIR/runs.json" | jq -c "$q" ;;
-            *actions/runs/*) echo '{"workflow_id":7}' | jq -r "$q" ;;
             *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
           esac
           FAKE
@@ -587,14 +569,12 @@ jobs:
             id=$(jq -r .id <<<"$c")
             d="$t/$id"
             mkdir "$d"
-            jq -c --arg t "$today" --arg o "$old" '{workflow_runs: ([.runs[] | {id, event: (.event // "issues"), created_at: (if .when == "YESTERDAY" then $o else $t end)}] + [range(0; (.extra_runs // 0)) | {id: (1000 + .), event: "issues", created_at: $t}])}' <<<"$c" > "$d/runs.json"
+            jq -c --arg t "$today" --arg o "$old" '[.handoffs[] | {created_at: (if .when == "YESTERDAY" then $o else $t end), author_association: (.assoc // "MEMBER"), body: (.body // "orchestrator hand-off started: https://github.com/o/r/actions/runs/1")}] + [range(0; (.noise // 0)) | {created_at: $t, author_association: "MEMBER", body: "agent: claimed"}]' <<<"$c" > "$d/comments.json"
             jq -c '{state: "OPEN", labels: ([.labels[], "needs-orchestrator"] | map({name: .}))}' <<<"$c" > "$d/issue.json"
-            while IFS= read -r r; do
-              jq -c '{jobs: [{name: (.job // "orchestrate"), steps: ([{name: "Set up job", conclusion: "success"}] + (if .session == "absent" then [] else [{name: "Run the orchestrator session", conclusion: (if .session == "null" then null else .session end)}] end))}]}' <<<"$r" > "$d/jobs-$(jq -r .id <<<"$r").json"
-            done < <(jq -c '.runs[]' <<<"$c")
-            : > "$d/out"; jq -r '.fail_runs // 0' <<<"$c" > "$d/fail"; jq -r '.fail_jobs // 0' <<<"$c" > "$d/failj"
+            : > "$d/out"; jq -r '.fail_comments // 0' <<<"$c" > "$d/fail"
+            [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
-            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x RUN_ID=1 CAP_COUNT="$cap" \
+            log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
               DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
@@ -609,6 +589,8 @@ jobs:
               [ "$(sed -n 's/^turns=//p' "$d/out")" = "$(jq -r .want_turns <<<"$c")" ] || { echo "cap case $id: turns $(sed -n 's/^turns=//p' "$d/out")"; bad=1; }
               want_runner=$(jq -r '.want_runner // empty' <<<"$c")
               [ -z "$want_runner" ] || [ "$(sed -n 's/^runner=//p' "$d/out")" = "$want_runner" ] || { echo "cap case $id: runner $(sed -n 's/^runner=//p' "$d/out")"; bad=1; }
+              [ -f "$d/failpost" ] || grep -qxF 'issue comment 5 -R o/r --body orchestrator hand-off started: https://github.com/o/r/actions/runs/1' "$d/posted" 2>/dev/null || { echo "cap case $id: admitted without the hand-off-started comment"; bad=1; }
+              [ "$(jq -r '.want_unreadable // false' <<<"$c")" = false ] || grep -q 'count unreadable' <<<"$log" || { echo "cap case $id: no unreadable warning: $log"; bad=1; }
             else
               grep -q 'daily cap' <<<"$log" || { echo "cap case $id: capped without the cap log line: $log"; bad=1; }
             fi
@@ -669,17 +651,15 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
-      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
-        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
-        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # The headless claude in rootfs/etc/systemd/system/tincan-listen-claude-vps.service
+        # loads only agent-tincan, no skills and no user settings. Delete a flag, or the MCP
         # file it names, and this fails. --mcp-config must come before
         # --strict-mcp-config: its value list is variadic and would eat the prompt.
         if: always()
         run: |
           set -euo pipefail
-          u=systemd/tincan-listen-claude-vps.service
+          u=rootfs/etc/systemd/system/tincan-listen-claude-vps.service
           exec_line=$(grep '^ExecStart=' "$u")
           for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
@@ -688,9 +668,9 @@ jobs:
           # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
           # settings source is ~/.claude/settings.json (the user file) and
           # --setting-sources project,local still loads the user Stop hook and plugins.
-          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
-          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          grep -qx 'WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; } # gitleaks:allow
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
+          grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against
@@ -743,7 +723,6 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
@@ -1135,13 +1114,13 @@ jobs:
           yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f" > "$t/review.sh"
           yq '.jobs.arm.steps[] | select(.name == "Arm the approved head") | .run' "$f" > "$t/arm.sh"
           for s in review arm; do { [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh"; } || { echo "$s step missing"; exit 1; }; done
-          for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_SEAT SECOND_FAMILY REVIEW_BACKOFF THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
+          for v in FLEET_TASK_ID JUDGE_FAMILY SECOND_MODEL SECOND_FAMILY REVIEW_BACKOFF THIRD_SEAT THIRD_FAMILY FIRST_MODEL_OTHER FIRST_MODEL_CLAUDE_BUILT; do
             val=$(yq ".jobs.review.steps[] | select(.id == \"review\") | .env.$v" "$f")
             [ -n "$val" ] && [ "$val" != null ] || { echo "review env $v missing"; exit 1; }
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL
-          export SECOND_ROW=synthetic-glm53flash-senior THIRD_ROW=alibaba-qwen38max-judge REVIEW_BACKOFF="0 0 0"
+          export SECOND_ROW=$SECOND_MODEL THIRD_ROW=alibaba-qwen38max-judge REVIEW_BACKOFF="0 0 0"
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
@@ -1151,7 +1130,7 @@ jobs:
           ! grep -q 'pr merge' "$t/review.sh" || { echo "the review step arms; the arm job must"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' "$t/review.sh" || { echo "person-request wording in the review step"; bad=1; }
           ! grep -q 'vnd.github.diff' "$t/review.sh" || { echo "the review step reads the diff through the diff API"; bad=1; }
-          # No extra review is handed to pi: the row that answered is only in the response headers, so both extra reviewers are called directly.
+          # No extra review is handed to pi: the row that answered is only in the response headers, so the third reviewer is called directly.
           ! grep -q 'provider litellm' "$t/review.sh" || { echo "the review step still routes an extra reviewer through pi"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
           cat > "$t/bin/gh" <<'MOCK'
@@ -1160,14 +1139,14 @@ jobs:
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
-            *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
-              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
+            *"issues/7/"*) case "$*" in *labels*) echo "$*" >> "$STATE/labels" ;; *) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
+              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;; esac ;;
             *"pulls/7/files"*) case "${GUARD:-}" in fail) exit 1 ;; rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;; "") echo app/routes/home.tsx ;; 1) echo .github/workflows/new.yml ;; *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;; esac ;;
             "issue "*) case "$*" in *create*) echo "$*" >> "$STATE/issues"; echo https://github.com/Nishfleet/fleet-ops/issues/99 ;; esac ;;
             *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
-              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"labels\":[{\"name\":\"needs-split\"}],\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1176,27 +1155,27 @@ jobs:
           case "$*" in
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
-            *4000/v1/chat/completions*) # the two extra reviewers: the GLM row for the senior seat and the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
+            *4000/v1/chat/completions*) # the third reviewer: the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
               for a in "$@"; do [ "${#a}" -le 131072 ] || { echo "mock curl: one argument over 128 KiB (E2BIG)" >&2; exit 7; }; done
               [ -z "${JUDGE_SLEEPS:-}" ] || sleep "$JUDGE_SLEEPS"
               h= b= req= sid=; while [ $# -gt 0 ]; do case $1 in -D) h=$2 ;; -o) b=$2 ;; --data-binary) req=${2#@} ;; -H) case $2 in x-litellm-session-id:*) sid=${2#*: } ;; esac ;; esac; shift; done
               m=$(jq -r .model "$req"); echo "$m $sid" >> "$STATE/sessions"
-              if [ "$m" = "$SECOND_SEAT" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 7; [ -z "${SECOND_ONCE:-}" ] || [ -e "$STATE/second-once" ] || { : > "$STATE/second-once"; exit 7; }; wc -c < "$req" > "$STATE/second-req-size"; noh=${SECOND_NO_HEADER:-}; mi=${SECOND_MODEL_ID:-$SECOND_ROW}; cut=${SECOND_CUT:-}; ans=$SECOND
-              elif [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; [ "$m" != assistant ] || mi=${FALLBACK_MODEL_ID:-$mi}; cut=${THIRD_CUT:-}; ans=$THIRD
+              if [ "$m" = "$THIRD_SEAT" ] || [ "$m" = assistant ]; then [ -z "${JUDGE_FAILS:-}" ] || exit 7; [ -z "${THIRD_ONCE:-}" ] || [ -e "$STATE/third-once" ] || { : > "$STATE/third-once"; exit 7; }; wc -c < "$req" > "$STATE/third-req-size"; noh=${JUDGE_NO_HEADER:-}; mi=${THIRD_MODEL_ID:-$THIRD_ROW}; [ "$m" != assistant ] || mi=${FALLBACK_MODEL_ID:-$mi}; cut=${THIRD_CUT:-}; ans=$THIRD
               else echo "mock curl: unexpected model $m" >&2; exit 7; fi
               if [ -n "$noh" ]; then : > "$h"; else printf 'x-litellm-model-id: %s\r\n' "$mi" > "$h"; fi
               fr=stop; [ -z "$cut" ] || fr=length; printf '{"id":"chatcmpl-mock","model":"judge","choices":[{"index":0,"finish_reason":"%s","message":{"role":"assistant","content":"%s"}}]}' "$fr" "$ans" > "$b" ;;
             *) echo "mock curl: unexpected call: $*" >&2; exit 1 ;;
           esac
           MOCK
-          # The first review is `claude -p --model <m> --tools ""`: no tools, a model
-          # from the builder rule, and never a permission bypass.
+          # The first review and a guard head's second review (Fable) are `claude -p --model <m> --tools ""`:
+          # no tools, a model from the builder rule, and never a permission bypass.
           cat > "$t/bin/claude" <<'MOCK'
           #!/usr/bin/env bash
           model= tools=unset
           while [ $# -gt 0 ]; do case $1 in --model) model=$2 ;; --tools) tools=$2 ;; --permission-mode|--allowedTools|--dangerously-skip-permissions) echo "claude review uses $1" >> "$STATE/claude-bad" ;; esac; shift; done
           [ "$tools" = "" ] || echo "tools not disabled: '$tools'" >> "$STATE/claude-bad"
           cat > /dev/null; echo "$model" >> "$STATE/models"
+          if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; printf '%b\n' "$SECOND"; exit 0; fi
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1
           printf '%b\n' "$FIRST"
           MOCK
@@ -1231,11 +1210,11 @@ jobs:
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
           : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
-          gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
+          gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' SECOND_MODEL_ID='' SECOND_NO_HEADER='' SECOND_CUT='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' SECOND_ONCE='' WANT_ISSUE=''
+              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1249,7 +1228,7 @@ jobs:
                   blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
                   near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
-                  blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve.\n\nSecond reviewer (GLM family, senior seat, served row synthetic-glm53flash-senior): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
+                  blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve.\n\nSecond reviewer (Claude family, served row claude-fable-5-1): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
                   blocked-none-five) copies=5; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
                   blocked-none-four) copies=4; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.' "$SHA")" ;;
                   blocked-none-and-real) prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.\nblocker a.yml: real problem' "$SHA")" ;;
@@ -1285,66 +1264,62 @@ jobs:
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
             # An approval names both served rows, so the family in the comment can be checked against the row that answered (fleet-ops#10172).
-            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${SECOND_MODEL_ID:-$SECOND_ROW}" "$STATE/comments" || problem="$problem the second row was not named on the PR"
+            [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$SECOND_ROW" "$STATE/comments" || problem="$problem the second model was not named on the PR"
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${THIRD_MODEL_ID:-$THIRD_ROW}" "$STATE/comments" || problem="$problem the third row was not named on the PR"
             [ -z "${WANT_ISSUE:-}" ] || { [ -s "$STATE/issues" ] && grep -q 'Issue #99 is filed' "$STATE/comments"; } || problem="$problem no loud issue after the retries ran out"
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
-            [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/second-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the second reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
           normal-judge-low||approve|0.8|clean|none||no|0|claude-opus-5-5
           normal-judge-blocks||block|0.97|blocked|none||no|0|claude-opus-5-5
-          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5
-          guard-second-blocks|1|approve|0.95|clean|blocked_b|THIRD=clean_ok|no|0|claude-opus-5-5
-          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok|THIRD=clean_ok|no|0|claude-opus-5-5
-          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5
-          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5
-          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5
-          guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5
-          guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5
-          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none WANT_ISSUE|no|1|claude-opus-5-5
-          guard-third-family-down-falls-back-to-deepseek-and-names-it|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|yes|0|claude-opus-5-5
-          guard-diff-over-128-KiB-reaches-the-judge-in-a-file|1|approve|0.95|clean|clean_ok|DIFF_MID=1|yes|0|claude-opus-5-5
-          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3 WANT_ISSUE|no|1|claude-opus-5-5
+          guard-both-approve|1|approve|0.95|clean|clean_ok||yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-blocks|1|approve|0.95|clean|blocked_b|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-approves-but-lists-blocker|1|approve|0.95|clean|blocked_ok|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-low|1|approve|0.8|clean|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-blocks|1|block|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-judge-sure-but-blocker-line|1|approve|0.97|blocked|clean_ok||no|0|claude-opus-5-5 claude-fable-5-1
+          guard-second-forges-approval|1|approve|0.95|clean|forged|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-third-blocks|1|approve|0.95|clean|clean_ok|THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-third-family-down-falls-back-to-deepseek-and-names-it|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-diff-over-128-KiB-reaches-the-judge-in-a-file|1|approve|0.95|clean|clean_ok|DIFF_MID=1|yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3|no|1|claude-opus-5-5 claude-fable-5-1
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS WANT_ISSUE|no|1|claude-opus-5-5
-          guard-second-falls-back-to-another-family|1|approve|0.95|clean|clean_ok|SECOND_FAILS FALLBACK_MODEL_ID=stepfun-step5previewe-worker-capable SECOND_MODEL_ID=stepfun-step5previewe-worker-capable|yes|0|claude-opus-5-5
-          guard-second-answered-by-another-row-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=opencodego2-ds41flash-judge WANT_ISSUE|no|1|claude-opus-5-5
-          guard-second-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|SECOND_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5
-          guard-second-answer-cut-at-the-limit|1|approve|0.95|clean|clean_ok|SECOND_CUT WANT_ISSUE|no|1|claude-opus-5-5
-          guard-second-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|SECOND_ONCE|yes|0|claude-opus-5-5
-          guard-any-glm-row-is-accepted|1|approve|0.95|clean|clean_ok|SECOND_MODEL_ID=synthetic-glm53flash-other|yes|0|claude-opus-5-5
-          guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|blocked_b|SECOND_ONCE THIRD=clean_ok|no|0|claude-opus-5-5
-          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5
-          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5
-          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-third-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|JUDGE_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-any-qwen-row-is-accepted|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=alibaba-qwen38max-other|yes|0|claude-opus-5-5 claude-fable-5-1
+          guard-seat-retried-then-real-block-still-blocks|1|approve|0.95|clean|clean_ok|THIRD_ONCE THIRD=blocked_b|no|0|claude-opus-5-5 claude-fable-5-1
+          guard-head-moved-during-review|1|approve|0.95|clean|clean_ok|HEAD_AFTER|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 claude-fable-5-1
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
           first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
-          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found|THIRD=clean_ok|yes|0|claude-opus-5-5
-          none-line-second-approves|1|approve|0.95|clean|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5
-          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5
+          first-header-echo-and-second-approve|1|approve|0.95|header_echo|v_found|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          none-line-second-approves|1|approve|0.95|clean|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
+          none-line-first-and-second-approve|1|approve|0.95|first_none|none_ok|THIRD=clean_ok|yes|0|claude-opus-5-5 claude-fable-5-1
           none-line-first-normal-approves||approve|0.95|first_none|none||yes|0|claude-opus-5-5
-          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words|THIRD=clean_ok|no|0|claude-opus-5-5
-          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real|THIRD=clean_ok|no|0|claude-opus-5-5
-          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5
-          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5
-          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5
+          none-line-with-trailing-words-blocks|1|approve|0.95|clean|none_words|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          none-line-then-real-blocker-blocks|1|approve|0.95|clean|none_then_real|THIRD=clean_ok|no|0|claude-opus-5-5 claude-fable-5-1
+          prior-fallback-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=fallback-text|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-blocked-by-a-none-line-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-only|yes|0|claude-opus-5-5 claude-fable-5-1
+          prior-blocked-by-none-lines-four-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-four|yes|0|claude-opus-5-5 claude-fable-5-1
           prior-blocked-by-none-lines-five-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-five|no|0|
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
-          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5
+          prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 claude-fable-5-1
           built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
           built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
           built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
           built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
           built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
-          claude-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5
-          other-built-guard-second-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5
+          claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
+          other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
           claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
           diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
@@ -1605,7 +1580,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_(deploy_failed_(rule|engine)|grafana_fixture_drift)\.py$|\.github/workflows/ci\.yml$)'; then
             run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -1828,10 +1803,10 @@ jobs:
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
-      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
+      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py tests/test_grafana_fixture_drift.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

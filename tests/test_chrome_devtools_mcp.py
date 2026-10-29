@@ -14,6 +14,7 @@ import subprocess
 import tomllib
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
@@ -21,11 +22,12 @@ if not shutil.which("yq"):
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
 PIN_DIR = ROOT / "config/chrome-devtools-mcp"
+DRIVE_PIN = ROOT / "config/drive-mcp.json"
 REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
 
 
 def _play():
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]
 
 
@@ -68,7 +70,7 @@ def test_install_is_an_ansible_core_module_from_the_lockfile():
 
 
 def test_no_runtime_fetch():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "@latest" not in text and "npx" not in text
 
 
@@ -82,6 +84,9 @@ def test_every_install_step_is_in_the_play():
         "Install the pinned Chrome DevTools MCP server from the lockfile",
         "Read the shared MCP config",
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
+        "Read Claude Code's drive entry",
+        "Drop a stale drive entry",
+        "Pin the Drive filesystem server in Claude Code's user config",
         "Drop Codex's dead camofox entry and its subtables",
         "Add the chrome-devtools entry under Hermes' mcp_servers",
     ):
@@ -97,11 +102,15 @@ USER_FILE_TASKS = [
     "Create the shared MCP config directory",
     "Read the shared MCP config",
     "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
+    "Read Claude Code's drive entry",
+    "Drop a stale drive entry",
+    "Pin the Drive filesystem server in Claude Code's user config",
     "Look for Codex's config",
     "Drop Codex's dead camofox entry and its subtables",
     "Read Hermes' config",
     "Add the chrome-devtools entry under Hermes' mcp_servers",
     "Read Hermes' scheduled jobs",
+    "Delete the retired jobs from Hermes' cron store",
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
     "Link the packaged gh into nish's ~/.local/bin",
@@ -148,6 +157,11 @@ def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_asse
     assert max(names.index(n) for n in USER_FILE_TASKS) < assert_at
 
 
+def test_agent_cli_tasks_are_bounded():
+    for name in ("Read Claude Code's drive entry", "Drop a stale drive entry", "Pin the Drive filesystem server in Claude Code's user config"):
+        assert TASKS[name]["timeout"] <= 120, name
+
+
 def test_fleet_sync_fast_forwards_claude_mods_and_fails_loud():
     lines = [l for l in (ROOT / "systemd/fleet-sync.service").read_text().splitlines() if "claude-mods" in l and l.startswith("ExecStart")]
     assert [l.split(" ", 1)[0] for l in lines] == ["ExecStart=/usr/bin/git"] * 2
@@ -172,7 +186,10 @@ def _run_tasks(tmp_path, names, subs=None):
                 if isinstance(module, dict):
                     module.pop(key, None)
         tasks.append(task)
-    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**VARS, "nish_home": str(tmp_path)}, "tasks": tasks}
+    vars_text = json.dumps(VARS)
+    for old, new in subs.items():
+        vars_text = vars_text.replace(old, new)
+    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**json.loads(vars_text), "nish_home": str(tmp_path)}, "tasks": tasks}
     book = tmp_path / "play.json"
     book.write_text(json.dumps([play]))
     result = subprocess.run(
@@ -198,6 +215,36 @@ def test_generated_configs_carry_the_pinned_command(tmp_path):
     assert whole["mcpServers"]["chrome-devtools"] == {"command": bin_path, "args": ARGS, "lifecycle": "lazy", "idleTimeout": 5}
     assert whole["mcpServers"]["kept"] == {"url": "https://example.invalid/mcp"} and whole["settings"] == {"x": 1}
     assert "changed=0" in _run_tasks(tmp_path, names)
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def pinned_spec():
+    return json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]["args"][1]
+
+
+def test_the_drive_entry_is_one_exact_pin_and_nothing_else():
+    entry = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
+    assert entry["type"] == "stdio" and entry["command"] == "npx" and entry["env"] == {}
+    assert entry["args"][0] == "-y"
+    assert re.fullmatch(r"@modelcontextprotocol/server-filesystem@\d+\.\d+\.\d+", entry["args"][1])
+    assert entry["args"][2] == "~/Drive"
+    text = HOST.read_text()
+    assert "config/drive-mcp.json" in text and "server-filesystem" not in text and "npx" not in text
+
+
+def test_the_play_writes_the_drive_entry_with_claudes_own_mcp_command():
+    assert "drive_mcp_words: \"{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}\"" in HOST.read_text()
+    read = TASKS["Read Claude Code's drive entry"]
+    assert read["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "get", "drive"]
+    assert read["changed_when"] is False and read["failed_when"] is False
+    drop = TASKS["Drop a stale drive entry"]
+    assert drop["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "remove", "drive", "--scope", "user"]
+    assert "drive_entry.rc == 0" in drop["when"]
+    add = TASKS["Pin the Drive filesystem server in Claude Code's user config"]
+    assert add["ansible.builtin.command"]["argv"] == "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
+    assert "drive_entry.rc != 0" in add["when"]
+    for task in (read, drop, add):
+        assert task["timeout"] <= 120, task["name"]
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")

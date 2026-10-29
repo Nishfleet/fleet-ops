@@ -1,8 +1,9 @@
-"""Fable is only an escalation model, and no lane uses it by default.
+"""Fable is never a default model: it is the second reviewer of guard heads only.
 
-Sonnet 5.5 is the worker; Opus 5.5 is the senior escalation, the first reviewer
-and the judge. As the default first reviewer, Fable 5.1 used 44% of a seat's
-weekly Fable limit in about 2 days. These checks read the workflow text itself.
+Sonnet 5.5 is the worker; Opus 5.5 is the senior escalation and the first reviewer.
+As the default first reviewer, Fable 5.1 used 44% of a seat's weekly Fable limit
+in about 2 days, so it reviews only the heads that need three reviews (Nish
+2026-10-28, fleet-ops#10608). These checks read the workflow text itself.
 """
 import pathlib
 import re
@@ -12,9 +13,9 @@ WORKFLOWS = sorted((ROOT / ".github/workflows").glob("*.yml"))
 AGENT = (ROOT / ".github/workflows/agent.yml").read_text()
 
 
-def test_no_workflow_names_a_fable_model():
-    hits = [w.name for w in WORKFLOWS if re.search(r"claude-fable", w.read_text(), re.I)]
-    assert hits == []
+def test_fable_is_named_once_as_the_guard_second_reviewer():
+    hits = [(w.name, line.strip()) for w in WORKFLOWS if w.name != "ci.yml" for line in w.read_text().splitlines() if re.search(r"claude-fable", line, re.I)]
+    assert hits == [("agent.yml", "SECOND_MODEL: claude-fable-5-1")]
 
 
 def test_first_review_model_is_opus_for_claude_built_and_other_work():

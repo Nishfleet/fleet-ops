@@ -1,8 +1,8 @@
 # Gate for the strong-tier-empty rules (the state-only complement to
 # RouterStrongGroupNoHealthyRow, fleet-ops#10054).
 #
-# The rules fire when a strong group (worker-capable, senior) has no row at
-# litellm_deployment_state 0 for 5 minutes. Five cases pin the behaviour:
+# The rule fires when the strong group worker-capable has no row at
+# litellm_deployment_state 0 for 5 minutes. Four cases pin the behaviour:
 #
 #  - a group with one healthy row and one parked row stays quiet, and a row that
 #    one exporter process reports at 2 while another reports 0 counts healthy
@@ -10,11 +10,8 @@
 #  - a group-name state series (litellm_model_name equal to the group, no
 #    model_id) at state 0 never satisfies the rule, in a healthy group or a dead
 #    one;
-#  - every worker-capable row parked at 2 fires, while the healthy senior row
-#    keeps its rule quiet;
-#  - the one senior row parked at 2 fires, while a healthy worker-capable group
-#    keeps its rule quiet;
-#  - no state series at all reads empty through both expressions (in production
+#  - every worker-capable row parked at 2 fires;
+#  - no state series at all reads empty through the expression (in production
 #    Grafana's noDataState: OK keeps that quiet).
 #
 # Structure follows paid-plan-idle.test.yml: alert_rule_test answers "does
@@ -35,30 +32,18 @@ tests:
     values: '0+0x12'
   - series: 'litellm_deployment_state{litellm_model_name="worker-capable",pid="96"}'
     values: '0+0x12'
-  - series: 'litellm_deployment_state{model_id="synthetic-glm53flash-senior",litellm_model_name="hf:zai-org/GLM-5.3-Flash",pid="96"}'
-    values: '0+0x12'
-  - series: 'litellm_deployment_state{litellm_model_name="senior",pid="96"}'
-    values: '0+0x12'
   alert_rule_test:
   - alertname: Strong group worker-capable has no healthy row
     eval_time: 10m
     exp_alerts: []
-  - alertname: Strong group senior has no healthy row
-    eval_time: 10m
-    exp_alerts: []
   promql_expr_test:
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!~"worker-capable|senior"} == bool 0))'
+  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!="worker-capable"} == bool 0))'
     eval_time: 10m
     exp_samples:
     - labels: '{}'
       value: 2
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-senior$",litellm_model_name!~"worker-capable|senior"} == bool 0))'
-    eval_time: 10m
-    exp_samples:
-    - labels: '{}'
-      value: 1
 - interval: 1m
-  name: every worker-capable row parked fires, healthy senior stays quiet
+  name: every worker-capable row parked fires
   input_series:
   - series: 'litellm_deployment_state{model_id="commandcode-glm53flash-worker-capable",litellm_model_name="z-ai/glm-5.3-flash",pid="96"}'
     values: '2+0x12'
@@ -66,8 +51,6 @@ tests:
     values: '2+0x12'
   - series: 'litellm_deployment_state{litellm_model_name="worker-capable",pid="96"}'
     values: '0+0x12'
-  - series: 'litellm_deployment_state{model_id="synthetic-glm53flash-senior",litellm_model_name="hf:zai-org/GLM-5.3-Flash",pid="96"}'
-    values: '0+0x12'
   alert_rule_test:
   - alertname: Strong group worker-capable has no healthy row
     eval_time: 10m
@@ -76,37 +59,8 @@ tests:
         grafana_folder: fleet
         severity: warning
         signal: strong-tier-empty
-  - alertname: Strong group senior has no healthy row
-    eval_time: 10m
-    exp_alerts: []
   promql_expr_test:
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
-    eval_time: 10m
-    exp_samples:
-    - labels: '{}'
-      value: 1
-- interval: 1m
-  name: the one senior row parked fires, healthy worker-capable stays quiet
-  input_series:
-  - series: 'litellm_deployment_state{model_id="commandcode-glm53flash-worker-capable",litellm_model_name="z-ai/glm-5.3-flash",pid="96"}'
-    values: '0+0x12'
-  - series: 'litellm_deployment_state{model_id="synthetic-glm53flash-senior",litellm_model_name="hf:zai-org/GLM-5.3-Flash",pid="96"}'
-    values: '2+0x12'
-  - series: 'litellm_deployment_state{litellm_model_name="senior",pid="96"}'
-    values: '0+0x12'
-  alert_rule_test:
-  - alertname: Strong group worker-capable has no healthy row
-    eval_time: 10m
-    exp_alerts: []
-  - alertname: Strong group senior has no healthy row
-    eval_time: 10m
-    exp_alerts:
-    - exp_labels:
-        grafana_folder: fleet
-        severity: warning
-        signal: strong-tier-empty
-  promql_expr_test:
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-senior$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
+  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!="worker-capable"} == bool 0)) == bool 0'
     eval_time: 10m
     exp_samples:
     - labels: '{}'
@@ -118,13 +72,7 @@ tests:
   - alertname: Strong group worker-capable has no healthy row
     eval_time: 10m
     exp_alerts: []
-  - alertname: Strong group senior has no healthy row
-    eval_time: 10m
-    exp_alerts: []
   promql_expr_test:
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
-    eval_time: 10m
-    exp_samples: []
-  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-senior$",litellm_model_name!~"worker-capable|senior"} == bool 0)) == bool 0'
+  - expr: 'sum(max by (model_id) (litellm_deployment_state{model_id=~".+-worker-capable$",litellm_model_name!="worker-capable"} == bool 0)) == bool 0'
     eval_time: 10m
     exp_samples: []

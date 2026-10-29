@@ -1,51 +1,21 @@
-# Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
-# Long note 1: docs/litellm-router-notes.md
-# Anthropic: claude-sonnet-5-5, in the tether group only (Nish 2026-10-22, fleet-ops#9980 comment 6347106070, and 2026-10-23, Nishfleet/tether#7). The row, its fallback to assistant and its cost are recorded above the router_settings block.
-# Cline: stealth/space-bunny-alpha. (Historical: no Cline row remains since 2026-10-23; the same goes for the Cline entries in the free-rows lines above.)
-# Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
-# Long note 2: docs/litellm-router-notes.md
-# fleet-ops#9469: a 404 lane is taken out of rotation on the FIRST 404. LiteLLM v1.98.0's
-# _is_cooldown_required accepts 404, but the threshold is resolved PER EXCEPTION TYPE
-# (Router.get_allowed_fails_from_policy), and a key the policy does not name falls back to
-# the router-level allowed_fails (1) - two 404s - so the dead lane is picked again and
-# leaks a 404 to a caller. router_settings.allowed_fails_policy now carries
-# NotFoundErrorAllowedFails: 0, so the first 404 parks the row and the job falls through to
-# the next lane in the group (order filtering is applied after the cooldown filter, so the
-# job reaches a peer row in the same group, or the worker-group fallbacks when none is
-# left; no order-2 worker row remains after fleet-ops#9711). Measured on
-# ghcr.io/berriai/litellm:v1.98.0 in tests/test_router_404_fallthrough.py: one 404 parks the
-# row and the call still returns 200 on the next row; with the key at 1 the dead lane is
-# picked twice.
-#
-# The per-exception resolution is also what makes one router-level key reach every row:
-# _should_cooldown_based_on_deployment_policy reads the row's own policy first and, for an
-# exception type that policy does not name, defers to the router-level policy. All 47 rows
-# below carry a deployment-level allowed_fails_policy and none of them names NotFoundError,
-# so the fix is one key, not 47.
-#
-# Measured consequence, stated because it is a real trade: the cooldown a 404 applies is the
-# ROW's own cooldown_time, not the router-level 60 s. A 404 on one of the 4 rows parked
-# 21600 s for a named quota wall keeps that row out of rotation for 6 h. The row is not
-# removed: it stays in the router, comes back when the cooldown expires and re-probes
-# itself (proven in the same test file), so a restored model or a reset quota is picked up
-# within hours. The alternative - two 404s before the park - is the bug. A 404 is a
-# withdrawn free model or a dead model id, which is exactly what should park a row; there
-# is no per-exception-type cooldown_time in v1.98.0 (AllowedFailsPolicy has 9 fields, none
-# of them a duration), so the row's own cooldown_time is the only knob.
-#
-# Background health checks stay off: they spend the same free quota (Nish 2026-09-28) and
-# would probe every paid row.
-# Long note 3: docs/litellm-router-notes.md
-# Pareto removed 2026-10-22 (Nish, "yes, also remove pareto", fleet-ops#10040): both rows (worker-capable and senior) are gone; the senior row is the Synthetic GLM-5.3-Flash row below. PARETO_API_KEY stays in place.
+# Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
+# A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
+# Approved opencode: deepseek-v4.1-flash
+# Approved commandcode: z-ai/glm-5.3-flash
+# Approved minimax: MiniMax-M3.1-Flash-Preview
+# Approved stepfun: step-5-preview
+# Approved synthetic: hf:zai-org/GLM-5.3-Flash
+# Approved zai: glm-5.3-flash
+# Approved straitly: deepseek/deepseek-v4-1-flash
+# Approved alibaba-coding: qwen3.8-max
+# Approved anthropic: claude-sonnet-5-5
+# anthropic answers in the tether group only (fleet-ops#9980; Nishfleet/tether#7).
+# Long notes for this file: docs/litellm-router-notes.md
 # Devin and Cursor CLI lanes retired (item 9, 2026-10-28): Devin had no router route (404 on every base).
 # OpenCode and Command Code keep paid plans, served as router rows below.
-# Long note 4: docs/litellm-router-notes.md
 model_list:
-# Command Code carries z-ai/glm-5.3-flash only (fleet-ops#9744). Every row has a 10 USD/day max_budget (unlimited is not confirmed for GLM).
-# To take the b lane out of the shuffle, remove its rows (ids commandcode-glm53flashb-worker-capable and
-# commandcode-glm53flashb-worker-cheap) in a one-line config change. fleet-sync copies the file and the proxy restarts to load it:
-# about 101 s end to end on this host, with a 30 s drain of in-flight calls. POST /model/block cannot do this: it answers
-# HTTP 400 "Model updates only supported for DB-stored models" for a config-file row.
+# Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
@@ -201,14 +171,7 @@ model_list:
     tags:
     - prepaid
     - opencode-go
-    # order 2 (fleet-ops#9374, 2026-10-07): fallback behind the paid Alibaba
-    # qwen3.8-max judge row, which is order 1. v1.98.0 keeps only the lowest order
-    # group and does it after the cooldown filter (router.py _async_get_available_deployment
-    # -> utils._get_order_filtered_deployments), so this pair answers only while that row
-    # is cooled down or out of budget. config/litellm-proxy.schema.json pins the
-    # layout (one paid judge row on order 1 with the plan's rpm 3 and concurrency 3,
-    # two named OpenCode Go judge rows on order 2) and its rejects/ directory holds
-    # one case per shape the schema must refuse.
+    # order 2: fallback behind the order-1 Alibaba judge row; the schema pins this layout (fleet-ops#9374).
     order: 2
     max_parallel_requests: 2
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
@@ -221,11 +184,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# Straitly (fleet-ops#9788): public-repo Pi jobs only, see the record at the top. Two rows on one key; each carries a
-# 9.5 USD max_budget over 30d (LiteLLM v1.98.0 registers a deployment budget only when budget_duration is set too, so 30d
-# is the lifetime cap: both rows together stop routing at 19 USD of the 20 USD balance). A 402 quota_exceeded is neither
-# retried nor cooled by v1.98.0, so these caps must trip first. The key also has a 6 USD/day cap at Straitly that LiteLLM
-# cannot mirror: a row takes one budget, and a provider budget would also cap every other openai/ row.
+# Straitly: public-repo Pi jobs only, 9.5 USD/30d per row (fleet-ops#9788). A 402 is neither retried nor cooled.
 - model_name: worker-public
   litellm_params:
     model: openai/deepseek/deepseek-v4-1-flash
@@ -274,58 +233,42 @@ model_list:
     id: straitly-ds41flashb-worker-public
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Long note 5: docs/litellm-router-notes.md
+- model_name: worker-capable
+  # Former senior slot: GLM-5.3-Flash is a worker model only (fleet-ops#10608).
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
-    # The key's 8th slot. 12 parallel calls on this key gave 8x200 and 4x429 "Too many concurrent requests", so 8 one-slot rows sit at
-    # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
-    max_parallel_requests: 1
-    # 60 s, not the 900 s of the sibling Synthetic rows: the senior group has one or two rows, so a long park takes half or all of the tier
-    # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked the row 900 s at 06:14 UTC, and
-    # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
-    # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
-    cooldown_time: 60
-    # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
-    # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
+    weight: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap)."
-    id: synthetic-glm53flash-senior
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
+    id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Second GLM reviewer row (2026-10-28): the senior tier had one Synthetic row at one slot, so every workflow-edit review queued behind it, and Synthetic ends 2026-11-12 (fleet-ops#10530).
+- model_name: worker-capable
+  # z.ai Coding Plan slot (fleet-ops#10566, #10608).
   litellm_params:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
     tags:
-    - senior
     - prepaid
     - zai
     order: 1
     weight: 1
-    # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
-    # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
-    # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
-    # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
+    # z.ai Coding Plan: no slot count, the plan's own 429 cools the row and it re-probes itself (fleet-ops#10694).
     cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
     cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flash-senior
+    id: zai-glm53flashi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
@@ -337,11 +280,7 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
-    # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8; the senior row (fleet-ops#9596) is the 8th slot. The 500 / 5 h pool is the real wall:
-    # a pool 429 cools a row 15 min, and the rolling window refills by itself.
-    max_parallel_requests: 1
+    # Synthetic: no slot count; the 500-req/5h pool's 429 cools the row and the window refills (fleet-ops#10694).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -359,7 +298,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -377,7 +315,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -395,7 +332,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -413,7 +349,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -431,7 +366,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -449,7 +383,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -468,13 +401,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
-    # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
-    # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
-    # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
-    # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -493,7 +419,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -512,7 +437,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -531,7 +455,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -550,7 +473,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -569,7 +491,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -588,7 +509,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -607,7 +527,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -626,7 +545,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -645,7 +563,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -654,20 +571,7 @@ model_list:
     id: zai-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# MiniMax Yearly Plus flat plan (Nish 2026-10-09, screenshot: 5-hour limit and weekly limit, no per-token bill):
-# the plan's quota is the cap, not dollars, so these rows carry no max_budget. The accounting prices below
-# (platform.minimax.io/docs/guides/pricing-paygo, M3 Standard as the proxy; M3.1-Flash-Preview has none of its
-# own) stay so the spend ledger still reads, but nothing filters a row on them. 12 lanes per row (48 across the
-# four) so the fleet can use the quota. When the 5-hour or weekly limit is hit MiniMax answers 429: a row parks
-# 1800 s on its 4th 429 inside that window (RateLimitErrorAllowedFails: 3, the shape the removed cline-ds41flash rows used, so a
-# per-minute burst does not park it but a quota wall does) and is re-probed. A 402 or other billing error is not
-# retried (router_settings.num_retries: 0). The idle guard is grafana ppi-minimax (paid-plan-idle.yaml): zero calls
-# in 24 h means the plan is going to waste.
-# 2026-10-20: the provider list grew one id (MiniMax-M3.1-Flash) and it takes no row here. A row for it would need
-# Nish's yes first: the approved-models list at the top of this file names MiniMax: M3.1-Flash-Preview only
-# (2026-09-28). The probe + Gate eval gave no case for asking: on the Gate's own 60 held-out cases the two ids are
-# not measurably different, and the added id was ahead on no band that counts. Numbers and per-case rows (the only
-# copy): tests/evals/results/minimax_gate_m3_1_flash.json. No row or setting below changed.
+# MiniMax Yearly Plus: the plan's quota is the cap, so no max_budget; 12 lanes per row; a 4th 429 parks a row 1800 s (fleet-ops#9220).
 - model_name: worker-capable
   litellm_params:
     model: anthropic/MiniMax-M3.1-Flash-Preview
@@ -764,18 +668,7 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 3
-# Ollama worker-capable rows removed 2026-10-22 (approved by the owner on the private tracker item W10c; Nish 2026-10-22 22:15 IST, "yes, also remove pareto", the yes for removing the dead Ollama rows and Pareto, quoted in fleet-ops#10040;
-# Long note 6: docs/litellm-router-notes.md
-# Nish 2026-10-04: Ollama can take more lanes. Probe 12 parallel 12x200; 24
-# parallel 13x200 11x429, cap ~12. Ten rows x mpr 1 = 10 lanes, leaving 2 for
-# direct `pi --provider ollama-cloud` (a 429 cools 900 s). DS4.1 Flash only.
-# max_budget 1.0 per row: budgets are per deployment, so 10 x 1.0 keeps the
-# key at $10/day (the #9209 cap). Peak token rates from ollama.com/pricing.
-# Native ollama_chat/, not openai/ on /v1 (fleet-ops#9253): Ollama's /v1 reply ids
-# are chatcmpl-<0..999>, all 1,000 were in LiteLLM_SpendLogs by 2026-09-19, and
-# SpendLogs keys on the reply id, so every Ollama success was dropped as a
-# duplicate (0 rows in 7 days while Prometheus counted them). ollama_chat/ gets
-# a uuid id from LiteLLM; tool calls and streaming checked 2026-10-05.
+# Removed 2026-10-22/10-23 (fleet-ops#10068): Ollama, Poolside, Cline and Pareto rows. Git history holds each row.
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -786,13 +679,7 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    # Nish 2026-10-02: StepFun gets 10 slots. simple-shuffle picks among rows, and one row got 562 of 10,512 worker calls (5%),
-    # 58M tokens = ~22% of the Pro plan's pace (8000M/month), in the 24 h to 15:00 IST. Ten rows give it ~10x the share of new tasks.
-    # Nish: using the month's credit before the reset is fine; tokens must go to productive work.
-    # max_parallel_requests is per row, so the account's 13 router lanes are split 2 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 1 + 1 across the rows.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
+    # No slot count: v1.105.0 never frees an abandoned stream's slot, so a capped row jams (fleet-ops#10762).
     cooldown_time: 900
   model_info:
     mode: chat
@@ -811,9 +698,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -832,9 +716,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -853,9 +734,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -874,9 +752,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -895,9 +770,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -916,9 +788,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -937,9 +806,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -958,9 +824,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -979,9 +842,6 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
-    # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
     mode: chat
@@ -990,24 +850,7 @@ model_list:
     id: stepfun-step5previewj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# Removal record, 2026-10-23 (fleet-ops#10068): Nish 2026-10-23, "remove" for the 3 Cline Pass rows (cline-ds41flash-worker-capable, cline-ds41flash-worker-cheap, cline-ds41flash-assistant; the plan lapsed and he does not want it renewed),
-# and "yes, remove the dead Ollama and Poolside rows" for the 2 poolside/laguna-s-2.1:free rows via the Cline endpoint (ids cline-lagunas21-worker-capable and cline-lagunas21-worker-cheap; /health answered no 'choices').
-# The Cline and Ollama Cloud entries left config/paid-plans.json with their last row (same yes). Rollback: restore the rows from git history and restart.
-# Cline stealth/space-bunny-alpha answers 402 "Insufficient balance" (no longer free on Cline; LiteLLM v1.98.0 cannot cool a 402). Row removed on Nish's yes 2026-10-07 ~21:30 IST, fleet-ops#9312.
-# Alibaba Model Studio Token Plan (Personal Standard, SG, $18/mo, 45,000 credits per 30-day month, no weekly cap,
-# unused credits do not roll over - Nish from the console 2026-10-04, #9220), re-wired 2026-10-04 with a fresh key
-# (fleet-ops#9220). fleet-ops#9374 (2026-10-07) made this row the judge PRIMARY (order 1) and put the two OpenCode
-# Go judge rows on order 2: the plan is paid for and idle (22 of 1054 judge calls in 14 days) while the OpenCode
-# Go rows carried the builder family, which memory grader-never-builder-family forbids for the grader. 14 days of
-# LiteLLM_SpendLogs to 2026-10-07: peak 3 judge calls in flight at once, mean 1.05, so the plan's 3-4 concurrent
-# covers the traffic; rpm and max_parallel_requests stay 3 and were not raised. v1.98.0 does not read either value
-# on the request path (no enable_max_parallel_requests_limit, no rpm limiter), so a burst past 3/min is not queued
-# here: it passes to the provider, and a 429 cools this row for cooldown_time (900s) while the order-2 pair answers.
-# Nish 2026-09-08 (#4445): "only use qwen 3.8 max as another judge / orchestrator on the roster.
-# this token plan isn't for use with other models." The 09-08 seat never shipped that judge timer and its rows
-# went away in #7666, #8515 and #8521, so this row has no worker rung: one judge row, the only rung that can
-# call this seat. The plan allows 3-4 concurrent, so rpm and max_parallel_requests are both 3 (#9220), which leaves
-# the other two judge rows room. Prepaid, so there is no max_budget wall: the monthly credit allowance is the cap.
+# Alibaba Token Plan: judge row only, order 1, never a worker rung; rpm and max_parallel_requests 3; prepaid, so no max_budget (fleet-ops#9220, #9374, #4445).
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
@@ -1020,31 +863,11 @@ model_list:
     order: 1
     max_parallel_requests: 3
     cooldown_time: 900
-    # fleet-ops#9405: qwen3.8-max reasons before it answers. With no thinking
-    # budget the model spent the whole completion on reasoning and returned an
-    # empty body on a 40 KB diff (completion_tokens pinned to the cap: 8192,
-    # 14449, 28888, 43470; content 0 bytes; the 2026-10-07 `pi --model judge`
-    # call stopped at its 8192-token cap with empty stdout). The DashScope
-    # compatible-mode endpoint that this row pins takes enable_thinking and
-    # thinking_budget; LiteLLM's openai-compatible path only forwards those
-    # through extra_body (utils.py + openai_like/chat/handler.py), so they
-    # live here, not as sibling keys and not as pi samplingParams. The
-    # schema pins extra_body on this row (config/litellm-proxy.schema.json).
-    # This row is model_name: judge only (Nish #4445: Token Plan is
-    # judge/orchestrator, no worker rung). 2048
-    # caps the reasoning and the row answers in about 50 s with a verdict
-    # (proof on the #9393 diff in #9405). A larger diff that still returns
-    # empty content after 2048 is a seat failure for the retry ladder, not
-    # a reason to widen the budget here. max_tokens is respected once the
-    # budget is bounded, so no max_completion_tokens change is needed, and
-    # the two order-2 deepseek-v4.1-flash rows keep their reasoning_effort
-    # and already return text.
+    # qwen3.8-max reasons until the budget caps it; DashScope reads that budget only through extra_body (fleet-ops#9405).
     extra_body:
       enable_thinking: true
       thinking_budget: 2048
-    # fleet-ops#10109: a caller that sends reasoning_effort (pi with a thinking level) made DashScope answer 400 "'reasoning_effort' and
-    # 'thinking_budget' cannot be set simultaneously" (14 rejections 2026-10-23, row state 2). The row owns its thinking budget, so the
-    # per-request reasoning_effort is dropped here and never reaches the provider.
+    # The row owns the thinking budget, so a caller's reasoning_effort is dropped here (fleet-ops#10109).
     additional_drop_params:
     - reasoning_effort
   model_info:
@@ -1054,7 +877,7 @@ model_list:
     id: alibaba-qwen38max-judge
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# assistant: DeepSeek-V4.1-Flash only, on prepaid rows, for the Hermes chat agent (Nish 2026-10-21). Falls back to worker-capable.
+# assistant: DeepSeek-V4.1-Flash on prepaid rows only, for the Hermes chat agent (Nish 2026-10-21).
 - model_name: assistant
   litellm_params:
     model: openai/deepseek-v4.1-flash
@@ -1079,7 +902,6 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
-# Long note 7: docs/litellm-router-notes.md
 - model_name: tether
   litellm_params:
     model: anthropic/claude-sonnet-5-5
@@ -1099,7 +921,7 @@ model_list:
     cache_read_input_token_cost: 1e-07
     output_cost_per_token: 1e-05
     max_parallel_requests: 4
-    # 5 min: a spent credit or a rate limit parks the row, Tether is answered by `assistant` meanwhile, and the next probe after the window finds Claude again.
+    # 5 min: a spent credit or a rate limit parks the row; `assistant` answers meanwhile (fleet-ops#9980).
     cooldown_time: 300
     max_budget: 50.0
     budget_duration: 1d
@@ -1110,80 +932,28 @@ model_list:
     id: anthropic-sonnet55-tether
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-# Removal record, 2026-10-23 (fleet-ops#10068): Nish 2026-10-23, "yes, remove the dead Ollama and Poolside rows". The 10 ollama_chat/deepseek-v4.1-flash assistant rows
-# (ids ollama-ds41flash{,b,c,d,e,f,g,h,i,j}-assistant) answered "not in the Free plan" on /health, so the assistant group keeps its 2 OpenCode Go rows and its fallback to worker-capable.
-# Rollback: restore the rows from git history and restart.
 router_settings:
   routing_strategy: simple-shuffle
-  # One task = one model (Nish 2026-10-01, fleet-ops#9015). Pi sends x-litellm-session-id=$FLEET_TASK_ID
-  # (config/pi-models.json; Pi refuses to call without it), and session_affinity pins that id to the
-  # first row picked in each group until it has been idle for deployment_affinity_ttl_seconds (600 s, see below).
+  # One task = one model: Pi sends x-litellm-session-id and session_affinity pins it to a row (fleet-ops#9015).
   optional_pre_call_checks: ["prompt_caching", "session_affinity"]
-  # The pin store. Without this the Router keeps pins in each worker process's own memory, and the proxy
-  # runs --num_workers 2, so a session flips between 2 rows with no failure (fleet-ops#9015: 6,188 of 6,473
-  # worker-row switches from 2026-10-02 19:30 to 2026-10-04 15:45 UTC followed a success). general_settings
-  # has no redis_url key in v1.98.0 (proxy_server never reads it), so the Redis below sat empty (dbsize 0).
-  # Cooldowns and usage counters now share it too, as fleet-ops#4174 P1 intended.
-  # host/port/password, never redis_url: LiteLLM v1.98.0 drops the password when redis_url is set.
+  # Pins and counters live in Redis because the proxy runs 2 workers; host/port/password, never redis_url.
   redis_host: 127.0.0.1
   redis_port: 6379
   redis_password: os.environ/REDIS_PASSWORD
-  # The pin survives only while its row keeps being picked: the claim script refreshes the TTL when
-  # the stored row equals the row just chosen, and a row in cooldown makes async_filter_deployments
-  # return the whole group unfiltered. So a pin that lands on a row then hits a quota wall (zai, cline
-  # and commandcode free models all 429 "free-model token quota") is never refreshed and holds the
-  # session to a dead row for the full TTL, while every call re-shuffles the group. That scatter was
-  # 17.1% of non-first calls (16,673 of 97,326, 2026-10-02 to 10-07 07:55 UTC) and cost 90.4M
-  # already-cached tokens in 5.6 days (fleet-ops#9361). 600 s is the tested value: the p99 gap between
-  # consecutive calls in one session is 214 s and 99.7% of gaps are under 600 s, so a live session keeps
-  # its pin, and a pin on a dead row is dropped after 10 minutes instead of 60. The floor of 300 s (held
-  # in the schema) is the gap window the hop metric counts: a shorter TTL could expire a healthy pin inside
-  # a hop the metric would count, manufacturing the hops this value exists to remove.
-  # INTERIM ONLY (Nish 2026-10-07, fleet-ops#9361 scope change): this TTL caps the blast radius of a
-  # stale pin. It is not the fix. LiteLLM has no stock re-pin in the pinned image (v1.98.0) nor in the
-  # newest release: deployment_affinity_check.claim_affinity_pin takes eligible_values upstream, but only
-  # the complexity router passes it, so a fallback row never takes the pin. The fix is the upstream issue
-  # BerriAI/litellm#45145 (repro: first-writer-wins _claim_pin refreshes only when the row it names is
-  # re-selected, so a pin held by a row in cooldown can never move) plus its PR and a second image bump,
-  # tracked as fleet-ops#9411, until which the TTL above and the session-hop Grafana alert
-  # (config/grafana/provisioning/alerting/session-hop.yaml) bound the damage.
+  # 600 s: the p99 gap inside a session is 214 s, so a live pin holds and a dead-row pin expires in 10 min. The fix is upstream (fleet-ops#9411); the session-hop alert on the SELECT-only grafana_ro source (config/grafana/provisioning/alerting/session-hop.yaml, fleet-ops#9475) bounds the damage meanwhile.
   deployment_affinity_ttl_seconds: 600
-  # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
-  # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
-  # (fleet-ops#9374): order 1 alibaba-qwen38max-judge, order 2 the two OpenCode Go judge rows. The stale note here
-  # ("simple-shuffle ignores order") was wrong for v1.98.0 - the order filter runs for every routing strategy,
-  # after the cooldown filter. config/litellm-proxy.schema.json pins the layout - the seat, key and
-  # plan limits of the order-1 row, and the model, api_base, key and order of each named fallback -
-  # and its rejects/ cases hold one case per shape it must refuse.
-  # worker-cheap falls up to worker-capable, and worker-public and assistant fall to worker-capable; worker-capable never
-  # falls down (W10c, below). Origin of the worker fallbacks: fleet-ops#9015 finish line, "unless that model fails, then fall back".
-  # 24h to 2026-10-02 19:05 UTC: 313 of 11,144 worker calls failed at the caller, and 1,345 of the journal's
-  # errors were "JSON error injected into SSE stream" (OpenRouter/Cline/CommandCode space-bunny-alpha, 38-92%
-  # failing) that raised MidStreamFallbackError and found "No fallback model group". v1.98.0 never cools an
-  # APIConnectionError (cooldown_handlers._is_cooldown_required ignores that string) and only runs a
-  # mid-stream fallback before any content was generated, so this switch never splices two models into one
-  # answer. Closed (fleet-ops#9290): the injection was the cloaked stealth/space-bunny-alpha preview as resold by
-  # OpenRouter, Cline and CommandCode - 2,021 of 2,127 spend-log rows 09-24..10-05 (OpenRouter 1,006, Cline 923,
-  # CommandCode 105), so the failures were spread across all three resellers, not one of them; Zen's space-bunny
-  # row served ~34k calls and xKiro's alpha row ~70 with no injection row, so the malformed SSE tracked the
-  # reseller, not the model. The upstream ended the preview (402/403 from 10-06) and #9400, #9402, #9677 and
-  # #9710 took every space-bunny row out by 10-13; zero injection rows since 2026-10-05 11:59 UTC (checked
-  # 10-24). A future stealth-preview row from any reseller walks back into the failure mode described above.
-  # A failed run still escalates once, at task level, to the strong-only lane (agent.yml first
-  # strike adds strong-only). senior has one row (GLM-5.3-Flash on Synthetic, fleet-ops#10040) and no fallback of its own, so a judge call that
-  # falls to senior ends there and cannot cycle.
-  # W10c: worker-capable never falls to worker-cheap. Before the dead Ollama rows left (fleet-ops#10033), about 26% of worker-capable
-  # calls were answered from the worker-cheap group (router:capable_answered_by_cheap:ratio_1d). A strong group with no healthy row now fails
-  # the call, and the RouterStrongGroupNoHealthyRow rule in rootfs/etc/prometheus/fleet_rules.yml says so. Only same-tier or upward
-  # fallbacks may be listed here; config/litellm-proxy.schema.json refuses a worker-capable entry naming worker-cheap, worker-public or assistant.
-  # Accepted trade (W10c plan, fleet-ops#10040): a call whose picked row fails and has no peer left reaches the caller
-  # (Pi retries), including a row answering 402/403, which the router never cools (a 404 does park on its first failure).
+  # Worker rows are order 1 (a peer set); judge is order 1 Alibaba, order 2 the OpenCode Go pair. The order filter runs for every strategy (fleet-ops#9374).
+  # A desk alias renames the group a job already picked, so the 3-day token trial changes compaction alone (fleet-ops#9330). Long note 14: docs/litellm-router-notes.md
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
+  # worker-cheap, worker-public and assistant rise to worker-capable; worker-capable never falls down (fleet-ops#10040). An alias has no chain of its own, so it needs its own fallback row.
+  # A row answering 402/403 is never cooled, so that call reaches the caller and Pi retries it.
   fallbacks:
-    - judge: [senior]
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
+    - worker-public-desk: [worker-capable]
     - assistant: [worker-capable]
-    # Long note 8: docs/litellm-router-notes.md
     - tether: [assistant]
   cooldown_time: 60
   allowed_fails: 1
@@ -1192,47 +962,23 @@ router_settings:
   timeout: 1800
   enable_tag_filtering: false
   retry_policy:
-    # Long note 9: docs/litellm-router-notes.md
-    AuthenticationErrorRetries: 0
+    # Measured on the PINNED_LITELLM in tests/test_router_retry_policy_no_cross_seat.py: re-measure on a bump (fleet-ops#9427).
+    AuthenticationErrorRetries: 1
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1
-    # Long note 10: docs/litellm-router-notes.md
     BadRequestErrorRetries: 1
     ContentPolicyViolationErrorRetries: 0
-    # Long note 11: docs/litellm-router-notes.md
     NotFoundErrorRetries: 1
     DefaultRetries: 1
   allowed_fails_policy:
-    # fleet-ops#9007: a withdrawn model answers 400 (BadRequestError) and a spent
-    # credit line answers 402 (APIError). _is_cooldown_required (pinned v1.98.0,
-    # unchanged through released v1.103.1) cools only 401/404/408/429, and no
-    # router-level value here can change that. The stock override is per
-    # deployment: model_info.allowed_fails_policy naming the exact exception
-    # type (cooldown_handlers._has_explicit_allowed_fails_policy_for_exception)
-    # makes _should_run_cooldown_logic accept the 4xx. Every row opts in below
-    # with BadRequestErrorAllowedFails: 1 - 2 bad answers in one worker cool the
-    # row for its cooldown_time, and it comes back when it answers 200. It also
-    # matches ContextWindowExceededError (a BadRequestError subclass), but the
-    # journal shows the real 400 traffic is dead models: 1239 x 400 in 24h,
-    # 0 context overflows. A 402 maps to litellm.APIError, which is NOT in the
-    # policy's nameable exception fields, so no config value can cool it -
-    # agent.yml's Router wall treats a run killed by one as infra instead.
+    # BadRequestErrorAllowedFails: 1 is the stock per-deployment override that lets a 400 cool the row; a 402 cannot be cooled by config (fleet-ops#9007).
     AuthenticationErrorAllowedFails: 0
-    # one 429 cools the deployment: the judge's own cooldown_time (900 s) is the parking window, so
-    # this router-level value is read with the row's duration, not on its own. (fleet-ops#9876 fixed
-    # the stale Pareto rationale that used to sit here; this row is Alibaba's, not Pareto's.)
+    # Read with the row's own cooldown_time, not the router's 60 s.
     RateLimitErrorAllowedFails: 1
     TimeoutErrorAllowedFails: 1
     InternalServerErrorAllowedFails: 1
-    # fleet-ops#9469: a 404 is a withdrawn free model ("This model is unavailable for free")
-    # or a model id that no longer exists. _is_cooldown_required accepts 404, but with this
-    # key unset the router-level allowed_fails (1) needs two 404s before the lane parks, so a
-    # dead lane leaks a 404 to every other caller. 0 parks it on the first one; it comes back
-    # after its cooldown_time and re-probes. On v1.98.0 the failed call itself raised
-    # NotFoundError (should_retry_this_error hard-raised); on the v1.105.0 image the failed
-    # call is retried once onto a live row (retry_policy.NotFoundErrorRetries above,
-    # fleet-ops#9050), and the park still closes the leak after that one call.
+    # 0 parks a 404 lane on its first failure, then it re-probes; the retry above lands on a live row (fleet-ops#9469, #9050).
     NotFoundErrorAllowedFails: 0
 litellm_settings:
   drop_params: true
@@ -1252,9 +998,9 @@ general_settings:
         ai-evaluation-model-specification-version: "4"
         ai-gateway-protocol-version: "0.0.1"
         ai-gateway-auth-method: "api-key"
-  # real traffic is the probe: the background checks spent the same free quota and cooled rows themselves (Nish 2026-09-28).
+  # real traffic is the probe: background checks spent the same free quota (Nish 2026-09-28).
   background_health_checks: false
-  # The container's DATABASE_URL (same role, port and database; host localhost, which resolves to 127.0.0.1 here) is the single source, so a credential change is one env edit.
+  # The container's DATABASE_URL is the single source (host localhost), so a credential change is one env edit (fleet-ops#10020).
   database_url: os.environ/DATABASE_URL
   master_key: os.environ/LITELLM_MASTER_KEY
   # without this, startup prisma migrate deploy stalls every restart.

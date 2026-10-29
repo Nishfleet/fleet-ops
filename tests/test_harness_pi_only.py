@@ -25,9 +25,10 @@ def test_no_retired_lane_in_agent_workflows():
 
 def test_retired_listener_units_stay_gone():
     for name in GONE_UNITS:
-        assert not (ROOT / "systemd" / name).exists(), (
-            f"{name} is back — a retired CLI listener cannot be relinked"
-        )
+        for base in ("systemd", "rootfs/etc/systemd/system"):
+            assert not (ROOT / base / name).exists(), (
+                f"{base}/{name} is back — a retired CLI listener cannot be relinked"
+            )
 
 
 def test_fleet_sync_lists_no_retired_listener():
