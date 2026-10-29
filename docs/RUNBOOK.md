@@ -291,6 +291,15 @@ without being on the urgent list (or the reverse), or a critical alert would re-
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
 
+Router dead-row persistence (fleet-ops#9562). `router-dead-row.yaml` fires only when a row
+answered 402, 403 or 404 more than 5 times in the last hour and is still failing: at least one
+such failure in the last 10 minutes, held for 15 continuous minutes. A row that answered for a
+minute and healed files nothing, and a dead row still files while the failures continue. To fire
+on the first burst again, set `for: 0s` and drop the 10-minute factor; to silence the rule, set
+`isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
+promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
+deployed rule drift apart.
+
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
 a file went stale and every delivery answered `401 Bad credentials` for days.
