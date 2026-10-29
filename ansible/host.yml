@@ -24,9 +24,11 @@
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
     # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
-    # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
-    # runner's registration lives at GitHub and removing it needs an org admin
-    # token that the VPS key does not carry.
+    # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
+    # registration is gone (fleet-ops#10632): the registration lives at GitHub
+    # and removing it needs an org admin token that the VPS key does not carry,
+    # so until `config.sh remove` has taken .runner and .credentials away, the
+    # directory is the only thing left that can still deregister the runner.
     agent_runner_retired_ids: "{{ range(31, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that

@@ -53,15 +53,27 @@ def test_both_symlinks_are_read_not_only_bin():
 
 
 def test_a_version_unpacked_in_the_last_hour_survives():
-    """A self-update unpacks the new pair before it moves the symlink.
+    """A runner stopped mid-self-update may have unpacked without repointing.
 
-    In that window the new directory is not a link target yet, so age is the
-    only thing that keeps it: without the guard the prune deletes the version
-    the update is about to point at.
+    The stop above the prune is what makes it safe, and the hour is the second
+    belt for that runner: its fresh directory is not a link target yet, so age
+    is the only thing that keeps it. An archive's mtime can make a directory
+    look older than it is, so the belt is loose, not a window.
     """
     assert CANDIDATES["ansible.builtin.find"]["age"] == "1h"
     assert sorted(CANDIDATES["ansible.builtin.find"]["patterns"]) == ["bin.*", "externals.*"]
     assert CANDIDATES["ansible.builtin.find"]["file_type"] == "directory"
+
+
+def test_both_finds_walk_the_root_resolved_the_same_way_stat_reports():
+    """stat reports a link's target as a realpath.
+
+    If the candidates were walked under an unresolved root, a symlinked path
+    component would leave no candidate matching the keep set, and the prune
+    would delete the version every runner runs from.
+    """
+    for task in (LINKS, CANDIDATES):
+        assert task["ansible.builtin.find"]["paths"] == ["{{ agent_runner_root | realpath }}"]
 
 
 def test_the_prune_removes_only_directories():
@@ -76,7 +88,9 @@ def test_the_summary_reports_what_was_removed():
                if "runner_version_dirs_removed" in json.dumps(task.get("ansible.builtin.debug", {}))]
     assert len(reports) == 1
     assert "selectattr('changed') | map(attribute='item')" in reports[0]["runner_version_dirs_removed"]
-    assert reports[0]["runner_version_prune_ran"].endswith("skipped | default(false)) }}")
+    assert "selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item')" in reports[0]["runner_version_dirs_failed"]
+    assert reports[0]["runner_version_prune_ran"].endswith("results | default([]) | length > 0 }}")
+    assert "runner_version_prune.skipped" not in reports[0]["runner_version_prune_ran"]
 
 
 def _render(expression, keep, candidates):
@@ -110,3 +124,14 @@ def test_an_empty_keep_set_removes_nothing():
     candidates = ["/r/13/bin.2.338.0", "/r/13/externals.2.338.0"]
     assert _render(REMOVE["when"], [], candidates).strip() == "False"
     assert _render(REMOVE["when"], candidates, candidates).strip() == "True"
+
+
+def test_a_skipped_link_read_reads_as_an_empty_keep_set():
+    """The stat loop skips when no link was found.
+
+    A skipped register carries no results key, so the guard must read that as
+    an empty keep set, not as an expression error.
+    """
+    template = "{{ " + REMOVE["when"] + " }}"
+    rendered = jinja2.Environment().from_string(template).render(runner_version_targets={})
+    assert rendered.strip() == "False"

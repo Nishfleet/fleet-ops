@@ -404,28 +404,34 @@
 
             - name: List the runner version each runner's bin and externals symlink points at
               ansible.builtin.find:
-                paths: ["{{ agent_runner_root }}"]
+                paths: ["{{ agent_runner_root | realpath }}"]
                 patterns: [bin, externals]
                 file_type: link
                 recurse: true
                 depth: 2
               register: runner_version_links
 
-            # stat resolves a link to an absolute path, so a relative link and an
-            # absolute one land on the same kept path below.
+            # stat reports a link's target as a realpath, and both find tasks
+            # resolve the root the same way, so a relative link, an absolute one
+            # and a symlinked path component in the root all compare equal to
+            # the candidate paths below.
             - name: Read the version directory each of those symlinks points at
               ansible.builtin.stat:
                 path: "{{ item }}"
               loop: "{{ runner_version_links.files | map(attribute='path') | list }}"
               register: runner_version_targets
 
-            # age=1h is the guard on the window a self-update opens: the new
-            # version is unpacked before the symlink moves, so a directory that
-            # appeared in the last hour may be the one the link is about to
-            # point at, and it survives this run.
+            # The stop above is what makes the prune safe: no runner is
+            # running, so no self-update can unpack a version mid-prune.
+            # age=1h is the second belt for a runner that was stopped
+            # mid-self-update, before it repointed its links: its fresh
+            # directory is younger than the hour and survives this run. A
+            # directory unpacked from an archive can carry the archive's mtime
+            # and look older than it is, so the hour is a loose belt, not a
+            # precise window.
             - name: List the runner version directories older than a self-update
               ansible.builtin.find:
-                paths: ["{{ agent_runner_root }}"]
+                paths: ["{{ agent_runner_root | realpath }}"]
                 patterns: ["bin.*", "externals.*"]
                 file_type: directory
                 recurse: true
@@ -437,7 +443,11 @@
             # the same version in two directories, so keeping only the bin target
             # would delete the version externals runs from. An empty keep set means
             # the links could not be read, and then nothing is a candidate: the
-            # whole task skips rather than deleting every version on the host.
+            # whole task skips rather than deleting every version on the host. A
+            # delete that fails (a root-owned file left inside a version
+            # directory by an earlier run) is recorded and reported at the end,
+            # so one unreadable file cannot skip the apt upgrade that follows
+            # this block.
             - name: Remove the runner version directories no runner points at
               ansible.builtin.file:
                 path: "{{ item }}"
@@ -446,8 +456,9 @@
                 {{ runner_version_dirs.files | map(attribute='path')
                    | reject('in', runner_version_targets.results | map(attribute='stat.lnk_source') | list)
                    | list }}
-              when: runner_version_targets.results | length > 0
+              when: (runner_version_targets.results | default([])) | length > 0
               register: runner_version_prune
+              ignore_errors: true
 
         - name: Upgrade every Ubuntu package (security and regular updates)
           ansible.builtin.apt:
@@ -1358,9 +1369,12 @@
                 build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
               # Which runner version directories the prune removed, one path per line.
               runner_version_dirs_removed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('changed') | map(attribute='item') | list }}"
-              # false means the prune could not read any runner's link and skipped,
-              # which is not the same as finding nothing to remove.
-              runner_version_prune_ran: "{{ not ((runner_version_prune | default({})).skipped | default(false)) }}"
+              # Which candidate directories could not be deleted, one path per line.
+              runner_version_dirs_failed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list }}"
+              # false means no runner's link could be read, so the prune had no
+              # keep set and skipped. An empty candidate list does not land
+              # here: the prune ran and removed nothing.
+              runner_version_prune_ran: "{{ (runner_version_targets | default({})).results | default([]) | length > 0 }}"
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
