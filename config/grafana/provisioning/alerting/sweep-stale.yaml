@@ -1,0 +1,62 @@
+# The sweep is dead: agent-dispatch has finished no run for 3 hours
+# (fleet-ops#9278 item 5).
+#
+# Why: agent-dispatch is the fleet's only clock. Nothing it does waits on a
+# person, so when it stops, nothing else notices and the queue just goes quiet.
+# Two rules watch its consequences (queue-down for a startup_failure, queue-stuck
+# for work that stopped moving) and both stay silent when the sweep is never
+# started at all, which is the failure only a heartbeat sees.
+#
+# Signal: the stock GitHub data source (fleet-github, read-only) lists the runs of
+# agent-dispatch.yml in fleet-ops in the last 3 days (Workflow_Runs). The SQL
+# expression reads 1 when no run finished in the last 3 hours, or when the window
+# holds no finished run at all. The sweep has two triggers, an hourly systemd timer
+# on the box (systemd/fleet-pr-sweep@.timer) and GitHub's own schedule, so a 3-hour
+# gap means both are down. for: 30m keeps one slow cycle from firing it.
+#
+# Route: severity warning and no route of its own, so it reaches the catch-all in
+# cloudflare-spend-contact.yaml and files one agent-ready fleet-ops issue. It does
+# not page: the page for a dead loop is Alertmanager's (GrafanaDown).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: sweep-stale
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: sweep-stale-fleet-ops
+        title: agent-dispatch sweep stale for 3h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN MAX(UNIX_TIMESTAMP(created_at)) IS NULL
+                              OR MAX(UNIX_TIMESTAMP(created_at)) < UNIX_TIMESTAMP() - 10800
+                            THEN 1 ELSE 0 END AS stale
+                FROM A
+                WHERE status = 'completed'
+        noDataState: OK
+        execErrState: Error
+        for: 30m
+        annotations:
+          summary: '{{ if $values }}No agent-dispatch sweep has finished in fleet-ops for 3 hours: nothing is being started from the queue, and no worker is being started by it either.{{ else }}The fleet cannot read GitHub runs for the sweep-stale rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Both sweep triggers are down, or every run fails before it starts. Read the hourly timer first (systemctl --user list-timers with the fleet-pr-sweep pattern, then its service status), then the workflow itself: a disabled workflow, or a broken on: block, stops every trigger at once and shows no failed run. Fix the cause, then prove a new run completes with gh run list -R Nishfleet/fleet-ops -w agent-dispatch.yml -L 1.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on actions runs.{{ end }} Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent-dispatch.yml'
+        labels: {severity: warning, signal: sweep-stale}
+        isPaused: false

@@ -289,23 +289,16 @@ deleted issue 9502, exit 1, stdout {"message":"This issue was deleted",
 "status":"410"}, stderr "(HTTP 410)"; either marks it gone, any other read
 fault stays fatal (fleet-ops#9553).
 
-### agent.yml: the arm step's path allowlist
+### agent.yml: the arm step keeps no path list of its own
 
-The arm step arms only when every path in the PR is product code. The shared list
-is the fleet-ops and 0509 layout: `app/routes`, `app/components`, a handful of
-`app/lib` modules, `tests/*.test.tsx`, `e2e/*.spec.ts`, `docs/`. drive keeps its
-code in `src/` and its tests in `test/`, so it adds `src/` and `test/*.test.*` to
-the same line, and every drive PR touching either stopped being held
-(fleet-ops#9420; drive#850 was held with a coordinator approval on its head). A
-repo the `case` does not name keeps the shared list, so 0509 and a repo the fleet
-does not own are unchanged. Only test files are added, not the helpers beside them
-(`test/d1-sqlite.mjs` stays held), and `hold-risky` still holds money, secrets and
-data inside `src/` from its own list: `config/risky-paths.json` carries
-`drive-src-billing-dir` and `drive-src-secret-named-file` for exactly that, and
-`tests/test_risky_paths_cases.py` runs them. The `case` rides the `safe=` line rather than
-a block of its own because the workflow may not grow (the ratchet).
-`tests/test_arm_allowlist.py` runs the step against a fake `gh` for each layout and
-control, and pins the review job's `FLEET_TASK_ID` (#9428) in the same file.
+`config/risky-paths.json` is the one list. The arm step arms every PR; `hold-risky`
+reads that file when the arm raises `auto_merge_enabled`, labels the PR
+`needs-coordinator` and disarms it, and `coordinator-approval` is a required check,
+so a risky PR cannot merge unapproved. The step used to carry a second list beside
+the file, and the two drifted: a drive PR in `src/` was held while the file already
+called it safe, which took a patch to the step to fix (fleet-ops#9420, #11049).
+`ci.yml` fails when the list, or the `pulls/<n>/files` read it needed, comes back
+(fleet-ops#9278).
 
 ### coordinator-approval.yml: the merge-queue gate
 

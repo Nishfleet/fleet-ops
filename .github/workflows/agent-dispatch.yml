@@ -1029,6 +1029,18 @@ jobs:
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
+          # A closed issue frees what it blocked (fleet-ops#9278 item 6). GitHub's
+          # dependency gate skips an issue while it has an open blocker, but a close
+          # does not remove a park label, so an agent-blocked dependent stayed parked
+          # with no event left to free it (#10162, #9324: blocker closed, label still
+          # on). Requeue only when nothing else still blocks it, and only from
+          # agent-blocked: every other park label records a decision, not a wait.
+          deps=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocking" --jq '.[] | select(.state == "open") | .number') || echo "::warning::could not read the issues #$ISSUE blocks"
+          for d in ${deps:-}; do
+            row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked"))"') || row=
+            [ "$row" = "0 true" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
+            gh issue edit "$d" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked --add-label agent-ready || echo "::warning::could not requeue dependent #$d"
+          done
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
