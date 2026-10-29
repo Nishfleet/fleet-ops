@@ -637,3 +637,20 @@ tests:
       - eval_time: 25m
         alertname: FleetSyncFailed
         exp_alerts: []
+
+  # FleetSyncMetricMissing (fleet-ops#9437): no sample at all is a blind detector,
+  # not a pass, so the same silence pages after 30m. The series is absent for this
+  # whole block: no input_series, so every eval sees absent(fleet_sync_failed) = 1.
+  - interval: 30s
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FleetSyncMetricMissing
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: FleetSyncMetricMissing
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+            exp_annotations:
+              summary: "the fleet-ops deploy result metric is missing, so a failed deploy cannot page"
+              description: "fleet_sync_failed has no sample, so FleetSyncFailed cannot fire. fleet-sync.service step 11 could not write /var/lib/prometheus/node-exporter/fleet-sync.prom: check `systemctl --user cat fleet-sync.service` and rootfs/etc/tmpfiles.d/fleet-sync-metric.conf on the box."

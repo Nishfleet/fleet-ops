@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -108,9 +109,15 @@ HOOK = ROOT / "config" / "git-hooks" / "reference-transaction"
 BRANCH_PROBE = "DEPLOY-BLOCKED: the deploy clone has"
 
 
+def install_hook(clone: Path) -> None:
+    hooks = clone / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    shutil.copy2(HOOK, hooks / "reference-transaction")
+
+
 def clone_with_hook(tmp_path: Path) -> Path:
     clone = clone_at(tmp_path)
-    git(clone, "config", "core.hooksPath", str(HOOK.parent))
+    install_hook(clone)
     return clone
 
 
@@ -179,6 +186,34 @@ def test_the_hook_allows_the_deploy_steps(tmp_path: Path) -> None:
     assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
 
 
+def test_the_hook_allows_a_real_deploy_fast_forward(tmp_path: Path) -> None:
+    # The deploy step is a fast-forward of main, and git sends it as two lines:
+    # refs/heads/main and a reflog-only HEAD line with the same new commit. A
+    # guard that refuses the second one stops every deploy (fleet-ops#9437).
+    clone = clone_with_hook(tmp_path)
+    (clone / "later.txt").write_text("later\n")
+    git(clone, "add", "later.txt")
+    git(clone, "commit", "-m", "a commit main has not taken yet")
+    ahead = git(clone, "rev-parse", "HEAD")
+    git(clone, "update-ref", "refs/remotes/origin/main", ahead)
+    git(clone, "reset", "--hard", "HEAD~1")
+    code, text = run_git(clone, "merge", "--ff-only", "refs/remotes/origin/main")
+    assert code == 0, text
+    assert "Fast-forward" in text
+    assert git(clone, "rev-parse", "HEAD") == ahead
+
+
+def test_the_hook_allows_removing_a_stray_branch(tmp_path: Path) -> None:
+    # A stray branch is the 2026-10-08 leftover, and deleting one cannot put the
+    # clone on it, so the guard must not need a bypass to clean it up.
+    clone = clone_at(tmp_path)
+    git(clone, "branch", "pr-9426")
+    install_hook(clone)
+    code, text = run_git(clone, "branch", "-D", "pr-9426")
+    assert code == 0, text
+    assert git(clone, "branch", "--list", "pr-9426") == ""
+
+
 def test_the_hook_leaves_a_linked_worktree_alone(tmp_path: Path) -> None:
     # The worktree is made before the hook is installed: `git worktree add` runs
     # its HEAD transaction from the main worktree, and whether the hook can tell
@@ -217,8 +252,14 @@ def test_a_clone_on_main_passes_step_0a(tmp_path: Path) -> None:
 
 def test_fleet_sync_installs_the_hook_on_every_sync(tmp_path: Path) -> None:
     clone = clone_at(tmp_path)
-    line = exec_line("config core.hooksPath", tmp_path)
+    source = clone / "config" / "git-hooks" / "reference-transaction"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(HOOK.read_bytes())
+    line = exec_line("install -m 0755", tmp_path)
     proc = subprocess.run(line, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert git(clone, "config", "core.hooksPath") == str(tmp_path / CLONE / "config" / "git-hooks")
+    installed = clone / ".git" / "hooks" / "reference-transaction"
+    assert installed.is_file()
+    assert os.access(installed, os.X_OK), "git ignores a hook it cannot execute"
+    assert installed.read_bytes() == HOOK.read_bytes()
 
