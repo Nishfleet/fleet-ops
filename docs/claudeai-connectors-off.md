@@ -19,7 +19,7 @@ on here, later.
 - Verify: `claude mcp list` on the box prints no `claude.ai` line, and the CLI
   logs `[claudeai-mcp] Disabled via disableClaudeAiConnectors setting` when
   connector loading is attempted.
-- Switch it off: fast, `sudo rm /etc/claude-code/managed-settings.d/80-claudeai-connectors.json`
+- Switch the connectors back on: fast, `sudo rm /etc/claude-code/managed-settings.d/80-claudeai-connectors.json`
   (takes effect for the next Claude Code launch; running sessions keep their
   start-up values, and the next `fleet-host-config.service` run puts the file
   back until a PR retires it). Durable: a PR that deletes the file from
