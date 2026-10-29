@@ -469,7 +469,6 @@ jobs:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
-      inputs.task != 'miss-review' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
@@ -1070,7 +1069,7 @@ jobs:
     # claim PR stayed open (0509 #5081 #5019 #5010 #4922 #4902 #4683).
     if: >-
       (github.event_name == 'issues' && github.event.action == 'closed') ||
-      (inputs.issue != '' && inputs.task != 'miss-review')
+      inputs.issue != ''
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     permissions:
       # pull-requests: write closes the PR; contents: write is what
