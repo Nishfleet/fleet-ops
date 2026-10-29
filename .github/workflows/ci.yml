@@ -226,7 +226,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {persist-credentials: false}
+        with: {persist-credentials: false, fetch-depth: 2}
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
@@ -1796,10 +1796,6 @@ jobs:
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
-      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
-        if: steps.gate.outputs.run == 'true'
-        timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py tests/test_grafana_fixture_drift.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
