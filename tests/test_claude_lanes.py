@@ -114,6 +114,13 @@ echo "$last" > "$STATE/jev-body.json"
 echo "{\\"answers\\":{\\"needs_judgment\\":{\\"choice\\":\\"$JEV_CHOICE\\",\\"probabilities\\":{\\"$JEV_CHOICE\\":$JEV_P}}}}"
 """
 SYS_PATH = "/usr/bin:/bin"
+# Plain git: no mirror and no network here, and the step runs under GitHub's
+# default `bash -eo pipefail`, so a real clone failure (rc 128) would end the step
+# instead of being ignored. The clone, fetch and switch only have to succeed.
+GIT = """#!/bin/bash
+echo "$*" >> "$STATE/git.log"
+exit 0
+"""
 # pi_free's seat sum. The real yq reads the runner's copy of
 # config/litellm-proxy.yaml, the same file this repo ships, so a case that needs
 # a specific cap sets YQ_SLOTS instead of pointing at a second copy of the rows.
@@ -125,7 +132,7 @@ echo "${YQ_SLOTS:-65}"
 def _bin(tmp, real_bwrap=False):
     b = tmp / "bin"
     b.mkdir()
-    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("claude", PROBE if real_bwrap else CLAUDE), ("pi", NOOP), ("yq", YQ), ("curl", CURL)):
+    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("git", GIT), ("claude", PROBE if real_bwrap else CLAUDE), ("pi", NOOP), ("yq", YQ), ("curl", CURL)):
         if real_bwrap and name == "bwrap":
             continue  # the system's bwrap is found on PATH
         (b / name).write_text(body)
@@ -335,7 +342,10 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
     }
     paths = [home / SEATS_REL / f"claude-seat-{x}.env" for x in "ab"] + [home / ".local/share/claude-seat-backup", home / ".claude-max", home / ".claude-other-seat", seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"]
     env["PROBE_PATHS"] = " ".join(map(str, paths))
-    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    # The step runs under GitHub's default shell, which is `bash -eo pipefail`, so the
+    # suite runs it the same way: a line that only works without -e or pipefail is a red
+    # step on the runner, not a green one here.
+    r = subprocess.run(["bash", "-eo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
 
     def rd(n):
         p = state / n
@@ -512,7 +522,8 @@ def test_a_packet_with_a_pr_is_never_retried_on_the_other_seat(tmp_path):
 def test_both_seats_at_their_usage_limit_falls_through_to_pi_as_infra(tmp_path):
     # Both seats refused: the run is not a failed job. pi continues the packet, the step's
     # stderr carries the CLI's own 429 so the Router wall requeues the issue as infra, and
-    # no failure comment, strike or orchestrator-tried follows (fleet-ops#10741).
+    # no failure comment, strike or orchestrator-tried follows (fleet-ops#10741). The wall
+    # line names the reset time the API reported, in IST, so the requeue waits for it.
     limit = "Claude AI usage limit reached|1793276330"
     r, _, claude, ran, _, _, _ = _worker(tmp_path, "claude", issue=5, fail_seat=".claude", fail_out=limit)
     assert r.returncode == 0, r.stderr
@@ -520,7 +531,26 @@ def test_both_seats_at_their_usage_limit_falls_through_to_pi_as_infra(tmp_path):
     assert claude.count("CCD=") == 2
     assert "usage limit reached" in (tmp_path / "runner-tmp/worker.err").read_text()
     assert "fallthrough: pi (claude rate limit)" in r.stdout
-    assert "no failure comment" not in r.stdout
+    assert "claude: 429 usage limit on both seats, reset at 2026-10-29 17:48 IST (epoch 1793276330)" in r.stdout
+
+
+def test_one_seat_tried_says_so_in_the_usage_limit_line(tmp_path):
+    # Seat b has no login, so the retry never runs: the line must not claim both seats were
+    # tried, and the reset time still comes from the seat that did refuse.
+    r, _, _, ran, _, _, _ = _worker(tmp_path, "claude", issue=5, login_b=None, fail_seat=".claude-vps", fail_out="Claude AI usage limit reached|1793276330")
+    assert r.returncode == 0, r.stderr
+    assert ran == ["claude", "pi"]
+    assert "claude: 429 usage limit on one seat, reset at 2026-10-29 17:48 IST (epoch 1793276330)" in r.stdout
+    assert "both seats" not in r.stdout
+
+
+def test_the_usage_limit_line_names_the_reset_time_it_has(tmp_path):
+    # No epoch in the output: the line still prints, so a reader is never left with a bare
+    # 429 and no time to wait for.
+    r, _, _, ran, _, _, _ = _worker(tmp_path, "claude", issue=5, fail_seat=".claude", fail_out="API Error: 429 rate limit")
+    assert r.returncode == 0, r.stderr
+    assert ran == ["claude", "pi"]
+    assert "claude: 429 usage limit on both seats, reset at no reset time reported (epoch none)" in r.stdout
 
 
 @pytest.mark.parametrize("engine", ["pi"])
@@ -537,6 +567,41 @@ def test_other_engines_jail_hides_both_seat_logins(tmp_path, engine):
 def _assert_backups_hidden(bwrap, home):
     for d in (".claude-auth-backup-x", "backups-claude-x", ".claude-other-seat"):
         assert f"--tmpfs {home}/{d}" in bwrap, d
+
+
+def _mount_paths(line):
+    """Every path a jail line mounts, in order (a bind's destination, not its source)."""
+    toks = line.split()
+    paths = []
+    i = 0
+    while i < len(toks):
+        if toks[i] in ("--dev-bind", "--bind", "--ro-bind", "--ro-bind-try"):
+            paths.append(toks[i + 2])
+            i += 3
+        elif toks[i] in ("--tmpfs", "--dir", "--chdir"):
+            paths.append(toks[i + 1])
+            i += 2
+        else:
+            i += 1
+    return paths
+
+
+@pytest.mark.parametrize("name", ["jail_base", "claude_jail_a", "claude_jail_b"])
+def test_every_jail_line_mounts_each_path_once(tmp_path, name):
+    # bwrap 0.9.0 accepts a repeated mount (checked on this host), so a duplicate is
+    # invisible until a stricter build refuses the whole line and the step dies. $hide_all
+    # already mounts seat a, so no jail line may name that path a second time.
+    lines = _jail_lines()
+    home = tmp_path / "home"
+    seat_a = home / ".claude-vps"
+    (home / ".claude").mkdir(parents=True)
+    seat_a.mkdir()
+    line = (lines[name].replace("$HOME", str(home)).replace("$seat_a", str(seat_a))
+            .replace("$hide_all", _hides(home, "")).replace("$hide_but_a", _hides(home, str(seat_a))))
+    paths = _mount_paths(line)
+    assert paths
+    dupes = sorted({p for p in paths if paths.count(p) > 1})
+    assert not dupes, dupes
 
 
 def _jail_lines():
@@ -574,7 +639,7 @@ def _lane_seat(issue, home, runner_name="netcup-agent-1"):
     """Runs the lane's own seat lines (parity, then the login check) against real
     files under home and returns (seat, whether CLAUDE_CONFIG_DIR is set)."""
     lines = _step("work", "Worker").splitlines()
-    a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("fallback=pi; case"))
+    a = next(i for i, ln in enumerate(lines) if "fallback=pi;" in ln)
     b = next(i for i, ln in enumerate(lines) if "fallthrough: $ENGINE (claude login missing)" in ln) + 3
     prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nseat_a=$HOME/.claude-vps\nseat_b=$HOME/.claude\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${claude_cfg:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "PATH": SYS_PATH}, capture_output=True, text=True)
@@ -591,6 +656,22 @@ def test_a_non_numeric_id_keeps_seat_a(tmp_path):
     seat_a.mkdir()
     (seat_a / ".credentials.json").write_text("planted")
     assert _lane_seat("miss", home) == ("a", True)
+
+
+def _review_seat(pr):
+    """The review job's own seat line, under that step's `set -euo pipefail`: an even PR
+    reviews on seat b, an odd one on seat a."""
+    lines = _step("review", "Review the held head").splitlines()
+    pick = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a=$HOME/.claude-vps"))
+    prog = "set -euo pipefail\nPR=%s\n" % pr + lines[pick].strip() + '\necho "$claude_seat"\n'
+    r = subprocess.run(["bash", "-c", prog], env={"HOME": "/tmp", "PATH": SYS_PATH}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.splitlines()[-1]
+
+
+@pytest.mark.parametrize("pr,seat", [(7, "a"), (8, "b"), ("", "a"), ("abc", "a"), ("08", "b"), ("09", "a")])
+def test_the_review_seat_follows_the_pull_request_number(pr, seat):
+    assert _review_seat(pr) == seat
 
 
 @pytest.mark.skipif(not _real_bwrap_ok(), reason="bwrap cannot run here")
