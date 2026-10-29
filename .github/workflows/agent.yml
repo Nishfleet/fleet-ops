@@ -55,8 +55,7 @@ permissions: {}
 jobs:
   work:
     if: inputs.ref
-    # fleet-ops asks for the runners only it requests: they do not carry agent, so no product build can take them (#10717)
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 60
     # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
     # else here uses it. No job outputs: the strike runs in this job (below),
@@ -1233,7 +1232,7 @@ jobs:
   # fires the orchestrate job. One open issue per PR: a new head comments on it, the same head does nothing.
   stuck:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions: {pull-requests: read, issues: read}
     concurrency: {group: "stuck-${{ github.repository }}-${{ inputs.stuck_pr }}", cancel-in-progress: false}
