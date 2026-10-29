@@ -197,8 +197,7 @@ jobs:
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
-            gh label create needs-opus -R "$REPO" --force --color D4C5F9 --description "Orchestrator hand-off runs on Opus with 80 turns instead of Sonnet with 40" >/dev/null
-            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator,needs-opus --remove-label agent-ready,agent-in-progress
+            gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
           fi
@@ -251,8 +250,9 @@ jobs:
           # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
           # anything between, or a Jev call that fails, goes to the free lanes. The
           # free order is pi, then opencode, then Devin, and never Cursor
-          # (fleet-ops#8740). Claude is Sonnet, or Opus with needs-opus or after two
-          # failed runs. The seat follows the issue number's parity (the same input the Cursor lane keys on, fleet-ops#9696):
+          # (fleet-ops#8740). Claude is always Sonnet: Opus, Fable and Qwen are
+          # reviewer and judge models only, never a worker (#10750), and a packet
+          # that failed twice escalates to the worker-capable pool. The seat follows the issue number's parity (the same input the Cursor lane keys on, fleet-ops#9696):
           # an odd issue runs seat a, an even issue the default login (seat b), so the jobs split across both seats and a job
           # never changes seat (no clock, and the prompt cache holds). A seat at its usage limit shows up
           # as a rate limit in the Worker, which falls through (below). There is no
@@ -280,10 +280,11 @@ jobs:
           }
           claude_model=claude-sonnet-5-5
           senior=false
+          escalated=false
           # shellcheck disable=SC2016 # $v is a jq variable
           failed=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" elif (.body | startswith("agent run failed: ")) and ((.author.login == "nishfleet-worker") or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | not) then "untrusted" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
-          case $labels in *,needs-opus,*) claude_model=claude-opus-5-5 ;; esac
-          [ "$failed" -lt 2 ] || claude_model=claude-opus-5-5
+          # Two failed runs escalate off the Claude lane to the worker-capable pool (#10750).
+          [ "$failed" -lt 2 ] || escalated=true
           # The audit line goes to the log and to the job summary.
           judged() { echo "judgment: p=$1 -> $2 ($3)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
           want_claude=false
@@ -305,7 +306,8 @@ jobs:
               fi ;;
           esac
           claude_ok=$want_claude
-          if [ "$claude_ok" = true ]; then
+          if [ "$escalated" = true ] && pi_free; then engine=pi
+          elif [ "$claude_ok" = true ]; then
             engine=claude
           elif [ "$senior" = true ]; then
             if [ "$(live cursor-agent)" -lt 1 ]; then engine=cursor; else skip lanes-full; fi
@@ -349,9 +351,8 @@ jobs:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          # Claude lane: Sonnet, or Opus for a packet that failed twice or has
-          # needs-opus (the Gate decides). The other lanes have no turn cap, only
-          # the 55 minute step wall; this is a backstop under it.
+          # Claude lane: Sonnet always (the Gate decides). The other lanes have no
+          # turn cap, only the 55 minute step wall; this is a backstop under it.
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
           # true for strong-only work; a judgment job that claude cannot take goes to pi, never Cursor.

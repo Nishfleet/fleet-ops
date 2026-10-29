@@ -89,8 +89,9 @@ The rules still in force:
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
-  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the issue number's parity
+  Code first (`claude-sonnet-5-5`, the only worker model: Opus, Fable and Qwen
+  are reviewer and judge models only, fleet-ops#10750). A packet that failed twice
+  escalates to the worker-capable pool, never to Opus. The seat is set by the issue number's parity
   (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
   step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
@@ -120,7 +121,7 @@ The rules still in force:
   title and body: does completing this need engineering judgment (a design
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
-  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
+  the issue goes to the claude lane (Sonnet); at 0.1
   or less it goes to the free lanes (pi, then opencode, then Devin). Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
   lanes; `strong-only` always goes to claude. The decision is written as

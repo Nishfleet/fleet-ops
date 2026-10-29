@@ -23,10 +23,12 @@ Repo variable ORCHESTRATE:
   (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
-  Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+  Model/turns pin: Sonnet, 40 turns, on every hand-off. There is no model variable
+    and no escalation label: Opus, Fable and Qwen are reviewer and judge models only
+    (fleet-ops#10750). Off: delete the model and turns lines in the "Check the issue" step.
   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
-  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
-    ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
+  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude.
+    ORCHESTRATE_HOOKS and the 40 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
 To switch orchestration off: set ORCHESTRATE to off.

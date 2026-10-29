@@ -1,8 +1,9 @@
 """Claude Code lanes in .github/workflows/agent.yml, run from the workflow's own
 text (read out with yq, never a copy).
 
-Gate: strong-only work goes to claude-sonnet-5-5, or claude-opus-5-5 after two
-failed runs or with needs-opus. Any other issue is classified by a stubbed Jev:
+Gate: strong-only work goes to claude-sonnet-5-5, and a packet that failed twice
+escalates to the worker-capable pool (fleet-ops#10750). Any other issue is
+classified by a stubbed Jev:
 p >= 0.9 judgment goes to claude, p <= 0.1 or anything between (or a Jev error)
 to the free pi, opencode, devin order; the decision is logged and written to the
 job summary.
@@ -89,6 +90,10 @@ for p in $PROBE_PATHS; do
 done
 } > "$STATE/probe.log"
 """
+YQ = """#!/bin/bash
+n=$(grep -c 'model_name: worker-capable' "$HOME/.config/fleet-ops/litellm-proxy.yaml" 2>/dev/null) || n=0
+echo "$n"
+"""
 CURSOR = """#!/bin/bash
 echo "cursor-agent $*" >> "$STATE/cursor.log"
 echo "cursor TOK=${CLAUDE_CODE_OAUTH_TOKEN-unset} CCD=${CLAUDE_CONFIG_DIR-unset} OTHER=${OTHER-unset}" >> "$STATE/fallback-env.log"
@@ -118,7 +123,7 @@ SYS_PATH = "/usr/bin:/bin"
 def _bin(tmp, real_bwrap=False):
     b = tmp / "bin"
     b.mkdir()
-    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("claude", PROBE if real_bwrap else CLAUDE), ("cursor-agent", CURSOR), ("pi", NOOP), ("devin", NOOP), ("opencode", NOOP), ("curl", CURL)):
+    for name, body in (("pgrep", PGREP), ("gh", GH), ("bwrap", BWRAP), ("claude", PROBE if real_bwrap else CLAUDE), ("cursor-agent", CURSOR), ("pi", NOOP), ("devin", NOOP), ("opencode", NOOP), ("curl", CURL), ("yq", YQ)):
         if real_bwrap and name == "bwrap":
             continue  # the system's bwrap is found on PATH
         (b / name).write_text(body)
@@ -130,6 +135,7 @@ def _bin(tmp, real_bwrap=False):
     for name in ("cursor.env", "cursor-2.env", "mobbin-mcp.env"):
         (seats / name).write_text("")
     (seats / "typesafe-jev.env").write_text("LITELLM_JEV_KEY=not-a-key\n")
+    (home / ".config/fleet-ops/litellm-proxy.yaml").write_text("model_list:\n  - model_name: worker-capable\n    litellm_params: {model: x}\n")
     return b, home
 
 
@@ -164,22 +170,26 @@ def test_one_failed_run_still_sonnet(tmp_path):
     assert _gate(tmp_path, failed=1) == "engine=claude model=claude-sonnet-5-5"
 
 
-def test_second_strike_goes_to_claude_opus(tmp_path):
-    assert _gate(tmp_path, failed=2) == "engine=claude model=claude-opus-5-5"
+def test_second_strike_escalates_to_the_worker_capable_pool(tmp_path):
+    assert _gate(tmp_path, failed=2) == "engine=pi model=claude-sonnet-5-5"
 
 
-def test_failed_comments_from_strangers_do_not_count_toward_opus(tmp_path):
+def test_failed_comments_from_strangers_do_not_count_toward_the_escalation(tmp_path):
     stranger = _comments(failed=3, login="someone-else", assoc="NONE")
     assert _gate(tmp_path, comments=stranger) == "engine=claude model=claude-sonnet-5-5"
 
 
-def test_failed_comments_from_a_member_count_toward_opus(tmp_path):
+def test_failed_comments_from_a_member_count_toward_the_escalation(tmp_path):
     member = _comments(failed=2, login="a-member", assoc="MEMBER")
-    assert _gate(tmp_path, comments=member) == "engine=claude model=claude-opus-5-5"
+    assert _gate(tmp_path, comments=member) == "engine=pi model=claude-sonnet-5-5"
 
 
-def test_needs_opus_label_goes_to_claude_opus(tmp_path):
-    assert _gate(tmp_path, labels=",strong-only,needs-opus,") == "engine=claude model=claude-opus-5-5"
+def test_no_gate_input_resolves_to_a_reviewer_model(tmp_path):
+    for k, (labels, failed) in enumerate([(",strong-only,", 0), (",bug,", 1), (",strong-only,", 2), (",bug,", 3)]):
+        d = tmp_path / str(k)
+        d.mkdir()
+        got = _gate(d, labels=labels, failed=failed)
+        assert got.endswith("model=claude-sonnet-5-5"), got
 
 
 def _route(tmp_path, jev=None, labels=",bug,", live=None, env=None):
@@ -268,9 +278,9 @@ def test_there_is_no_claude_cap(tmp_path):
     assert _gate(d, live={"claude": 40, "cursor_agent": 1}).startswith("engine=claude ")
 
 
-def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
-    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,needs-opus,")
-    assert last == "engine=claude model=claude-opus-5-5" and "senior=false" in out
+def test_only_strong_only_is_senior(tmp_path):
+    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,")
+    assert last == "engine=claude model=claude-sonnet-5-5" and "senior=false" in out
     d = tmp_path / "b"
     d.mkdir()
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
