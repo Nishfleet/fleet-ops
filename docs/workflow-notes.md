@@ -9,11 +9,12 @@ Events that put work on the agent queue. Repo variable AGENT_MODE:
   shadow (default) = only issues also labelled shadow-actions, no rework
   live             = every agent-ready issue, plus rework on red CI
 Repo variable MISS_REVIEW:
-  off (default, unset) = miss-review jobs never start
-  live                 = a miss event starts one different-family review
-To switch miss-review off: set MISS_REVIEW to off, or delete the variable.
-To delete it: revert the miss-review jobs in this file and the miss-review
-path in agent.yml (Gate, Worker, Arm, Deliverable, Clean).
+  off (default, unset) = the miss-review jobs never started
+  live                 = a miss event started one different-family review
+The three miss-review jobs are deleted (fleet-ops#10986), so no dispatch event
+starts a miss review now. The variable still gates the miss path inside agent.yml
+(Gate, Worker, Arm, Deliverable, Clean), which a hand-made ref=...-miss-review
+dispatch reaches; retire it with that path.
 Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
