@@ -1,21 +1,21 @@
-# Gate for the ppi-alibaba rule's A expression (fleet-ops#9865).
+# Gate for the ppi-commandcode, ppi-minimax and ppi-alibaba A expressions
+# (fleet-ops#9880, which supersedes the #9865 gate that covered ppi-alibaba
+# alone).
 #
-# The rule family pages a plan that serves zero calls in 24h. That threshold
-# sits below the Alibaba row's real cadence: it is the one judge-seat row, its
-# traffic is occasional one-shot judge calls (0-3/day, bursty), and on
-# 2026-10-16 the rule fired with the row healthy because its last 3 calls
-# (18:17-19:31 UTC the day before) had slid out of the 24h window 40 seconds
-# before the rule evaluated. The deployed fix widens the idle branch to 7
-# days and leads with the 24h absence branch, so these three cases pin the
-# behaviour:
+# The old idle branch read only `sum(increase(...)) == bool 0`, and a counter
+# satisfies that while the plan serves: a series is created at its first value,
+# so one success in a day reads as zero, and a proxy restart resets the counter
+# and takes the series away. That is the #9879 page - CommandCode fired 50
+# seconds after the provider answered a real 200 OK.
 #
-#  - the incident shape stays silent: the row is present and its last call
-#    (here 91h before the eval, i.e. any gap over 24h and under 7d) is outside
-#    the old 24h idle branch and well inside the new 7d one. In the real
-#    incident the gap was 24h plus 40 seconds, the closest possible miss.
-#  - a plan with zero calls for 7 days still fires;
-#  - a row that vanishes from the router still fires after 24h of absence even
-#    when its counter moved within the last 7 days.
+# The idle branch now also requires the plan total to equal its total one idle
+# window back. Each side is `or vector(0)`, so an absent series compares as 0
+# rather than dropping the comparison to an empty result.
+#
+# Each plan keeps its own window: the worker rows read 24h, MiniMax 72h
+# (fleet-ops#10431) and Alibaba 7d (fleet-ops#9865). The MiniMax cases below
+# pin that 72h window. tests/test_paid_plans.py pins all six deployed rules'
+# windows, api_base regexes and the number each alert message names.
 #
 # Structure follows prompt-cache-hit.test.yml: alert_rule_test answers "does
 # Grafana's threshold call it Alerting", promql_expr_test pins the values the
@@ -24,6 +24,134 @@ evaluation_interval: 1h
 rule_files:
 - paid-plan-idle.test.rules.yml
 tests:
+# #9879: flat counter, the row's series gone, one success not scraped yet.
+# Old expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
+    values: '100+0x46'
+  alert_rule_test:
+  - alertname: CommandCodeIdle
+    eval_time: 47h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
+    eval_time: 47h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+# One success per caller, the per-caller labels the issue names
+# (user_agent, client_ip, hashed_api_key). Old expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1",user_agent="pi/1.4.0"}'
+    values: '1+0x2'
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1",user_agent="opencode/1.0"}'
+    values: '1+0x2'
+  alert_rule_test:
+  - alertname: CommandCodeIdle
+    eval_time: 2h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
+    eval_time: 2h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+# Genuinely idle: flat counter, live series, equal totals.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
+    values: '100+0x47'
+  alert_rule_test:
+  - alertname: CommandCodeIdle
+    eval_time: 47h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: commandcode
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
+    eval_time: 47h
+    exp_samples:
+    - labels: '{}'
+      value: 1
+# Vanished from the router 25h ago, with a counter that moved inside the idle
+# window.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.commandcode.ai/provider/v1"}'
+    values: '100+1x20'
+  alert_rule_test:
+  - alertname: CommandCodeIdle
+    eval_time: 45h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: commandcode
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}[24h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.commandcode.ai/provider/v1.*"} offset 24h) or vector(0)))))'
+    eval_time: 45h
+    exp_samples:
+    - labels: '{}'
+      value: 1
+# MiniMax (#10431): a call 25h back sits inside MiniMax's 72h window and
+# outside a 24h one, so the plan is not idle. Old 24h expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '0+0x20 1+0x26'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 47h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
+    eval_time: 47h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+# MiniMax genuinely idle for its whole 72h window, and the offset side is
+# present, so the totals comparison has to pass the row as well.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '500+0x79'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 79h
+    exp_alerts:
+    - exp_labels:
+        grafana_folder: fleet
+        plan: minimax
+        severity: critical
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
+    eval_time: 79h
+    exp_samples:
+    - labels: '{}'
+      value: 1
+# MiniMax vanished 30h ago: inside the 72h absence window, and its counter
+# moved before it went, so the row is neither absent nor idle yet. Old 24h
+# expression: Alerting.
+- interval: 1h
+  input_series:
+  - series: 'litellm_deployment_success_responses_total{api_base="https://api.minimax.io/anthropic/v1"}'
+    values: '0+0x5 10+0x25'
+  alert_rule_test:
+  - alertname: MiniMaxIdle
+    eval_time: 60h
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}[72h])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://api.minimax.io/anthropic.*"} offset 72h) or vector(0)))))'
+    eval_time: 60h
+    exp_samples:
+    - labels: '{}'
+      value: 0
+# The #9865 incident shape: present, last call 91h back, outside the old 24h
+# idle branch and inside the 7d one.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
@@ -33,11 +161,12 @@ tests:
     eval_time: 181h
     exp_alerts: []
   promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"} offset 7d) or vector(0)))))'
     eval_time: 181h
     exp_samples:
     - labels: '{}'
       value: 0
+# Zero calls for 7 days.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
@@ -51,11 +180,13 @@ tests:
         plan: alibaba-token-plan-sg
         severity: critical
   promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"} offset 7d) or vector(0)))))'
     eval_time: 190h
     exp_samples:
     - labels: '{}'
       value: 1
+# Vanished from the router after 24h of absence, with a counter that moved
+# inside the 7d window.
 - interval: 1h
   input_series:
   - series: 'litellm_deployment_success_responses_total{api_base="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"}'
@@ -69,7 +200,7 @@ tests:
         plan: alibaba-token-plan-sg
         severity: critical
   promql_expr_test:
-  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or (sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0))'
+  - expr: '(absent_over_time(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[24h]) or ((sum(increase(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}[7d])) == bool 0) * ((sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"}) or vector(0)) == bool (sum(litellm_deployment_success_responses_total{api_base=~"https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1.*"} offset 7d) or vector(0)))))'
     eval_time: 130h
     exp_samples:
     - labels: '{}'

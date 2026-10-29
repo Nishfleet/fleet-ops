@@ -228,3 +228,8 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
     w = run(tmp_path, [i])
     assert edits(w, "--add-label needs-nish-decision") == []
     assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_list_job_asks_no_more_than_the_caller_stubs_grant():
+    got = subprocess.run(["yq", ".jobs.list.permissions.actions", WF], capture_output=True, text=True, check=True).stdout.strip()
+    assert got == "read"

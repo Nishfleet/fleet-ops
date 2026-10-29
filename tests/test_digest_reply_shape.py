@@ -311,4 +311,5 @@ def test_morning_files_no_edition_line():
 
 
 def test_ci_runs_this_file():
-    assert "tests/test_digest_reply_shape.py" in CI.read_text()
+    # ci.yml finds every test under tests/ (fleet-ops#10721), so this file runs without being named there.
+    assert re.search(r"pytest\b[^\n]*\stests(\s|$)", CI.read_text()), "ci.yml has no step that runs pytest on the whole tests/ directory"

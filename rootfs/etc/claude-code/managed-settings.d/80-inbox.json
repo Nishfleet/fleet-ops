@@ -2,8 +2,9 @@
   "extraKnownMarketplaces": {
     "inbox": {
       "source": {
-        "source": "directory",
-        "path": "/home/nish/workspaces/tooling/claude-code-mods-petekp-inbox"
+        "source": "github",
+        "repo": "petekp/inbox",
+        "ref": "v0.2.14"
       }
     }
   },

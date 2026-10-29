@@ -6,11 +6,15 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-import litellm
-import pytest
-import yaml
-from litellm import Router
-from litellm.litellm_core_utils.duration_parser import duration_in_seconds
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
+
+import litellm  # noqa: E402
+import pytest  # noqa: E402
+import yaml  # noqa: E402
+from litellm import Router  # noqa: E402
+from litellm.litellm_core_utils.duration_parser import duration_in_seconds  # noqa: E402
 
 CONFIG = yaml.safe_load((Path(__file__).resolve().parent.parent / "config" / "litellm-proxy.yaml").read_text())
 STRAITLY_BASE = "https://api.straitly.ai/v1"

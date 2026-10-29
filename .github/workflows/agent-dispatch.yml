@@ -476,13 +476,14 @@ jobs:
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
-    permissions:
-      issues: write
-      pull-requests: read
-      # actions: `gh run view` liveness (fleet-ops#8777); write only for the sweep-only re-fire `gh workflow run` (no step checks out PR code).
-      actions: write
-      checks: read
-      statuses: read
+    # contents: read is required because `statusCheckRollup` on a private repository
+    # needs it as well as checks: read; without it GitHub answers "Resource not
+    # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"
+    # and the sweep dies on the first claim PR it reads (tether#56). A public repo
+    # never asks for it, so 0509 and drive stayed green. actions: read, not write,
+    # is `gh run view` liveness (fleet-ops#8777); write startup-failed their sweeps
+    # (fleet-ops#10638).
+    permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
       stalled_refs: ${{ steps.list.outputs.stalled_refs }}
@@ -556,10 +557,10 @@ jobs:
               c=$p
             done
           else
-            # agent-in-progress left by a run that died with its runner (no event) and no claim PR goes
-            # back to agent-ready (fleet-ops#9063). One with a claim PR is the orphans case below.
+            gh issue list -R "$GITHUB_REPOSITORY" -S no:label -L 5 --json number --jq '.[].number' | xargs -rI{} gh issue edit {} -R "$GITHUB_REPOSITORY" --add-label needs-triage || echo "::warning::triage labelling failed"
+            # agent-in-progress left by a run that died with its runner and no claim PR goes back to agent-ready (fleet-ops#9063). A draft claim PR counts as none: a dead run leaves one (fleet-ops#10367).
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
-              gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
+              gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
               [[ $body =~ actions/runs/([0-9]+) ]] || continue
               # A failed read is not proof the run died: skip, never requeue a live worker.
@@ -764,16 +765,12 @@ jobs:
        (github.event_name == 'workflow_dispatch' && inputs.issue == '' && inputs.task == ''))
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
     timeout-minutes: 20
-    # issues: write posts the rework note on a claim issue; pull-requests:
-    # write posts the stuck-review marker. checks and statuses read each
-    # head's state; actions: read is `gh run view`
-    # for a claim issue's live run. All within what every caller stub grants.
-    permissions:
-      issues: write
-      pull-requests: write
-      checks: read
-      statuses: read
-      actions: read
+    # issues: write posts the rework note on a claim issue; pull-requests: write
+    # posts the stuck-review marker. checks and statuses read each head's state;
+    # actions: read is `gh run view` for a claim issue's live run. contents: read
+    # is here for the same reason as the list job's: on a private repository GitHub
+    # refuses the head's checks for a token without it (tether#56).
+    permissions: {issues: write, pull-requests: write, contents: read, checks: read, statuses: read, actions: read}
     outputs:
       review: ${{ steps.find.outputs.review }}
       arm: ${{ steps.find.outputs.arm }}
@@ -1090,7 +1087,12 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
+          # A closed issue is not active work: strip the queue and park labels, and
+          # orchestrator-tried, which marks a dead end that a close ends
+          # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
+          # record of a reserved call, not a queue state. An empty list makes the
+          # edit fail and || true swallows it, the same net effect as skipping.
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1310,12 +1312,12 @@ jobs:
             actor=$(gh api "repos/$REPO/issues/$n/events" --paginate \
               --jq '.[] | select(.event == "labeled" and .label.name == "needs-triage") | [.created_at, (.actor.login // "")] | @tsv' \
               | sort | tail -n1 | cut -f2)
-            printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$actor" || {
+            { [ -n "$actor" ] && printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$actor"; } || {
               echo "::notice::admit: #$n needs-triage was not applied by a trusted login; skipped"; continue; }
             # fleet-ops#8313: only the owner's issues are admitted, so a trusted
             # labeller cannot pull a stranger's issue into the queue.
             author=$(jq -r '.user.login // ""' <<<"$issue")
-            printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$author" || {
+            { [ -n "$author" ] && printf '%s\n' "$TRUSTED_LOGINS" | grep -Fxq -- "$author"; } || {
               echo "::notice::admit: #$n was filed by an untrusted login; skipped"; continue; }
             reason=$(jq -r "$EXCLUDE" <<<"$issue")
             if [ -n "$reason" ]; then
@@ -1390,12 +1392,10 @@ jobs:
       # issues: read for the issue steps; contents: read for git refs and PR lists
       # through the API; pull-requests: read because on a private repo the cleanup
       # step's PR list fails without it and a failed list reads as "no PR" (drive
-      # while it was private); actions: read because the daily cap lists this
-      # workflow's runs and jobs (403 under GITHUB_TOKEN without it).
+      # while it was private).
       issues: read
       contents: read
       pull-requests: read
-      actions: read
     env:
       REPO: ${{ github.repository }}
       # An issues.labeled event has no inputs.issue, so a 0509 stub that calls
@@ -1411,15 +1411,6 @@ jobs:
           DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX }}
           MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
-          RUN_ID: ${{ github.run_id }}
-          # Counts the jobs of earlier runs whose session step ended (success
-          # or failure). Input: a slurped array of job objects from the
-          # actions jobs API. The name match covers a caller stub, whose job
-          # reads "<stub job> / orchestrate".
-          CAP_COUNT: >-
-            [.[] | select((.name // "") as $n | $n == "orchestrate" or ($n | endswith(" / orchestrate")))
-              | select(any(.steps[]?; .name == "Run the orchestrator session" and (.conclusion == "success" or .conclusion == "failure")))]
-            | length
         run: |
           set -euo pipefail
           [ -n "$ISSUE" ] || { echo "orchestrate: no issue number on this event; skip"; exit 0; }
@@ -1433,42 +1424,36 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435): continue it. The per-issue concurrency group means no other run for #N is live. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
+          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            open=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=open" --jq length) || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
-            if [ "$open" = 0 ]; then echo "orchestrate: $branch exists on origin with no open PR; another hand-off owns #$ISSUE; skip"; exit 0; fi
+            ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then 0 else length end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
+            if [ "$ended" != 0 ]; then echo "orchestrate: $branch has only closed or merged PRs; skip"; exit 0; fi
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
-          # used ~31% of Nish's weekly Claude limit. It counts hand-off RUNS
-          # since 00:00 IST, whose session step concluded, over this workflow's
-          # `issues` and `workflow_dispatch` runs (the only events that can
-          # start this job). Over the cap, or when a GitHub 5xx leaves the count
-          # unreadable, the run skips and the issue keeps needs-orchestrator.
+          # used ~31% of Nish's weekly Claude limit. It counts today's (IST)
+          # "orchestrator hand-off started:" comments, which this step posts on
+          # every admitted run below, from members only. Counting this
+          # workflow's runs held every hand-off on a day of 400+ dispatch runs
+          # (fleet-ops#10641), so the count must not grow with dispatch traffic.
+          # An unreadable count admits with a warning: the cap stops a runaway
+          # loop, and a GitHub 5xx is not one.
           DAILY_MAX=${DAILY_MAX:-10}
           case $DAILY_MAX in
             ''|*[!0-9]*) echo "::error::orchestrate: ORCHESTRATE_DAILY_MAX must be a non-negative integer, got '$DAILY_MAX'"; exit 1 ;;
           esac
           if [ "$DAILY_MAX" -gt 0 ]; then
             since=$(date -u -d "$(TZ=Asia/Kolkata date +%F) 00:00 +0530" +%FT%TZ)
-            wid=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id)
             retry() { local o i; for i in 1 2 3; do o=$("$@") && { printf '%s\n' "$o"; return 0; }; sleep $((i * 5)); done; return 1; }
-            unknown() { echo "::warning::orchestrate: daily cap count unreadable (GitHub error); #$ISSUE keeps needs-orchestrator for the sweep"; exit 0; }
-            for ev in issues workflow_dispatch; do
-              ids+=$'\n'$(retry gh api --method GET --paginate "repos/$REPO/actions/workflows/$wid/runs" -f event="$ev" -f created=">=${since%%T*}" -f per_page=100 --jq ".workflow_runs[] | select(.created_at >= \"$since\") | .id") || unknown
-            done
-            ids=$(printf '%s' "$ids" | grep -E '^[0-9]+$' | sort -u || true)
-            nruns=$(printf '%s' "$ids" | grep -c . || true)
-            if [ "$nruns" -gt 400 ]; then
-              echo "::warning::orchestrate: $nruns runs since 00:00 IST in $REPO, too many to count; daily cap holds #$ISSUE (keeps needs-orchestrator)"
-              exit 0
+            if pages=$(retry gh api --method GET --paginate "repos/$REPO/issues/comments" -f since="$since" -f per_page=100 --jq "[.[] | select(.created_at >= \"$since\" and (.author_association | IN(\"OWNER\", \"MEMBER\", \"COLLABORATOR\")) and (.body | startswith(\"orchestrator hand-off started:\")))] | length"); then
+              count=$(printf '%s\n' "$pages" | jq -s 'add // 0')
+              if [ "$count" -ge "$DAILY_MAX" ]; then
+                echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-offs since 00:00 IST in $REPO); #$ISSUE keeps needs-orchestrator; dispatch task=orchestrate issue=$ISSUE after midnight IST"
+                exit 0
+              fi
+              echo "orchestrate: $count/$DAILY_MAX hand-offs since 00:00 IST in $REPO"
+            else
+              echo "::warning::orchestrate: daily cap count unreadable (GitHub error); admitting #$ISSUE uncounted"
             fi
-            jobs_json=$(for id in $ids; do retry gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" --jq '.jobs[] | {name, steps: [.steps[]? | {name, conclusion}]}' || exit 1; done) || unknown
-            count=$(jq -s "$CAP_COUNT" <<<"$jobs_json")
-            if [ "$count" -ge "$DAILY_MAX" ]; then
-              echo "::warning::orchestrate: daily cap reached ($count/$DAILY_MAX hand-off runs since 00:00 IST in $REPO); #$ISSUE keeps needs-orchestrator; dispatch task=orchestrate issue=$ISSUE after midnight IST"
-              exit 0
-            fi
-            echo "orchestrate: $count/$DAILY_MAX hand-off runs since 00:00 IST in $REPO"
           else
             echo "orchestrate: daily cap off (ORCHESTRATE_DAILY_MAX=0)"
           fi
@@ -1487,6 +1472,10 @@ jobs:
           else
             echo "runner=pi" >> "$GITHUB_OUTPUT"
           fi
+          # The daily cap's count. Posted as the runner login (this job's token
+          # is issues: read); a failed post only undercounts, so it warns.
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off started: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" ||
+            echo "::warning::orchestrate: the hand-off-started comment failed; today's daily cap count misses this run"
           echo "go=true" >> "$GITHUB_OUTPUT"
       - name: Fresh worktree on origin/main
         id: worktree
@@ -1540,7 +1529,7 @@ jobs:
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
-          # A branch on origin here has an open PR (step "issue"): continue from its head.
+          # A branch on origin here has an open PR or none at all (step "issue"): continue from its head.
           start=refs/remotes/origin/orch/issue-$ISSUE
           git -C "$mirror" show-ref --verify --quiet "$start" || start=
           if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
@@ -1679,10 +1668,7 @@ jobs:
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
           # work, so it does not park the issue.
-          [ "$GO" = true ] || {
-            echo "orchestrate: nothing was built on this run; no park mark"
-            exit 0
-          }
+          [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
@@ -1691,6 +1677,14 @@ jobs:
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
           fi
+          # A PR on any other branch (gate/*, claim/*) that closes the issue is
+          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
+          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
+          # Open and merged PRs count (default includeClosedPrs=false); a closed
+          # unmerged one does not. Fail closed: a read that fails or prints no
+          # count marks nothing.
+          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
+          [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
