@@ -49,17 +49,17 @@ jobs:
           set -euo pipefail
           src="$BASE_DIR/.github/workflows/agent-dispatch.yml"
           [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && [ -s "$src" ] || { src=$(mktemp); curl -fsSL --max-time 20 --retry 2 "$RULES" > "$src" || { echo "::error::coordinator-approval: rules unreadable"; exit 1; }; }
+          # The base commit of this workflow's own first queue entry is main before the
+          # move, where the rules still sit under the hold-risky job; read either layout.
           for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
-            val=$(yq ".env.$v" "$src")
+            val=$(yq ".env.$v // .jobs.\"hold-risky\".env.$v" "$src")
             [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: $v unreadable"; exit 1; }
             export "$v=$val"
           done
           [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || cfg=$(curl -fsSL --max-time 20 --retry 2 "$(yq '.env.RISKY_PATHS_URL' "$src")" | jq -c .) || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
           [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] || { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
           nums=${BASH_REMATCH[1]}
-          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" \
-            --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" ||
-            { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
+          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" || { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
           total=$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)
           if [ "$total" -gt 1 ]; then
             while IFS= read -r subject; do
@@ -74,23 +74,16 @@ jobs:
           for n in $(tr ' ' '\n' <<<"$nums" | sort -un); do
             pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
             sha=$(jq -r .head.sha <<<"$pr")
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
-              { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
+            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" || { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
             jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
             jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
               '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
-            verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
-              { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
+            verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") || { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
             echo "coordinator-approval: #$n at $sha: $verdict"
             jq -e .risky <<<"$verdict" >/dev/null || continue
-            gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt" ||
-              { echo "::error::coordinator-approval: statuses read failed for $sha"; bad=1; continue; }
-            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
-              --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
-              { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
+            gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt" || { echo "::error::coordinator-approval: statuses read failed for $sha"; bad=1; continue; }
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" || { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
+            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" '{sha: $sha, statuses: $s, comments: $m}' | jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
             if [ "$approved" = true ]; then
               echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
             else

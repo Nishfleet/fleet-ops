@@ -30,8 +30,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          # Pin: every job except ci and coordinator-approval must be in ci's needs.
-          want=$(yq -r '.jobs | keys | .[] | select(. != "ci" and . != "coordinator-approval")' .github/workflows/ci.yml | sort)
+          # Pin: every job except ci must be in ci's needs.
+          want=$(yq -r '.jobs | keys | .[] | select(. != "ci")' .github/workflows/ci.yml | sort)
           have=$(yq -r '.jobs.ci.needs[]' .github/workflows/ci.yml | sort)
           [ "$want" = "$have" ] || { echo "::error::ci needs ${have//$'\n'/ } but the other jobs are ${want//$'\n'/ }"; exit 1; }
           # Failure and cancelled block; success and skipped pass.
