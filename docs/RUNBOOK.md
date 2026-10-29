@@ -330,12 +330,6 @@ unit's real ExecStart under systemd against a stub that checks the JWT the way G
 
     gh variable set CI_RUNNER --org Nishfleet --body blacksmith-4vcpu-ubuntu-2404 -v all
 
-Dispatch `.github/workflows/ci-runner-probe.yml` (Actions -> ci-runner-probe -> Run workflow)
-and read its log: `CI_RUNNER=` is the value the job saw, `runner=` is the runner the job took,
-and `CI_RUNNER=<unset>` means the variable is absent. A run that stays queued names a label no
-runner carries, which is the failure the probe exists to show. It is dispatch-only, from `main`
-and non-required, so it reports and never gates.
-
 `-v all` keeps the public repos on it; the default is private-only. While it is set, read
 `blacksmith usage` and take the largest of its `billable_minutes`, `billing_minutes` and
 `runtime_minutes` columns (4-vCPU minutes count double). At 2,850 minutes (95% of the 3,000 free)
@@ -480,11 +474,10 @@ on the .path, both from the deploy clone (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
-miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
-not that key; the cap takes effect when the key is minted and that seat file
-holds it. LiteLLM v1.98 has no declarative key list, so minting is one
-admin-API call, not a config edit.
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
+`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
+takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
 into `agent-state/backups/litellm.dump` before every run, and that dump is the
@@ -501,8 +494,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
@@ -716,7 +712,7 @@ plan now fixes. Data restore is that vault's
 
 - Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
 - Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
-- A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
+- A reusable workflow can be required from another repo: the organization ruleset `org-required-workflows` (`config/org-ruleset.json`, fleet-ops#10554) runs `Nishfleet/fleet-ops` `.github/workflows/ratchet.yml@main` in every repo. The 403 on `gh api orgs/Nishfleet/rulesets` was the token's missing org-owner scope, not the plan. The caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is caught by the ruleset's own run once the rule is active.
 - Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
 - Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
 
