@@ -240,8 +240,10 @@ also sets `StartLimitIntervalSec=` and `StartLimitBurst=` large enough for the
 burst to fit inside the interval: the default 5 starts in 10s can never be
 spent by a `RestartSec=30`, so such a unit loops forever instead of failing and
 its `OnFailure=` page never fires. The one exception is a unit that means to
-retry without end, which turns the limit off and pages from `ExecStopPost=`
-(fleet-ops#10253, enforced by `tests/test_systemd_unit_keys.py`).
+retry without end: it turns the limit off and pages from `ExecStopPost=`, or it
+is the only way back onto the box. `tests/test_systemd_unit_keys.py` names
+those two units with their reason and requires the pair everywhere else
+(fleet-ops#10253).
 
 ## CI standard (the parts that stay)
 

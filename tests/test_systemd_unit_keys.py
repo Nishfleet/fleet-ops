@@ -59,6 +59,7 @@ def test_systemd_analyze_reports_no_unknown_directive() -> None:
 
 USER_INSTALLED = ROOT / "rootfs/etc/systemd/user"
 TIME_UNITS = {"": 1, "us": 1e-06, "ms": 1e-03, "s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600, "d": 86400}
+RESTARTING = ("always", "on-failure", "on-abnormal", "on-abort", "on-watchdog")
 DESIGNED_FLAPPERS = {
     "claude-remote-control.service (system)": "selfheal.conf turns the limit off and 50-alert-on-stop.conf pages from ExecStopPost=, because OnFailure= cannot fire",
     "tailscaled.service (system)": "50-restart-always.conf turns the limit off: this link is the way back to the box",
@@ -66,7 +67,6 @@ DESIGNED_FLAPPERS = {
 
 
 def unit_layers() -> dict[str, list[Path]]:
-    """Unit name and its manager to the files systemd reads for it: the base file first, then its drop-ins."""
     layers: dict[str, list[Path]] = {}
     managers = {
         "user": [ROOT / "systemd", USER_INSTALLED],
@@ -84,7 +84,6 @@ def unit_layers() -> dict[str, list[Path]]:
 
 
 def sections(path: Path) -> list[tuple[str, str, str]]:
-    """(section, key, value) for every assignment in the file, in file order. Units repeat keys, so no configparser."""
     entries: list[tuple[str, str, str]] = []
     section = ""
     for raw in path.read_text().splitlines():
@@ -101,13 +100,14 @@ def sections(path: Path) -> list[tuple[str, str, str]]:
 
 
 def seconds(value: str) -> float:
-    spans = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*([a-z]+)?", value)
+    if value == "infinity":
+        return float("inf")
+    spans = re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)?", value)
     assert spans and all(unit in TIME_UNITS for _, unit in spans), f"{value!r} is not a systemd time span"
     return sum(float(number) * TIME_UNITS[unit] for number, unit in spans)
 
 
 def last(entries: list[tuple[str, str, str]], key: str) -> tuple[str, str] | None:
-    """(section, value) of the key systemd would use, or None."""
     found = [(section, value) for section, name, value in entries if name == key]
     return found[-1] if found else None
 
@@ -117,11 +117,13 @@ def test_a_restarting_unit_can_spend_its_start_limit() -> None:
     for unit, files in unit_layers().items():
         entries = [entry for path in files for entry in sections(path)]
         restart = last(entries, "Restart")
-        if restart is None or restart[1] not in ("always", "on-failure"):
+        if restart is None or restart[1] not in RESTARTING:
             continue
         interval = last(entries, "StartLimitIntervalSec")
         if unit in DESIGNED_FLAPPERS:
-            if interval is None or seconds(interval[1]) != 0:
+            if not DESIGNED_FLAPPERS[unit].strip():
+                problems.append(f"{unit}: named in DESIGNED_FLAPPERS with no reason")
+            elif interval is None or seconds(interval[1]) not in (0, float("inf")):
                 problems.append(f"{unit}: DESIGNED_FLAPPERS names it, so it must turn the limit off with StartLimitIntervalSec=0")
             continue
         burst = last(entries, "StartLimitBurst")
@@ -135,7 +137,7 @@ def test_a_restarting_unit_can_spend_its_start_limit() -> None:
         if interval[0] != "Unit" or burst[0] != "Unit":
             problems.append(f"{unit}: StartLimitIntervalSec=/StartLimitBurst= outside [Unit] is ignored by systemd")
             continue
-        if seconds(interval[1]) <= 0:
+        if seconds(interval[1]) in (0, float("inf")):
             problems.append(
                 f"{unit}: StartLimitIntervalSec={interval[1]} turns the limit off. Name it in DESIGNED_FLAPPERS with the reason instead"
             )
