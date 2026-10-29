@@ -45,8 +45,8 @@ Description=Daily check of each router provider's model list against the host sn
 # only that provider (a plain line names it); every other provider is still checked.
 #
 # Credentials: the issues-only token of the worker App (fleet-grafana-github-token.service
-# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so the human
-# gh login is never read, as retro-weekly.service files its issues. The provider keys come
+# mints it; %t/fleet-grafana-github-token/token) with an empty GH_CONFIG_DIR, so gh finds no
+# config file at all and the human gh login under ~/.config/gh is never read. The provider keys come
 # from the same per-provider key files the LiteLLM container reads, listed one by one so the
 # master key and the Claude logins are not in this unit's environment. A key goes to curl
 # through a 0600 header file in the runtime dir (-H @file, a form AGENTS.md lists), never argv.
@@ -81,12 +81,9 @@ Environment=YQ=%h/.local/bin/yq
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
-EnvironmentFile=-%E/fleet-ops/seats/pareto.env
 EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%E/fleet-ops/seats/zai.env
-EnvironmentFile=-%E/fleet-ops/seats/cline.env
 EnvironmentFile=-%E/fleet-ops/seats/minimax.env
-EnvironmentFile=-%E/fleet-ops/seats/ollama.env
 EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
 EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
 # Straitly (fleet-ops#9788): its key lives in %h/.config/straitly/straitly.env, not a seat file, and config/provider-watch.json marks it listing none, so the watch skips it before it looks for a key. The line keeps tests/test_provider_watch.py::test_every_router_key_has_an_environment_file_in_the_unit true.

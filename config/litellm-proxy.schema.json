@@ -53,6 +53,11 @@
       "required": ["litellm_params"],
       "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.synthetic.new/openai/v1" } } } }
     },
+    "stepfunRow": {
+      "type": "object",
+      "required": ["litellm_params"],
+      "properties": { "litellm_params": { "type": "object", "required": ["api_base"], "properties": { "api_base": { "const": "https://api.stepfun.ai/step_plan/v1" } } } }
+    },
     "judgeRow": {
       "type": "object",
       "required": ["model_name", "litellm_params"],
@@ -127,7 +132,7 @@
       ]
     },
     "retryPolicy": {
-      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; proposed (0,1,1) caps the worker group at one attempt before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 0 because a bad key can never recover on retry. TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it was a forward bound only, and it went live with the v1.105.0 image move (fleet-ops#10071). fleet-ops#9050 adds NotFoundErrorRetries and DefaultRetries, both live on 1.105.0: the policy is read before should_retry_this_error, NotFoundErrorRetries covers a status-404 answer, and DefaultRetries covers every class the policy does not name (a 402 maps to APIError with no named key; a 403 from an openai-compatible provider arrives as BadRequestError carrying status 403, which BadRequestErrorRetries already granted on both 1.98.0 and 1.105.0). Whether the granted retry reaches a different row depends on rotation: a 404 parks the row on NotFoundErrorAllowedFails 0, so the retry went to a live peer; a 403 cools nothing, so the session pin overrides the skip list and the granted attempt re-picks the same row (both drilled on 1.105.0 in tests/test_router_retry_policy_no_cross_seat.py). Both are capped at 1 like the other retry keys; named keys keep precedence, so 401/content-policy stay 0 and a 429 gets the second, peer-row retry. RateLimitErrorRetries is 2 (fleet-ops#10178: the second retry runs after the pinned row is parked and lands on a peer, so a one-slot row that is full does not leak a 429 from a group with no fallback). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
+      "$comment": "fleet-ops#9375: in-router retries must not re-send a worker prompt to a different seat more than the fallback needs. The values are locked by tests/test_router_retry_policy_no_cross_seat.py: shipped (2,2,2) produced a third in-group pick that re-sent the whole prompt cold; the #9375 cut caps the worker group before the fallback group (or Pi's own retry, which keeps the session id and therefore the pin). On litellm 1.98.0 the one allowed retry goes back to the row that just failed when that row is still healthy after the 429 (router allowed_fails 1; the test drills it). A row that parks on its first 429 (RateLimitErrorAllowedFails 0, the daily-quota rows) is already cooling, so its retry goes to a peer: still capped at one extra pick, not a same-row retry. Either way the cap removes the third-seat re-send. A litellm upgrade can change that, which is why the test pins the version. ContentPolicyViolationErrorRetries is 0 because a content-policy refusal repeats on every seat; AuthenticationErrorRetries is 1 (fleet-ops#10756) because a 401 does not recover on the same row but the router-level AuthenticationErrorAllowedFails 0 (config/litellm-proxy.yaml router_settings.allowed_fails_policy, gated by test_the_live_config_parks_a_401_row_on_its_first_failure) parks the 401 row on its first failure, so the granted retry goes to a live peer in the same group and one dead provider key does not fail the whole session. TimeoutErrorRetries/InternalServerErrorRetries/BadRequestErrorRetries are capped at 1 (InternalServerErrorRetries is inert on 1.98.0: get_num_retries_from_retry_policy has no InternalServerError branch, so it was a forward bound only, and it went live with the v1.105.0 image move (fleet-ops#10071). fleet-ops#9050 adds NotFoundErrorRetries and DefaultRetries, both live on 1.105.0: the policy is read before should_retry_this_error, NotFoundErrorRetries covers a status-404 answer, and DefaultRetries covers every class the policy does not name (a 402 maps to APIError with no named key; a 403 from an openai-compatible provider arrives as BadRequestError carrying status 403, which BadRequestErrorRetries already granted on both 1.98.0 and 1.105.0). Whether the granted retry reaches a different row depends on rotation: a 404 parks the row on NotFoundErrorAllowedFails 0, so the retry went to a live peer; a 403 cools nothing, so the session pin overrides the skip list and the granted attempt re-picks the same row (both drilled on 1.105.0 in tests/test_router_retry_policy_no_cross_seat.py). Both are capped at 1 like the other retry keys; named keys keep precedence, so content-policy stays 0 and a 429 gets the second, peer-row retry. RateLimitErrorRetries is 2 (fleet-ops#10178: the second retry runs after the pinned row is parked and lands on a peer, so a one-slot row that is full does not leak a 429 from a group with no fallback). All keys are required and unknown keys are forbidden on purpose: a new litellm knob must arrive as a reviewed schema change, not a silent config edit.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -141,7 +146,7 @@
         "DefaultRetries"
       ],
       "properties": {
-        "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "AuthenticationErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
         "RateLimitErrorRetries": { "type": "integer", "minimum": 0, "maximum": 2 },
         "TimeoutErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
         "InternalServerErrorRetries": { "type": "integer", "minimum": 0, "maximum": 1 },
@@ -213,6 +218,22 @@
           "contains": { "$ref": "#/$defs/judgeRow" },
           "minContains": 2,
           "maxContains": 2
+        },
+        {
+          "$comment": "fleet-ops#10762: no StepFun row carries max_parallel_requests. Cause and measurements: note 13 in docs/litellm-router-notes.md. fleet-ops#10694 took the same cap off the Synthetic and z.ai rows.",
+          "contains": { "$ref": "#/$defs/stepfunRow" },
+          "minContains": 0,
+          "maxContains": 10,
+          "items": {
+            "if": { "$ref": "#/$defs/stepfunRow" },
+            "then": {
+              "properties": {
+                "litellm_params": {
+                  "not": { "required": ["max_parallel_requests"] }
+                }
+              }
+            }
+          }
         }
       ],
       "items": {
@@ -343,6 +364,15 @@
             "TimeoutErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "InternalServerErrorAllowedFails": { "type": "integer", "minimum": 0 },
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
+          }
+        },
+        "model_group_alias": {
+          "$comment": "fleet-ops#9330 desk arm of the 3-day token trial, and nothing else: an alias renames a group Pi already picks, so Pi's compaction.modelOverrides (keyed provider/model) can shorten that arm's context without moving a single call to another seat. Only a worker group a Pi job can pick has one, which is why worker-public is here and assistant is not. Pinned as a closed map because an alias also renames the fallback chain: Router._get_model_from_alias resolves the name before routing, but fallback_lookup_groups keys on the requested name, so an alias with no fallbacks entry of its own inherits nothing and a failed row ends the call (the 'No fallback model group' shape of fleet-ops#9290). tests/test_workflow_caps.py asserts each pair here is real, that no alias name shadows a model_name, and that the desk name agent.yml builds is listed.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "worker-capable-desk": { "const": "worker-capable" },
+            "worker-public-desk": { "const": "worker-public" }
           }
         },
         "fallbacks": {

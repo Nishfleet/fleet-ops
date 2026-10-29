@@ -13,8 +13,6 @@
       "--max-turns \"$TURNS\"",
       "ORCHESTRATE_DAILY_MAX",
       "claude-sonnet-5-5",
-      "needs-opus",
-      "ORCHESTRATE_MODEL",
       "ORCHESTRATE_HOOKS",
       "actions: read",
       "disableAllHooks",
@@ -256,7 +254,6 @@
     {
       "id": "under-cap",
       "daily_max": "2",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {}
@@ -268,7 +265,6 @@
     {
       "id": "at-cap",
       "daily_max": "2",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -279,7 +275,6 @@
     {
       "id": "over-cap-default-10",
       "daily_max": null,
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -298,7 +293,6 @@
     {
       "id": "under-default-10",
       "daily_max": null,
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -318,7 +312,6 @@
     {
       "id": "yesterday-not-counted",
       "daily_max": "1",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {
@@ -332,7 +325,6 @@
     {
       "id": "ended-comment-not-counted",
       "daily_max": "1",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {
@@ -346,7 +338,6 @@
     {
       "id": "non-member-not-counted",
       "daily_max": "1",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {
@@ -360,7 +351,6 @@
     {
       "id": "collaborator-counts",
       "daily_max": "1",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {
@@ -372,7 +362,6 @@
     {
       "id": "busy-day-500-runs-3-handoffs-admits-4th",
       "daily_max": "4",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -387,7 +376,6 @@
     {
       "id": "busy-day-cap-still-holds",
       "daily_max": "3",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -400,7 +388,6 @@
     {
       "id": "zero-is-no-cap",
       "daily_max": "0",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -441,64 +428,13 @@
     {
       "id": "bad-max-fails",
       "daily_max": "ten",
-      "model_var": null,
       "labels": [],
       "handoffs": [],
       "want_fail": true
     },
     {
-      "id": "needs-opus-label",
-      "daily_max": "5",
-      "model_var": null,
-      "labels": [
-        "needs-opus"
-      ],
-      "handoffs": [
-        {}
-      ],
-      "want_go": true,
-      "want_model": "",
-      "want_turns": "80",
-      "want_runner": "claude"
-    },
-    {
-      "id": "model-var-off",
-      "daily_max": null,
-      "model_var": "off",
-      "labels": [],
-      "handoffs": [],
-      "want_go": true,
-      "want_model": "",
-      "want_turns": "80",
-      "want_runner": "claude"
-    },
-    {
-      "id": "model-var-override",
-      "daily_max": null,
-      "model_var": "claude-opus-4-1",
-      "labels": [],
-      "handoffs": [],
-      "want_go": true,
-      "want_model": "claude-opus-4-1",
-      "want_turns": "40",
-      "want_runner": "pi"
-    },
-    {
-      "id": "needs-opus-but-capped",
-      "daily_max": "1",
-      "model_var": null,
-      "labels": [
-        "needs-opus"
-      ],
-      "handoffs": [
-        {}
-      ],
-      "want_go": false
-    },
-    {
       "id": "runner-var-claude",
       "daily_max": null,
-      "model_var": null,
       "labels": [],
       "handoffs": [],
       "runner_var": "claude",
@@ -510,7 +446,6 @@
     {
       "id": "runner-default-pi",
       "daily_max": null,
-      "model_var": null,
       "labels": [],
       "handoffs": [],
       "want_go": true,
@@ -521,7 +456,6 @@
     {
       "id": "502-then-good",
       "daily_max": "2",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -533,7 +467,6 @@
     {
       "id": "502-always-admits-open",
       "daily_max": "2",
-      "model_var": null,
       "labels": [],
       "handoffs": [
         {},
@@ -548,7 +481,6 @@
     {
       "id": "marker-post-fails-still-goes",
       "daily_max": "2",
-      "model_var": null,
       "labels": [],
       "handoffs": [],
       "fail_post": true,
@@ -565,16 +497,6 @@
       "hooks": "",
       "want_model": "claude-sonnet-5-5",
       "want_turns": "40",
-      "want_settings": true,
-      "runner": "claude"
-    },
-    {
-      "id": "opus-hooks-off",
-      "model": "",
-      "turns": "80",
-      "hooks": "",
-      "want_model": "",
-      "want_turns": "80",
       "want_settings": true,
       "runner": "claude"
     },

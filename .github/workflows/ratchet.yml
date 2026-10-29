@@ -1,15 +1,18 @@
-# The fleet's ratchet, defined once: net added lines under .github/workflows, .github/actions,
-# scripts and bin must be 0 or fewer. A repo's job `ratchet` calls this @main and requires the check
-# `ratchet / ratchet`. The rule runs from main, and a PR that edits the caller's job fails.
+# The fleet's ratchet, defined once: net added code lines (blank and comment lines not counted) under
+# .github/workflows, .github/actions, scripts and bin must be 0 or fewer. A repo's job `ratchet` calls
+# this @main and requires `ratchet / ratchet`. The rule runs from main; a PR that edits that job fails.
+# The org ruleset in config/org-ruleset.json requires this file in every repo, and a ruleset runs a file
+# only if it declares pull_request, pull_request_target or merge_group: pull_request for the rule, and
+# merge_group so a merge-queue entry reports the check. This repo already calls it from ci.yml, so the
+# job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not `ratchet / ratchet`.
 name: Ratchet
-on:
-  workflow_call:
+on: [workflow_call, pull_request, merge_group]
 permissions:
   contents: read
 jobs:
   ratchet:
     name: ratchet
-    if: github.event_name != 'push'
+    if: ${{ github.repository != 'Nishfleet/fleet-ops' || !startsWith(github.workflow_ref, 'Nishfleet/fleet-ops/.github/workflows/ratchet.yml@') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -22,15 +25,15 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          net() { git diff --numstat "$(git merge-base "$1" "$2")" "$2" -- .github/workflows .github/actions scripts bin | awk '{a+=$1; d+=$2} END {print a-d}'; }
-          t=$(mktemp -d); git init -q "$t"; mkdir -p "$t/.github/workflows" "$t/bin"; seq 9 | tee "$t/.github/workflows/a.yml" > "$t/bin/b"
+          net() { git diff --no-color --no-ext-diff -U0 "$(git merge-base "$1" "$2")" "$2" -- .github/workflows .github/actions scripts bin | awk '/^diff --git/ {h=1} /^@@/ {h=0; next} h || /^[+-][[:space:]]*(#|$)/ {next} /^\+/ {n++} /^-/ {n--} END {print n+0}'; }
+          t=$(mktemp -d); git init -q "$t"; mkdir -p "$t/.github/workflows" "$t/bin"; { seq 9; echo '# c'; } | tee "$t/.github/workflows/a.yml" > "$t/bin/b"
           (cd "$t" && git add -A && git -c user.name=t -c user.email=t@t commit -qm base)
-          for c in 'seq 5 >> .github/workflows/a.yml;5' 'seq 5 >> bin/b;5' 'sed -i 1,3d .github/workflows/a.yml;-3' 'sed -i 1s/1/9/ .github/workflows/a.yml;0'; do
+          for c in 'seq 5 >> .github/workflows/a.yml;5' 'seq 5 >> bin/b;5' 'sed -i 1,3d .github/workflows/a.yml;-3' 'sed -i 1s/1/9/ .github/workflows/a.yml;0' 'printf "  # d\n\n" >> bin/b;0' 'sed -i /^#/d bin/b && echo x >> bin/b;1'; do
             (cd "$t" && eval "${c%;*}" && git -c user.name=t -c user.email=t@t commit -qam t && got=$(net HEAD~1 HEAD) && git reset -q --hard HEAD~1 && [ "$got" = "${c##*;}" ]) || { echo "self-test '${c%;*}' failed"; exit 1; }
           done
           f=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}; f=${f%@*}
           old=$(git show "$BASE:$f" 2>/dev/null | yq -o=json -I=0 '.jobs.ratchet' || true)
           case "$old" in *ratchet.yml@*) [ "$old" = "$(yq -o=json -I=0 '.jobs.ratchet' "$f")" ] || { echo "::error::ratchet: this PR edits the ratchet job in $f. A PR does not change the rule it is judged by."; exit 1; };; esac
           n=$(net "$BASE" "$HEAD")
-          echo "ratchet: net added lines under .github/workflows, .github/actions, scripts, bin: $n"
-          [ "$n" -le 0 ] || { echo "::error::ratchet: +$n net lines of workflow or script code. Delete as many as you add, or build the mechanism in its own repo behind an official extension point."; exit 1; }
+          echo "ratchet: net added code lines under .github/workflows, .github/actions, scripts, bin: $n"
+          [ "$n" -le 0 ] || { echo "::error::ratchet: +$n net code lines of workflow or script. Delete as many as you add, or build the mechanism in its own repo behind an official extension point."; exit 1; }

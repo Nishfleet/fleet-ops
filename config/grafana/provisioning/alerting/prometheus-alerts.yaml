@@ -42,7 +42,7 @@ groups:
         execErrState: Error
         for: 0m
         annotations:
-          summary: 'Prometheus alert {{ $labels.prom_alertname }} is firing{{ with $labels.name }} for {{ . }}{{ else }}{{ with $labels.instance }} for {{ . }}{{ end }}{{ end }}'
-          description: 'Detector: rootfs/etc/prometheus/fleet_rules.yml, alert {{ $labels.prom_alertname }}. Find it with promtool or the Prometheus ALERTS series.'
+          summary: 'Prometheus alert {{ with $labels.prom_alertname }}{{ . }}{{ else }}unknown alert{{ end }} is firing{{ with $labels.name }} for {{ . }}{{ else }}{{ with $labels.instance }} for {{ . }}{{ end }}{{ end }}'
+          description: 'Detector: rootfs/etc/prometheus/fleet_rules.yml, alert {{ with $labels.prom_alertname }}{{ . }}{{ else }}unknown alert{{ end }}. Find it with promtool or the Prometheus ALERTS series.'
         labels: {severity: warning, signal: prometheus}
         isPaused: false

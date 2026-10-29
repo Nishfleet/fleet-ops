@@ -1,0 +1,62 @@
+# polkitd watches rules.d itself; no reload needed.
+- name: Install polkit rules
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/polkit-1/rules.d/"
+    dest: /etc/polkit-1/rules.d/
+    owner: root
+    group: root
+    mode: preserve
+
+# No handler: needrestart reads conf.d on every run.
+- name: Install needrestart config
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/needrestart/conf.d/"
+    dest: /etc/needrestart/conf.d/
+    owner: root
+    group: root
+    mode: preserve
+
+# Claude Code merges /etc/claude-code/managed-settings.d/*.json into its
+# managed settings: here, the agents' auto-mode rules, the hook that
+# bounces routine asks to Nish, the Beacon telemetry env and the enabled
+# plugins (README, "Agent autonomy drop-in", "Beacon OTLP drop-in" and
+# "Claude plugin drop-ins"). The box-wide file those merge into,
+# managed-settings.json, has its own task below (README, "Managed-settings
+# defaults"). A drop-in
+# that does not parse stops Claude Code from starting on the whole box, so
+# validate refuses any file that is not a JSON object before it reaches
+# /etc. /etc/claude-code is not in owned_dirs: the directory is installed
+# file by file. To switch a file off, delete the file from rootfs/ and add
+# its /etc path to `retired`.
+- name: Install Claude Code managed-settings drop-ins
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/claude-code/managed-settings.d/"
+    dest: /etc/claude-code/managed-settings.d/
+    owner: root
+    group: root
+    mode: preserve
+    validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+- name: Install the Claude Code managed-settings defaults file
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/claude-code/managed-settings.json"
+    dest: /etc/claude-code/managed-settings.json
+    owner: root
+    group: root
+    mode: preserve
+    validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+# nish's login shells set umask 077, so a tmux session started
+# from one writes owner-only state under ~/.local/share/devin instead of the
+# 0664 pam_umask's 0002 gives (audit W1a, Nishfleet/nish-vault#30).
+# systemd-started launchers carry their own UMask=0077 drop-in instead. This
+# file applies at the next login: a running shell keeps the umask it started
+# with. /etc/zsh is not in owned_dirs, because Ubuntu ships the other files
+# there and only this one is the repo's.
+- name: Install the owner-only umask for nish's login shells
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/zsh/zprofile"
+    dest: /etc/zsh/zprofile
+    owner: root
+    group: root
+    mode: preserve

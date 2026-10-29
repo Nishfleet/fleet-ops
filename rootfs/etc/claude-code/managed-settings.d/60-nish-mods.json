@@ -2,8 +2,8 @@
   "extraKnownMarketplaces": {
     "nish-mods": {
       "source": {
-        "source": "directory",
-        "path": "/home/nish/workspaces/tooling/claude-mods"
+        "source": "github",
+        "repo": "Nishfleet/claude-mods"
       }
     }
   },
