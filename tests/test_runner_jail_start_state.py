@@ -18,9 +18,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
-KEY = "nishfleet-worker.private-key.pem"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
+KEY = "nishfleet-worker.private-key.pem"
 # pool -> (drop-in with the start order and the pre-start step, drop-in with InaccessiblePaths=)
 POOLS = {
     "agent": (AGENT_DIR / "10-agent.conf", AGENT_DIR / "20-lockdown.conf"),

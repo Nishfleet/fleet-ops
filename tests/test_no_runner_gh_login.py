@@ -7,6 +7,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DROPINS = ROOT / "rootfs/etc/systemd/system"
+CRED_HIDE = "$(if [ -d /run/credentials ]; then echo --tmpfs /run/credentials; fi)"
 
 
 def test_no_runner_dropin_binds_the_gh_login():
@@ -38,7 +39,8 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
 def test_the_worker_jails_hide_the_credential_directory():
     """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
     wf = (ROOT / ".github/workflows/agent.yml").read_text()
-    assert "cred_hide=${CREDENTIALS_DIRECTORY:+--tmpfs $CREDENTIALS_DIRECTORY}" in wf, "an unset CREDENTIALS_DIRECTORY must not leave a bare --tmpfs in the jail line"
+    assert f"cred_hide={CRED_HIDE}" in wf, "the hide names the systemd credential dir and asks whether it exists; $CREDENTIALS_DIRECTORY is empty in a runner started without the unit's environment"
+    assert "--tmpfs $CREDENTIALS_DIRECTORY" not in wf, "the credential dir must not come from the environment"
     jails = [line for line in wf.splitlines() if re.match(r'\s*(?:jail_base|claude_jail_[ab])="bwrap --dev-bind', line)]
     assert len(jails) >= 4, jails
     for line in jails:
@@ -50,8 +52,9 @@ def test_the_orchestrator_session_cannot_read_the_app_key():
     wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
     step = wf[wf.index("- name: Run the orchestrator session"):wf.index("- name: Clean up and mark a PR-less hand-off")]
     jail = next(line for line in step.splitlines() if line.strip().startswith("jail=(bwrap"))
-    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"', '"$CREDENTIALS_DIRECTORY"'):
+    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"'):
         assert f"--tmpfs {hidden}" in jail, hidden
+    assert CRED_HIDE in jail, "the session reads the outsider comments it is handed; it must not see the App key's credential dir"
     starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
     assert starts and all('"${jail[@]}"' in line for line in starts), starts
 
