@@ -1912,3 +1912,64 @@ def test_retro_stoppost_is_quiet_on_a_delivered_run(tmp_path: Path) -> None:
     result, _, _, _ = _run_retro_stoppost(tmp_path)
     assert result.returncode == 0
     assert result.stdout == "" and result.stderr == ""
+
+
+SWEEP = ROOT / "systemd/fleet-pr-sweep@.service"
+FAKE_GH = """#!/bin/sh
+echo "$*" >> "$GH_CALLS"
+case "$1 $2" in
+  "workflow run")
+    case "$GH_MODE" in
+      disabled) echo "could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow (https://api.github.com/repos/Nishfleet/drive/actions/workflows/1/dispatches)" >&2; exit 1 ;;
+      outage) echo "could not create workflow dispatch event: HTTP 500: Internal Server Error" >&2; exit 1 ;;
+    esac ;;
+  "run list") echo "previous agent-dispatch run ended in startup_failure: https://github.com/Nishfleet/drive/actions/runs/1" >&2; exit 1 ;;
+esac
+"""
+
+
+def _sweep_dispatch(repo: str) -> list[str]:
+    values = _unit_keys(SWEEP)["ExecStart"]
+    assert len(values) == 1, values
+    argv = shlex.split(values[0].replace("%%", "%").replace("$$", "$").replace("%i", repo))
+    assert argv[:2] == ["/bin/sh", "-c"], argv
+    return argv
+
+
+def _run_sweep_dispatch(tmp_path: Path, mode: str) -> tuple[str, int, list[str]]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH)
+    gh.chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("")
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_CALLS": str(calls), "GH_MODE": mode}
+    proc = subprocess.run(_sweep_dispatch("drive"), capture_output=True, text=True, env=env, check=False)
+    return proc.stdout, proc.returncode, calls.read_text().splitlines()
+
+
+def test_pr_sweep_skips_a_repo_whose_agent_dispatch_is_disabled(tmp_path: Path) -> None:
+    out, code, calls = _run_sweep_dispatch(tmp_path, "disabled")
+    assert code == 0, out
+    assert out.splitlines() == [
+        "skip: Nishfleet/drive disabled agent-dispatch (HTTP 422), so there is no sweep to start"
+    ]
+    assert calls == ["workflow run agent-dispatch.yml -R Nishfleet/drive"]
+
+
+def test_pr_sweep_keeps_every_other_dispatch_failure_loud(tmp_path: Path) -> None:
+    out, code, calls = _run_sweep_dispatch(tmp_path, "outage")
+    assert code != 0
+    assert "HTTP 500: Internal Server Error" in out
+    assert calls == ["workflow run agent-dispatch.yml -R Nishfleet/drive"]
+
+
+def test_pr_sweep_reads_the_previous_run_only_after_a_dispatch(tmp_path: Path) -> None:
+    out, code, calls = _run_sweep_dispatch(tmp_path, "ok")
+    assert code != 0
+    assert out == ""
+    assert [call.split(" -w ")[0] for call in calls] == [
+        "workflow run agent-dispatch.yml -R Nishfleet/drive",
+        "run list -R Nishfleet/drive",
+    ]

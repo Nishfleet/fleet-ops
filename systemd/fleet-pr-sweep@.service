@@ -1,5 +1,5 @@
 # Starts one agent-dispatch sweep in Nishfleet/%i (see fleet-pr-sweep@.timer
-# for why). Stock only: one gh call, no script. The sweep itself runs on
+# for why). Stock only: stock gh calls, no script file. The sweep itself runs on
 # GitHub; this unit only asks for it. gh acts as the nishfleet-worker App,
 # never the owner's personal login, so a burst here rate-limits the App install
 # and not every agent on the box (fleet-ops#10601): Requires= mints a one-hour
@@ -12,14 +12,21 @@
 # live Actions-write token there between sweeps (review of PR 10651).
 # gh is found on the user manager's PATH (/usr/bin/gh on the box, apt)
 # through env, so the unit names no home path and verifies on a CI runner.
-# Second ExecStart (fleet-ops#9668): a run that ends in startup_failure has no
-# job, so nothing inside the workflow can report it and the dispatch above
-# still returns HTTP 204. The unit therefore reads the newest completed
+# One ExecStart, because the disabled-workflow skip below must stop the second
+# call too (fleet-ops#9631). A repo that disables agent-dispatch answers the
+# dispatch with HTTP 422 "Cannot trigger a 'workflow_dispatch' on a disabled
+# workflow": a permanent state, not the network blip Restart= retries, so the
+# hourly timer would page on it forever. That one answer is a skip with one
+# journal line and neither call runs; every other dispatch failure is echoed
+# and exits non-zero, so it stays loud.
+# Second call (fleet-ops#9668): a run that ends in startup_failure has no job,
+# so nothing inside the workflow can report it and the dispatch above still
+# returns HTTP 204. The unit therefore reads the newest completed
 # agent-dispatch run (the previous cycle's, seconds-old startup failures
 # included) and fails when it is startup_failure; OnFailure= then pages and
 # the unit shows in `systemctl --user list-units --state=failed`. A repo
 # whose last completed run is anything else, or with no run, passes.
-# Switch off: delete the second ExecStart line.
+# Switch off: delete this ExecStart line.
 [Unit]
 Description=Start the agent-dispatch sweep in Nishfleet/%i
 After=network-online.target
@@ -35,8 +42,12 @@ Type=oneshot
 EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env
 # $$ keeps systemd from expanding the token into the shell's argv.
 ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN"'
-ExecStart=/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i
-ExecStart=/usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq 'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'
+ExecStart=/bin/sh -c 'out=$$(/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i 2>&1); rc=$$?; \
+  if [ "$$rc" -ne 0 ]; then \
+    case "$$out" in *"on a disabled workflow"*) echo "skip: Nishfleet/%i disabled agent-dispatch (HTTP 422), so there is no sweep to start"; exit 0;; esac; \
+    [ -z "$$out" ] || echo "$$out"; exit "$$rc"; \
+  fi; \
+  /usr/bin/env gh run list -R Nishfleet/%i -w agent-dispatch.yml -s completed -L 1 --json conclusion,url --jq '"'"'if .[0].conclusion == "startup_failure" then error("previous agent-dispatch run ended in startup_failure: " + .[0].url) else empty end'"'"''
 # One command, not two: systemd loads EnvironmentFile= again for every command
 # it spawns, so a revoke after the rm could not start, and a failed command
 # skips the rest. The revoke runs only with the App token loaded (an empty
