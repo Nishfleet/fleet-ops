@@ -446,13 +446,13 @@ jobs:
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
           permission-actions: write
-      - id: list
+      # The claim-PR re-dispatch (fleet-ops#9368): its own step, so a read fault here cannot abort
+      # the sweep pick. It feeds the pick, so it runs first; continue-on-error keeps the pick
+      # alive with no claim-PR append for this run only.
+      - id: redispatch
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          # The App token, for the writes that must fire a workflow event.
-          LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
-          CLOSED: ${{ github.event.issue.number }}
-          ISSUE: ${{ inputs.issue }}
           # jq defs shared by the missing-checks and red-PR cases below.
           CHECK_DEFS: |
             def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
@@ -474,6 +474,93 @@ jobs:
                elif ($started | length) > 0 and ($started[-1].createdAt | fromdateiso8601) >= $failed_at then "run-after-failure"
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
+        run: |
+          # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after
+          # arming, so it never enters the queue (0509#4384). Each armed PR is
+          # re-read, because the bulk list says UNKNOWN after a push to main (fleet-ops#8557).
+          all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
+            --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
+          if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
+            --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
+            unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
+            conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
+              for _ in 1 2 3; do
+                v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
+                [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
+                sleep 10
+              done
+              jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
+            done | jq -sc .)
+            # Armed claim PRs whose required checks never reported (fleet-ops#8777):
+            # BLOCKED with nothing pending and nothing failed; a completed failure is the
+            # red PRs case below, and a repo with no required checks lists none (#8981).
+            missing=$(
+              for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
+                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
+              done | jq -sc "$CHECK_DEFS"'[.[] | (.statusCheckRollup // []) as $checks
+                | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not)) | .headRefName]'
+            )
+            # Claim PRs whose issue is still agent-in-progress after the worker is gone
+            # (fleet-ops#8777): live means the newest "agent run started:" run is queued or running.
+            inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
+            orphans=$(
+              jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
+              while IFS= read -r n; do
+                body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
+                if [ -z "$body" ]; then
+                  echo "claim/issue-$n"
+                  continue
+                fi
+                [[ $body =~ actions/runs/([0-9]+) ]] || { echo "::error::agent run started comment on #$n has no run id" >&2; exit 1; }
+                id=${BASH_REMATCH[1]}
+                rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
+                [ "$live" = true ] || echo "claim/issue-$n"
+              done | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )
+            # Red claim PRs the rework event missed (drive#765, 0509#7182, #7172). The
+            # verdict is RED_REWORK above; a live newest run or a DIRTY PR is left alone.
+            red=$(
+              set -o pipefail
+              for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
+                v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
+                ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
+                jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
+                # A claim PR outlives a deleted issue (gh api answers 410), and its empty comments
+                # aborted the whole sweep (fleet-ops#9553). Skip the PR; any other read fault stays fatal.
+                # The pick step's issue_json is a shell function, and a function does not cross a step
+                # boundary, so this read keeps both streams and checks the 410 marker itself.
+                rc=0; issue=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n" 2>&1) || rc=$?
+                if [ "$rc" != 0 ]; then
+                  [[ $issue =~ \(HTTP\ (404|410)\) ]] || { echo "#$n: issue read failed: $issue" >&2; exit 1; }
+                  echo "#$n: issue gone, skipping claim PR $pr" >&2; continue
+                fi
+                comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
+                verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
+                  '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
+                if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
+                  rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                  if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: run live, skip" >&2; continue; fi
+                fi
+                echo "$ref"
+              done | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )
+            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson d "$red" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[], $d[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
+            echo "claim PRs: missing checks $missing, dead run $orphans, red with no rework $red, picked $prs"
+          else
+            echo "::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run"
+            prs='[]'
+          fi
+          echo "prs=${prs:-[]}" >> "$GITHUB_OUTPUT"
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The App token, for the writes that must fire a workflow event.
+          LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLOSED: ${{ github.event.issue.number }}
+          ISSUE: ${{ inputs.issue }}
+          PRS: ${{ steps.redispatch.outputs.prs }}
         run: |
           # One issue as JSON for the sweep: exit 3 when it is gone (404/410), 1 on any other fault.
           issue_json() {
@@ -515,92 +602,6 @@ jobs:
               fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
-            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after
-            # arming, so it never enters the queue (0509#4384). Each armed PR is
-            # re-read, because the bulk list says UNKNOWN after a push to main (fleet-ops#8557).
-            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
-              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
-            if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
-              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
-              unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
-              conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
-                for _ in 1 2 3; do
-                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
-                  [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
-                  sleep 10
-                done
-                jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
-              done | jq -sc .)
-              # Armed claim PRs whose required checks never reported (fleet-ops#8777):
-              # BLOCKED with nothing pending and nothing failed; a completed failure is the
-              # red PRs case below, and a repo with no required checks lists none (#8981).
-              missing=$(
-                for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
-                  gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
-                done | jq -sc "$CHECK_DEFS"'
-                  [.[] | (.statusCheckRollup // []) as $checks
-                    | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not))
-                    | .headRefName
-                  ]'
-              )
-              # Claim PRs whose issue is still agent-in-progress after the worker is gone
-              # (fleet-ops#8777): live means the newest "agent run started:" run is queued or running.
-              inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
-              orphans=$(
-                jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
-                while IFS= read -r n; do
-                  body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
-                  if [ -z "$body" ]; then
-                    echo "claim/issue-$n"
-                    continue
-                  fi
-                  if [[ $body =~ actions/runs/([0-9]+) ]]; then
-                    id=${BASH_REMATCH[1]}
-                  else
-                    echo "::error::agent run started comment on #$n has no run id" >&2
-                    exit 1
-                  fi
-                  rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
-                  live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
-                  [ "$live" = true ] || echo "claim/issue-$n"
-                done | jq -Rsc 'split("\n") | map(select(length > 0))'
-              )
-              # Red claim PRs the rework event missed (drive#765, 0509#7182, #7172). The
-              # verdict is RED_REWORK above; a live newest run or a DIRTY PR is left alone.
-              red=$(
-                set -o pipefail
-                for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
-                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
-                  ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
-                  jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
-                  # A claim PR outlives a deleted issue (gh api answers 410), and its empty comments
-                  # aborted the whole sweep (fleet-ops#9553). Skip the PR; any other read fault stays fatal.
-                  rc=0; issue=$(issue_json "$n") || rc=$?
-                  case $rc in
-                    0) ;;
-                    3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
-                    *) exit 1 ;;
-                  esac
-                  comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
-                  verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
-                    '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
-                  [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
-                  if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
-                    rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
-                    if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: run live, skip" >&2; continue; fi
-                  fi
-                  echo "$ref"
-                done | jq -Rsc 'split("\n") | map(select(length > 0))'
-              )
-              prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson d "$red" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[], $d[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
-              echo "claim PRs missing required checks: $missing"
-              echo "claim PRs with a dead agent run: $orphans"
-              echo "claim PRs red with no rework since: $red"
-              echo "claim PRs picked by the sweep: $prs"
-            else
-              echo "::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run"
-              prs='[]'
-            fi
           fi
           # Gone-issue skip as above; this loop runs in the shell, so any other read fault aborts the sweep.
           pages=''
@@ -619,7 +620,7 @@ jobs:
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
           refs=$(printf '%s' "$pages" |
-            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+            jq -sc --argjson prs "${PRS:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
