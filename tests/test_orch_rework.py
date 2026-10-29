@@ -80,7 +80,7 @@ def test_a_blocked_orch_pr_puts_needs_orchestrator_back_on_its_issue(tmp_path):
     r = _run(_block(*SEND), env)
     assert r.returncode == 0, r.stderr
     calls = log.read_text()
-    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator --remove-label orchestrator-tried" in calls
+    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator --remove-label handoff-ended" in calls
     assert "issue comment 77" in calls and "pull/5" in calls
 
 

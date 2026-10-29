@@ -703,10 +703,9 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
-                and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
-              | select("orch/issue-\(.number)" | IN($prs[]) | not)
-              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
+              | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - 21600
+                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
+              | {number, ended: ($l | index("handoff-ended") != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
@@ -720,14 +719,16 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+          # The label this job wrote before it was renamed (fleet-ops#10863). Until no repository carries it, one pass per sweep moves the open issues still on it: create the new label first, then re-label as the runner login, which is what writes a label event. A search, not --label, so a repository that no longer carries the old label reports none instead of failing.
+          env -u GH_TOKEN gh label create handoff-ended -R "$GITHUB_REPOSITORY" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null || echo "::warning::handoff-ended: label create refused"; gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" --state open -L 300 --json number --jq '.[].number' | xargs -r env -u GH_TOKEN gh issue edit -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label handoff-ended || echo "::warning::retired label: the one-pass rename was refused"
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:handoff-ended,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
-              elif [ "$(jq -r .tried <<<"$r")" = true ]; then
-                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
+              elif [ "$(jq -r .ended <<<"$r")" = true ]; then
+                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label handoff-ended --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
               else
                 gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
@@ -1088,11 +1089,11 @@ jobs:
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
           # A closed issue is not active work: strip the queue and park labels, and
-          # orchestrator-tried, which marks a dead end that a close ends
+          # handoff-ended, which marks a dead end that a close ends
           # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
-          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","handoff-ended"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1422,7 +1423,7 @@ jobs:
           # hand-off already ran and produced no PR: both end the loop here
           # rather than in the always() step, so nothing is built.
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
-          case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
+          case $labels in *,handoff-ended,*) echo "orchestrate: #$ISSUE already has handoff-ended; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
           # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
@@ -1672,7 +1673,7 @@ jobs:
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
-          # orchestrator-tried and skips; the sweep re-queues it after 6 h, up to 3 tries.
+          # handoff-ended and skips; the sweep re-queues it after 6 h, up to 3 tries.
           if gh pr list -R "$REPO" --head "orch/issue-$ISSUE" --state all --json number --jq 'length' | grep -qxE '[1-9][0-9]*'; then
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
@@ -1691,7 +1692,7 @@ jobs:
           # credential, the same one the session pushes with).
           # --force makes the label idempotent, so a newly stubbed repo without
           # it does not fail the mark (drive#199, 2026-10-04).
-          env -u GH_TOKEN -u GITHUB_TOKEN gh label create orchestrator-tried -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h"
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label orchestrator-tried --remove-label needs-orchestrator
+          env -u GH_TOKEN -u GITHUB_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h"
+          env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label handoff-ended --remove-label needs-orchestrator
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
-          echo "orchestrate: #$ISSUE marked orchestrator-tried (no PR)"
+          echo "orchestrate: #$ISSUE marked handoff-ended (no PR)"

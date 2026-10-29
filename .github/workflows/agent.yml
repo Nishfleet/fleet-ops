@@ -1157,7 +1157,7 @@ jobs:
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).

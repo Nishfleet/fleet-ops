@@ -1,10 +1,11 @@
 """Parked hand-offs in agent-dispatch.yml's list job (fleet-ops#10420, #10475): the step's real
 `run:` block and REQUEUE program (read out with yq) against a fake gh.
 
-An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
-no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 5 minus the live orchestrate runs a sweep. Three ended or
-re-fired hand-offs give needs-nish-decision.
+An handoff-ended issue idle over 6 h goes back to needs-orchestrator (and an agent-blocked one, even with
+old end markers, is left alone). A labelled idle one with no orch/issue-N PR is re-fired by a task=orchestrate
+dispatch of the calling workflow file, with a marker comment and no label write. At most 5 minus the live
+orchestrate runs a sweep. Three ended or re-fired hand-offs give needs-nish-decision. Every sweep also runs
+one pass that moves the open issues on the label this one was renamed from (fleet-ops#10863).
 """
 import datetime
 import json
@@ -23,7 +24,8 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
-  "issue list") cat "$FAKE_DIR/issues.json" ;;
+  "issue list") case " $* " in *"label:orchestrator-tried"*) jq -r '.[].number' "$FAKE_DIR/retired.json" ;; *) cat "$FAKE_DIR/issues.json" ;; esac ;;
+  "label create") echo "$*" >> "$FAKE_DIR/labels.log" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -48,7 +50,7 @@ def _yj(expr):
                                      capture_output=True, text=True).stdout)
 
 
-def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",), refired=0):
+def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0):
     t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_idle)
     comments = [{"body": f"{ENDED}{number}{i}", "authorAssociation": "OWNER", "author": {"login": "nish3451"}}
                 for i in range(ended)]
@@ -64,9 +66,10 @@ def job(name, status="in_progress"):
     return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=()):
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), retired=()):
     """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
+    (tmp_path / "retired.json").write_text(json.dumps([{"number": n} for n in retired]))
     jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
     for i, j in enumerate(other_jobs):
         jobs[str(100 + i)] = {"jobs": [j]}
@@ -188,9 +191,25 @@ def test_three_tries_escalate_not_requeue(tmp_path):
 
 
 def test_escalated_and_queued_issues_are_left_alone(tmp_path):
-    w = run(tmp_path, [issue(1, ended=3, labels=("orchestrator-tried", "needs-nish-decision")),
-                       issue(2, labels=("orchestrator-tried", "needs-orchestrator"))])
+    w = run(tmp_path, [issue(1, ended=3, labels=("handoff-ended", "needs-nish-decision")),
+                       issue(2, labels=("handoff-ended", "needs-orchestrator"))])
     assert w == []
+
+
+def test_an_agent_blocked_handoff_is_left_alone(tmp_path):
+    """agent-blocked is a live block, not an ended hand-off: an old end marker is neither a re-queue nor a strike."""
+    w = run(tmp_path, [issue(1, ended=3, labels=("handoff-ended", "agent-blocked"))])
+    assert w == []
+
+
+def test_the_retired_label_moves_its_open_issues_in_one_pass(tmp_path):
+    """Every sweep creates the new label, then re-labels the open issues still on the old one, so
+    `gh label delete` on the old name is safe once this reports none (fleet-ops#10863)."""
+    w = run(tmp_path, [issue(1)], retired=(4, 5))
+    assert [l for l in w if "--remove-label orchestrator-tried" in l] == [
+        "issue edit -R o/r --remove-label orchestrator-tried --add-label handoff-ended 4 5"]
+    labels = (tmp_path / "labels.log").read_text()
+    assert "label create handoff-ended" in labels and "BFD4F2" in labels
 
 
 def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
