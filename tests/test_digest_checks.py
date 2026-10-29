@@ -474,8 +474,21 @@ def test_the_reply_copies_the_printed_waiting_count():
         step = next(l for l in text.splitlines() if l.startswith("3 WAITING ON NISH"))
         assert "copied exactly from that WAITING_MORE line" in step, prompt.name
         assert "never count the ROW lines" in step, prompt.name
+        assert "never write the WAITING_TOTAL number" in step, prompt.name
         assert "WAITING_COUNT FAILED" in step, prompt.name
         assert "Never show the count of labelled issues" not in text, prompt.name
+
+
+@pytest.mark.parametrize("prompt", [MORNING, EVENING])
+def test_the_waiting_counts_never_reach_the_stored_object(prompt, tmp_path):
+    gh = {
+        "repos": ["alpha"],
+        "issues": {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in (1, 2, 3)},
+        "runs": {"Nishfleet/alpha": []},
+    }
+    lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
+    assert "WAITING_TOTAL 3" in lines, lines
+    assert not set(saved) & {"waiting", "wfail"}, saved
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])

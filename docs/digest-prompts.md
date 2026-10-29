@@ -38,11 +38,12 @@ only when two items are named, so a run that names one item or none says nothing
 about the rest of the backlog.
 
 Two digest runs put a wrong number in that line. Run `150bb7b3` (2026-10-22)
-stated 13 more waiting while 68 open issues carried the label, so 66 were left
-unnamed. Run `06829ce1` (2026-10-26) stated "and 5 more waiting" in a run that
-held no new item. The number was wrong, not the sweep: the sweep had already
-stored every labelled issue. Both are Hermes execution ids, and the digest job's
-history on the host lists each one.
+named two waiting items and said "and 13 more waiting", while 68 open issues
+carried the label: it named two of 68, so the line it should have written was
+"and 66 more waiting", and 66 issues went unnamed. Run `06829ce1` (2026-10-26)
+stated "and 5 more waiting" in a run that held no new item. The number was wrong,
+not the sweep: the sweep had already stored every labelled issue. Both are Hermes
+execution ids, and the digest job's history on the host lists each one.
 
 ## Switch the waiting lines off
 
@@ -70,8 +71,10 @@ a fake notepad. It pins the count to the labelled backlog: 68 labelled issues wi
 46 already stored print `WAITING_TOTAL 68` and `WAITING_MORE 66`, a backlog of two
 prints no overflow line, and a repository whose list fails prints
 `WAITING_COUNT FAILED` and no total. It also fails a step 3 that stops copying the
-printed number. `tests/test_digest_reply_shape.py` keeps the reply contract,
-including the "and N more waiting" line.
+printed number, and one that writes the `WAITING_TOTAL` number. One case holds the
+object the step saves: the two count fields never reach the stored notepad.
+`tests/test_digest_reply_shape.py` keeps the reply contract, including the "and N
+more waiting" line.
 
 Run both files for a prompt change:
 
