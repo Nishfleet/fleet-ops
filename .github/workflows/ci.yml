@@ -329,12 +329,10 @@ jobs:
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
-          test ! -e "$HOME/.config/fleet-worker/planted-key"
-          test ! -e "$CREDENTIALS_DIRECTORY/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
-          echo planted > "$HOME/.config/fleet-worker/planted-key"
-          echo planted > "$CREDENTIALS_DIRECTORY/planted-key"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"; echo planted > "$CREDENTIALS_DIRECTORY/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
@@ -358,8 +356,7 @@ jobs:
             case "$line" in
               *'--tmpfs $HOME/.config/fleet-ops'*)
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
-                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
-                "${jail[@]}" test ! -e "$CREDENTIALS_DIRECTORY/planted-key"
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
                 sealed=$((sealed + 1)) ;;
             esac
           done
@@ -379,7 +376,7 @@ jobs:
             else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
           done
           test -r "$HOME/.config/gh/hosts.yml"
-          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
