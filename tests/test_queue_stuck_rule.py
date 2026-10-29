@@ -20,6 +20,7 @@ AGE = {
     "queue-stuck-pr-unmerged": 2,
     "queue-stuck-pr-blocked": 2,
     "queue-stuck-issue-no-pr": 3,
+    "queue-stuck-pr-needs-split": 2,
     "queue-stuck-ask-noslip": 4,
 }
 
@@ -71,7 +72,7 @@ def test_queries_use_the_org_wide_search_and_the_timefield_of_their_own_type():
 
 def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
     rules = _rules()
-    assert len({r["uid"] for r in rules.values()}) == len(rules) == 4
+    assert len({r["uid"] for r in rules.values()}) == len(rules) == 5
     ask = rules["queue-stuck-ask-noslip"]
     (search,) = (d for d in ask["data"] if d["refId"] == "A")
     query = search["model"]["options"]["query"]
@@ -83,3 +84,8 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
         assert (r["for"], r["execErrState"], r["noDataState"]) == ("0s", "Error", "OK")
         assert "cannot read GitHub" in r["annotations"]["summary"]
         assert "notification_settings" not in r
+
+
+def test_needs_split_rule_reads_open_prs_with_that_label():
+    (a,) = [d for d in _rules()["queue-stuck-pr-needs-split"]["data"] if d["refId"] != "C"]
+    assert a["model"]["options"]["query"] == "org:Nishfleet is:pr is:open label:needs-split"

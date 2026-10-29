@@ -4,6 +4,8 @@ import re
 
 import yaml
 
+import ansible_host
+
 ROOT = Path(__file__).resolve().parents[1]
 CLONE_SUFFIX = "workspaces/tooling/fleet-ops-deploy-clone"
 SYNC = (ROOT / "systemd/fleet-sync.service").read_text()
@@ -12,7 +14,7 @@ CHAIN = (ROOT / "rootfs/etc/systemd/system/fleet-deploy.service").read_text()
 BOX = yaml.safe_load((ROOT / ".github/workflows/deploy-box.yml").read_text())
 POLKIT = (ROOT / "rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules").read_text()
 QUADLET = (ROOT / "containers/quadlet/fleet-grafana.container").read_text()
-HOST = yaml.safe_load((ROOT / "ansible/host.yml").read_text())[0]
+HOST = ansible_host.play()
 
 
 def _deploy_clone_task() -> dict:

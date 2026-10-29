@@ -15,7 +15,8 @@ fails the run instead of passing silently:
        needs the same JWT and a body that asks for exactly repositories
        [fleet-ops] and permissions {issues: write} (the Grafana token), or
        exactly the one repo whose installation was looked up and permissions
-       {contents, issues, pull_requests: write} (the worker token).
+       {contents, issues, pull_requests: write} (the worker token) or
+       {actions: write} (the pr-sweep token, instance actions:<repo>).
 
 Every answered mint returns a distinct token (ghs_stub_<n>) so a test can tell
 a refresh from a stale file. The mode file switches the stub to answering 401
@@ -91,11 +92,13 @@ class H(http.server.BaseHTTPRequestHandler):
             iid = int(self.path.split("/")[3])
             repo = REPOS.get(iid)
             wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
-                     {"repositories": [repo], "permissions": WORKER_PERMS}]
+                     {"repositories": [repo], "permissions": WORKER_PERMS},
+                     {"repositories": [repo], "permissions": {"actions": "write"}}]
             if repo is None or json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}
             else:
                 MINTS += 1
+                verdict = "ok " + ",".join(sorted(json.loads(body)["permissions"]))
                 code, out = 201, {"token": f"ghs_stub_{MINTS}"}
         else:
             verdict, code, out = "unknown", 404, {"message": "Not Found"}

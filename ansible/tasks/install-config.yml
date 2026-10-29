@@ -1,0 +1,162 @@
+# ansible-pull's own clone (/var/lib/fleet-ops/repo) is the read-only
+# checkout that user units can read (fleet-ops#10479): root owns it, no
+# worktree is attached to it, and every deploy moves it to the merged
+# commit. UMask=0077 (20-umask.conf) leaves its newer files 0600, which
+# locked readers out once already (#10472), so this makes the whole tree
+# readable and not writable by anyone but root.
+- name: Make the deploy checkout readable by every user and writable by root only
+  ansible.builtin.file:
+    path: "{{ (playbook_dir ~ '/..') | realpath }}"
+    state: directory
+    recurse: true
+    owner: root
+    group: root
+    mode: "u=rwX,go=rX"
+
+# The user-scope deploy clone (fleet-ops#10477): agent sessions run as nish and
+# must not write here, so the tree is root-owned, readable by every user, and
+# the only writer is fleet-deploy-sync.service (root). The Grafana quadlet
+# mounts provisioning dirs from it read-only and the user units link configs out
+# of it, so go=rX keeps every reader working.
+- name: Make the user-scope deploy clone root-owned and writable by root only
+  ansible.builtin.file:
+    path: "{{ nish_home }}/workspaces/tooling/fleet-ops-deploy-clone"
+    state: directory
+    recurse: true
+    owner: root
+    group: root
+    mode: "u=rwX,go=rX"
+
+- name: Check the prometheus config before installing it
+  ansible.builtin.command: /usr/bin/promtool check config {{ rootfs }}/etc/prometheus/prometheus.yml
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+
+- name: Check the alertmanager config before installing it
+  ansible.builtin.command: /usr/bin/amtool check-config {{ rootfs }}/etc/alertmanager/alertmanager.yml
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+
+- name: Check the nftables ruleset before installing it
+  ansible.builtin.command: /usr/sbin/nft -c -f {{ rootfs }}/etc/nftables.conf
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+
+# GitHub's public commit-signing keys (https://github.com/web-flow.gpg), so
+# root can run `git verify-commit` on what ansible-pull fetches. Two keys,
+# both matching keys.openpgp.org. Current, signs squash and merge commits:
+# 9684 79A1 AFF9 27E3 7D1A  566B B569 0EEE BB95 2194. Expired 2024-01-16,
+# kept for older history: 5DE3 E050 9C47 EA3C F04A  42D3 4AEE 18F8 3AFD EB23.
+# The import into root's keyring is idempotent: gpg reports "imported" only
+# the first time.
+- name: Import GitHub's commit-signing keys into root's keyring
+  ansible.builtin.command: /usr/bin/gpg --batch --import {{ playbook_dir }}/files/github-web-flow.gpg
+  environment:
+    LC_ALL: C
+  register: github_signing_keys
+  changed_when: "'imported:' in github_signing_keys.stderr"
+
+# Per-role Claude Code allow lists (fleet-ops#9502). tincan-listen-claude-vps
+# passes --settings at /etc/claude-code/roles/tincan-listener.json, so this
+# copy must exist on the box before that user unit is restarted after merge.
+# claude remote-control refuses --settings; spawned sessions read
+# ~/.claude/settings.json. The remote-control.json file here is the list in
+# the repo, not a path that unit loads.
+- name: Install the per-role Claude permission allow lists
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/claude-code/roles/"
+    dest: /etc/claude-code/roles/
+    owner: root
+    group: root
+    mode: preserve
+    validate: /usr/bin/python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' %s
+
+# Restic backup include and exclude lists and the retention policy
+# (config/restic/). The backup and maintenance units read them from
+# /etc/restic/ on every run, so they are installed before the unit drop-ins
+# that name retention.env; a change here is live after
+# the next fleet-host-config run, no daemon-reload needed. README.md is not
+# copied: it is repo documentation, not box config. Rendered as templates
+# so newer lines can name the home directory through nish_home. Keep
+# Jinja markers ({{, {% and {#) out of their comments and patterns.
+- name: Install restic include, exclude and retention files
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../config/restic/{{ item }}"
+    dest: /etc/restic/{{ item }}
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - include.txt
+    - exclude.txt
+    - retention.env
+
+# A socket takes new ListenStream addresses only on restart. This copy runs before
+# the tree copy below, which would otherwise write the file first and leave this
+# task with no change to signal (fleet-ops#10541).
+- name: Create the ssh.socket drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/ssh.socket.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the SSH socket bind and rebind the socket when it changes
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+    dest: /etc/systemd/system/ssh.socket.d/override.conf
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart ssh.socket
+
+- name: Install systemd units, slices and drop-ins
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/"
+    dest: /etc/systemd/system/
+    owner: root
+    group: root
+    mode: preserve
+  notify: Reload systemd
+
+# fleet-update.service reads the healthchecks.io success-ping URL from a
+# root-only curl config; the URL is not named in the repo (fleet-ops#9965).
+- name: Make the directory for the update unit's root-only files
+  ansible.builtin.file:
+    path: /etc/fleet-ops
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# The update's own healthchecks ping URL lives with the box's other ping
+# URLs in the keystone env file, so one paste covers it once the check
+# exists (creating the check needs the healthchecks.io account; no API key
+# is on the box). Only the HC_URL_UPDATE line is handed to the unit, so
+# the update unit cannot ping the other checks. A missing line leaves the
+# mirror absent, the unit pings SKIP, and its check simply goes stale,
+# which is the alert.
+- name: Read the healthchecks ping URLs nish keeps for the box
+  ansible.builtin.slurp:
+    src: "{{ nish_config }}/fleet-ops/keystone-hc.env"
+  register: hc_env_source
+  failed_when: false
+  no_log: true
+
+# Written as a curl config (`url = <URL>`), so the unit pings with a
+# plain `curl --config` and the URL stays out of argv.
+- name: Hand the update unit its own healthchecks URL, root-only
+  vars:
+    hc_update_lines: "{{ (hc_env_source.content | default('') | b64decode).splitlines() | select('match', '^HC_URL_UPDATE=') | list }}"
+  ansible.builtin.copy:
+    dest: /etc/fleet-ops/update-hc.curl
+    content: "url = {{ hc_update_lines | first | regex_replace('^HC_URL_UPDATE=', '') }}\n"
+    owner: root
+    group: root
+    mode: '0600'
+  when: hc_update_lines | length > 0
+  diff: false
+  no_log: true

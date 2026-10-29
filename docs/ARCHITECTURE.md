@@ -16,7 +16,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens PRs. Two scheduled jobs open issues: the weekly retro, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314; its report is private, in the vault), and the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled job that calls a model itself is the weekly retro (the provider watch's issues start a hand-off run, above); the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
+No scheduled fleet job opens PRs. One scheduled job opens issues: the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip).
 
 ## Model plane
 
@@ -90,11 +90,13 @@ The rules still in force:
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
   pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the runner's number
-  (`RUNNER_NAME` is `netcup-agent-N`): in the claude lane step, before claude
-  runs, an even N unsets `CLAUDE_CONFIG_DIR` and runs the default login (seat b),
-  an odd N keeps it (seat a), and a name with no number keeps seat a. The step
-  logs `claude lane: seat=a|b auth=token|login runner=<name>`. A seat with a
+  with `needs-opus`). The seat is set by the issue number's parity
+  (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
+  step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
+  default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
+  keeps seat a. The seat follows the issue, not the runner, so a retry of the
+  same issue keeps its seat and `claude -p --continue` resumes the earlier
+  session. The step logs `claude lane: seat=a|b auth=token|login issue=<n> runner=<name>`. A seat with a
   one-year `claude setup-token` file (`claude-seat-<x>.env` in the seat config
   directory, one line `CLAUDE_CODE_OAUTH_TOKEN=...`, mode 600) logs in with that
   token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
@@ -166,6 +168,15 @@ The rules still in force:
   is now redundant on fleet-ops and stays only until 0509 and drive have the
   check: their `agent-dispatch.yml` stubs call this shared workflow and their
   rulesets require no `coordinator-approval`.
+  The `review` and `arm` jobs run on `[self-hosted, review]`: runners
+  `netcup-agent-9` (seat a) and `netcup-agent-10` (seat b) carry the labels
+  `self-hosted, review` and not `agent`, so no build can take them and a review
+  never waits behind a multi-hour build (fleet-ops#10587). With `agent` kept,
+  GitHub hands a queued build to any idle runner that matches, so builds would
+  starve reviews again. The labels live at GitHub, not in ansible:
+  `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
+  To switch it off, give those two runners `agent` back and set both `runs-on`
+  lines back to `[self-hosted, agent]`.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
   through the API, asks a no-tools Claude call for findings (on the runner's own login:

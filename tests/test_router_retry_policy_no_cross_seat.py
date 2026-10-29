@@ -3,10 +3,11 @@
 Before the change the `retry_policy` block shipped AuthenticationErrorRetries:2 /
 RateLimitErrorRetries:2 / InternalServerErrorRetries:2. On a pinned seat that
 fail-fast 429s, the router then spent its second in-group attempt on a *different*
-seat, re-sending the whole cold prompt, and a third after that. The fix cuts the
-counts to 0 (401, which can never recover) / 1 (429), so the worker group spends
-exactly one in-group retry - which litellm sends back to the row that just failed -
-before the call reaches the fallback group or Pi's own retry. Pi keeps
+seat, re-sending the whole cold prompt, and a third after that. The fix caps each
+named class (401: 1 since fleet-ops#10756, 429: 2 since fleet-ops#10178), so the
+worker group spends only the retries the fallback needs - the 429 retry goes back to
+the row that just failed - before the call reaches the fallback group or Pi's own
+retry. Pi keeps
 x-litellm-session-id and the session pin is first-writer-wins, so a pinned seat
 that recovers is re-picked on the next call.
 
@@ -53,6 +54,16 @@ image contains), one call into a pinned seat:
     pinned row (the session-affinity pin outranks the retry skip list; the
     403 does not cool the row) and the call exits through the fallback group
     (/gone403, /gone403, /okcheap)
+  a 401 from a dead provider key (fleet-ops#10756: CommandCode answered 401 on
+    chat while its model list still answered 200) parks the row on its first
+    401 (router-level AuthenticationErrorAllowedFails 0; a row's own
+    allowed_fails_policy does not name the 401 class, so it does not override
+    it), so the granted attempt goes to a live peer (/gone401, /okcapable) and
+    the next call goes straight to the peer. The mock answers the real
+    CommandCode 401 body, which carries no invalid_request_error type, so
+    litellm maps it to AuthenticationError; the drilled body "Invalid API key
+    provided." with type invalid_request_error maps to BadRequestError instead,
+    which the router-level AuthenticationErrorAllowedFails cannot cool
   an unkeyed status like 402 (plain APIError, no named key) gains one
     in-group attempt through DefaultRetries that 1.98.0 did not grant
 
@@ -101,17 +112,21 @@ import socketserver
 import threading
 from typing import List
 
-import litellm
-from litellm import Router
-from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,
-                                InternalServerError, NotFoundError, RateLimitError)
-from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy
-from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck
-from litellm.types.router import RetryPolicy
+from router_litellm_pin import require_pinned_litellm
 
-import jsonschema
-import httpx
-import yaml
+require_pinned_litellm(__file__)
+
+import litellm  # noqa: E402
+from litellm import Router  # noqa: E402
+from litellm.exceptions import (APIError, AuthenticationError, BadRequestError,  # noqa: E402
+                                InternalServerError, NotFoundError, RateLimitError)
+from litellm.router_utils.get_retry_from_policy import get_num_retries_from_retry_policy  # noqa: E402
+from litellm.router_utils.pre_call_checks.deployment_affinity_check import DeploymentAffinityCheck  # noqa: E402
+from litellm.types.router import RetryPolicy  # noqa: E402
+
+import jsonschema  # noqa: E402
+import httpx  # noqa: E402
+import yaml  # noqa: E402
 
 CONFIG_PATH = "config/litellm-proxy.yaml"
 SCHEMA_PATH = "config/litellm-proxy.schema.json"
@@ -137,10 +152,8 @@ RP_SHIPPED = {
     "BadRequestErrorRetries": 1,
     "ContentPolicyViolationErrorRetries": 0,
 }
-# fleet-ops#9375 as this commit ships it (0/1/1), plus the two keys fleet-ops#9050
-# adds on litellm 1.105.0:
 RP_PROPOSED = {
-    "AuthenticationErrorRetries": 0,
+    "AuthenticationErrorRetries": 1,
     "RateLimitErrorRetries": 2,
     "TimeoutErrorRetries": 1,
     "InternalServerErrorRetries": 1,
@@ -198,6 +211,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.rfile.read(length)
         _CURRENT_SERVER[0].hits.append(self.path)
         path = self.path
+        if "/gone401" in path:
+            body = json.dumps({"success": False, "error": {
+                "code": "UNAUTHORIZED",
+                "status": 401,
+                "message": "Invalid 'Authorization' header or token.",
+                "docs": "https://commandcode.ai/docs/reference/errors/unauthorized",
+            }}).encode()
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if "/gone403" in path:
             body = json.dumps({"error": {
                 "message": "Free tier has ended for this model. Use the paid slug.",
@@ -284,10 +310,13 @@ def _rows(port, park_on_first_429=False, seat_a_lane="/fail", peer_lane="/failca
     """park_on_first_429 gives seat-a the row policy the prod rows that sit on a daily
     quota wall carry (model_info.allowed_fails_policy.RateLimitErrorAllowedFails: 0,
     fleet-ops#9075 / #9122 / #9248): the first 429 cools the row at once. seat_a_lane
-    and seat_a_row_policy put seat-a on the /gone403 and /gone404 walls for the
-    fleet-ops#9050 drills (seat_a_row_policy is the NotFoundErrorAllowedFails: 0
-    parked 404 shape). peer_lane points seat-c at /okcapable so the retry lands on
-    a row that answers."""
+    and seat_a_row_policy put seat-a on the /gone401, /gone403 and /gone404 walls
+    for the fleet-ops#10756 and #9050 drills (the 404 drill passes
+    NotFoundErrorAllowedFails: 0; the 401 drill passes the prod row shape,
+    BadRequestErrorAllowedFails, and relies on the router-level
+    AuthenticationErrorAllowedFails: 0, so a row policy that does not name the
+    401 class cannot override it). peer_lane points seat-c at /okcapable so the
+    retry lands on a row that answers."""
     seat_a_info = {"id": "seat-a", "supports_prompt_caching": True}
     if park_on_first_429:
         seat_a_info["allowed_fails_policy"] = {"RateLimitErrorAllowedFails": 0}
@@ -306,9 +335,10 @@ def _rows(port, park_on_first_429=False, seat_a_lane="/fail", peer_lane="/failca
     ]
 
 
-async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, calls=1):
-    """Run `calls` calls against one Router instance (the 404 park drill needs a
-    second call on the same router to prove the parked lane stays out). With
+async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, calls=1,
+               allowed_fails_policy=None):
+    """Run `calls` calls against one Router instance (the 404 and 401 park drills
+    need a second call on the same router to prove the parked lane stays out). With
     calls == 1 the return keeps the old (attempts, outcome, pin) shape; with a
     higher count it returns ([attempts per call], [outcome per call], pin)."""
     server.hits.clear()
@@ -322,6 +352,7 @@ async def _run(server, retry_policy, sid, park_on_first_429=False, rows=None, ca
             model_list=rows if rows is not None else _rows(server.port, park_on_first_429),
             routing_strategy="simple-shuffle",
             num_retries=0, cooldown_time=60, allowed_fails=1,
+            allowed_fails_policy=allowed_fails_policy,
             optional_pre_call_checks=["prompt_caching", "session_affinity"],
             fallbacks=[{"worker-capable": ["worker-cheap"]}],
             deployment_affinity_ttl_seconds=3600,
@@ -403,10 +434,28 @@ def _load_retry_policy():
 def test_config_retry_policy_is_the_fleet_ops_9375_fix():
     """The production retry_policy must carry the fleet-ops#9375 values; the schema
     bounds the whole block and this gate holds the actual numbers. If someone
-    flips AuthenticationErrorRetries back to >=1, or RateLimit / Timeout /
-    InternalServerError back to 2, the audit numbers regress and this gate fails."""
+    flips AuthenticationErrorRetries back to >=2, or RateLimitErrorRetries /
+    TimeoutErrorRetries / InternalServerErrorRetries off the values this file pins,
+    the audit numbers regress and this gate fails."""
     rp = _load_retry_policy()
     assert rp == RP_PROPOSED, rp
+
+
+def test_the_live_config_parks_a_401_row_on_its_first_failure():
+    """fleet-ops#10756 pre-flight, gated: the one retry a 401 gets is a peer retry
+    only because the router-level AuthenticationErrorAllowedFails is 0, so the row
+    that answered 401 parks on its first failure. The drill injects that policy, so
+    without this gate a config edit to 1 would leave every test green and the fix
+    dead in production. No row may name the class either: a row-level value is
+    resolved before the router policy, so it could raise the threshold."""
+    with open(CONFIG_PATH, "rb") as fh:
+        cfg = yaml.safe_load(fh)
+    policy = cfg["router_settings"]["allowed_fails_policy"]
+    assert policy["AuthenticationErrorAllowedFails"] == 0, policy
+    named = [row["model_name"] for row in cfg["model_list"]
+             if "AuthenticationErrorAllowedFails"
+             in (row.get("model_info", {}).get("allowed_fails_policy") or {})]
+    assert named == [], named
 
 
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
@@ -444,9 +493,12 @@ def test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule(
         assert any(p[:1] == ["router_settings"] for p in paths), (path, paths)
 
 
-def test_authentication_error_gets_zero_retries():
+def test_authentication_error_gets_one_retry():
+    """fleet-ops#10756: a 401 gets one in-group retry, and the router-level
+    AuthenticationErrorAllowedFails 0 parks the row that answered it, so the retry
+    goes to a live peer (test_a_401_lane_retries_onto_the_peer_and_then_parks)."""
     rp = RetryPolicy(**RP_PROPOSED)
-    assert get_num_retries_from_retry_policy(AuthenticationError("401", "openai", "m", None), rp) == 0
+    assert get_num_retries_from_retry_policy(AuthenticationError("401", "openai", "m", None), rp) == 1
 
 
 def test_rate_limit_gets_two_retries():
@@ -714,13 +766,14 @@ def test_a_403_arrives_as_bad_request_and_gets_one_retry():
 def test_an_unkeyed_402_also_gets_the_default_one_retry():
     """DefaultRetries covers every class the policy does not name. 402 stays plain
     APIError on 1.105.0 (no key), so the default grants it one retry; the named keys
-    keep precedence, so 401 stays 0 and a 429 gets its two (fleet-ops#10178)."""
+    keep precedence, so 401 gets its own one (fleet-ops#10756) and a 429 gets its
+    two (fleet-ops#10178)."""
     exception = APIError(status_code=402, message="insufficient credits",
                          llm_provider="openai", model="x")
     assert get_num_retries_from_retry_policy(
         exception, RetryPolicy(**RP_PROPOSED)) == 1
     assert get_num_retries_from_retry_policy(
-        AuthenticationError("401", "openai", "x", None), RetryPolicy(**RP_PROPOSED)) == 0
+        AuthenticationError("401", "openai", "x", None), RetryPolicy(**RP_PROPOSED)) == 1
     assert get_num_retries_from_retry_policy(
         RateLimitError(message="x", llm_provider="openai", model="x"),
         RetryPolicy(**RP_PROPOSED)) == 2
@@ -789,12 +842,47 @@ def test_a_404_lane_retries_onto_the_peer_and_then_parks():
     assert pin == {"model_id": "seat-a"}, pin
 
 
+def test_a_401_lane_retries_onto_the_peer_and_then_parks():
+    """fleet-ops#10756: a dead provider key answers 401 (CommandCode answered 401
+    on chat while its model list still answered 200 on 2026-10-28). The mock
+    answers the real CommandCode 401 body, which litellm maps to
+    AuthenticationError; a body carrying type invalid_request_error maps to
+    BadRequestError, which the router-level 401 value cannot cool. The 401 row
+    parks on its first failure through the router-level
+    AuthenticationErrorAllowedFails: 0 (config/litellm-proxy.yaml, held by
+    test_the_live_config_parks_a_401_row_on_its_first_failure), so the one
+    granted retry goes to a live peer and the NEXT call on the same router goes
+    straight to the peer - one dead key no longer fails the whole session. seat-a
+    carries the prod row shape (a model_info.allowed_fails_policy naming only
+    BadRequestError), so the drill also holds the issue's pre-flight: a row policy
+    that does not name the 401 class does not override the router-level 0. The
+    worker-capable group holds exactly one peer row (seat-c), so the retry has one
+    landing spot and the asserted pick order is deterministic."""
+    server = _Server()
+    try:
+        batches, outcomes, pin = asyncio.run(_run(
+            server, RP_PROPOSED, "s-401-peer-and-park",
+            rows=_rows(server.port, seat_a_lane="/gone401", peer_lane="/okcapable",
+                       seat_a_row_policy={"BadRequestErrorAllowedFails": 1}),
+            allowed_fails_policy={"AuthenticationErrorAllowedFails": 0,
+                                  "BadRequestErrorAllowedFails": 1},
+            calls=2))
+    finally:
+        server.close()
+    assert batches[0] == ["/gone401/chat/completions",
+                          "/okcapable/chat/completions"], batches
+    assert batches[1] == ["/okcapable/chat/completions"], batches
+    assert outcomes == ["ok", "ok"], outcomes
+    assert pin == {"model_id": "seat-a"}, pin
+
+
 if __name__ == "__main__":
     fns = [
         test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on,
         test_config_retry_policy_is_the_fleet_ops_9375_fix,
+        test_the_live_config_parks_a_401_row_on_its_first_failure,
         test_schema_accepts_the_live_config_and_each_reject_fails_on_the_retry_rule,
-        test_authentication_error_gets_zero_retries,
+        test_authentication_error_gets_one_retry,
         test_rate_limit_gets_two_retries,
         test_internal_server_error_retry_is_live_on_litellm_1_105_0,
         test_the_same_row_retry_has_no_backoff,
@@ -811,6 +899,7 @@ if __name__ == "__main__":
         test_a_403_wall_retries_the_pinned_row_then_falls_to_the_fallback,
         test_zero_retries_kick_a_403_wall_to_the_fallback,
         test_a_404_lane_retries_onto_the_peer_and_then_parks,
+        test_a_401_lane_retries_onto_the_peer_and_then_parks,
         test_pin_survives_a_failed_then_fallback_success,
         test_the_migration_pre_start_names_the_same_image_as_the_proxy,
     ]

@@ -193,3 +193,37 @@ groups:
           description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
+
+      - uid: queue-stuck-pr-needs-split
+        title: PR labelled needs-split for 2h
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 2592000, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open label:needs-split", timeField: 3}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT COUNT(*) AS stuck
+                FROM (SELECT updated_at FROM A) AS found
+                WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) >= 7200
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: '{{ if $values }}A pull request has been labelled needs-split, with no update, for 2 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR labelled needs-split for 2h", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Its diff is over 250 KB, so the review job refused it and added needs-split; nothing reviews or merges it until it is split (fleet-ops#10514: two 0509 PRs sat 7 days this way). The orchestrator lane splits it into at most three PRs (prompts/orchestrator-handoff.md). Split it, close the original as superseded, and prove the parts landed.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+label%3Aneeds-split+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck}
+        isPaused: false

@@ -44,6 +44,21 @@
       "name": "seo-fix-kit",
       "product": true,
       "enrolled_by": "Nish, 2026-10-15 (two-week launch push for Site Rep and SEO Fix Kit, to 2026-10-29; decision ledger entry nish-vault#27; the end-date review is Nishfleet/siterep-public#173, due that day; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16)"
+    },
+    {
+      "name": "mailbox",
+      "product": true,
+      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; a product repo, Team mailbox, whose CI runs on GitHub-hosted ubuntu-latest so PR code never reaches a self-hosted runner; measured 2026-10-29: the stub PR is on main, the six labels and the checkout are in place; inert until Nish sets AGENT_MODE=live, which the hand-off lane may not do)"
+    }
+  ],
+  "sweep_only": [
+    {
+      "name": "fleet-ops",
+      "reason": "Nish, fleet-ops#10638: agent.yml's worker-exit top-up re-runs this repo's sweep, a retry of items already labelled agent-ready. Admit, scout and later-sweep read .repos only and stay off (deferred entry below)."
+    },
+    {
+      "name": "drive",
+      "reason": "Nish, fleet-ops#10638: dispatched by its own agent-dispatch stub but not in .repos, so an item labelled while lanes were full waited for GitHub's delayed cron. The worker-exit top-up re-runs its sweep; no admit or later-sweep."
     }
   ],
   "excluded": [
@@ -75,11 +90,29 @@
   ],
   "deferred": [
     {
+      "name": "claude-mods",
+      "product": false,
+      "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
+      "reason": "control plane, not product. It ships the model-lanes plugin, which denies subagents and model overrides for every fleet agent, so a worker editing it can loosen the gate that holds the fleet's own lanes. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+    },
+    {
+      "name": "fleet-console-worker",
+      "product": false,
+      "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
+      "reason": "control plane, not product. The fleet console Worker holds the board's read-only GitHub token and the enrolled signing keys, so a PR in this repo reaches credentials and the console that audits the fleet. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+    },
+    {
+      "name": "pi-runner-guard",
+      "product": false,
+      "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653, PR #10771 review)",
+      "reason": "control plane, not product. It is a pi extension that decides what a worker's own tools may do, so a worker editing it can widen its own sandbox. The stub PR, the six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+    },
+    {
       "name": "fleet-ops",
       "product": false,
       "enrolled_by": "Nish, 2026-08-26",
       "deferred_by": "Fable for Nish, 2026-09-22 12:30 IST",
-      "reason": "Tripwire tripped. Nish 2026-09-22: 'protect compute. no bs should be built in the first place, rather than being blocked at gates.' Last 24h on fleet-ops: 149 merged PRs vs 45 on 0509; of the 149, 50 are docs/observe-close/reports the fleet writes about itself, 36 are Jev shadow/advisory tiers whose own text says they change nothing, 0 touch the product. 100 open agent-ready issues, all self-filed by the worker bot (worker files findings, intake labels them agent-ready, a worker claims them: a self-feeding loop). Control-plane work now enters ONLY as a packet scoped by Fable or Nish: a repair upstream of a product outcome (dead lane, seat wall, a gate that let a D-grade PR merge). No auto-intake, no scout, no worker-exit top-up on this repo. Re-enrol via PR when the fleet-ops:0509 merge ratio inverts on product supply, not before."
+      "reason": "Tripwire tripped. Nish 2026-09-22: 'protect compute. no bs should be built in the first place, rather than being blocked at gates.' Last 24h on fleet-ops: 149 merged PRs vs 45 on 0509; of the 149, 50 are docs/observe-close/reports the fleet writes about itself, 36 are Jev shadow/advisory tiers whose own text says they change nothing, 0 touch the product. 100 open agent-ready issues, all self-filed by the worker bot (worker files findings, intake labels them agent-ready, a worker claims them: a self-feeding loop). Control-plane work now enters ONLY as a packet scoped by Fable or Nish: a repair upstream of a product outcome (dead lane, seat wall, a gate that let a D-grade PR merge). No auto-intake and no scout on this repo. The worker-exit top-up re-runs its sweep (sweep_only above, fleet-ops#10638), which only retries items already labelled agent-ready. Re-enrol via PR when the fleet-ops:0509 merge ratio inverts on product supply, not before."
     },
     {
       "name": "0509-telemetry",
@@ -89,6 +122,18 @@
       "name": "inish-site",
       "product": true,
       "reason": "Retired product: no dispatch. Nish, 2026-10-12: the 0509-only freeze is lifted for every other product; this one stays out because it is retired."
+    },
+    {
+      "name": "nish-vault",
+      "product": false,
+      "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653)",
+      "reason": "fleet-ops#10653: control plane, not product. The vault holds the standing rules, the shared memory and the decisions ledger that every other agent is judged against, so a repo a worker can edit is one that can loosen the gate that judges it. The stub PR (Nishfleet/nish-vault#102) is merged and the six labels and the checkout are in place, so the only missing precondition is AGENT_MODE=live, which the hand-off lane may not set. Its Skills Library checks also failed on runner netcup-vault-1 on 2026-10-28 at the runner-probe step, which reported /run/user/1000/fleet-worker-github-token readable from the job. That runner instance had started before the user manager created the dir, so the unit's InaccessiblePaths entry over it was skipped. The runner restarted at 2026-10-29 04:34:46 IST, the mask now applies (checked in /proc/1726495/mountinfo), and a re-run of the same head reports checked=11 readable=0 in all four jobs. The probe reports the path only and opens no file, so the check printed no token value. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
+    },
+    {
+      "name": "owner-gate",
+      "product": false,
+      "deferred_by": "orchestrator, 2026-10-28 (fleet-ops#10653)",
+      "reason": "fleet-ops#10653: the stub PR (Nishfleet/owner-gate#6) is open and mergeable but blocked by the active freeze-main ruleset, and lifting that is a GitHub admin action the hand-off lane cannot take. It is also control plane, not product: this repo is the approval gate for owner-level API calls and holds the owner's full-power token as the OWNER_TOKEN environment secret, so a repo a worker can edit is one that can edit the gate that holds it. The six labels and the checkout are in place. Re-enrol by PR: the review path decides (Jev judges, then one Opus final say)."
     }
   ]
 }
