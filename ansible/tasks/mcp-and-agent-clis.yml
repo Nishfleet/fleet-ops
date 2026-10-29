@@ -130,9 +130,39 @@
   vars:
     cursor_now: "{{ (cursor_mcp.content | default('e30=') | b64decode | from_json) }}"
     cursor_servers: "{{ (cursor_now.mcpServers | default({})) | dict2items | rejectattr('key', 'in', ['camofox-browser', 'chrome-devtools']) | items2dict }}"
-    cursor_next: "{{ cursor_now | combine({'mcpServers': cursor_servers | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args}})}) }}"
+    cursor_next: "{{ cursor_now | combine({'mcpServers': cursor_servers | combine({'chrome-devtools': {'command': chrome_devtools_mcp_bin, 'args': chrome_devtools_mcp_args}}) | combine(drive_mcp_servers if 'drive' in cursor_servers else {})}) }}"
   when: cursor_next != cursor_now
   diff: false
+
+- name: Read Claude Code's drive entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/claude", mcp, get, drive]
+  register: drive_entry
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  timeout: 60
+
+- name: Drop a stale drive entry
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: ["{{ nish_home }}/.local/bin/claude", mcp, remove, drive, --scope, user]
+  when: drive_entry.rc == 0 and (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
+  timeout: 60
+
+- name: Pin the Drive filesystem server in Claude Code's user config
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv: "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
+  when: drive_entry.rc != 0 or (drive_mcp_words | reject('in', drive_entry.stdout ~ drive_entry.stderr) | list | length) > 0
+  timeout: 60
 
 - name: Look for Codex's config
   become: true

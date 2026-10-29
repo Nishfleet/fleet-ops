@@ -100,8 +100,8 @@
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.
   [provider-watch.md](provider-watch.md) has the run, off and delete steps.
-- `systemd/executor.service`, `syncthing.service` and `tigervnc.service` — stock vendor
-  binaries (Executor, Syncthing, TigerVNC) run under systemd. They were hand-placed on the
+- `systemd/syncthing.service` and `tigervnc.service` — stock vendor
+  binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
@@ -219,30 +219,23 @@
   Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
   `systemctl --user disable --now fleet-hermes-xai-login-check.timer
   fleet-hermes-xai-login-check.path` and delete the files.
-- `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
-  the Leviathan session-log search index, refreshed every 15 minutes per
-  instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
-  answers "what did an old session say about X" in milliseconds (fleet-ops#9313).
-  Config and index live in `~/.local/share/leviathan/` (0700), installed from
-  `config/leviathan/` by `fleet-sync.service`; the binary is installed by
-  `ansible/host.yml` from a pinned release. Off switch, under 2 minutes and
-  nothing re-enables it: `systemctl --user disable --now leviathan-index@claude.timer leviathan-index@pi.timer`,
-  then `rm ~/.local/bin/leviathan && rm -rf ~/.local/share/leviathan` —
-  `host.yml`/`update.yml` only install and version the binary and
-  `fleet-sync.service` only refreshes unit and config bytes, so no fleet unit
-  ever re-enables a timer. Wire new instances only after `fleet-sync.service`
-  has run once with the configs merged (the 15-minute tick pages on a missing
-  config). Each run rebuilds the index from the files on disk, so it mirrors
-  the logs and keeps the same retention; the index never holds more than the
-  logs do. The drop-in `systemd/leviathan-index@.service.d/20-umask.conf` sets
-  `UMask=0077` so `pi.db` and `claude.db` are owner-only (the user-manager
-  default is 0002). Link it once after the merge with the drop-in `ln -sfn`
-  idiom under "Install" (before the merge it would dangle), then
-  `systemctl --user daemon-reload`; it applies at the next index run.
-  The same `UMask=0077` drop-in sits in
-  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
-  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
-  so the drop-in now applies on every deploy. Applies at the next restart.
+- `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` sets `UMask=0077` on
+  the Devin Tincan listener (unit file moved into `systemd/` with fleet-ops#10133),
+  so its session-text output files are owner-only and the drop-in applies on every
+  deploy. Applies at the next restart.
+  That drop-in covers the listener only. The Devin CLI runs in two more places,
+  and both started it group-writable: under the `netcup-agent` runners at the
+  units' 0022, which made a new log group-readable, and in nish's login shells
+  at `pam_umask`'s 0002, which made it group-writable (audit W1a,
+  `nish-vault#30`).
+  `rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-umask.conf`
+  sets `UMask=0077` for every `netcup-agent` runner — a prefix drop-in, because
+  their unit files come from the runner's own `svc.sh` — and
+  `rootfs/etc/zsh/zprofile` sets `umask 077` for nish's login shells, which is
+  how sshd and tmux start one. Both apply at the next runner restart and the
+  next login. The check after a fresh CLI run: `find ~/.local/share/devin
+  -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
+  always shows mode 777, so it is excluded).
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)
@@ -310,8 +303,6 @@
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  and the leviathan index units, their configs and the tmpfiles rule to
-  `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead

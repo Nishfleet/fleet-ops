@@ -1,3 +1,130 @@
+# --- Alertmanager's API is authenticated (fleet-ops#10058) ---------------
+# Every route of the API, /-/healthy and /-/ready included, answered without a
+# credential, so any process that could reach 127.0.0.1:9093 could create a
+# silence and mute a page. The stock answer is Alertmanager's own
+# --web.config.file, which puts basic auth in front of the whole API.
+#
+# The two files that switch it on are hand-placed host state, like deadman_url
+# and the bot token: never in the repo, and never readable by nish. A credential
+# nish could read would protect nothing, because every process that can reach
+# the listener runs as nish or as the tether user this play itself creates, and
+# both are one sudo away from it. This block owns their shape and their
+# ownership, never their bytes.
+#
+# Until both halves are in place the prometheus config install below is skipped.
+# prometheus.yml now names the password file under basic_auth, and a config
+# that points at a file which is not there starts Prometheus but silently stops
+# every alert push, Watchdog included. Skipping keeps the old prometheus config
+# and the old loopback-only options file in force, so alerting keeps working
+# while the last assert of the play fails loudly and names the pair. One root
+# step fixes it for good: the runbook in the W15 proof folder.
+
+- name: Look for the alertmanager web config
+  ansible.builtin.stat:
+    path: /etc/alertmanager/web.yml
+    follow: false
+  register: alertmanager_web_config
+  check_mode: false  # read-only; runs under --check too
+
+- name: Look for the password Prometheus authenticates to alertmanager with
+  ansible.builtin.stat:
+    path: /etc/prometheus/alertmanager_password
+    follow: false
+  register: alertmanager_password
+  check_mode: false  # read-only; runs under --check too
+
+- name: Note whether both halves of the alertmanager credential are in place
+  ansible.builtin.set_fact:
+    alertmanager_auth_ready: "{{ alertmanager_web_config.stat.isreg | default(false) and alertmanager_password.stat.isreg | default(false) }}"
+  check_mode: false  # the gates below read it, so a --check run needs it too
+
+# Root-owned and not writable by the service: these bytes decide who may silence
+# an alert. The prometheus group reads the web config at start, so the file is
+# group-readable by the service and by nothing else.
+- name: Keep the alertmanager web config root-owned and readable by the service group
+  ansible.builtin.file:
+    path: /etc/alertmanager/web.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+  when: alertmanager_auth_ready | default(false) | bool
+
+# The password file is read by prometheus at config load, so it belongs to the
+# prometheus user and nobody else can read it.
+- name: Keep the alertmanager password owned by the prometheus user
+  ansible.builtin.file:
+    path: /etc/prometheus/alertmanager_password
+    owner: prometheus
+    group: prometheus
+    mode: "0600"
+  when: alertmanager_auth_ready | default(false) | bool
+
+# promtool fully validates an exporter-toolkit web config: it fails on an
+# unknown key, on a broken TLS block, on invalid YAML and on a password that is
+# not a bcrypt hash. It says nothing about the other half of the pair.
+- name: Check the alertmanager web config before installing anything that uses it
+  ansible.builtin.command: /usr/bin/promtool check web-config /etc/alertmanager/web.yml
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+  when: alertmanager_auth_ready | default(false) | bool
+
+# promtool validates the web config alone. What it cannot see is the other end
+# of the credential: prometheus.yml must send a user the web config defines, and
+# the password file must be the one line Prometheus trims. Stock slurp and
+# assert read the three files; no_log keeps a byte of either credential out of
+# the transcript, and the messages name files and fixed words only.
+- name: Read the alertmanager web config
+  ansible.builtin.slurp:
+    src: /etc/alertmanager/web.yml
+  register: alertmanager_web
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: Read the password Prometheus authenticates to alertmanager with
+  ansible.builtin.slurp:
+    src: /etc/prometheus/alertmanager_password
+  register: alertmanager_client_password
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: Read the prometheus config that sends the credential
+  ansible.builtin.slurp:
+    src: "{{ rootfs }}/etc/prometheus/prometheus.yml"
+  register: alertmanager_prometheus
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: Check that the alertmanager credential matches the client that sends it
+  ansible.builtin.assert:
+    that:
+      - alertmanager_web_users | length > 0
+      - alertmanager_client_auths | length == alertmanager_clients | length
+      - alertmanager_client_users | length == alertmanager_clients | length
+      - alertmanager_client_users | difference(alertmanager_web_users) | length == 0
+      - alertmanager_client_files | length == alertmanager_clients | length
+      - alertmanager_client_files | difference([alertmanager_password_file]) | length == 0
+      - alertmanager_inline_passwords | length == 0
+      - alertmanager_password_words | length == 1
+    fail_msg: >-
+      the alertmanager credential pair does not agree. {{ alertmanager_web_config }} needs a
+      basic_auth_users key for every user {{ alertmanager_prometheus_config }} sends, each of
+      them reading password_file {{ alertmanager_password_file }} and carrying no inline
+      password, and /etc/prometheus/alertmanager_password must hold one line with no
+      whitespace in it.
+    quiet: true
+  vars:
+    alertmanager_web_config: /etc/alertmanager/web.yml
+    alertmanager_prometheus_config: "{{ rootfs }}/etc/prometheus/prometheus.yml"
+    alertmanager_password_file: /etc/prometheus/alertmanager_password
+    alertmanager_web_users: "{{ (alertmanager_web.content | b64decode | from_yaml).basic_auth_users | default({}, true) | dict2items | map(attribute='key') | list }}"
+    alertmanager_clients: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers }}"
+    alertmanager_client_auths: "{{ alertmanager_clients | selectattr('basic_auth', 'defined') | map(attribute='basic_auth') | list }}"
+    alertmanager_client_users: "{{ alertmanager_client_auths | selectattr('username', 'defined') | map(attribute='username') | list }}"
+    alertmanager_client_files: "{{ alertmanager_client_auths | selectattr('password_file', 'defined') | map(attribute='password_file') | list }}"
+    alertmanager_inline_passwords: "{{ alertmanager_client_auths | selectattr('password', 'defined') | list }}"
+    alertmanager_password_words: "{{ (alertmanager_client_password.content | b64decode).split() }}"
+  when: alertmanager_auth_ready | default(false) | bool
+
 - name: Install prometheus and blackbox exporter config
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/prometheus/"
@@ -11,6 +138,7 @@
     - Reload prometheus
     - Reload alertmanager
     - Reload blackbox exporter
+  when: alertmanager_auth_ready | default(false) | bool
 
 # The Telegram chat id has no file option in Alertmanager, so it is kept out
 # of the repo: the repo copy holds chat_id 1 and the installed copy gets the
@@ -65,7 +193,9 @@
   when: telegram_chat_id.content is defined
   notify: Reload alertmanager
 
-# Alertmanager's API is unauthenticated, so the options pin it to loopback.
+# Alertmanager's API is authenticated, so the options no longer pin it to
+# loopback: --web.config.file is what turns the auth on. It is read only at
+# start, so installing it is what queues the restart below.
 - name: Install the alertmanager options
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/default/prometheus-alertmanager"
@@ -74,6 +204,7 @@
     group: root
     mode: preserve
   notify: Restart alertmanager
+  when: alertmanager_auth_ready | default(false) | bool
 
 # The ping URL and the bot token are hand-placed credentials that stay out of
 # the repo. Alertmanager exits at config load without them, so it starts only
@@ -110,3 +241,56 @@
     enabled: true
     state: started
   when: alertmanager_credentials is defined and (alertmanager_credentials.results | map(attribute='stat.exists') | min)
+
+# The restart the options install queued has to have happened already: an
+# Alertmanager still on the old loopback-only options answers without a
+# credential, so the probes below would pass without testing anything.
+# The guard keeps it to what this block queued: the reload the chat-id and
+# credential-file tasks notify runs at the end of the play, as it did before.
+- name: Apply pending handlers before the alertmanager credential is probed
+  ansible.builtin.meta: flush_handlers
+  when: alertmanager_auth_ready | default(false) | bool
+
+# The one thing no local file can prove: that the hash in the web config really
+# is the bcrypt of the password Prometheus sends. A mismatch stops every alert
+# push, Watchdog included, and only the dead-man outside the box would notice.
+# This is the runbook's proof, run on every deploy.
+- name: Check that alertmanager refuses the API without a credential
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9093/-/ready
+    status_code: 401
+  retries: 10
+  delay: 2
+  until: alertmanager_unauth.status == 401
+  register: alertmanager_unauth
+  when: alertmanager_auth_ready | default(false) | bool
+
+# no_log keeps the credential out of the deploy log, and failed_when: false hands
+# the answer to the assert below, which names the status code no_log would have
+# hidden. The username comes from the prometheus config this block already read.
+- name: Check that alertmanager answers the credential Prometheus sends
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9093/-/ready
+    url_username: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"
+    url_password: "{{ (alertmanager_client_password.content | b64decode).strip() }}"
+    status_code: 200
+  retries: 10
+  delay: 2
+  until: alertmanager_ready.status == 200
+  register: alertmanager_ready
+  failed_when: false
+  no_log: true
+  when: alertmanager_auth_ready | default(false) | bool
+
+- name: The alertmanager credential probe must answer 200
+  ansible.builtin.assert:
+    that: alertmanager_ready.status == 200
+    fail_msg: >-
+      alertmanager answered {{ 'no connection' if (alertmanager_ready.status | default(-1)) == -1 else alertmanager_ready.status }}
+      on 127.0.0.1:9093/-/ready after 10 tries with the credential prometheus.yml
+      sends. A 401 means the hash in /etc/alertmanager/web.yml is not the bcrypt
+      of the password in /etc/prometheus/alertmanager_password, or the username
+      is not the one prometheus.yml sends. A connection error means alertmanager
+      is not up on the new options yet.
+    quiet: true
+  when: alertmanager_auth_ready | default(false) | bool

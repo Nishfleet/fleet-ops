@@ -14,6 +14,8 @@ YQ = shutil.which("yq")
 FIXTURED_RULES = [
     ("prompt-cache-hit.yaml", "prompt-cache-hit-low", "prompt-cache-hit.test.rules.yml", "PromptCacheHitLow"),
     ("paid-plan-idle.yaml", "ppi-alibaba", "paid-plan-idle.test.rules.yml", "AlibabaTokenPlanSgIdle"),
+    ("paid-plan-idle.yaml", "ppi-commandcode", "paid-plan-idle.test.rules.yml", "CommandCodeIdle"),
+    ("paid-plan-idle.yaml", "ppi-minimax", "paid-plan-idle.test.rules.yml", "MiniMaxIdle"),
 ]
 
 
