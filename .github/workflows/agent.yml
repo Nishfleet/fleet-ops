@@ -315,6 +315,10 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
+          # fleet-ops#9330 2x2 trial: the arm is a pure function of the issue number, so the pi lane below computes
+          # it from the same $id it already parses for the session dir, and nothing here records it: any reader
+          # recovers a run's arm from its issue number (odd -> no skills menu, (n/2) odd -> desk), the rule Note 14
+          # states. No comment carries a suffix, so the attempt cap above and the strike probe below are untouched.
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
@@ -549,7 +553,10 @@ jobs:
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
-            mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public
+            # fleet-ops#9330 2x2 trial arm, from the issue number ($id is claim/issue-<n>, exactly as the Cursor seat
+            # parity above reads it): odd n -> no skills menu, (n/2) odd -> desk, the alias group with earlier
+            # compaction. The miss branch below uses neither, so miss-review is not an arm.
+            mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public; arm_flags=(); [ $(( ${id##*-} % 2 )) = 1 ] && arm_flags+=(--no-skills)
             if [ "$MISS" = true ]; then
               echo "$packet" | $jail pi --print --no-context-files \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
@@ -558,12 +565,12 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             else
-              cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
+              [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-                --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
+                --exclude-tools subagent "${arm_flags[@]}" --provider litellm --model "$pi_model" >/dev/null
             fi
           elif [ "$ENGINE" != devin ] && [ "$ENGINE" != opencode ] && [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2

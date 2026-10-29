@@ -1139,6 +1139,15 @@ router_settings:
   # tracked as fleet-ops#9411, until which the TTL above and the session-hop Grafana alert
   # (config/grafana/provisioning/alerting/session-hop.yaml) bound the damage.
   deployment_affinity_ttl_seconds: 600
+  # Long note 14: docs/litellm-router-notes.md
+  # fleet-ops#9330 desk arm of the 3-day token trial: an alias renames the group the job already picked, so Pi's
+  # compaction.modelOverrides can key on a second name and the arm changes compaction alone - no new seat, no new
+  # route. Both worker groups a Pi job can pick have one, because the trial has to reach a public repo too. A request
+  # naming an alias has no fallback chain of its own (the lookup keys on the requested name), so an alias that falls
+  # needs its own entry below, exactly where its base group's is. Remove both aliases and that entry with the trial.
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
   # worker groups hold only rungs proven to return finish_reason=tool_calls (fleet-ops#7761); every worker row is
   # order 1 because a worker group is a peer set, not a preference order. The judge group is the exception
   # (fleet-ops#9374): order 1 alibaba-qwen38max-judge, order 2 the two OpenCode Go judge rows. The stale note here
@@ -1171,6 +1180,7 @@ router_settings:
   fallbacks:
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
+    - worker-public-desk: [worker-capable]
     - assistant: [worker-capable]
     # Long note 8: docs/litellm-router-notes.md
     - tether: [assistant]
