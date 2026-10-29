@@ -70,6 +70,17 @@
     fail_msg: "Grafana secrets not refreshed, source or key missing or empty: {{ grafana_secrets_missing | join('; ') }}."
     quiet: true
 
+# The directory has to exist before the copy below writes into it: a run on a box
+# where it has not been made yet would otherwise fail here, above the drift
+# assert, and never report a hand edit.
+- name: Make sure the directory the recorded commit lives in exists
+  ansible.builtin.file:
+    path: "{{ applied_sha_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 # Recorded before the drift assert below, so a run that reports a hand edit
 # still moves the baseline to the commit it applied. The copy tasks have already
 # put the repo's version of every file back, so the next run compares against
@@ -85,13 +96,18 @@
 
 # The snapshot from tasks/drift-baseline.yml, taken before the copy tasks put
 # every hand edit back. A file this deploy changes on purpose is excluded, so
-# what is left is a hand edit the repo does not know about.
+# what is left is a hand edit the repo does not know about. Above the two tether
+# failure checks, which have to stay last: a hand edit is this check's own
+# finding and must not be one of the things a later failure hides. A diff that
+# failed leaves the check off for the run (tasks/drift-baseline.yml logs it).
 - name: Fail on a hand-edited file
   ansible.builtin.assert:
     that: hand_edited | default([]) | length == 0
     fail_msg: "Hand-edited, differs from fleet-ops rootfs/ and not changed by this deploy (the copy tasks have put the repo's version back; make the change in the repo): {{ hand_edited | default([]) | join(', ') }}"
     quiet: true
-  when: drift_baseline_sha != ''
+  when:
+    - drift_baseline_sha != ''
+    - deploy_changes.rc | default(1) == 0
 
 # A Cua Space that did not come up fails the run here, before the last two
 # tasks; force_handlers still runs the pending handlers.

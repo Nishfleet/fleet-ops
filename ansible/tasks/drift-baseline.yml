@@ -44,13 +44,36 @@
   register: head_sha
   changed_when: false
   check_mode: false  # read-only; runs under --check too
+  # An empty checkout (a pull that produced no commit) would fail this. With no
+  # head there is nothing to record and nothing to diff, so the drift check
+  # stays off for the run instead of failing every deploy until a checkout
+  # holds a commit.
+  failed_when: false
 
 - name: List the files this deploy changes in rootfs/
-  ansible.builtin.command: git -C {{ rootfs }}/.. diff --name-only {{ drift_baseline_sha }} {{ head_sha.stdout }} -- rootfs/etc
+  ansible.builtin.command: git -C {{ rootfs }}/.. diff --name-only {{ drift_baseline_sha }} {{ head_sha.stdout }}
   register: deploy_changes
   changed_when: false
   check_mode: false  # read-only; runs under --check too
+  # Not pathspec'd to rootfs/etc: a change to a symlink target outside it
+  # (systemd/fleet-unit-failed@.service) is a change to the file the deploy
+  # installs at the link's own path, and must be excused like any other. The
+  # paths outside rootfs/ are dropped again below, after the link targets are
+  # matched against them.
+  # The baseline commit is not guaranteed to be in this clone: ansible-pull can
+  # hand it a shallow one and a squash-merge drops the object. A diff that
+  # fails is treated like a missing baseline (the check stays off) instead of
+  # failing every deploy until the recorded sha is deleted by hand.
+  failed_when: false
   when: drift_baseline_sha != ''
+
+- name: Say when the drift baseline could not be diffed
+  ansible.builtin.debug:
+    msg: >-
+      Drift check off for this run: the diff against the baseline commit
+      {{ drift_baseline_sha }} failed (rc {{ deploy_changes.rc | default('?') }}),
+      so the files this deploy changes are unknown and no hand edit is reported.
+  when: drift_baseline_sha != '' and deploy_changes.rc | default(1) != 0
 
 - name: Work out which shipped files were edited by hand
   ansible.builtin.set_fact:
@@ -83,14 +106,21 @@
          | reject('match', '^[^:]+:$') | list }}
     live_paths: "{{ live_files | map('regex_replace', ':[0-9a-f]*$', '') | list }}"
     # A link's content lands at the link's own path, but the file a change to it
-    # edits is the target, and the diff above only lists the target. So a link
-    # whose target this deploy changes is excused at its own path too, or the
-    # run reports a hand edit that is really this deploy's change.
+    # edits is the target, which may sit outside rootfs/ (the diff lists it as
+    # systemd/fleet-unit-failed@.service, not rootfs/etc/...). So the paths the
+    # deploy changes are two halves: every changed path under rootfs/, as it
+    # will read on the box, plus every shipped link whose target is a changed
+    # path, at the link's own path -- copy follows the link and installs the
+    # target's bytes there, so a target change is a change at the link's path
+    # too. Without the second half a PR that edits the target reports the link
+    # as a hand edit on every run. Changed paths outside rootfs/ that are not a
+    # link target (ansible/, tests/, docs/) install nothing and are dropped.
+    repo_root: "{{ (rootfs ~ '/..') | realpath }}"
+    changed_paths: "{{ deploy_changes.stdout_lines | default([]) | list }}"
+    link_paths: "{{ shipped_sums.files | selectattr('islnk') | map(attribute='path') | list }}"
+    link_targets: "{{ link_paths | map('realpath') | map('regex_replace', '^' ~ (repo_root | regex_escape) ~ '/?', '') | list }}"
     deploy_changed: >-
-      {{ (deploy_changes.stdout_lines | default([]) | map('regex_replace', '^rootfs', '') | list)
-         | union(shipped_sums.files | selectattr('islnk') | map(attribute='path')
-            | zip(shipped_sums.files | selectattr('islnk') | map(attribute='path') | map('realpath')
-                 | map('replace', rootfs, '') | list)
-            | selectattr('1', 'in', deploy_changes.stdout_lines | default([]) | map('regex_replace', '^rootfs', '') | list)
+      {{ (changed_paths | select('match', '^rootfs/') | map('regex_replace', '^rootfs', '') | list)
+         | union(link_paths | zip(link_targets) | selectattr('1', 'in', changed_paths)
             | map('first') | map('replace', rootfs, '') | list) }}
   when: drift_baseline_sha != ''

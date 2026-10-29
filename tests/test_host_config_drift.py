@@ -32,9 +32,11 @@ NAMES = [
     "Read the checksum of the file each shipped symlink points at",
     "Read the commit this run applies",
     "List the files this deploy changes in rootfs/",
+    "Say when the drift baseline could not be diffed",
     "Work out which shipped files were edited by hand",
-    "Fail on a hand-edited file",
+    "Make sure the directory the recorded commit lives in exists",
     "Record the commit this run applied",
+    "Fail on a hand-edited file",
 ]
 UNIT = "etc/systemd/system/fleet-a.service"
 # A shipped symlink whose target sits outside rootfs/etc, the way
@@ -57,19 +59,20 @@ def _commit(repo, message):
     _git(repo, "commit", "-q", "-m", message)
 
 
-def _run(tmp_path):
+def _run(tmp_path, applied_sha_file=None):
     tasks = []
     for name in NAMES:
         task = json.loads(json.dumps(TASKS[name]))
-        for key in ("owner", "group"):
-            task.get("ansible.builtin.copy", {}).pop(key, None)
+        for module in ("ansible.builtin.copy", "ansible.builtin.file"):
+            for key in ("owner", "group"):
+                task.get(module, {}).pop(key, None)
 
         tasks.append(task)
     variables = {
         **PLAY["vars"],
         "rootfs": str(tmp_path / "repo/rootfs"),
         "host_root": str(tmp_path / "box"),
-        "applied_sha_file": str(tmp_path / "applied-sha"),
+        "applied_sha_file": applied_sha_file or str(tmp_path / "applied-sha"),
     }
     play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables, "tasks": tasks}
     book = tmp_path / "play.json"
@@ -134,12 +137,11 @@ def test_hand_edit_at_a_shipped_symlinks_path_fails_and_names_it(fixture):
     assert f"/{LINK}" in result.stdout and "Hand-edited" in result.stdout
 
 
-def test_change_to_a_symlink_target_outside_rootfs_is_reported(fixture):
+def test_change_to_a_symlink_target_outside_rootfs_is_excused(fixture):
     (fixture / "repo" / TARGET).write_text("[Unit]\nDescription=changed\n")
     _commit(fixture / "repo", "second")
     result = _run(fixture)
-    assert result.returncode != 0
-    assert f"/{LINK}" in result.stdout and "Hand-edited" in result.stdout
+    assert result.returncode == 0, result.stdout
 
 
 def test_change_to_a_symlink_target_inside_rootfs_is_excused(fixture):
@@ -153,3 +155,19 @@ def test_a_file_the_live_walk_cannot_read_is_not_reported(fixture):
     (fixture / "box" / UNIT).chmod(0)
     result = _run(fixture)
     assert result.returncode == 0, result.stdout
+
+
+def test_the_recorded_commit_is_written_when_its_directory_does_not_exist(fixture):
+    recorded = fixture / "state" / "fleet-ops" / "applied-sha"
+    head = subprocess.run(["git", "-C", str(fixture / "repo"), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
+    result = _run(fixture, applied_sha_file=str(recorded))
+    assert result.returncode == 0, result.stdout
+    assert recorded.read_text() == head
+
+
+def test_an_unknown_baseline_commit_does_not_fail_the_run(fixture):
+    (fixture / "applied-sha").write_text("0" * 40 + "\n")
+    (fixture / "box" / UNIT).write_text("[Service]\nUMask=0022\n")
+    result = _run(fixture)
+    assert result.returncode == 0, result.stdout
+    assert "Drift check off" in result.stdout
