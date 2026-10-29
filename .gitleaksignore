@@ -16,3 +16,11 @@
 5409e49ae27c7ca822938a780d3b45a1488a02d9:ansible/update.yml:private-home-path:967
 e001fda6d51822792498c7fb81d3e0320430eb7a:tests/test_fleet_update_false_failures.py:private-home-path:28
 e001fda6d51822792498c7fb81d3e0320430eb7a:ansible/update.yml:private-home-path:973
+# fleet-ops#9437: three early commits of this PR spell the deploy clone, the worktree path
+# and the mirror by absolute home path; the head spells them ~. A PR scan reads every commit
+# and history cannot be rewritten on an open PR. Sha-keyed so they cover only these commits.
+2bcf3c853c0a26e8c27cc23f6530b3ad624461f2:config/git-hooks/reference-transaction:private-home-path:45
+2bcf3c853c0a26e8c27cc23f6530b3ad624461f2:template/agents/reviewer.md:private-home-path:11
+2d79a3766cbc25e71911fe301756f4a7baefb4fc:prompts/miss-review.md:private-home-path:12
+2d79a3766cbc25e71911fe301756f4a7baefb4fc:prompts/risky-review.md:private-home-path:10
+8f31a0157eca584a96ecaa9476f66ef40f56aa49:tests/test_fleet_sync_deploy_blocked.py:private-home-path:147

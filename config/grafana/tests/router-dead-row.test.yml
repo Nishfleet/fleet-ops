@@ -1,0 +1,102 @@
+# Gate for the router-dead-row rule (fleet-ops#9562). The rule counts 402/403/404
+# failures per row over an hour, but only while the row is still failing: at least
+# one such failure in the last 10 minutes, held for 15 minutes.
+#
+#  - a one-minute burst of 8, then silence, never fires however long it is left
+#    running: it holds at most 10 minutes of the 15 `for:` needs, and the A pin at
+#    20m reads 0, which is the difference between the multiply and `and`;
+#  - a row failing once a minute fires at 30m (the 1-hour count passes 5 at the
+#    second evaluation, then `for: 15m` adds the page delay);
+#  - a sparse dead row, one failure every 4 minutes, still fires: the 10-minute
+#    window keeps one inside it at every evaluation;
+#  - a proxy-level series (no model_id, the health check) fires and is named by its
+#    requested_model, the label the summary and the issue title fall back to.
+#
+# Grafana's noDataState: OK is not something promtool replays; a case with no series
+# at all is covered by the empty read of an instant query, not by an alert case.
+evaluation_interval: 5m
+rule_files:
+- router-dead-row.test.rules.yml
+tests:
+- interval: 1m
+  name: a one-minute flap never fires
+  input_series:
+  - series: 'litellm_deployment_failure_responses_total{model_id="opencodego-ds41flash-worker-capable",requested_model="worker-capable",exception_status="403"}'
+    values: '0+0x1 8+0x70'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 20m
+    exp_alerts: []
+  - alertname: RouterRowAnswers402403404
+    eval_time: 40m
+    exp_alerts: []
+  - alertname: RouterRowAnswers402403404
+    eval_time: 70m
+    exp_alerts: []
+  promql_expr_test:
+  - expr: '(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h])) or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))) * on(model_id,requested_model) (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)'
+    eval_time: 6m
+    exp_samples:
+    - labels: '{model_id="opencodego-ds41flash-worker-capable",requested_model="worker-capable"}'
+      value: 8
+  - expr: '(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h])) or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))) * on(model_id,requested_model) (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)'
+    eval_time: 20m
+    exp_samples:
+    - labels: '{model_id="opencodego-ds41flash-worker-capable",requested_model="worker-capable"}'
+      value: 0
+- interval: 1m
+  name: a row failing once a minute fires
+  input_series:
+  - series: 'litellm_deployment_failure_responses_total{model_id="cline-spacebunnyalpha-worker-capable",requested_model="worker-capable",exception_status="402"}'
+    values: '0+1x60'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 10m
+    exp_alerts: []
+  - alertname: RouterRowAnswers402403404
+    eval_time: 30m
+    exp_alerts:
+    - exp_labels:
+        model_id: cline-spacebunnyalpha-worker-capable
+        requested_model: worker-capable
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-row
+      exp_annotations: {}
+- interval: 1m
+  name: a sparse dead row fires
+  input_series:
+  - series: 'litellm_deployment_failure_responses_total{model_id="commandcode-spacebunnyalpha-worker-cheap",requested_model="worker-cheap",exception_status="404"}'
+    values: '0+0x3 1+0x3 2+0x3 3+0x3 4+0x3 5+0x3 6+0x3 7+0x3 8+0x3 9+0x3 10+0x3 11+0x3 12+0x3 13+0x3 14+0x3'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 45m
+    exp_alerts:
+    - exp_labels:
+        model_id: commandcode-spacebunnyalpha-worker-cheap
+        requested_model: worker-cheap
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-row
+      exp_annotations: {}
+- interval: 1m
+  name: a proxy-level series fires under its requested_model
+  input_series:
+  - series: 'litellm_deployment_failure_responses_total{requested_model="jev-latest",exception_status="404"}'
+    values: '0+1x60'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 30m
+    exp_alerts:
+    - exp_labels:
+        requested_model: jev-latest
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-row
+      exp_annotations: {}
+  promql_expr_test:
+  - expr: '(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h])) or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))) * on(model_id,requested_model) (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)'
+    eval_time: 30m
+    exp_samples:
+    - labels: '{requested_model="jev-latest"}'
+      value: 30

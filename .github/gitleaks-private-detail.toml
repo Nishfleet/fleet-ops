@@ -235,3 +235,26 @@ targetRules = ["private-home-path", "private-fleet-seats-config"]
 paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
 regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|home/nish/workspaces/tooling/fleet-ops-deploy-clone/|\.config/fleet-ops/seats)$''']
 condition = "AND"
+
+[[allowlists]]
+description = "The review runners' drop-ins hand the reviewer App key, the worker App key, the router key and one seat token over with LoadCredential= and EnvironmentFile=, and bind the tools, the rules and the deploy clone; a unit line cannot carry an inline gitleaks:allow comment and a system unit has no %h. The test reads those lines back, so it spells out one of them. Only the paths these three files carry are allowed, so a new home path in any drop-in still fails the scan; fleet-ops#10950"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = [
+  '''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-(9|10)\.service\.d/30-review-user\.conf$''',
+  '''^tests/test_review_runner_key\.py$''',
+]
+regexes = [
+  '''^home/nish/\.config/fleet-ops/seats/claude-seat-b\.env$''',
+  '''^home/nish/\.config/fleet-ops/seats/typesafe-jev\.env$''',
+  '''^home/nish/\.config/fleet-worker/(nishfleet-worker\.private-key\.pem)?$''',
+  '''^home/nish/(\.local/bin|\.local/lib|\.nvm|AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone)$''',
+  '''^\.config/fleet-ops/seats$''',
+]
+condition = "AND"
+
+[[allowlists]]
+description = "The review job and the arm job read the router key, and a shell line inside $( ) cannot carry a trailing gitleaks:allow comment without closing the substitution. The file reads it through ${CREDENTIALS_DIRECTORY:-$HOME/...}, so only the relative seats directory is allowed here; fleet-ops#10950"
+targetRules = ["private-fleet-seats-config"]
+paths = ['''(^|/)\.github/workflows/agent\.yml$''']
+regexes = ['''^\.config/fleet-ops/seats$''']
+condition = "AND"

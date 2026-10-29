@@ -3,8 +3,8 @@
 
 An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
 no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 5 minus the live orchestrate runs a sweep. Three ended or
-re-fired hand-offs give needs-nish-decision.
+marker comment and no label write. At most 12 minus the live orchestrate runs a sweep, and a closed
+blocker releases at most 12. Three ended or re-fired hand-offs give needs-nish-decision.
 """
 import datetime
 import json
@@ -18,10 +18,12 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
 STEP = ".jobs.list.steps[] | select(.env.REQUEUE)"
+LIST = '.jobs.list.steps[] | select(.id == "list")'
 REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
 ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/"
 
 FAKE_GH = r"""#!/usr/bin/env bash
+cred() { [ -n "$GH_TOKEN" ] || [ -e "$FAKE_DIR/login" ] || { echo "gh: no credential: $*" >&2; exit 4; }; }
 case "$1 $2" in
   "issue list") cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
@@ -32,8 +34,18 @@ case "$1 $2" in
     [ -z "$FAIL_JOBS" ] || exit 1
     id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
-  "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
-  "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit"|"issue comment") cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
+esac
+"""
+
+FAKE_LIST_GH = r"""#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/o/r/issues/"*"/parent") exit 1 ;;
+  "api repos/o/r/issues/"*"/dependencies/blocking") jq -r "$4" "$FAKE_DIR/dependents.json" ;;
+  "api repos/o/r/issues/"*) jq --arg n "${2##*/}" '.[$n]' "$FAKE_DIR/issues.json" ;;
+  "issue edit") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -64,8 +76,9 @@ def job(name, status="in_progress"):
     return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=()):
-    """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), login=True):
+    """Every live run is titled differently (sweep, stub); only its job names say orchestrate. login
+    models the runner's own ~/.config/gh, which every hosted runner lacks."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
     jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
     for i, j in enumerate(other_jobs):
@@ -73,6 +86,8 @@ def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=())
     (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [{"id": int(k)} for k in jobs]}))
     (tmp_path / "jobs.json").write_text(json.dumps(jobs))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
+    if login:
+        (tmp_path / "login").touch()
     gh = tmp_path / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
@@ -118,25 +133,54 @@ def test_the_thirty_minute_wait_is_only_for_a_priority_now_issue(tmp_path):
 
 
 def test_a_priority_now_issue_takes_a_slot_ahead_of_the_parked_backlog(tmp_path):
-    """Five 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
+    """Twelve 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
     them however short its wait (fleet-ops#10716: #10681 sat that way for 16 h)."""
-    backlog = [issue(n, hours_idle=7) for n in range(1, 6)]
-    w = run(tmp_path, backlog + [issue(9, hours_idle=0.6, labels=("orchestrator-tried", "priority-now"))])
+    backlog = [issue(n, hours_idle=7) for n in range(1, 13)]
+    w = run(tmp_path, backlog + [issue(99, hours_idle=0.6, labels=("orchestrator-tried", "priority-now"))])
     sel = edits(w, "--add-label needs-orchestrator")
-    assert 9 in sel, sel
-    assert len(sel) == 5, sel
+    assert 99 in sel, sel
+    assert len(sel) == 12, sel
 
 
-def test_batch_is_five(tmp_path):
-    w = run(tmp_path, [issue(n) for n in range(1, 8)])
-    assert len(edits(w, "--add-label needs-orchestrator")) == 5
+def test_batch_is_twelve(tmp_path):
+    w = run(tmp_path, [issue(n) for n in range(1, 15)])
+    assert len(edits(w, "--add-label needs-orchestrator")) == 12
+
+
+def released(tmp_path, numbers):
+    """The list step on a closed blocker's path, over the open issues it released."""
+    issues = {str(n): {"number": n, "state": "open", "labels": [{"name": "needs-orchestrator"}],
+                       "issue_dependencies_summary": {"blocked_by": 0}} for n in numbers}
+    (tmp_path / "issues.json").write_text(json.dumps(issues))
+    (tmp_path / "dependents.json").write_text(json.dumps([{"number": n, "state": "open"} for n in numbers]))
+    gh = tmp_path / "gh"
+    gh.write_text(FAKE_LIST_GH)
+    gh.chmod(0o755)
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path),
+           "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "GITHUB_OUTPUT": str(out),
+           "CLOSED": "1", "ISSUE": "",
+           "CHECK_DEFS": _y(f"{LIST} | .env.CHECK_DEFS"), "RED_REWORK": _y(f"{LIST} | .env.RED_REWORK")}
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST} | .run")],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = tmp_path / "writes.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_a_closed_epic_releases_no_more_than_the_requeue_batch(tmp_path):
+    """A closed epic blocks hundreds, and each released hand-off costs two writes on the runner login
+    (fleet-ops#10489), so the list step stops at the requeue batch's 12 (fleet-ops#11010)."""
+    w = released(tmp_path, range(2, 32))
+    assert edits(w, "--add-label needs-orchestrator") == list(range(2, 14))
 
 
 def test_live_runs_use_up_the_batch(tmp_path):
     """Live orchestrate jobs count, whatever the run is titled, plain or behind a stub; other jobs and
     finished orchestrate jobs do not (fleet-ops#10475)."""
     noise = [job("list") for _ in range(8)] + [job("orchestrate", "completed")]
-    w = run(tmp_path, [issue(n) for n in range(1, 5)], queued=3, other_jobs=noise)
+    w = run(tmp_path, [issue(n) for n in range(1, 15)], queued=10, other_jobs=noise)
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
 
@@ -224,7 +268,7 @@ def test_escalated_and_queued_issues_are_left_alone(tmp_path):
 
 
 def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
-    w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=5)
+    w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=12)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
 
@@ -235,8 +279,12 @@ def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
     counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE"))
     assert counted, "REQUEUE no longer counts ended hand-offs with a startswith() prefix"
     prefix = counted.group(1)
-    posted = [m for line in _y(".jobs.orchestrate.steps[] | select(.run) | .run").splitlines()
-              for m in re.findall(r'--body "([^"]*)"', line) if "gh issue comment" in line]
+    run = _y(".jobs.orchestrate.steps[] | select(.run) | .run")
+    bodies = [b for line in run.splitlines() if "gh issue comment" in line
+              for b in re.findall(r'--body "([^"]*)"', line)]
+    from_var = {b.lstrip("$") for b in bodies if b.startswith("$")}
+    posted = [b for b in bodies if not b.startswith("$")]
+    posted += [v for name, v in re.findall(r'\b(\w+)="([^"]*)"', run) if name in from_var]
     assert prefix in [body.split("$")[0] for body in posted], (prefix, posted)
 
 
@@ -263,3 +311,29 @@ def test_a_stranger_cannot_escalate_an_issue(tmp_path):
 def test_list_job_asks_no_more_than_the_caller_stubs_grant():
     got = subprocess.run(["yq", ".jobs.list.permissions.actions", WF], capture_output=True, text=True, check=True).stdout.strip()
     assert got == "read"
+
+
+def test_the_requeue_write_needs_the_login_the_runner_has(tmp_path):
+    """The re-queue write runs as `env -u GH_TOKEN`, the runner's own login, because the job's own
+    token fires no event. A hosted runner has no login: sweep 40786326904 refused five hand-offs and
+    only warned (fleet-ops#10963)."""
+    assert "::warning::#1: re-queue refused" in run(tmp_path, [issue(1)], login=False, out=True)
+    assert "re-queue refused" not in run(tmp_path, [issue(1)], out=True)
+
+
+def test_the_list_job_runs_where_the_login_is():
+    """A hosted runner has no ~/.config/gh, so the job that re-queues runs where the login is:
+    fleet-ops on its own runners, a caller on its agent runners (fleet-ops#10963)."""
+    expr = _y(".jobs.list.runs-on")
+    assert "self-hosted" in re.findall(r'"([^"]+)"', expr), expr
+    assert "ubuntu-latest" not in expr, expr
+
+
+def test_the_requeue_writes_run_as_the_login_not_the_job_token():
+    """The job's own token writes the label but fires no event, so nothing re-queues (fleet-ops#10489).
+    Every label write that must fire one carries `env -u GH_TOKEN`."""
+    writes = [l.strip() for l in _y(f"{STEP} | .run").splitlines()
+              if "gh issue edit" in l and "needs-orchestrator" in l]
+    assert writes, "the sweep no longer re-queues with a label write"
+    for w in writes:
+        assert "env -u GH_TOKEN" in w.split("gh issue edit")[0], w
