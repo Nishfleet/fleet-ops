@@ -46,6 +46,21 @@ def test_only_the_review_runners_run_as_the_review_user() -> None:
     assert {str(p.relative_to(UNITS)) for p in found} == REVIEW_USERS
 
 
+def test_the_review_dropins_differ_only_in_their_runner_number() -> None:
+    """Each new drop-in is a copy, so a line that is not its own runner number is drift."""
+
+    def own_number(name: str) -> str:
+        return name.split("netcup-agent-")[1].split(".")[0]
+
+    for name in sorted(REVIEW_USERS):
+        text = (UNITS / name).read_text()
+        assert text.count(f"/var/lib/fleet-reviewer/{own_number(name)}") >= 2, (
+            "the drop-in must name its own runner directory in WorkingDirectory= and ExecStart=: " + name
+        )
+    shapes = {(UNITS / name).read_text().replace(f"/var/lib/fleet-reviewer/{own_number(name)}", "/N") for name in REVIEW_USERS}
+    assert len(shapes) == 1, "the four review drop-ins differ in something other than their runner number"
+
+
 @pytest.mark.parametrize("name", sorted(REVIEW_USERS))
 def test_the_review_runners_take_the_reviewer_key_by_bare_name(name: str) -> None:
     text = (UNITS / name).read_text()
