@@ -23,8 +23,8 @@ def _iso(ts):
     return subprocess.run(["date", "-u", "-d", f"@{ts}", "+%Y-%m-%dT%H:%M:%SZ"], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def decide(file, run, issues, trig=("push",), gone=False):
-    payload = json.dumps({"file": file, "run": run, "trig": list(trig), "gone": gone, "issues": issues})
+def decide(file, run, issues, trig=("push",)):
+    payload = json.dumps({"file": file, "run": run, "trig": list(trig), "issues": issues})
     out = subprocess.run(
         ["jq", "-c", "--argjson", "now", str(NOW), _y(f"{FIND} | .env.RED_MAIN")],
         input=payload, check=True, capture_output=True, text=True,
@@ -149,12 +149,6 @@ def test_no_finished_run_and_no_default_branch_trigger_closes_its_open_issue():
 def test_no_finished_run_and_no_default_branch_trigger_leaves_a_claimed_issue_alone():
     v = decide("hand.yml", None, [issue(5, file="hand.yml", labels=("agent-in-progress",))], trig=())
     assert v == {"action": "none", "issues": [], "reason": "no trigger that runs on the default branch"}
-
-
-def test_a_gone_file_closes_its_open_issue_over_a_stale_red_run():
-    v = decide("hand.yml", red(), [issue(5, file="hand.yml")], trig=(), gone=True)
-    assert v == {"action": "close", "issues": [5], "reason": "the file is gone from the default branch",
-                 "msg": "hand.yml is no longer on the default branch, so it cannot be red there"}
 
 
 def test_a_green_run_of_a_workflow_that_cannot_run_on_the_default_branch_closes_its_issue():
@@ -411,27 +405,41 @@ def test_sweep_closes_an_issue_for_a_workflow_that_cannot_run_on_the_default_bra
     assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it cannot be green there on its own"]
 
 
-def test_sweep_closes_an_issue_for_a_workflow_whose_file_is_gone(tmp_path):
+def test_sweep_skips_a_workflow_whose_file_it_cannot_read(tmp_path):
     r, log = _sweep(tmp_path, deploy(), [issue(5)], drop=["on-deploy.yml"])
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c deploy.yml is no longer on the default branch, so it cannot be red there"]
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert log == []
+    assert "::warning::deploy.yml: file unreadable, skipped" in r.stdout
+    assert "::error::1 of 1 workflows errored and were skipped" in r.stdout
 
 
-def test_sweep_reads_the_on_block_past_a_comment_through_a_flow_list_and_a_quoted_key(tmp_path):
-    files = {
-        1: (".github/workflows/commented.yml", "active", [], FAILED_JOBS, None, "on: # push and schedule come later\n  workflow_dispatch:\n"),
-        2: (".github/workflows/flow.yml", "active", [], FAILED_JOBS, None, "on: [schedule, workflow_dispatch]\n"),
-        3: ('.github/workflows/quoted.yml', "active", [], FAILED_JOBS, None, '"on":\n  push:\n'),
-        4: (".github/workflows/scalar.yml", "active", [], FAILED_JOBS, None, "on: push\n"),
-        5: (".github/workflows/empty.yml", "active", [], FAILED_JOBS, None, "on:\n"),
-    }
-    issues = [issue(n, file=f) for n, f in [(1, "commented.yml"), (2, "flow.yml"), (3, "quoted.yml"), (4, "scalar.yml"), (5, "empty.yml")]]
-    r, log = _sweep(tmp_path, files, issues)
+def _on_shape(tmp_path, name, on, closes):
+    files = {1: (f".github/workflows/{name}", "active", [], FAILED_JOBS, None, on)}
+    r, log = _sweep(tmp_path, files, [issue(5, file=name)])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert log == [
-        "issue close 1 -R o/r -r completed -c commented.yml has no trigger that runs on the default branch, so it cannot be green there on its own",
-        "issue close 5 -R o/r -r completed -c empty.yml has no trigger that runs on the default branch, so it cannot be green there on its own",
-    ]
+    assert log == (["issue close 5 -R o/r -r completed -c "
+                    f"{name} has no trigger that runs on the default branch, so it cannot be green there on its own"] if closes else [])
+    assert f"{name}: " + ("close, no trigger that runs on the default branch" if closes else "none, no finished run on the default branch") in r.stdout
+
+
+def test_a_comment_before_the_first_key_does_not_hide_a_dispatch_only_trigger(tmp_path):
+    _on_shape(tmp_path, "commented.yml", "on: # push and schedule come later\n  workflow_dispatch:\n", True)
+
+
+def test_a_flow_list_of_triggers_is_read(tmp_path):
+    _on_shape(tmp_path, "flow.yml", "on: [schedule, workflow_dispatch]\n", False)
+
+
+def test_a_quoted_on_key_is_read(tmp_path):
+    _on_shape(tmp_path, "quoted.yml", '"on":\n  push:\n', False)
+
+
+def test_a_bare_scalar_on_is_read(tmp_path):
+    _on_shape(tmp_path, "scalar.yml", "on: push\n", False)
+
+
+def test_an_empty_on_block_has_no_trigger(tmp_path):
+    _on_shape(tmp_path, "empty.yml", "on:\n", True)
 
 
 def test_sweep_closes_an_issue_for_a_workflow_that_has_no_finished_run_at_all(tmp_path):
