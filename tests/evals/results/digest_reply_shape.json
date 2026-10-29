@@ -1,12 +1,12 @@
 {
-  "question": "digest reply shape: the cron digests' reply step must hold - at most 6 short plain lines, no sections, no internal names, commands, paths or config advice, no questions or asks, no routine all-green lines (Nishfleet/fleet-ops#9706)",
+  "question": "digest reply shape: the cron digests' reply step must hold - at most 6 short plain lines, no sections, no internal names, commands, paths or config advice, no questions or asks, no routine all-green lines, and never a sentence about the tools themselves (Nishfleet/fleet-ops#9706, #9580)",
   "cases_file": "tests/evals/cases/digest_reply_shape.json",
-  "source": "five synthetic fixtures shaped like the digest replies that shipped to Telegram under the pre-fix prompt wording (REPLY rule unchanged since jobs.json.bak-9560, 2026-10-10T22:21): morning+evening of 2026-10-11 and 2026-10-12 and the morning of 2026-10-13; names, links and issue titles replaced because this repo is public",
+  "source": "13 fixtures: seven synthetic fitted fixtures shaped like the digest replies that shipped to Telegram under the pre-fix prompt wording (REPLY rule unchanged since jobs.json.bak-9560, 2026-10-10T22:21): morning+evening of 2026-10-11 and 2026-10-12 and the morning of 2026-10-13, plus the evening replies of 2026-10-19 and 2026-10-20 that shipped after the first fix (the regression in Nishfleet/fleet-ops#9921); plus the held-out group h1-h6, written and labelled by the judge seat before the tooling classes were widened; names, links and issue titles replaced because this repo is public",
   "labeller": {
     "group": "judge",
-    "served_model": "openai/qwen3.8-max",
+    "served_model": "model judge (litellm)",
     "calls": 1,
-    "note": "labels written by a non-Claude model before the prompt rewrite; the builder wrote none (AI-decision rule). One no-tools call labelled all five shipped replies against the shape spec (task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST)."
+    "note": "labels written by non-Claude models; the builder wrote none (AI-decision rule). One no-tools call labelled all five shipped replies against the shape spec (task id orch-fleet-ops-9706-labels, 2026-10-13T09:43 IST). A second non-Claude no-tools call (the cases file's labeller_repeat, worker-cheap, task id orch-fleet-ops-9921-eval, 2026-10-20) labelled the two 2026-10-19 and 2026-10-20 shapes blind to which replies are new and to the builder's intent, and re-labelled the first five, agreeing with every stored label. The held-out group h1-h6 was written and labelled by the judge seat in one no-tools call before the tooling classes were widened (task id orch-fleet-ops-9580-labels, 2026-10-25); the judge seat is a non-Claude family and the builder graded none and wrote none."
   },
   "scorer": {
     "endpoint": "tests/test_digest_reply_shape.py check_reply_shape",
@@ -15,13 +15,45 @@
     "repeats": "n/a",
     "request": "the fixture reply text; URLs are stripped before the name and number rules run, because the link carries the detail"
   },
-  "tuning": "the reply contract in config/hermes/digest-*.md and the checker's rules were written after the labels existed; the checker's rules were then fitted to the five labelled fixtures plus two clean fixtures (the post-fix reply and the quiet template), so the five are fitting cases, not held-out ones",
-  "summary": {
-    "cases": 5,
-    "labelled_violation": 5,
+  "tuning": "the reply contract in config/hermes/digest-*.md and the checker's rules were written after the labels existed; the checker's rules were then fitted to the five labelled fixtures plus two clean fixtures (the post-fix reply and the quiet template), so the five are fitting cases, not held-out ones. The two 2026-10-19 and 2026-10-20 fixtures are marked fitted for the same reason: they are the ground truth this change tunes against, and no third real digest reply existed when it was written, so nothing here is held out from it. The held-out test is the live one: the audit pass on the next three digests.",
+  "generation_eval": {
+    "question": "does the rewritten reply contract hold on the digests' own lane (worker-cheap, the free flash models the jobs actually run on) when the model writes the reply from a fact set",
+    "model": {
+      "group": "worker-cheap",
+      "served_model": "openai/z-ai/glm-5.3-flash",
+      "calls": 28,
+      "repeats": "2 to 4 per cell",
+      "task_id": "orch-fleet-ops-9921-eval",
+      "date": "2026-10-20"
+    },
+    "cells": [
+      "the real 2026-10-20 evening facts (execution 59de77f7) replayed against the full canonical prompt, old reply wording: 1/4 samples obey the gate (one wrote 'The daily page is up', one 'is passing again', two named a deploy token in text)",
+      "the same facts and the same full prompt, new reply wording: 4/4 obey",
+      "the same facts with only the reply step in the prompt, old wording: 3/4 obey (one named an internal check in text)",
+      "the same facts and only the reply step, new wording: 4/4 obey",
+      "the real 2026-10-19 evening facts, old wording: 4/4 obey; new wording: 4/4 obey",
+      "a quiet fact set (nothing merged, nothing broken, both services active), old wording: 2/2 obey; new wording: 2/2 obey, both sending exactly 'Quiet 12 hours, 0 merged.'"
+    ],
+    "aggregate": {
+      "before": "10/14 generated samples obey the gate under the old reply wording",
+      "after": "14/14 generated samples obey the gate under the new reply wording",
+      "what_changed": "the misses were lines whose only point was that something was up, passing or unchanged, and internal check names in text; the new wording bans those two classes in the reply step, next to the service check that produces them, and adds a pre-send re-read that deletes them"
+    },
+    "limits": "both shipped 2026-10-19 and 2026-10-20 replies fail the gate (2/2), yet replaying their fact sets did not reproduce the narration, bold-section or 'are both live' classes without the live tool output the real run had, so these numbers under-state the change. The deterministic gate catches every instance, and the live proof is the audit pass on the next three digests."
+  },
+  "summary_9706": {
+    "cases": 7,
+    "labelled_violation": 7,
     "labelled_obey": 0,
-    "before": "0/5 replies obey the shape (the labeller found sections, internal names, and in one case an ask and config advice)",
-    "after": "checker agreement with the labels 5/5 on the fitted fixtures; the first shipped post-fix reply (digest-evening execution 634b61c6, 2026-10-13T09:46 IST, delivered to Telegram) obeys: exactly 6 plain lines, 'and 2 more broken' overflow, links carry the detail, the step-1 failure produced the designed one-liner 'Merged count could not be read'",
+    "before": "0/7 fitted shipped replies obey the shape (the labeller found sections, internal names, and in one case an ask and config advice; the 2026-10-20 evening reply also carried all-green lines and 'nothing new to wait on')",
+    "after": "checker agreement with the labels 7/7 on the fitted fixtures; the first shipped post-fix reply (digest-evening execution 634b61c6, 2026-10-13T09:46 IST, delivered to Telegram) obeys: exactly 6 plain lines, 'and 2 more broken' overflow, links carry the detail, the step-1 failure produced the designed one-liner 'Merged count could not be read'",
+    "gate": "tests/test_digest_reply_shape.py runs in ci.yml, so a prompt edit that drops the contract or a checker drift goes red"
+  },
+  "summary_9580": {
+    "cases": 11,
+    "held_out": 6,
+    "before": "the 2026-10-11 08:00 IST morning slot shipped a tool sentence instead of the digest (execution prefix e078ee1c, issue #9580), and the checker named no class for it: labeled agreement on that class was 0 (the sentence happened to flag first-person, that is all)",
+    "after": "checker agreement with the labels 5/6 on the judge-labelled held-out group before the class was widened (h3, a web-fetch capability sentence, escaped) and 6/6 after; all seven fitted fixtures still flag and the clean post-fix reply, the quiet line and three clean held-out samples all pass",
     "gate": "tests/test_digest_reply_shape.py runs in ci.yml, so a prompt edit that drops the contract or a checker drift goes red"
   }
 }

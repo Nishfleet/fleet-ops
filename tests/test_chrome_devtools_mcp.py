@@ -14,6 +14,7 @@ import subprocess
 import tomllib
 
 import pytest
+import ansible_host
 
 if not shutil.which("yq"):
     pytest.skip("yq missing", allow_module_level=True)
@@ -21,11 +22,12 @@ if not shutil.which("yq"):
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
 PIN_DIR = ROOT / "config/chrome-devtools-mcp"
+DRIVE_PIN = ROOT / "config/drive-mcp.json"
 REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
 
 
 def _play():
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     return json.loads(out)[0]
 
 
@@ -68,7 +70,7 @@ def test_install_is_an_ansible_core_module_from_the_lockfile():
 
 
 def test_no_runtime_fetch():
-    text = HOST.read_text()
+    text = ansible_host.text()
     assert "@latest" not in text and "npx" not in text
 
 
@@ -77,19 +79,14 @@ def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
     assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
 
 
-def test_claude_drop_in_enables_the_plugin():
-    drop_in = json.loads((ROOT / "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json").read_text())
-    assert drop_in == {"enabledPlugins": {"chrome-devtools@nish-mods": True}}
-
-
 def test_every_install_step_is_in_the_play():
     for name in (
         "Install the pinned Chrome DevTools MCP server from the lockfile",
-        "Install the OpenCode managed config",
         "Read the shared MCP config",
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
-        "Add the chrome-devtools entry to each agent CLI",
-        "Swap Cursor's dead camofox entry for chrome-devtools",
+        "Read Claude Code's drive entry",
+        "Drop a stale drive entry",
+        "Pin the Drive filesystem server in Claude Code's user config",
         "Drop Codex's dead camofox entry and its subtables",
         "Add the chrome-devtools entry under Hermes' mcp_servers",
     ):
@@ -105,16 +102,15 @@ USER_FILE_TASKS = [
     "Create the shared MCP config directory",
     "Read the shared MCP config",
     "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
-    "Read each agent CLI's chrome-devtools entry",
-    "Drop a stale chrome-devtools entry",
-    "Add the chrome-devtools entry to each agent CLI",
-    "Read Cursor's MCP config",
-    "Swap Cursor's dead camofox entry for chrome-devtools",
+    "Read Claude Code's drive entry",
+    "Drop a stale drive entry",
+    "Pin the Drive filesystem server in Claude Code's user config",
     "Look for Codex's config",
     "Drop Codex's dead camofox entry and its subtables",
     "Read Hermes' config",
     "Add the chrome-devtools entry under Hermes' mcp_servers",
     "Read Hermes' scheduled jobs",
+    "Delete the retired jobs from Hermes' cron store",
     "Apply config/hermes/digest-*.md to the live digest jobs",
     "Read Hermes' scheduled jobs again",
     "Link the packaged gh into nish's ~/.local/bin",
@@ -132,8 +128,6 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
     for task in PLAY["tasks"]:
         if "nish_home" in json.dumps(task) and task["name"] not in USER_FILE_TASKS:
             assert task["name"] in (
-                "Create the OpenCode managed config directory",
-                "Install the OpenCode managed config",
                 "Create Codex's rules directory",
                 "Install the Codex execpolicy floor",
                 "Check whether Hermes has its cua-driver",
@@ -142,7 +136,8 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 "Look for the agent state directories",
                 "Look for a plaintext git credential file in nish's home",
                 "Fail the run when a plaintext git credential file is in the way",
-                "Start the registered agent runners",
+                "Copy runner 1 to the pilot user once",
+                "Point the pilot runner links at the copy",
             ), task["name"]
     for name in ("Look for the agent state directories", "Keep the agent state directories private"):
         task = TASKS[name]
@@ -163,7 +158,7 @@ def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_asse
 
 
 def test_agent_cli_tasks_are_bounded():
-    for name in ("Read each agent CLI's chrome-devtools entry", "Drop a stale chrome-devtools entry", "Add the chrome-devtools entry to each agent CLI"):
+    for name in ("Read Claude Code's drive entry", "Drop a stale drive entry", "Pin the Drive filesystem server in Claude Code's user config"):
         assert TASKS[name]["timeout"] <= 120, name
 
 
@@ -185,12 +180,16 @@ def _run_tasks(tmp_path, names, subs=None):
         task = json.loads(text)
         task.pop("become", None)
         task.pop("become_user", None)
+        task.pop("notify", None)
         for key in ("owner", "group"):
             for module in task.values():
                 if isinstance(module, dict):
                     module.pop(key, None)
         tasks.append(task)
-    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**VARS, "nish_home": str(tmp_path)}, "tasks": tasks}
+    vars_text = json.dumps(VARS)
+    for old, new in subs.items():
+        vars_text = vars_text.replace(old, new)
+    play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": {**json.loads(vars_text), "nish_home": str(tmp_path)}, "tasks": tasks}
     book = tmp_path / "play.json"
     book.write_text(json.dumps([play]))
     result = subprocess.run(
@@ -204,41 +203,48 @@ def _run_tasks(tmp_path, names, subs=None):
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
 def test_generated_configs_carry_the_pinned_command(tmp_path):
     names = [
-        "Create the OpenCode managed config directory",
-        "Install the OpenCode managed config",
         "Create the shared MCP config directory",
         "Read the shared MCP config",
         "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
     ]
-    subs = {"/etc/opencode": str(tmp_path / "etc/opencode")}
-    (tmp_path / "etc").mkdir()
     (tmp_path / ".config/mcp").mkdir(parents=True)
     (tmp_path / ".config/mcp/mcp.json").write_text(json.dumps({"mcpServers": {"kept": {"url": "https://example.invalid/mcp"}}, "settings": {"x": 1}}))
-    _run_tasks(tmp_path, names, subs)
+    _run_tasks(tmp_path, names)
     bin_path = f"{tmp_path}/.local/bin/chrome-devtools-mcp"
-    entry = json.loads((tmp_path / "etc/opencode/opencode.json").read_text())["mcp"]["chrome-devtools"]
-    assert entry == {"type": "local", "command": [bin_path, *ARGS], "enabled": True}
     whole = json.loads((tmp_path / ".config/mcp/mcp.json").read_text())
     assert whole["mcpServers"]["chrome-devtools"] == {"command": bin_path, "args": ARGS, "lifecycle": "lazy", "idleTimeout": 5}
     assert whole["mcpServers"]["kept"] == {"url": "https://example.invalid/mcp"} and whole["settings"] == {"x": 1}
-    assert "changed=0" in _run_tasks(tmp_path, names, subs)
+    assert "changed=0" in _run_tasks(tmp_path, names)
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_cursor_swap_keeps_other_servers_and_is_idempotent(tmp_path):
-    cfg = tmp_path / ".cursor/mcp.json"
-    cfg.parent.mkdir()
-    cfg.write_text(json.dumps({"mcpServers": {
-        "camofox-browser": {"command": "/opt/gone/camofox-browser-mcp-shared", "args": ["cursor"]},
-        "drive": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/Drive"]},
-    }}))
-    names = ["Read Cursor's MCP config", "Swap Cursor's dead camofox entry for chrome-devtools"]
-    _run_tasks(tmp_path, names)
-    servers = json.loads(cfg.read_text())["mcpServers"]
-    assert set(servers) == {"drive", "chrome-devtools"}
-    assert servers["drive"]["command"] == "npx"
-    assert servers["chrome-devtools"] == {"command": f"{tmp_path}/.local/bin/chrome-devtools-mcp", "args": ARGS}
-    assert "changed=0" in _run_tasks(tmp_path, names)
+def pinned_spec():
+    return json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]["args"][1]
+
+
+def test_the_drive_entry_is_one_exact_pin_and_nothing_else():
+    entry = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
+    assert entry["type"] == "stdio" and entry["command"] == "npx" and entry["env"] == {}
+    assert entry["args"][0] == "-y"
+    assert re.fullmatch(r"@modelcontextprotocol/server-filesystem@\d+\.\d+\.\d+", entry["args"][1])
+    assert entry["args"][2] == "~/Drive"
+    text = HOST.read_text()
+    assert "config/drive-mcp.json" in text and "server-filesystem" not in text and "npx" not in text
+
+
+def test_the_play_writes_the_drive_entry_with_claudes_own_mcp_command():
+    assert "drive_mcp_words: \"{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}\"" in HOST.read_text()
+    read = TASKS["Read Claude Code's drive entry"]
+    assert read["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "get", "drive"]
+    assert read["changed_when"] is False and read["failed_when"] is False
+    drop = TASKS["Drop a stale drive entry"]
+    assert drop["ansible.builtin.command"]["argv"] == ["{{ nish_home }}/.local/bin/claude", "mcp", "remove", "drive", "--scope", "user"]
+    assert "drive_entry.rc == 0" in drop["when"]
+    add = TASKS["Pin the Drive filesystem server in Claude Code's user config"]
+    assert add["ansible.builtin.command"]["argv"] == "{{ [nish_home ~ '/.local/bin/claude', 'mcp', 'add', '--scope', 'user', 'drive', '--'] + drive_mcp_words }}"
+    assert "drive_entry.rc != 0" in add["when"]
+    for task in (read, drop, add):
+        assert task["timeout"] <= 120, task["name"]
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
@@ -303,11 +309,10 @@ def test_claude_worker_lane_loads_the_browser_server_and_nothing_else():
     assert '--mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" --strict-mcp-config' in flat
 
 
-def test_other_worker_lanes_pass_no_flag_that_hides_the_shared_configs():
+def test_pi_lane_passes_no_flag_that_hides_the_shared_configs():
     text = (ROOT / ".github/workflows/agent.yml").read_text()
-    for lane in (r"devin -p --prompt-file.*", r"opencode run --dir.*", r"pi --print --no-context-files.*"):
-        for line in re.findall(lane, text):
-            assert not re.search(r"--(config|no-mcp|no-extensions)\b|\s-ne\b", line), line
+    for line in re.findall(r"pi --print --no-context-files.*", text):
+        assert not re.search(r"--(config|no-mcp|no-extensions)\b|\s-ne\b", line), line
 
 
 @pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
@@ -367,44 +372,38 @@ def test_lockfile_install_runs_npm_ci_once_and_again_only_when_the_lock_changes(
     assert len(log.read_text().splitlines()) == 3
 
 
-AGENT_CLI = [
-    "Read each agent CLI's chrome-devtools entry",
-    "Drop a stale chrome-devtools entry",
-    "Add the chrome-devtools entry to each agent CLI",
-]
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_copy(tmp_path):
+    src = tmp_path / ".local/share/agent-runner/1"
+    (src / "bin.2.338.0").mkdir(parents=True)
+    (src / "bin.2.338.0/Runner.Listener").write_text("listener")
+    (src / "externals.2.338.0").mkdir()
+    (src / "runsvc.sh").write_text("run")
+    (src / "bin").symlink_to(src / "bin.2.338.0")
+    (src / "externals").symlink_to(src / "externals.2.338.0")
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    names = ["Copy runner 1 to the pilot user once", "Read the pilot runner links", "Point the pilot runner links at the copy"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert (dest / "runsvc.sh").read_text() == "run"
+    assert (dest / "bin").readlink().as_posix() == "bin.2.338.0"
+    assert (dest / "externals").readlink().as_posix() == "externals.2.338.0"
+    assert (dest / "bin/Runner.Listener").read_text() == "listener"
+    (dest / "runsvc.sh").write_text("live state")
+    (src / "runsvc.sh").write_text("changed upstream")
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)
+    assert (dest / "runsvc.sh").read_text() == "live state"
 
 
-def _fake_cli(tmp_path, name, style):
-    state = tmp_path / f"{name}.state"
-    calls = tmp_path / f"{name}.calls"
-    show = {
-        "line": 'echo "Command: $(cat %s)"' % state,
-        "lines": 'echo "Args:"; for a in $(cat %s); do echo "  - $a"; done' % state,
-    }[style]
-    _stub(
-        tmp_path / f".local/bin/{name}",
-        f'echo "$1 $2" >> {calls}\n'
-        f'case "$2" in\n'
-        f'  get) test -s {state} || exit 1; {show};;\n'
-        f'  remove) : > {state};;\n'
-        f'  add) shift 6; echo "$@" > {state};;\n'
-        f'esac\n',
-    )
-    return state, calls
-
-
-@NEED_ANSIBLE
-@pytest.mark.parametrize("style", ["line", "lines"])
-def test_devin_and_cmd_entries_converge_in_any_output_format_and_missing_cli_is_skipped(tmp_path, style):
-    state, calls = _fake_cli(tmp_path, "devin", style)
-    _run_tasks(tmp_path, AGENT_CLI)
-    want = " ".join([f"{tmp_path}/.local/bin/chrome-devtools-mcp", *ARGS])
-    assert state.read_text().strip() == want
-    assert calls.read_text().split("\n")[:-1] == ["mcp get", "mcp add"]
-    assert "changed=0" in _run_tasks(tmp_path, AGENT_CLI)
-    assert calls.read_text().split("\n")[:-1] == ["mcp get", "mcp add", "mcp get"]
-    state.write_text(want.replace("--headless", "--headed") + "\n")
-    _run_tasks(tmp_path, AGENT_CLI)
-    assert state.read_text().strip() == want
-    assert calls.read_text().split("\n")[:-1][3:] == ["mcp get", "mcp remove", "mcp add"]
-    assert not (tmp_path / ".local/bin/cmd").exists()
+@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
+    dest = tmp_path / "var/lib/fleet-runner/1"
+    dest.mkdir(parents=True)
+    env = dest / ".env"
+    env.write_text("HOME=/home/nish\nXDG_RUNTIME_DIR=/run/user/1000\nLANG=C.UTF-8\nCLAUDE_CONFIG_DIR=/home/nish/.claude-a\n")
+    names = ["Give the pilot runner its own HOME in the runner environment", "Drop nish's runtime paths from the pilot runner environment"]
+    subs = {"/var/lib/fleet-runner": str(tmp_path / "var/lib/fleet-runner")}
+    _run_tasks(tmp_path, names, subs)
+    assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
+    assert "changed=0" in _run_tasks(tmp_path, names, subs)
