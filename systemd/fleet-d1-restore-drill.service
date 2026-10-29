@@ -101,7 +101,7 @@ ExecStartPre=/bin/sh -c 'test -n "$$GH_TOKEN" || { echo "drill: no GitHub App to
 #    is how far back a broken weekly export can be before the drill fails loud.
 ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; \
   d=$$(date +%%F); echo "$$d" > "$$out/date"; \
-  test -s "$$DRILL_KEY" || { echo "drill: the private key $$DRILL_KEY is missing" >&2; exit 1; }; \
+  test -s "$$DRILL_KEY" || { echo "drill: the private key file is missing or empty" >&2; exit 1; }; \
   runs=$$(gh run list -R $$GH_REPO -w $$GH_WORKFLOW -s completed -L 8 --json databaseId -q ".[].databaseId"); \
   run=""; \
   for r in $$runs; do \
@@ -165,7 +165,7 @@ ExecStart=/bin/sh -c 'set -eu; umask 077; out="$$RUNTIME_DIRECTORY"; d=$$(cat "$
   { echo "# D1 restore drill, $$d (Asia/Kolkata)"; echo; \
     echo "Backup run: https://github.com/$$GH_REPO/actions/runs/$$run"; \
     echo "Source: the weekly $$GH_WORKFLOW matrix in $$GH_REPO (fleet-ops#10594)."; \
-    echo "Key: $$DRILL_KEY"; \
+    echo "Key: the host-held private key (path in this unit)"; \
     echo "Where: this host, into a 0700 runtime directory that systemd removes when the unit ends. No Cloudflare database was created and no Cloudflare API call was made."; echo; \
     echo "| database | artifact | dump bytes | integrity | rows |"; echo "|---|---|---|---|---|"; \
     cat "$$out/rows"; echo; echo "Per table:"; cat "$$out/tables"; echo; \
