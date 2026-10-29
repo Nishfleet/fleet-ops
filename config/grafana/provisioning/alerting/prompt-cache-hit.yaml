@@ -199,8 +199,8 @@ groups:
         noDataState: OK
         execErrState: Error
         annotations:
-          summary: 'Prompt-cache read share below 50% on {{ $labels.requested_model }}, so fleet requests are paying full input price.'
-          description: 'Less than half of this model''s input tokens came back from the provider prompt cache for an hour, on {{ $values.B.Value | printf "%.0f" }} input tokens/s. Every cache miss is billed at the full input price, so a route that stopped caching is a cost incident, not a latency one. Check whether the deployment still reports usage.prompt_tokens_details.cached_tokens (an OpenAI-compatible vendor that stops sending it looks exactly like this), and whether a prefix change broke the provider-side cache. Per-vendor verdicts: docs/prompt-cache-routes.md.'
+          summary: 'Prompt-cache read share below 50% on {{ with $labels.requested_model }}{{ . }}{{ else }}unknown model{{ end }}, so fleet requests are paying full input price.'
+          description: 'Less than half of this model''s input tokens came back from the provider prompt cache for an hour, on {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} input tokens/s. Every cache miss is billed at the full input price, so a route that stopped caching is a cost incident, not a latency one. Check whether the deployment still reports usage.prompt_tokens_details.cached_tokens (an OpenAI-compatible vendor that stops sending it looks exactly like this), and whether a prefix change broke the provider-side cache. Per-vendor verdicts: docs/prompt-cache-routes.md.'
         labels:
           severity: critical
           signal: prompt-cache-hit

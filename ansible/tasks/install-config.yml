@@ -77,6 +77,28 @@
     - exclude.txt
     - retention.env
 
+# A socket takes new ListenStream addresses only on restart. This copy runs before
+# the tree copy below, which would otherwise write the file first and leave this
+# task with no change to signal (fleet-ops#10541).
+- name: Create the ssh.socket drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/ssh.socket.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the SSH socket bind and rebind the socket when it changes
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+    dest: /etc/systemd/system/ssh.socket.d/override.conf
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart ssh.socket
+
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"
