@@ -306,7 +306,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert tail in bound, tail
 
 
-FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
+FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
 
 
 def fleet_config_read_names(text: str) -> set[str]:
@@ -397,6 +397,18 @@ def test_the_agent_pool_binds_no_directory_that_holds_the_fleet_config() -> None
                 if config == token or config.startswith(token + "/"):
                     wide.add(token)
     assert not wide, f"binds a directory that holds the fleet config: {sorted(wide)}"
+
+
+def test_the_read_scan_sees_each_home_spelling_the_workflows_use() -> None:
+    """`"$HOME"/.config/...` is a read like any other, and the scan has to see it (fleet-ops#10826).
+
+    agent.yml quotes the variable on its `claude_hides` line. A pattern that expects the path right
+    after `$HOME` misses that spelling, so a future read written that way passes the tripwire.
+    """
+    assert fleet_config_read_names('"$HOME"/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
+    assert fleet_config_read_names('$HOME/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
+    assert fleet_config_read_names('${HOME}/.config/fleet-ops/intake-repos.json') == {"intake-repos.json"}
+    assert fleet_config_read_names('%h/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
 
 
 def test_no_runner_job_reads_a_fleet_config_path_the_agent_pool_does_not_bind() -> None:
