@@ -99,6 +99,25 @@
     - Reload systemd
     - Restart ssh.socket
 
+# The runner's sandbox (TemporaryFileSystem=, BindReadOnlyPaths=, InaccessiblePaths=) is
+# read once, when the unit starts, so an installed drop-in reaches no runner that is
+# already running. On 2026-10-29 the read-only deploy-clone bind had been installed for
+# hours while every runner still started before it, so a job could write the clone
+# (fleet-ops#10866). Restarting the pool kills any agent job running on it at that moment
+# and leaves a claimed issue where it stood, which is the cost this deploy accepts. The
+# deploy job is not one of those jobs: deploy-box.yml runs it on [self-hosted, fleet-ci],
+# and this restart names agent runner units only.
+- name: Install the agent runner sandbox and restart the runners when it changes
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/"
+    dest: /etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart the agent runners
+
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"
