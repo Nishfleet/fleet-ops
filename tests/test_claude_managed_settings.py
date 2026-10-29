@@ -8,7 +8,10 @@ marketplace half must be one the box knows, either because a drop-in declares it
 in `extraKnownMarketplaces` or because the box already registered it. When the
 marketplace's directory is on disk (this box, or a runner with the checkout) the
 plugin name is read out of that marketplace's own manifest, so an id no
-marketplace lists fails here instead of at Claude Code start-up.
+marketplace lists fails here instead of at Claude Code start-up. A plugin the box
+loads from a directory instead of a marketplace has no marketplace, so its id ends
+`inline`; that one marketplace name passes only when the value is `false`, because
+nothing checks the name of a plugin the box loads from a directory.
 """
 import json
 import pathlib
@@ -24,6 +27,7 @@ DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
 JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
 NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 HOST_MARKETPLACES = pathlib.Path.home() / ".claude/plugins/known_marketplaces.json"
+INLINE = "inline"
 
 
 def _dropins():
@@ -48,8 +52,8 @@ def _known_marketplaces():
 def _enabled():
     enabled = {}
     for path in _dropins():
-        for plugin_id in _load(path).get("enabledPlugins", {}):
-            enabled[plugin_id] = path.name
+        for plugin_id, on in _load(path).get("enabledPlugins", {}).items():
+            enabled[plugin_id] = (path.name, on)
     return enabled
 
 
@@ -64,7 +68,12 @@ def test_every_drop_in_is_a_json_object(path):
 
 def test_every_enabled_plugin_names_a_known_marketplace():
     known = _known_marketplaces()
-    bad = {f"{p} (in {f})": sorted(known) for p, f in _enabled().items() if p.split("@")[-1] not in known}
+    bad = {}
+    for plugin_id, (source, on) in _enabled().items():
+        marketplace = plugin_id.rpartition("@")[2]
+        if marketplace in known or (marketplace == INLINE and on is False):
+            continue
+        bad[f"{plugin_id} (in {source})"] = sorted(known)
     assert not bad, f"enabled plugins from an unknown marketplace: {bad}"
 
 

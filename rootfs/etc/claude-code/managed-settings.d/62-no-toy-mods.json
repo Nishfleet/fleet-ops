@@ -1,0 +1,8 @@
+{
+  "enabledPlugins": {
+    "boss-fight@inline": false,
+    "code-pet@inline": false,
+    "token-weather@inline": false,
+    "usage-meter@inline": false
+  }
+}
