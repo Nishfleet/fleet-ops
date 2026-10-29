@@ -243,7 +243,7 @@ jobs:
           # as a rate limit in the Worker, which falls through (below). There is no
           # cap on live claude workers: nothing stock gives N slots, and
           # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
-          jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
+          jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
           # judgment_p: asks Jev whether the issue needs engineering judgment and sets
           # jp to the probability of yes (empty when the call fails). The issue text
           # is shown as data. Jev types the answer; the 0.9 and 0.1 lines are the
@@ -976,7 +976,7 @@ jobs:
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
-          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
+          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
           { [ -n "${review//[[:space:]]/}" ] && jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; } || { say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
@@ -1002,7 +1002,7 @@ jobs:
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change touches money, secrets, data, .github/ or the review rules. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # The third reviewer is called directly, not through pi, because the answering row is only in the response headers
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
-          jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
+          jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
@@ -1240,7 +1240,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.read-token.outputs.token }}
         run: |
-          key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") # gitleaks:allow
+          key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") # gitleaks:allow
           [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file (Jev ranks through the router's /jev, not TypeSafe direct); an unranked edition is not worth 40 minutes of model time"; exit 1; }
           admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
           trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }

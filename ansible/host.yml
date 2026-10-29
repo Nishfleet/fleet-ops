@@ -393,6 +393,8 @@
 
     - ansible.builtin.import_tasks: tasks/pilot-and-retired-runners.yml
 
+    - ansible.builtin.import_tasks: tasks/review-runners.yml
+
     - ansible.builtin.import_tasks: tasks/system.yml
 
     - ansible.builtin.import_tasks: tasks/alerting.yml

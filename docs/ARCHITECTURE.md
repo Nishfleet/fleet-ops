@@ -177,9 +177,13 @@ The rules still in force:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
   To switch it off, give those two runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
+  Those two runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,
+  and the reviewer App key reaches them by bare `LoadCredential=` from `/etc/credstore`,
+  so no other unit and no job can read it (fleet-ops#10950).
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff
-  through the API, asks a no-tools Claude call for findings (on the runner's own login:
+  through the API, asks a no-tools Claude call for findings (on the review user's own
+  seat token, `fleet-reviewer` with `claude-seat-b.env` and never nish's login, fleet-ops#10950:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for

@@ -1,0 +1,114 @@
+# Review runners (fleet-ops#10950): runners 9 and 10 run as the no-sudo service user
+# fleet-reviewer. Their drop-ins are rootfs/etc/systemd/system/
+# actions.runner.Nishfleet.netcup-agent-{9,10}.service.d/30-review-user.conf, and the
+# review and arm jobs read the credentials those drop-ins hand over: the reviewer App key
+# and the worker App key from the credential store, the router key and one Claude seat
+# token as systemd credentials, and the tools, the deploy clone and AGENTS.md as
+# read-only binds. nish's home stays mode 0700, so nothing is copied out of it.
+# The registration is copied once: only while the copy has no runsvc.sh, so a re-run
+# never overwrites the runner's live state.
+- name: Create the review runner user
+  ansible.builtin.user:
+    name: fleet-reviewer
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/fleet-reviewer
+    create_home: true
+
+# The key is Nish's to install. A unit whose LoadCredential= cannot be read does not
+# start, so the deploy says so here instead of taking both review runners down later.
+- name: Read the reviewer App key in the credential store
+  ansible.builtin.stat:
+    path: /etc/credstore/nishfleet-reviewer.private-key.pem
+  register: reviewer_key
+
+- name: Fail when the reviewer App key is missing or not root-only
+  ansible.builtin.assert:
+    that:
+      - reviewer_key.stat.exists
+      - reviewer_key.stat.pw_name == 'root'
+      - reviewer_key.stat.mode == '0600'
+    fail_msg: >-
+      /etc/credstore/nishfleet-reviewer.private-key.pem must exist, be owned by root and
+      be mode 0600: the review runners load it as a credential and will not start without it.
+
+- name: Copy the review runners to the review user once
+  ansible.builtin.copy:
+    src: "{{ nish_home }}/.local/share/agent-runner/{{ item }}/"
+    dest: "/var/lib/fleet-reviewer/{{ item }}/"
+    remote_src: true
+    local_follow: false
+    owner: fleet-reviewer
+    group: fleet-reviewer
+    mode: preserve
+    directory_mode: '0750'
+  loop: [9, 10]
+  when:
+    - (nish_home ~ '/.local/share/agent-runner/' ~ item ~ '/runsvc.sh') is exists
+    - ('/var/lib/fleet-reviewer/' ~ item ~ '/runsvc.sh') is not exists
+  notify:
+    - Reload systemd
+
+# The copy keeps `bin` and `externals` as the absolute links they are under nish's
+# home, which fleet-reviewer cannot enter, so runsvc.sh exits at once and the unit
+# crash-loops (fleet-ops#10491). Point them at their sibling directories instead. A
+# link that is already relative is left alone.
+- name: Read the review runner links
+  ansible.builtin.stat:
+    path: "/var/lib/fleet-reviewer/{{ item.0 }}/{{ item.1 }}"
+  loop: "{{ [9, 10] | product(['bin', 'externals']) | list }}"
+  register: review_links
+
+- name: Point the review runner links at the copy
+  ansible.builtin.file:
+    src: "{{ item.stat.lnk_target | basename }}"
+    dest: "{{ item.stat.path }}"
+    state: link
+    owner: fleet-reviewer
+    group: fleet-reviewer
+  loop: "{{ review_links.results | selectattr('stat.lnk_target', 'defined') | selectattr('stat.lnk_target', 'match', '^' ~ nish_home ~ '/') | list }}"
+  loop_control:
+    label: "{{ item.stat.path }}"
+
+# The copied runner `.env` pins HOME, XDG_RUNTIME_DIR and CLAUDE_CONFIG_DIR to nish's
+# paths, and the runner loads it over the unit's own values, so every job read nish's
+# files and died with permission denied (fleet-ops#10510). HOME goes to the review
+# user's own; the other two point at nish's runtime and Claude seat, so they are
+# dropped and the drop-in supplies both.
+- name: Give the review runner its own HOME in the runner environment
+  ansible.builtin.lineinfile:
+    path: "/var/lib/fleet-reviewer/{{ item }}/.env"
+    regexp: '^HOME='
+    line: HOME=/var/lib/fleet-reviewer
+    insertbefore: BOF
+  loop: [9, 10]
+  when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.env') is exists
+
+- name: Drop nish's runtime paths from the review runner environment
+  ansible.builtin.lineinfile:
+    path: "/var/lib/fleet-reviewer/{{ item }}/.env"
+    regexp: '^(XDG_RUNTIME_DIR|CLAUDE_CONFIG_DIR)='
+    state: absent
+  loop: [9, 10]
+  when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.env') is exists
+
+# The runner's `.path` puts nish's tool directories first, and fleet-reviewer cannot
+# enter them: the same bind that serves the tools to the unit is spelled at the review
+# user's home in the drop-in, so the copied `.path` is rewritten to match.
+- name: Point the review runner PATH at the bound tool directories
+  ansible.builtin.replace:
+    path: "/var/lib/fleet-reviewer/{{ item }}/.path"
+    regexp: "^{{ nish_home }}/"
+    replace: /var/lib/fleet-reviewer/
+  loop: [9, 10]
+  when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.path') is exists
+
+# The seat dir the drop-in names. Empty on purpose: the seat token arrives as
+# CLAUDE_CODE_OAUTH_TOKEN, so claude logs in with that alone and writes no login here.
+- name: Create the review user's Claude seat dir
+  ansible.builtin.file:
+    path: /var/lib/fleet-reviewer/.claude
+    state: directory
+    owner: fleet-reviewer
+    group: fleet-reviewer
+    mode: '0700'
