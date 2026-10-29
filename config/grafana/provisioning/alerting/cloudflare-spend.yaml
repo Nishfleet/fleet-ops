@@ -479,9 +479,15 @@ groups:
       # back, the same shape as cf-r2-bucket-growth's 24-hour-back B.
       # Query R joins the account growth to the top-bucket row, because a
       # scalar frame carries no labels and the top annotation needs one.
+      # G is the line the rule really uses: its $B > 0 leg guards the
+      # baseline, so a 30-day-back window with no rows, which the Infinity
+      # backend reads as a total of zero, cannot turn the whole account into
+      # 30 days of growth. for: 0s, as every rule in this file: the group
+      # runs hourly and the comparison is two 1-hour snapshots 30 days apart,
+      # so a one-hour spike in A is at most a one-hour alert.
       # Accepted blind spot: a planned bulk write raises the total for good,
-      # so a restore or a re-upload of more than 4 GB files an issue every
-      # 12 hours until the 30-day-old baseline catches up, up to a month.
+      # so a restore or a re-upload of more than 4 GB files an issue on every
+      # evaluation until the 30-day-old baseline catches up, up to a month.
       # Severity warning, not critical: cloudflare-spend-contact.yaml sends
       # only critical to hermes-urgent, so this rule files a fleet-ops issue
       # and never pages. tests/alert_routes_check.py holds that: a rule outside
@@ -543,23 +549,17 @@ groups:
           - refId: E
             datasourceUid: __expr__
             model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: E, expression: $A - $B}
+          - {refId: G, datasourceUid: __expr__, model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: G, expression: '($B > 0) && ($E > 4000000000)'}}
           - refId: R
             datasourceUid: __expr__
-            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $E}
-          - refId: F
-            datasourceUid: __expr__
-            model:
-              datasource: {type: __expr__, uid: __expr__}
-              type: threshold
-              refId: F
-              expression: R
-              conditions: [{evaluator: {params: [4000000000], type: gt}, operator: {type: and}, query: {params: [F]}, reducer: {params: [], type: last}, type: query}]
+            model: {datasource: {type: __expr__, uid: __expr__}, type: math, refId: R, expression: $T * 0 + $G}
+          - {refId: F, datasourceUid: __expr__, model: {<<: *cf-threshold}}
         noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
           summary: 'R2 Standard storage grew {{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B in 30 days'
-          description: 'The account total grew by more than 4 GB against the same hour 30 days ago. It is the middle tier between cf-r2-bucket-growth, which compares one bucket against itself 24 hours ago and so misses a leak that adds under 2 GB a day to each of several buckets, and cf-r2-standard-total, which pages at 30 GB. Measured 2026-10-21 (fleet-ops#9943): the account holds about 23 GB, the restic live repository and its 30-day-locked copy held about 10 GB each before the retention prune, whose kept set is about 1.5 GiB, and the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950), which is about 1 GB a month. The line sits about 4x above that designed ramp, and the drain of the locked copy to 2026-11-21 shrinks the total, so neither the designed growth nor the drain fires it. Severity warning: it files a fleet-ops issue through the cloudflare-spend contact point and never reaches hermes-urgent.'
+          description: 'The account total grew by more than 4 GB against the same hour 30 days ago. It is the middle tier between cf-r2-bucket-growth, which compares one bucket against itself 24 hours ago and so misses a leak that adds under 2 GB a day to each of several buckets, and cf-r2-standard-total, which pages at 30 GB. Measured 2026-10-21 (fleet-ops#9943): the account holds about 23 GB, the restic live repository and its 30-day-locked copy held about 10 GB each before the retention prune, whose kept set is about 1.5 GiB, and the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950), which is about 1 GB a month. The line sits about 4x above that designed ramp, and the drain of the locked copy to 2026-11-21 shrinks the total, so neither the designed growth nor the drain fires it. Severity warning: it files a fleet-ops issue through the cloudflare-spend contact point and never reaches hermes-urgent. top names the largest bucket today, not the bucket that grew, because the query compares account totals.'
           value: '{{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B growth in 30 days'
           threshold: 'over 4 GB (4000000000 bytes) growth in 30 days'
           top: 'bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
