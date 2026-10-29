@@ -9,15 +9,21 @@ is hidden.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED = ROOT / "rootfs/etc/systemd/system"
+USER_UNITS = ROOT / "systemd"
 CONTRACT = json.loads((ROOT / "config/agent-locks.json").read_text())
 AGENTS = CONTRACT["agents"]
 STALE_USER_UNITS = CONTRACT.get("stale_user_units", {})
+AGENT_ENGINE = re.compile(
+    r"(\.amp/bin/amp|\.local/bin/(claude|command-code|commandcode|cursor|cursor-agent|devin"
+    r"|opencode|pi))$"
+)
 
 
 def settings(unit: Path) -> dict[str, list[str]]:
@@ -151,6 +157,48 @@ def test_a_locked_agent_has_no_user_unit_left_behind(name: str) -> None:
         f"{stale.relative_to(ROOT)} is the unlocked form of a locked agent. Enable the system "
         "unit and remove this file, or list it in stale_user_units with its follow-up."
     )
+
+
+def exec_start_values(unit: Path) -> list[str]:
+    text = unit.read_text().replace("\\\n", " ")
+    return [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("ExecStart")]
+
+
+def runs_an_agent(unit: Path) -> bool:
+    for value in exec_start_values(unit):
+        if "tincan listen" in value:
+            return True
+        program = value.lstrip("-@+!").split(maxsplit=1)
+        if program and AGENT_ENGINE.search(program[0]):
+            return True
+    return False
+
+
+def test_every_user_unit_that_runs_an_agent_is_in_the_contract() -> None:
+    covered = {entry["unit"] for entry in AGENTS.values()} | set(STALE_USER_UNITS)
+    covered |= {gap["unit"] for gap in CONTRACT["gaps"] if gap.get("unit")}
+    uncovered = [
+        f"systemd/{path.name}"
+        for path in sorted(USER_UNITS.glob("*.service"))
+        if runs_an_agent(path) and f"systemd/{path.name}" not in covered
+    ]
+    assert uncovered == [], (
+        f"{uncovered} run an agent and are in no contract entry, so deleting that entry would "
+        "leave an unlocked agent behind. Add each one as an agent or as a gap."
+    )
+
+
+def test_every_gap_names_a_unit_file_that_still_exists() -> None:
+    for gap in CONTRACT["gaps"]:
+        unit = gap.get("unit")
+        assert isinstance(unit, str) and unit, (
+            f"{gap['agent']} names {unit!r} instead of a unit file, so nothing here would notice "
+            "when that agent's units are deleted and the gap turns into work nobody can do"
+        )
+        assert (ROOT / unit).exists(), (
+            f"{gap['agent']} names {unit}, which the repo no longer ships. Delete the gap if "
+            "the agent is gone, or point it at the new path if the unit moved"
+        )
 
 
 def test_every_gap_names_a_reason_and_a_follow_up() -> None:

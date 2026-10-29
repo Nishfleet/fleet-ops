@@ -12,11 +12,17 @@ sandbox directives in a **user** unit here, because
 
 `config/agent-locks.json` is the contract: one entry per agent, with the paths
 it must keep (`needs`) and the paths it must lose (`must_hide`).
+`gaps` is the other half of the contract: an agent that still runs unlocked,
+with the reason and the follow-up issue that closes it. Every gap names the
+unit file it is about, and a test fails when that file is gone, so a gap
+cannot name a unit the repo no longer ships.
 `tests/test_agent_locks.py` resolves each unit's real settings, following the
 symlinked shared drop-in, and fails when a unit is not a system unit with a
-service user, when a hidden path is still readable, when a need is hidden, or
-when the unit sets no `HOME` and no `PATH` that starts with
-`/home/nish/.local/bin`. The `systemd unit keys` job in CI runs it.
+service user, when a hidden path is still readable, when a need is hidden, when
+the unit sets no `HOME` and no `PATH` that starts with the fleet user's
+`~/.local/bin`, when a gap names a unit the repo no longer ships, or when a user
+unit under `systemd/` starts an agent engine in an `ExecStart*=` line and
+appears in no contract entry. The `unit` job in CI runs it.
 `ansible/tasks/agent-lock.yml` runs the same lists on the box inside a transient
 unit with the same `User=` and `InaccessiblePaths=`. The contract spells its
 paths with `~`, and `InaccessiblePaths=` takes them relative to the host's root
@@ -91,7 +97,9 @@ installed and keep running; nothing restarts them.
 1. Write the system unit under `rootfs/etc/systemd/system/`, with absolute
    paths and no `%h`.
 2. Add its entry to `config/agent-locks.json` with its `needs` and
-   `must_hide`.
+   `must_hide`. If it starts an engine binary that no entry names yet, add
+   that binary's path to `AGENT_ENGINE` in the test, so the coverage check
+   sees a unit that starts it.
 3. Symlink `rootfs/etc/systemd/system/<unit>.service.d/50-shared.conf` to
    `../fleet-agent-lock.service.d/50-shared.conf`, and write the agent's own
    `60-own-keys.conf`.
