@@ -1,6 +1,6 @@
 """The review job carries an approval across a rebase when the PR's own change is unchanged (fleet-ops#10681).
 
-Runs the review step's own carry block, read out of agent.yml, against a real git fixture: an approved head,
+Runs the review step's own scope block, read out of agent.yml, against a real git fixture: an approved head,
 then main moves and the PR is rebased, merged with main, or extended.
 """
 import json
@@ -13,11 +13,12 @@ import yaml
 WF = Path(__file__).parents[1] / ".github/workflows/agent.yml"
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "init.defaultBranch=main"]
 MISSING = "0123456789abcdef0123456789abcdef01234567"
+CFG = {"guard": ["^\\.github/", "(^|/)migrations/"]}
 
 
 def block():
     run = next(s["run"] for j in yaml.safe_load(WF.read_text())["jobs"].values() for s in j.get("steps", []) if s.get("id") == "review")
-    return run[run.index("# An approval follows the change"):run.index('[ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]')]
+    return run[run.index("# Review scope (#10681)"):run.index('[ "$(wc -c < "$RUNNER_TEMP/diff.txt")" -gt 250000 ]')]
 
 
 def git(repo, *args):
@@ -27,6 +28,7 @@ def git(repo, *args):
 def commit(repo, files, msg):
     for name, text in files.items():
         p = repo / name
+        p.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(text, bytes):
             p.write_bytes(text)
         else:
@@ -45,6 +47,7 @@ def repo(tmp_path):
     c = {"b0": commit(r, {"list.txt": "a\nc\n", "app.txt": "x\n", "blob.bin": b"\x00\x01"}, "base")}
     git(r, "checkout", "-qb", "pr")
     c["old"] = commit(r, {"list.txt": "a\nb\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03"}, "pr")
+    c["wf"] = commit(r, {".github/workflows/x.yml": "on: push\n"}, "the approved head also added a workflow")
     # main adds a line right next to the PR's own line, so a rebase conflicts in the shared list
     git(r, "checkout", "-qb", "m1", c["b0"])
     c["b1"] = commit(r, {"list.txt": "a\na2\nc\n"}, "main adds a2")
@@ -54,6 +57,8 @@ def repo(tmp_path):
     c["changed"] = commit(r, {"list.txt": "a\na2\nb2\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03"}, "rebase, conflict changed the PR line")
     git(r, "checkout", "-qb", "bin", c["b1"])
     c["bin"] = commit(r, {"list.txt": "a\na2\nb\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x04"}, "rebase, the binary file changed to other bytes")
+    git(r, "checkout", "-qb", "wfkeep", c["b1"])
+    c["wfkeep"] = commit(r, {"list.txt": "a\na2\nb\nc\n", "app.txt": "y\n", "blob.bin": b"\x00\x03", ".github/workflows/x.yml": "on: push\n"}, "rebase, and the workflow came along")
     # main moves elsewhere: a clean rebase, and a merge of main into the branch
     git(r, "checkout", "-qb", "m2", c["b0"])
     c["b2"] = commit(r, {"other.txt": "z\n"}, "main moves elsewhere")
@@ -82,21 +87,24 @@ def approval(sha, login="github-actions[bot]", edited=False):
             "body": f"coordinator-approval: {sha}\n\nreviewer: {sha} approved."}
 
 
-def review(tmp_path, repo, base, head, comments, guard="false"):
+def review(tmp_path, repo, base, head, comments, cfg=CFG):
     origin, _ = repo
     bt, temp = tmp_path / "bt", tmp_path / "temp"
     temp.mkdir()
     git(tmp_path, "init", "-q", str(bt))
     git(bt, "fetch", "-q", str(origin), f"{base}:refs/base", f"{head}:refs/head")
     (temp / "diff.txt").write_text(git(bt, "diff", "--no-color", "refs/base...refs/head") + "\n")
+    (temp / "files.txt").write_text(git(bt, "diff", "--name-only", f"{base}...{head}") + "\n")
     stubs = (
         'set -euo pipefail\n'
         'git() { local a=() x; for x in "$@"; do case $x in https://github.com/*) a+=("$ORIGIN") ;; *) a+=("$x") ;; esac; done; command git "${a[@]}"; }\n'
         'gh() { case "$*" in *"/comments"*) printf "%s" "$COMMENTS" ;; *"--jq .head.sha"*) echo "$SHA" ;; *) echo "unexpected gh $*" >&2; return 1 ;; esac; }\n'
         'say() { printf "%s\\n" "$1" >> "$RUNNER_TEMP/said"; }\napprove() { echo "APPROVE $SHA" >> "$RUNNER_TEMP/said"; }\n'
+        'approve_say() { approve; say "$1"; }\n'
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ORIGIN": str(origin), "COMMENTS": json.dumps(comments), "SHA": head,
-           "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt), "guard": guard}
+           "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt),
+           "cfg": json.dumps(cfg)}
     p = subprocess.run(["bash", "-c", stubs + block() + 'echo "scope=$scope note=$note"\n'], env=env, capture_output=True, text=True)
     read = lambda n: (temp / n).read_text() if (temp / n).exists() else ""
     return p, read("said"), read("out"), read("diff.txt")
@@ -177,9 +185,17 @@ def test_anything_else_gets_a_full_review(tmp_path, repo, comments):
     assert diff.startswith("diff --git") and "+y" in diff.splitlines() and "+b" in diff.splitlines()
 
 
-@pytest.mark.parametrize("head,base", [("clean", "b2"), ("added", "b0")])
-def test_guard_head_with_a_same_login_approval_gets_a_full_review(tmp_path, repo, head, base):
-    # a workflow in the PR could post this approval as the same bot, so a guard head neither carries nor narrows to an interdiff
+@pytest.mark.parametrize("head,base,cfg", [("wfkeep", "b1", CFG), ("clean", "b2", {"guard": ["^app\\.txt$"]})], ids=["workflow-head", "other-guard-path"])
+def test_a_guard_head_gets_a_full_review(tmp_path, repo, head, base, cfg):
+    # the head itself touches a guard path: no carry and no interdiff
     c = repo[1]
-    r, said, out, diff = review(tmp_path, repo, c[base], c[head], [approval(c["old"])], guard="true")
+    r, said, out, diff = review(tmp_path, repo, c[base], c[head], [approval(c["old"])], cfg=cfg)
+    assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout and diff.startswith("diff --git"), r.stdout + r.stderr
+
+
+def test_an_approved_guard_head_does_not_hand_its_approval_on(tmp_path, repo):
+    # the approved head added a workflow, so that approval could have been posted by the workflow itself;
+    # this head dropped the workflow and would otherwise get only an interdiff review of the rest
+    c = repo[1]
+    r, said, out, diff = review(tmp_path, repo, c["b1"], c["keep"], [approval(c["wf"])])
     assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout and diff.startswith("diff --git"), r.stdout + r.stderr

@@ -1,8 +1,8 @@
 """fleet-ops#10435: a coordinator PR (orch/issue-N) whose review blocked goes back to the orchestrator.
 
 Runs the real `run:` blocks (read out with yq) against a stub `gh` and a real git mirror:
-the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR
-instead of skipping) and its worktree step (start from the PR head)."""
+the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR, or on a branch with no PR at all,
+instead of skipping) and its worktree step (start from the branch head)."""
 import json
 import os
 import pathlib
@@ -14,13 +14,15 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_STUB = """#!/bin/bash
 echo "$*" >> "$GH_LOG"
+if [ "${GH_ISSUE_VIEW_FAIL:-0}" != 0 ]; then case "$*" in "issue view"*) exit 1 ;; esac; fi
 case "$*" in
   "pr view"*) while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PR_JSON" ;;
   "api --paginate"*) printf '%b' "$GH_REVIEWS" ;;
   "issue view"*) echo "$GH_LABELS" ;;
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
   "api repos/"*"/issues/"*) echo 0 ;;
-  "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; echo "$GH_OPEN_PRS" ;;
+  "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PULLS" ;;
+  "issue edit"*|"issue comment"*) if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then echo "403 Resource not accessible by integration: $*" >&2; exit 1; fi ;;
 esac
 exit 0
 """
@@ -42,6 +44,12 @@ def _block(workflow, job, step):
         check=True, capture_output=True, text=True,
     ).stdout
     assert out.strip(), f"step {step!r} not found"
+    return out
+
+
+def _y(expr):
+    out = subprocess.run(["yq", expr, str(ROOT / ".github/workflows/agent.yml")], check=True, capture_output=True, text=True).stdout.strip()
+    assert out and out != "null", expr
     return out
 
 
@@ -99,6 +107,28 @@ def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
     assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
 
 
+def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_on_the_runner_login():
+    assert _y(f'.jobs.review.steps[] | select(.name == "{SEND[2]}") | .env.GH_TOKEN') == "${{ github.token }}"
+    assert _y('.jobs.review.permissions."issues"') in ("read", "write")
+    assert _y('.jobs.review.permissions."pull-requests"') in ("read", "write")
+    lines = _block(*SEND).splitlines()
+    for read in ("gh pr view", "gh api ", "gh issue view"):
+        assert len([line for line in lines if read in line]) == 1, read
+    reads = [line for line in lines if any(read in line for read in ("gh pr view", "gh api ", "gh issue view"))]
+    others = [line for line in lines if "gh " in line and line not in reads]
+    assert others
+    assert [line for line in reads if "env -u" in line] == []
+    assert [line for line in others if not line.strip().startswith("env -u GH_TOKEN -u GITHUB_TOKEN gh ")] == []
+
+
+def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):
+    env, log = _review(tmp_path)
+    env["GH_ISSUE_VIEW_FAIL"] = "1"
+    r = _run(_block(*SEND), env)
+    assert r.returncode != 0
+    assert "issue edit" not in log.read_text() and "issue comment" not in log.read_text()
+
+
 def test_the_fourth_block_goes_to_nish_not_back_to_the_orchestrator(tmp_path):
     env, log = _review(tmp_path, reviews=(OTHER, OTHER, OTHER, SHA))
     assert _run(_block(*SEND), env).returncode == 0
@@ -113,8 +143,8 @@ def test_three_blocks_still_get_a_rework_round(tmp_path):
     assert "--add-label needs-orchestrator" in log.read_text()
 
 
-def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
-    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_OPEN_PRS=str(open_prs),
+def _issue_env(tmp_path, exists, pulls, pulls_fail=False):
+    env, log = _env(tmp_path, ISSUE="77", GH_REF_EXISTS=str(0 if exists else 1), GH_PULLS=json.dumps([{"state": x, "number": i + 1} for i, x in enumerate(pulls)]),
                     GH_LABELS="needs-orchestrator", GITHUB_RUN_ID="1", DAILY_MAX="0", MODEL_VAR="", RUNNER_VAR="", GITHUB_OUTPUT=str(tmp_path / "out"))
     gh = tmp_path / "bin/gh"
     gh.write_text(gh.read_text().replace('"issue view"*) echo "$GH_LABELS" ;;', '"issue view"*"state"*) echo OPEN ;;\n  "issue view"*) echo "$GH_LABELS" ;;'))
@@ -126,9 +156,15 @@ def _issue_env(tmp_path, exists, open_prs, pulls_fail=False):
 ISSUE_STEP = ("agent-dispatch.yml", "orchestrate", "Check the issue is still parked")
 
 
-@pytest.mark.parametrize("exists,open_prs,go", [(True, 1, True), (True, 0, False), (False, 0, True)])
-def test_issue_step_continues_on_a_branch_with_an_open_pr_and_skips_one_without(tmp_path, exists, open_prs, go):
-    env, _ = _issue_env(tmp_path, exists, open_prs)
+@pytest.mark.parametrize("exists,pulls,go", [
+    (True, ["open"], True),             # a blocked review sent back
+    (True, [], True),                   # a hand-off whose run died before its PR
+    (True, ["closed"], False),          # closed or merged: that branch is over
+    (True, ["closed", "open"], True),   # a new PR on a branch that had a closed one
+    (False, [], True),
+])
+def test_issue_step_continues_a_branch_with_an_open_pr_or_none_and_skips_an_ended_one(tmp_path, exists, pulls, go):
+    env, _ = _issue_env(tmp_path, exists, pulls)
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
     out = (tmp_path / "out").read_text() if (tmp_path / "out").exists() else ""
@@ -136,7 +172,7 @@ def test_issue_step_continues_on_a_branch_with_an_open_pr_and_skips_one_without(
 
 
 def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
-    env, log = _issue_env(tmp_path, True, 1, pulls_fail=True)
+    env, log = _issue_env(tmp_path, True, ["open"], pulls_fail=True)
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
     out = tmp_path / "out"
@@ -145,9 +181,49 @@ def test_issue_step_skips_a_branch_whose_pr_list_cannot_be_read(tmp_path):
 
 
 def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
-    env, log = _issue_env(tmp_path, True, 1)
+    env, log = _issue_env(tmp_path, True, ["open"])
     assert _run(_block(*ISSUE_STEP), env).returncode == 0
-    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=open" in log.read_text()
+    assert "api repos/Nishfleet/fleet-ops/pulls?head=Nishfleet:orch/issue-77&state=all" in log.read_text()
+
+
+def test_an_ended_branch_parks_the_issue_on_agent_blocked_and_names_its_pr(tmp_path):
+    env, log = _issue_env(tmp_path, True, ["closed", "merged"])
+    env["GH_TOKEN"] = env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
+    r = _run(_block(*ISSUE_STEP), env)
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text()
+    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label agent-blocked --remove-label needs-orchestrator" in calls
+    assert "issue comment 77" in calls and "newest #2" in calls
+    out = tmp_path / "out"
+    assert not out.exists() or "go=true" not in out.read_text()
+
+
+def test_the_stub_refuses_the_parking_writes_it_would_get_from_the_jobs_own_token(tmp_path):
+    env, _ = _env(tmp_path, ISSUE="77")
+    env["GH_TOKEN"] = env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
+    refused = subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env, capture_output=True, text=True)
+    assert refused.returncode == 1 and "403" in refused.stderr
+    env.pop("GH_TOKEN")
+    env.pop("GITHUB_TOKEN")
+    assert subprocess.run([str(tmp_path / "bin/gh"), "issue", "edit", "77"], env=env).returncode == 0
+
+
+def test_an_ended_branch_whose_pulls_carry_no_number_still_parks(tmp_path):
+    env, log = _issue_env(tmp_path, True, ["closed", "merged"])
+    env["GH_PULLS"] = json.dumps([{"state": "closed", "number": None}, {"state": "merged"}])
+    r = _run(_block(*ISSUE_STEP), env)
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text()
+    assert "--add-label agent-blocked" in calls
+    assert "newest #unknown" in calls
+    assert "parked #77 agent-blocked" in r.stdout
+
+
+@pytest.mark.parametrize("pulls", [["open"], [], ["closed", "open"]])
+def test_a_branch_a_hand_off_can_still_continue_is_never_parked(tmp_path, pulls):
+    env, log = _issue_env(tmp_path, True, pulls)
+    assert _run(_block(*ISSUE_STEP), env).returncode == 0
+    assert "agent-blocked" not in log.read_text()
 
 
 def _git(*args, cwd):

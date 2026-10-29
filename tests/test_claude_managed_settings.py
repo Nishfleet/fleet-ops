@@ -9,6 +9,15 @@ in `extraKnownMarketplaces` or because the box already registered it. When the
 marketplace's directory is on disk (this box, or a runner with the checkout) the
 plugin name is read out of that marketplace's own manifest, so an id no
 marketplace lists fails here instead of at Claude Code start-up.
+
+An id set to `false` is a switch-off, not an enable: it overrides an entry the
+box already has at user scope, so it needs no marketplace of its own and is not
+held to the manifest check.
+
+No managed settings file may name the plugin-directory override that made Claude
+Code load plugins straight from working-tree checkouts (fleet-ops#10540). Only
+the repo's own tree is read: a user settings file is the play's business, which
+refuses the deploy while one names the variable.
 """
 import json
 import pathlib
@@ -16,6 +25,7 @@ import shutil
 import subprocess
 
 import pytest
+import ansible_host
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANAGED_TREE = ROOT / "rootfs/etc/claude-code"
@@ -23,6 +33,7 @@ DROPINS = ROOT / "rootfs/etc/claude-code/managed-settings.d"
 JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)"
 NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 HOST_MARKETPLACES = pathlib.Path.home() / ".claude/plugins/known_marketplaces.json"
+PLUGINS_FROM_WORKING_TREE = "CLAUDE_CODE_PLUGIN_DIRS"
 
 
 def _dropins():
@@ -47,9 +58,19 @@ def _known_marketplaces():
 def _enabled():
     enabled = {}
     for path in _dropins():
-        for plugin_id in _load(path).get("enabledPlugins", {}):
-            enabled[plugin_id] = path.name
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value:
+                enabled[plugin_id] = path.name
     return enabled
+
+
+def _switched_off():
+    off = {}
+    for path in _dropins():
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value is False:
+                off.setdefault(plugin_id, []).append(path.name)
+    return off
 
 
 def test_the_repo_ships_at_least_one_drop_in():
@@ -59,6 +80,20 @@ def test_the_repo_ships_at_least_one_drop_in():
 @pytest.mark.parametrize("path", _dropins(), ids=lambda p: p.name)
 def test_every_drop_in_is_a_json_object(path):
     _load(path)
+
+
+def test_the_playwright_plugin_is_switched_off():
+    off = _switched_off()
+    assert "playwright@claude-plugins-official" in off, (
+        "no drop-in sets playwright@claude-plugins-official to false (fleet-ops#10529: Chrome DevTools is the one browser tool)"
+    )
+    assert off["playwright@claude-plugins-official"] == ["85-no-playwright.json"], off
+    assert "playwright@claude-plugins-official" not in _enabled()
+
+
+def test_every_switched_off_plugin_is_off_in_exactly_one_drop_in():
+    twice = {plugin_id: files for plugin_id, files in _switched_off().items() if len(files) > 1}
+    assert not twice, f"switched off in more than one drop-in: {twice}"
 
 
 def test_every_enabled_plugin_names_a_known_marketplace():
@@ -88,11 +123,31 @@ def test_every_enabled_plugin_is_listed_in_its_marketplace_manifest():
         assert name in listed, f"{plugin_id} is enabled but {manifest} lists {sorted(listed)}"
 
 
+def test_no_managed_settings_file_loads_plugins_from_a_working_tree():
+    """G1 of the 2026-10-28 glue sweep (fleet-ops#10540): an env override made
+    every agent load five plugins straight out of working-tree checkouts. Nothing
+    pinned, tested or reviewed a checkout, so a pull in one changed what every
+    agent loaded. The checkouts are retired and no plugin is enabled from one, and
+    this keeps the override out of the repo: a drop-in carrying it fails the pull
+    request."""
+    files = [path for path in sorted(MANAGED_TREE.rglob("*.json")) if path.is_file()]
+    assert files, f"{MANAGED_TREE.relative_to(ROOT)} holds no settings file to check"
+    offenders = [str(path) for path in files if PLUGINS_FROM_WORKING_TREE in path.read_text()]
+    assert not offenders, (
+        f"{PLUGINS_FROM_WORKING_TREE} loads plugins from working-tree checkouts with no pin "
+        f"or review: {offenders}"
+    )
+
+
 def _managed_copies():
-    out = subprocess.run(["yq", "-o=json", ".", str(ROOT / "ansible/host.yml")], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
     tasks = [task for play in json.loads(out) for task in play.get("tasks", [])]
     copies = [t["ansible.builtin.copy"] for t in tasks if "ansible.builtin.copy" in t and t["ansible.builtin.copy"].get("dest", "").startswith("/etc/claude-code/")]
     return tasks, copies
+
+
+def test_the_connector_drop_in_keeps_the_claude_ai_connectors_off():
+    assert _load(DROPINS / "80-claudeai-connectors.json")["disableClaudeAiConnectors"] is True
 
 
 @NEEDS_YQ

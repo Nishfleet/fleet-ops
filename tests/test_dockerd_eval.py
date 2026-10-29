@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
@@ -23,6 +24,7 @@ TMPFILES = ROOT / "rootfs/etc/tmpfiles.d/dockerd-eval.conf"
 CONFIG = ROOT / "rootfs/etc/fleet-ops/dockerd-eval.json"
 HOST_YML = ROOT / "ansible/host.yml"
 SOCKET = "/run/dockerd-eval/rt/docker.sock"
+MASK_TASK = "Mask the unused root podman API socket"
 
 
 def keys(path: Path) -> dict[str, list[str]]:
@@ -222,17 +224,10 @@ def test_the_unit_feeds_the_set_and_keeps_an_address_only_layer() -> None:
     assert allow == {"127.0.0.1/32", "127.0.0.53/32", "10.0.2.0/24"}
 
 
-def test_the_comment_does_not_claim_a_bridge_range_is_allowed() -> None:
-    text = UNIT.read_text()
-    assert "the Docker bridge networks, which are not host addresses" not in text
-    assert "network_mode: host" in text
-
-
-def test_the_nft_comment_matches_how_nftables_conf_loads_it() -> None:
+def test_the_nft_conf_loads_the_drop_in_without_flushing_the_ruleset() -> None:
     conf = (ROOT / "rootfs/etc/nftables.conf").read_text()
     assert not re.search(r"^flush ruleset", conf, re.M)
     assert 'include "/etc/nftables.d/*.nft"' in conf
-    assert "fleet-ops#8258" in NFT.read_text()
 
 
 def test_the_engine_cgroup_is_level_two() -> None:
@@ -241,16 +236,12 @@ def test_the_engine_cgroup_is_level_two() -> None:
     assert "DynamicUser" not in unit
 
 
-def test_the_unit_comment_explains_why_there_is_no_vendor_launcher() -> None:
-    text = UNIT.read_text()
-    assert "dockerd-rootless.sh" in text
-    assert "docker-ce-rootless-extras" in text
-    assert "docs.docker.com/engine/security/rootless" in text
+def test_no_vendor_launcher_runs_the_engine() -> None:
     assert "dockerd-rootless" not in keys(UNIT)["ExecStart"][0]
 
 
 def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     task = re.search(r"- name: Install the eval engine's egress rule\n(.*?)\n\n", host, re.S)
     assert task, "no install task"
     assert "dest: /etc/nftables.d/evalnet.nft" in task.group(1)
@@ -260,7 +251,7 @@ def test_the_host_playbook_installs_the_nft_file_with_a_syntax_check() -> None:
 
 def test_podman_eval_is_retired() -> None:
     assert not (SYSTEM / "podman-eval.service").exists()
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert "- /etc/systemd/system/podman-eval.service" in host
     off = re.search(r"- name: Stop and disable the retired rootless podman socket\n(.*?)\n\n", host, re.S)
     assert off, "no stop-and-disable task"
@@ -271,8 +262,23 @@ def test_podman_eval_is_retired() -> None:
     assert "- slirp4netns\n" in host
 
 
+def _mask() -> dict:
+    found = [t for t in ansible_host.play()["tasks"] if t.get("name") == MASK_TASK]
+    assert len(found) == 1, "one task must mask the unused root podman API socket"
+    return found[0]["ansible.builtin.systemd_service"]
+
+
+def test_the_unused_root_podman_api_socket_is_masked() -> None:
+    assert _mask() == {"name": "podman.socket", "state": "stopped", "masked": True}
+
+
+def test_no_other_play_task_touches_the_root_podman_api_socket() -> None:
+    others = [t.get("name") for t in ansible_host.play()["tasks"] if t.get("name") != MASK_TASK and "podman.socket" in str(t)]
+    assert not others, others
+
+
 def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert host.count("alertmanager_credentials is defined and (") == 4
     watcher = re.search(r"- name: Enable the deploy request watcher\n(.*?)\n\n", host, re.S)
     assert watcher, "no deploy request watcher task"
@@ -282,7 +288,7 @@ def test_the_host_playbook_keeps_the_tasks_this_change_must_not_drop() -> None:
 
 
 def test_a_failed_engine_start_is_reported_in_the_run_output() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     task = re.search(r"- name: Enable the rootless Docker engine for the drive eval\n(.*?)\n\n", host, re.S)
     assert task, "no engine enable task"
     assert "register: dockerd_eval_up" in task.group(1)

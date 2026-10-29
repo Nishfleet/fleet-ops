@@ -1,8 +1,8 @@
 """fleet-ops#9365: a cache-false worker row at order 2 still receives traffic
 when every order-1 row in its group is in cooldown.
 
-Runs against the pinned LiteLLM v1.98.0 Router with the proxy's production
-router settings (cooldown_time 60, allowed_fails 1, num_retries 0,
+Runs against the pinned proxy image's LiteLLM v1.105.0 Router with the proxy's
+production router settings (cooldown_time 60, allowed_fails 1, num_retries 0,
 simple-shuffle). Two failure modes could remove an order-1 row from the
 shuffle:
 
@@ -11,16 +11,20 @@ shuffle:
   _get_order_filtered_deployments (litellm/utils.py) picks the lowest order
   that still has healthy rows - so once both order-1 rows cool, the order-2
   row is the pick.
-- max_parallel_requests: NOT a routing filter on v1.98.0 - it is a
+- max_parallel_requests: NOT a routing filter - it is a
   per-deployment semaphore (litellm/router.py), so an order-1 row at its cap
   queues the call instead of deflecting it. Cooldown is therefore the only
   routing-level overflow trigger, and the one this test exercises.
 """
 import asyncio
 
-import litellm
-from litellm import Router
-from litellm.router_utils.cooldown_handlers import _set_cooldown_deployments
+from router_litellm_pin import require_pinned_litellm
+
+require_pinned_litellm(__file__)
+
+import litellm  # noqa: E402
+from litellm import Router  # noqa: E402
+from litellm.router_utils.cooldown_handlers import _set_cooldown_deployments  # noqa: E402
 
 
 def _row(mid, order, cache):

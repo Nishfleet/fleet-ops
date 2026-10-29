@@ -16,7 +16,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens PRs. Two scheduled jobs open issues: the weekly retro, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314; its report is private, in the vault), and the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled job that calls a model itself is the weekly retro (the provider watch's issues start a hand-off run, above); the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
+No scheduled fleet job opens PRs. One scheduled job opens issues: the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip).
 
 ## Model plane
 
@@ -88,10 +88,11 @@ The rules still in force:
   claiming a review it did not get: the `in-run review: unavailable -
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
-  pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
-  Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
-  with `needs-opus`). The seat is set by the issue number's parity
-  (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
+  pi. `strong-only` (senior) issues go to Claude
+  Code first (`claude-sonnet-5-5`, the only worker model: Opus, Fable and Qwen
+  are reviewer and judge models only, fleet-ops#10750). A packet that failed
+  twice escalates to the worker-capable pool, never to Opus. The seat is set by
+  the issue number's parity (fleet-ops#9696): in the claude lane
   step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
   keeps seat a. The seat follows the issue, not the runner, so a retry of the
@@ -102,7 +103,7 @@ The rules still in force:
   token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
   (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
   run as shell, and the token is masked and given to the claude command alone, so
-  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  a fallthrough to pi does not inherit it. If claude fails with an auth
   error on that token, the lane retries once with the other seat's token (logged as
   `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
   so a backup copy restores it. With no such file the seat's login is used
@@ -112,18 +113,17 @@ The rules still in force:
   included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
-  limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
-  any other job. Nothing polls usage.
+  limit, the same packet falls through to pi. Nothing polls usage.
   Routing by judgment, in plain words: Claude does the judgment work, free
   workers do the mechanical work, and Jev decides which is which. For an issue
   that is not `strong-only`, the Gate asks Jev one typed question from the issue
   title and body: does completing this need engineering judgment (a design
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
-  the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
-  or less it goes to the free lanes (pi, then opencode, then Devin). Anything
+  the issue goes to the claude lane (Sonnet); at 0.1
+  or less it goes to the free pi lane. Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
-  lanes; `strong-only` always goes to claude. The decision is written as
+  pi lane; `strong-only` always goes to claude. The decision is written as
   `judgment: p=<x> -> claude|free (<reason>)` to the log and the job summary.
   Eval numbers: `tests/evals/results/needs_judgment.json`. There is no cap on
   live claude workers: nothing stock gives N slots, and each worker sits under
@@ -147,11 +147,13 @@ The rules still in force:
 - Gates that exist: a PR touching a risky path is labelled `needs-coordinator` and
   not armed. Coordinator approval is a **required status check**: the
   `main-merge-queue` ruleset requires `coordinator-approval` (integration_id
-  15368, alongside `ci` and `Gitleaks`), and ci.yml's job of that name — on
-  `main` since 6c8667075 (PR #9389, 2026-10-07) — runs on `merge_group`,
+  15368, alongside `ci` and `Gitleaks`), and `.github/workflows/coordinator-approval.yml`'s
+  job of that name — on `main` since 6c8667075 (PR #9389, 2026-10-07; its own
+  workflow file since #10292) — runs on `merge_group`,
   resolves every PR in the queue entry from the group ref, reads the CLASSIFY
   and APPROVAL programs, APPROVERS and `config/risky-paths.json` from the BASE
-  commit, and fails a risky PR whose current head sha carries no approval. A
+  commit (a caller repo, which has no copy, reads fleet-ops main by URL), and
+  fails a risky PR whose current head sha carries no approval. A
   hand enqueue is caught by it as well, because a queue entry cannot merge
   while a required check fails (fleet-ops#9383: a manual enqueue merged #9371
   unapproved before the check existed; the job ran from 2026-10-07 but the
@@ -201,6 +203,9 @@ The rules still in force:
   is asked at any step. Nish's typed comment or app review stays an optional
   override. The gate and `hold-risky` read their programs and the path list from
   the base branch, so a PR cannot loosen the rules that judge it in the same PR;
+  the programs live in agent-dispatch.yml's workflow-level `env`, which
+  `coordinator-approval.yml` reads, so removing the `hold-risky` job leaves the
+  check intact (fleet-ops#10292);
   agent-authored PRs self-land green. The reviewer also runs by hand, so a
   dispatch that cannot start never needs a person to approve: `gh workflow run
   agent.yml -f review_pr=<N> -f review_sha=<sha>` runs the same job, from
@@ -209,6 +214,27 @@ The rules still in force:
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+- **fleet-ops gets runners first (fleet-ops#10717).** GitHub hands queued
+  self-hosted jobs out first come, first served, so a product burst put
+  fleet-ops work behind it. Every agent runner carries the label `fleet-ops`,
+  and `netcup-agent-20` to `-30` (not the offline `-23`) do not carry `agent`,
+  so no build can take those 10; they keep `review`. agent.yml's
+  `work`, `stuck` and `inish-daily` jobs and agent-dispatch.yml's `orchestrate`
+  job ask for `[self-hosted, fleet-ops]` when `github.repository` (the caller)
+  is fleet-ops, and `[self-hosted, agent]` for every other caller, so fleet-ops
+  can use every live runner while products share the rest, and no product
+  repo can request the reserved label. `agent` has to come off, for the reason
+  the two review runners record above: GitHub hands a queued build to any idle
+  runner that matches, so a shared label empties the reservation during a
+  burst. The cost is 10 of 28 runners that no longer take product work. The
+  labels live at GitHub, not in ansible:
+  Applied 2026-10-29 with org-owner scope (the runner PAT gets 403): every
+  agent runner got `fleet-ops` (`gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`),
+  and runners 20 to 30 lost `agent` (`gh api -X DELETE .../runners/<id>/labels/agent`).
+  They already carried `review`, so product review jobs can still use them.
+  To switch it off, set those three `runs-on` lines and the `orchestrate` line
+  back to `[self-hosted, agent]`, put `agent` back on runners 20 to 30, and the
+  `fleet-ops` label can stay (nothing else asks for it).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
@@ -233,9 +259,13 @@ Before building a retry loop, cooldown, poller, queue daemon, watchdog or
 dispatcher, find the existing owner. systemd primitives replace the bans:
 `Restart=`/`WatchdogSec=`/`StartLimitBurst=`, `RestartSec=`+`StartLimitInterval`,
 a `.path` unit or a named-reason timer, a `systemd-run --user` transient unit,
-or Pi's stock dispatch (`.github/workflows/agent.yml`). If no existing
-owner fits, open a design proposal through the senior-conference channel — do
-not build by fiat.
+or Pi's stock dispatch (`.github/workflows/agent.yml`). Set the start limit so
+the restart cadence can spend it. A unit whose cadence never fills the budget
+restarts for ever and never becomes `failed`, so its one reader (an `OnFailure=`
+hook, the `node_systemd_unit_state` gauge on a system unit, or the manager's
+failed list) sees nothing, and `tests/test_systemd_unit_keys.py` gates this. If
+no existing owner fits, open a design proposal through the senior-conference
+channel — do not build by fiat.
 
 ## CI standard (the parts that stay)
 

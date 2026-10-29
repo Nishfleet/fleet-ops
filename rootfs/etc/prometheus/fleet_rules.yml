@@ -192,6 +192,42 @@ groups:
           summary: "backup unit {{ $labels.name }} has been failed for 1 hour"
           description: "Systemd unit {{ $labels.name }} is in the failed state, so last night's off-site backup did not complete."
 
+  - name: fleet_deploy
+    rules:
+      # The deploy itself failed (fleet-ops#9437). fleet-sync.service writes the
+      # node_exporter textfile metric from its ExecStopPost: 1 when its last run did
+      # not end `success`, 0 when it did, so this rule pages from the first scrape
+      # after a failure and clears at the next good sync. Nothing else watched this
+      # unit. Its OnFailure= handler pings a healthchecks.io dead-man whose env file
+      # this host does not carry (the handler prints "SKIP: HC_URL_RECONCILE unset"
+      # and exits 0), and node_exporter's systemd collector reads system units, not
+      # user units like this one. Why: on 2026-10-08 the clone sat on an unmerged
+      # branch and this unit failed at 09:18:14; nobody was told, and #9364 was 11
+      # minutes late by hand.
+      - alert: FleetSyncFailed
+        expr: fleet_sync_failed == 1
+        for: 2m
+        labels:
+          severity: nish
+        annotations:
+          summary: "the fleet-ops deploy failed, so no unit or config change reached the box"
+          description: "fleet-sync.service did not end success on its last run. Read `journalctl --user -u fleet-sync.service -n 60`: a DEPLOY-BLOCKED line names the cause and the fix."
+
+      # The metric can also be missing rather than 1 (fleet-ops#9437): the
+      # ExecStopPost is prefixed with `-`, so a host without the tmpfiles line, or a
+      # write that fails, leaves no series at all and FleetSyncFailed stays silent,
+      # which is the same silence this issue is about. NodeExporterDown is the same
+      # shape for the detector it guards. 30 minutes, not 2: a host writes the file
+      # on its first sync, so only a detector that never worked reaches this.
+      - alert: FleetSyncMetricMissing
+        expr: absent(fleet_sync_failed)
+        for: 30m
+        labels:
+          severity: nish
+        annotations:
+          summary: "the fleet-ops deploy result metric is missing, so a failed deploy cannot page"
+          description: "fleet_sync_failed has no sample, so FleetSyncFailed cannot fire. fleet-sync.service step 11 could not write /var/lib/prometheus/node-exporter/fleet-sync.prom: check `systemctl --user cat fleet-sync.service` and rootfs/etc/tmpfiles.d/fleet-sync-metric.conf on the box."
+
   - name: fleet_sites
     rules:
       # A public product site probed by the blackbox exporter (jobs named
@@ -291,17 +327,35 @@ groups:
       # counters are used because the router's own "all slots in use" rejection never reaches a deployment, so it has no
       # deployment-level series for senior. Replayed on live Prometheus over 2026-10-28 10:30-14:10Z: senior at 90% or more
       # failed for a 14 minute run from 11:29Z, and only `assistant` (a standing RouterRateLimitError) also matched.
+      # requested_model="other" is the proxy's bucket for calls that name no model group, such as /jev with a bad key;
+      # 50 such 401s fired this alert on 2026-10-28 22:14Z (fleet-ops#10788); RouterOtherBucketFailing below watches that bucket.
       - alert: RouterGroupJammed
         expr: |
-          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total[10m]))
-            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 0.9)
-          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[10m])) >= 3)
+          (sum by (requested_model) (increase(litellm_proxy_failed_requests_metric_total{requested_model!="other"}[10m]))
+            / sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 0.9)
+          and (sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{requested_model!="other"}[10m])) >= 3)
         for: 10m
         labels:
           severity: nish
         annotations:
           summary: "Router group {{ $labels.requested_model }} fails nearly every call"
           description: "90% or more of the calls to {{ $labels.requested_model }} failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+      # The calls RouterGroupJammed skips: the proxy files calls that name no model group (/jev, a bad key, a rejected
+      # master key) under requested_model="other". A one-off burst ends inside the hour, as the 50 curl 401s on /jev
+      # did on 2026-10-28 (fleet-ops#10788); a stale key or auth fault on a fleet component keeps failing, so the
+      # 30 minute hold separates the two.
+      - alert: RouterOtherBucketFailing
+        expr: |
+          (sum(increase(litellm_proxy_failed_requests_metric_total{requested_model="other"}[10m]))
+            / sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 0.9)
+          and (sum(increase(litellm_proxy_total_requests_metric_total{requested_model="other"}[10m])) >= 3)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Router calls outside any model group keep failing"
+          description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
 
   - name: fleet_router_downgrade
     interval: 5m
