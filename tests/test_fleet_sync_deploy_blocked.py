@@ -106,6 +106,7 @@ def test_a_clone_behind_origin_main_fails_without_extra_commits_named(tmp_path: 
 
 
 HOOK = ROOT / "config" / "git-hooks" / "reference-transaction"
+TMPFILES = ROOT / "rootfs" / "etc" / "tmpfiles.d" / "fleet-sync-metric.conf"
 BRANCH_PROBE = "DEPLOY-BLOCKED: the deploy clone has"
 
 
@@ -124,6 +125,17 @@ def clone_with_hook(tmp_path: Path) -> Path:
 def run_git(cwd: Path, *args: str) -> tuple[int, str]:
     proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False, env={**os.environ, **GIT_ENV})
     return proc.returncode, proc.stdout + proc.stderr
+
+
+def test_the_metric_directory_grants_no_write_to_an_agent() -> None:
+    # The unit runs as nish, and so does every agent on the box, so a group- or
+    # other-writable metric directory lets any of them write `fleet_sync_failed 0`
+    # over a failed deploy and silence FleetSyncFailed.
+    rows = [line.split() for line in TMPFILES.read_text().splitlines() if line and not line.startswith("#")]
+    assert rows == [
+        ["d", "/var/lib/prometheus/node-exporter", "0755", "root", "prometheus", "-"],
+        ["f", "/var/lib/prometheus/node-exporter/fleet-sync.prom", "0644", "nish", "nish", "-"],
+    ]
 
 
 def test_the_hook_is_executable_and_shipped_as_a_config_file() -> None:
