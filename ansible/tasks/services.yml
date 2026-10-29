@@ -76,3 +76,13 @@
     - podman_eval_off.failed | default(false)
     - "'Could not find' not in (podman_eval_off.msg | default(''))"
   ignore_errors: "{{ ansible_check_mode }}"
+
+# The system podman API socket: every podman call in this repo and in update.yml
+# runs as nish against the user manager's socket, and rootful podman needs no
+# daemon, so nothing on this box uses it. Masked, so the listener cannot return at
+# boot or on a package upgrade; `systemctl unmask podman.socket` puts it back.
+- name: Mask the unused root podman API socket
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    state: stopped
+    masked: true

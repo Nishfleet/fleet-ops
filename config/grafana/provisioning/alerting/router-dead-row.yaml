@@ -9,10 +9,26 @@
 # one in an hour instead of by hand.
 #
 # Rule: any single deployment (model_id) that returned HTTP 402, 403 or 404 more than 5
-# times in the last hour. litellm_deployment_failure_responses_total is on the LiteLLM
-# /metrics endpoint Prometheus already scrapes; its exception_status label is the upstream
-# status and model_id is the router row id. 429 is never counted: a quota wall is a
-# resting row, not a dead one (Nish 2026-10-02).
+# times in the last hour while the row is still failing: at least one such failure in the
+# last 10 minutes, held for 15 continuous minutes. litellm_deployment_failure_responses_total
+# is on the LiteLLM /metrics endpoint Prometheus already scrapes; its exception_status label
+# is the upstream status and model_id is the router row id. 429 is never counted: a quota
+# wall is a resting row, not a dead one (Nish 2026-10-02).
+#
+# Persistence (fleet-ops#9562). The plain 1-hour count paged for a one-minute burst and
+# stayed true for the rest of the hour, so a row that answered 402/403/404 for about a
+# minute and then healed filed an issue anyway (2026-10-10, twice in 20 minutes; seven
+# more in the 2026-10-13 audit cycle). A dead row keeps failing, so the count now carries
+# a second factor: at least one such failure in the last 10 minutes. It is a `> bool 0`
+# 0/1 multiplied in, not `and`: `and` keeps the left value whenever the right side has a
+# matching series, whatever that value (paid-plan-idle.test.rules.yml says the same), so
+# a quiet row would still fire. `for: 15m` then holds until the failures persist. Numbers
+# from this fleet's Prometheus over 2026-09-20..2026-10-29: the 2026-10-10 flaps held the
+# plain count 55m per row and the gated count 10m at most; seven of the eight condition
+# runs in the 2026-10-12 audit cycle held 10m or less and the 30m one still fires at 15m;
+# every day-long dead row (2026-10-05..07, 2026-09-29..30) still fires. config/grafana/tests
+# holds the behaviour as promtool cases; tests/test_grafana_fixture_drift.py fails when
+# this file and that fixture drift apart.
 #
 # Proxy-level failures (the LiteLLM health check, a caller with no router row id) carry
 # requested_model and no model_id, and the old sum by (model_id) folded them into one
@@ -25,6 +41,11 @@
 # the policy tree in cloudflare-spend-contact.yaml.
 # The issue asks Nish whether to remove the row; a worker never removes it by itself.
 # Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+#
+# Switch it off: set isPaused: true on the rule (the same idiom as
+# cloudflare-spend.yaml), or move `for:` back to 0s with the 10-minute factor removed to
+# return the fire-on-any-burst behaviour. Neither is a manual Grafana edit: provisioning
+# rewrites the API copy when Grafana restarts.
 apiVersion: 1
 
 groups:
@@ -44,8 +65,10 @@ groups:
               datasource: {type: prometheus, uid: fleet-prometheus}
               editorMode: code
               expr: >-
-                sum by (model_id) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))
-                or sum by (requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h]))
+                (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id!=""}[1h]))
+                or sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404",model_id=""}[1h])))
+                * on(model_id,requested_model)
+                (sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~"402|403|404"}[10m])) > bool 0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -61,11 +84,11 @@ groups:
               conditions: [{evaluator: {params: [5], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}, type: query}]
         noDataState: OK
         execErrState: Error
-        for: 0s
+        for: 15m
         annotations:
           summary: 'Router row {{ with $labels.model_id }}{{ . }}{{ else }}{{ with $labels.requested_model }}{{ . }} (proxy-level){{ else }}unknown row{{ end }}{{ end }} answered 402, 403 or 404 {{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} times in the last hour'
-          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
+          description: 'A 402 is spent credit, a 403 is a model the provider ended, a 404 is a model or endpoint that no longer exists. LiteLLM v1.98.0 cannot cool the first two, so every caller routed to this row fails. The retry-side fix is tracked in #9050 (retry a 403/404 onto a live seat) and #9417 (re-probe a resting row); this rule is the detector until they land, so a one-minute flap that healed needs no action. Check the row in config/litellm-proxy.yaml and the router journal (journalctl --user -u fleet-litellm-proxy | grep {{ with $labels.model_id }}{{ printf "%q" . }}{{ else }}{{ with $labels.requested_model }}{{ printf "%q" . }}{{ else }}MODEL_ID{{ end }}{{ end }}). Do NOT remove or bench it without Nish''s explicit yes (2026-10-02 rule): open or update a needs-nish-decision issue with the evidence.'
           value: '{{ with index $values "A" }}{{ if .Value }}{{ .Value | printf "%.0f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }} failures in the last hour'
-          threshold: 'more than 5 in 1 hour'
+          threshold: 'more than 5 in 1 hour, still failing 15 minutes later'
         labels: {severity: warning, signal: router-dead-row}
         isPaused: false
