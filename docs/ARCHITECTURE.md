@@ -180,14 +180,19 @@ The rules still in force:
   fleet-ops gets runners first (fleet-ops#10717): GitHub hands queued
   self-hosted jobs out first come, first served, so a product burst queued
   fleet-ops behind it. `netcup-agent-20` to `-30` (not the offline `-23`), 10 of
-  the 28 live agent runners, also carry the label `fleet-ops`. agent.yml's
-  `work` and `stuck` jobs and agent-dispatch.yml's `orchestrate` job ask for
+  the 28 live agent runners, carry the label `fleet-ops` and not `agent`; they
+  keep `review`, so a review can still use them. agent.yml's `work`, `stuck` and
+  `inish-daily` jobs and agent-dispatch.yml's `orchestrate` job ask for
   `[self-hosted, fleet-ops]` when `github.repository` (the caller) is
   fleet-ops and `[self-hosted, agent]` otherwise, so no product caller can ask
-  for the reserved label. Those runners keep `agent`, so they take product work
-  whenever fleet-ops has none queued. The labels live at GitHub:
-  `gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`
-  (org-owner scope; the runner PAT gets 403). To switch it off, set the three
+  for the reserved label and a fleet-ops job finds a free runner instead of
+  waiting behind builds. Those runners must not keep `agent`, for the reason the
+  two review runners record above: GitHub hands a queued build to any idle
+  runner that matches, so the reservation would not hold during a burst. The
+  cost is 10 of 28 runners that no longer take product work. The labels live at
+  GitHub, not in ansible:
+  `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=fleet-ops' -f 'labels[]=review'`
+  (org-owner scope; the runner PAT gets 403). To switch it off, set the four
   `runs-on` lines back to `[self-hosted, agent]` and delete the label.
   agent.yml's `review` job (called by
   `review-risky`) is the independent approver: it reads the held head's diff

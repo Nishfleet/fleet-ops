@@ -55,7 +55,7 @@ permissions: {}
 jobs:
   work:
     if: inputs.ref
-    # fleet-ops asks for the runners only it requests; they also carry agent, so product work fills them when it idles (#10717)
+    # fleet-ops asks for the runners only it requests: they do not carry agent, so no product build can take them (#10717)
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     timeout-minutes: 60
     # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
@@ -1254,7 +1254,7 @@ jobs:
     # 07:30, the first step is a cheap live check, and a review summons (review_pr set, job at its default) publishes
     # nothing.
     if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 150
     concurrency:
       group: agent-${{ github.repository }}-scheduled-inish-daily
