@@ -1088,9 +1088,9 @@ jobs:
           # A closed issue is not active work: strip the queue and park labels, and
           # orchestrator-tried, which marks a dead end that a close ends
           # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
-          # record of a reserved call, not a queue state.
-          strip=$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')
-          [ -z "$strip" ] || gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$strip" || true
+          # record of a reserved call, not a queue state. An empty list makes the
+          # edit fail and || true swallows it, the same net effect as skipping.
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1565,8 +1565,8 @@ jobs:
           fi
           # A killed run can leave the worktree registered, and a bare repo
           # refuses to check one branch out in two worktrees at once. Remove it
-          # through git first, so the registration goes with the directory.
-          git -C "$mirror" worktree prune
+          # through git first, so the registration goes with the directory; the
+          # final prune clears any stale registration the remove could not.
           git -C "$mirror" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
@@ -1721,16 +1721,11 @@ jobs:
           # A PR on any other branch (gate/*, claim/*) that closes the issue is
           # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
           # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
-          # Open and merged PRs count (default includeClosedPrs=false); a closed unmerged one does not.
+          # Open and merged PRs count (default includeClosedPrs=false); a closed
+          # unmerged one does not. Fail closed: a read that fails or prints no
+          # count marks nothing.
           # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
-          # Fail closed: a read that fails or prints no count marks nothing.
-          linked=$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" \
-              -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' \
-              --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount') || linked=
-          if [ "$linked" != 0 ]; then
-            echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed (${linked:-no count}); nothing to mark"
-            exit 0
-          fi
+          [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
