@@ -114,7 +114,7 @@ What the drill does, in four steps and no script:
    artifacts. No branch filter, because a run dispatched by hand from a branch
    exports the same live database as the weekly one.
 2. Downloads each artifact with the one-hour Actions-write App token minted by
-   `fleet-worker-github-token@actions:drive.service`, which is revoked and
+   the token unit's Actions-only instance for drive, which is revoked and
    whose env file is deleted the moment the run ends.
 3. Decrypts each dump with `age`, loads the SQL into a fresh local SQLite file
    (the export API hands back SQL text, not a database file), runs
