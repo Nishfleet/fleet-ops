@@ -68,6 +68,15 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     line are gone, and this rm drops the copy earlier hosts still carry.
 #     Delete this step once every host has synced it.
 ExecStart=/bin/rm -f %h/.config/environment.d/60-pi-xai-client-version.conf
+# 2c. Retired the Executor hub (fleet-ops#10625): its live unit is a hand link
+#     into this clone and its drop-in lives there too, so moving the clone would
+#     leave both dangling and LINK-GUARD (step 9) would fail before
+#     fleet-host-config could delete them. The leviathan links point into
+#     ~/.local/share/leviathan and go with that directory in host.yml's retired
+#     list. `-` keeps a host that already ran host config quiet.
+#     Delete this step once every host has synced it.
+ExecStart=-/bin/rm -f %h/.config/systemd/user/executor.service %h/.config/systemd/user/default.target.wants/executor.service
+ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 # 2d. The helper and scout subagents (the only lanes model-lanes allows) are
 #     COPYs of config/claude-agents/, same class as 6/7/8: they lived only as
 #     hand-placed files. Remote Control runs on the Max config dir

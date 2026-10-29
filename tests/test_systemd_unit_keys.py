@@ -941,6 +941,53 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
+LEVIATHAN_EXECUTOR_LIVE_PATHS = (
+    "{{ nish_home }}/.config/systemd/user/executor.service",
+    "{{ nish_home }}/.config/systemd/user/default.target.wants/executor.service",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.service",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.timer",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.service.d/20-umask.conf",
+    "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@claude.timer",
+    "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@pi.timer",
+    "{{ nish_home }}/.local/bin/leviathan",
+    "{{ nish_home }}/.local/share/leviathan",
+    "{{ nish_home }}/.config/user-tmpfiles.d/leviathan.conf",
+)
+
+
+def test_leviathan_index_and_executor_hub_are_retired_from_the_host() -> None:
+    """Their repo units are gone, so a stopped and disabled unit's live links,
+    copied files and 5 GB index have to go too: the links point into
+    ~/.local/share/leviathan, and a link left behind fails LINK-GUARD."""
+    entries = retired_paths()
+    missing = [path for path in LEVIATHAN_EXECUTOR_LIVE_PATHS if path not in entries]
+    assert not missing, f"host.yml does not delete these live paths: {missing}"
+    host = ansible_host.text()
+    tasks = {task["name"]: task for task in _play_tasks()}
+    stop = tasks["Stop the retired Leviathan index timers and the Executor hub before their files go"]
+    disable = tasks["Disable the retired Leviathan index timers and the Executor hub before their files go"]
+    for unit in ("leviathan-index@claude.timer", "leviathan-index@pi.timer", "executor.service"):
+        assert unit in json.dumps(stop)
+        assert unit in json.dumps(disable)
+    assert host.index("Stop the retired Leviathan index timers") < host.index(
+        "Disable the retired Leviathan index timers"
+    ) < host.index("- name: Remove retired host files"), "the units stop and disable before their files go"
+    assert "Reload nish's user manager" in (stop.get("notify") or []), "the reload drops the stopped units"
+    assert [path.name for path in unit_files() if "leviathan" in path.name or "executor" in path.name] == [], (
+        "fleet-ops ships no copy of the units"
+    )
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    guard = sync.index("9. LINK-GUARD")
+    removal = sync.index("%h/.config/systemd/user/executor.service")
+    assert removal < guard, (
+        "fleet-sync drops the executor link before LINK-GUARD sees a dangling one"
+    )
+    assert "default.target.wants/executor.service" in sync[:guard], "the wants link goes too"
+    executor_line = next(line for line in sync.splitlines() if "executor.service" in line and line.startswith("ExecStart"))
+    assert "/bin/sh -c" not in executor_line, "each rm is its own ExecStart, not inline shell"
+    assert executor_line.startswith("ExecStart=-/bin/rm"), "a clean host does not fail the step"
+
+
 GLUE_AUDIT_HOST_LEFTOVERS = (
     "/etc/prometheus/alertmanager.yml",
     "/etc/systemd/system/tiny-studio-smb-bridge.service",
