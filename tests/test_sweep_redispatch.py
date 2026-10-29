@@ -23,8 +23,24 @@ def test_redispatch_is_a_continue_on_error_step_before_the_pick():
     assert ids.index("redispatch") < ids.index("list")
     step = _steps()[ids.index("redispatch")]
     assert step["continue-on-error"] is True
-    assert "if" not in step
+    assert step["if"] == ("github.event_name == 'schedule' || "
+                          "(github.event_name == 'workflow_dispatch' && inputs.issue == '')")
     assert "prs=${prs:-[]}" in step["run"]
+
+
+def test_the_redispatch_reads_an_issue_without_merging_stderr():
+    steps = {s.get("id"): s for s in _steps()}
+    run = steps["redispatch"]["run"]
+    assert "issue_json() {" in run
+    assert 'issue=$(issue_json "$n")' in run
+    assert "2>&1" not in run
+    assert "issue_json() {" in steps["list"]["run"]
+
+
+def test_the_pick_warns_when_the_redispatch_failed():
+    steps = {s.get("id"): s for s in _steps()}
+    assert steps["list"]["env"]["REDISPATCH"] == "${{ steps.redispatch.outcome }}"
+    assert 'if [ "$REDISPATCH" = failure ]' in steps["list"]["run"]
 
 
 def test_the_pick_reads_the_claim_prs_as_a_step_output():
