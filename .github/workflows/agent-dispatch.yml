@@ -1087,7 +1087,12 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
+          # A closed issue is not active work: strip the queue and park labels, and
+          # orchestrator-tried, which marks a dead end that a close ends
+          # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
+          # record of a reserved call, not a queue state. An empty list makes the
+          # edit fail and || true swallows it, the same net effect as skipping.
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1663,10 +1668,7 @@ jobs:
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
           # work, so it does not park the issue.
-          [ "$GO" = true ] || {
-            echo "orchestrate: nothing was built on this run; no park mark"
-            exit 0
-          }
+          [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
@@ -1675,6 +1677,14 @@ jobs:
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
           fi
+          # A PR on any other branch (gate/*, claim/*) that closes the issue is
+          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
+          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
+          # Open and merged PRs count (default includeClosedPrs=false); a closed
+          # unmerged one does not. Fail closed: a read that fails or prints no
+          # count marks nothing.
+          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
+          [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host

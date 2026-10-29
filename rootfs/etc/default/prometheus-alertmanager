@@ -2,7 +2,7 @@
 # its own: --web.config.file points at the exporter-toolkit web config installed
 # as /etc/alertmanager/web.yml (basic_auth_users, bcrypt hash), and Prometheus
 # authenticates with the matching plaintext from
-# /etc/prometheus/alertmanager_password. Both are hand-placed host state, never
+# /etc/prometheus/alertmanager_password. Both are made by ansible/tasks/alerting.yml on the first run, never
 # in git. The listener also stays on loopback, so a process off this box cannot
 # reach it even with the credential. HA gossip is off (empty
 # --cluster.listen-address). fleet-host-config.service installs this file and
