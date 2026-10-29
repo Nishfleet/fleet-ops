@@ -23,10 +23,12 @@ Repo variable ORCHESTRATE:
   (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
-  Model/turns pin: Sonnet (ORCHESTRATE_MODEL, default claude-sonnet-5-5), 40 turns. Off: label the issue needs-opus (Opus, 80 turns), or set ORCHESTRATE_MODEL to off for all.
+  Model/turns pin: Sonnet, 40 turns, on every hand-off. There is no model variable
+    and no escalation label: Opus, Fable and Qwen are reviewer and judge models only
+    (fleet-ops#10750). Off: delete the model and turns lines in the "Check the issue" step.
   Hook skip: the session runs with --settings '{"disableAllHooks":true}'. Off: set ORCHESTRATE_HOOKS to on.
-  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude, or label the issue needs-opus.
-    ORCHESTRATE_MODEL, ORCHESTRATE_HOOKS and the 40/80 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
+  Runner: pi on a LiteLLM seat (ORCHESTRATE_SEAT, default worker-capable), fleet-ops#9407. Off: set ORCHESTRATE_RUNNER to claude.
+    ORCHESTRATE_HOOKS and the 40 turn pin apply to the claude runner only; pi has no turn cap, and the 3000 s timeout is its wall.
   Delete all three: revert the cap and pick blocks of the "Check the issue" step and the model/--settings lines of the session step here,
     the "Orchestrate cap and session args" step in ci.yml, and cap_cases and session_cases in config/orchestrate-events.json (or revert the merge commit).
 To switch orchestration off: set ORCHESTRATE to off.
@@ -79,8 +81,7 @@ config/stuck-pr-cases.json runs this program in CI.
 `.github/workflows/engine-scorecard.yml`: one Monday run that walked the repo's
 merged PRs over GraphQL, built per-engine numbers from the `builder-engine:`
 comments, posted them on the tracking issue #10521, and filed an alert when an
-engine fell below its 4-week median. It is closed as superseded, and no head of
-that branch can go green, for one reason: the ratchet.
+engine fell below its 4-week median. It is closed as superseded.
 
 The ratchet (`.github/workflows/ratchet.yml`, called by `ci.yml`, required
 check `ratchet / ratchet`) allows 0 or fewer net added code lines under
@@ -91,13 +92,18 @@ PR's head `1047d5f7` against its base `490fff3b`:
 ratchet: net added code lines under .github/workflows, .github/actions, scripts, bin: 184
 ```
 
-The deliverable is one new workflow file, so editing it cannot bring that
-number down, and merging `main` cannot either: the ratchet diffs
-`merge-base(base, head)` to `head`, and a merge leaves that merge base where it
-was. Two independent reviews blocked the same head on the same defect, that the
-alert close loop matched every open issue whose body contains
-`engine-quality-alert:`, so a human issue quoting the marker was closed by the
-workflow.
+Those 184 lines are the new file's own, so keeping the measurement means
+deleting 184 code lines of existing workflow. Merging `main` cannot help
+either: the ratchet diffs `merge-base(base, head)` to `head`, and a merge
+leaves that merge base where it was. Two independent reviews blocked the same
+head on the same defect, that the alert close loop matched every open issue
+whose body contains `engine-quality-alert:`, so a human issue quoting the
+marker was closed by the workflow.
 
-What would unblock the measurement is the ratchet's own error text: "Delete as many as you add, or build the mechanism in its own repo behind an official extension point." Both halves need a decision above a worker, because deleting an equal number of workflow code lines is a product call, and a second repo is a new organ. The tracking issue #10521 has been closed since the 2026-10-29 pro-dev cut ("Reopen if it blocks a product"), so #10515 waits on that decision, not on a worker.
+The ratchet's own error text names the two ways out: "Delete as many as you
+add, or build the mechanism in its own repo behind an official extension
+point." Both are a decision above a worker, because a second repo is a new
+organ. The tracking issue #10521 has been closed since the 2026-10-29 pro-dev
+cut ("Reopen if it blocks a product"), so #10515 waits on that decision, not on
+a worker.
 

@@ -295,6 +295,7 @@
     url: http://127.0.0.1:9093/-/ready
     url_username: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"
     url_password: "{{ (alertmanager_client_password.content | b64decode).strip() }}"
+    force_basic_auth: true  # without it the module waits for a challenge and the probe sees 401
     status_code: 200
   retries: 10
   delay: 2

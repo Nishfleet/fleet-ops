@@ -19,6 +19,12 @@ Description=Fleet view (Grafana, Quadlet)
 # the directory it fills must exist before the container mounts it.
 Wants=fleet-grafana-github-token.service
 After=fleet-grafana-github-token.service
+# A crash loop must reach `failed`, which only the user-manager failed list
+# (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
+# the node_systemd_unit_state gauge reads system units only. The default 5
+# starts in 10 s is never spent at RestartSec=5s (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Container]
 # Pinned to the digest of the 13.2.3 manifest list; the tag stays as a readable label, but the

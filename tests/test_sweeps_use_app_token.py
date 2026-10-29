@@ -47,7 +47,7 @@ def test_only_the_actions_instance_asks_for_actions_write() -> None:
 
 
 def test_no_worker_launch_line_asks_for_the_actions_instance() -> None:
-    """No detached worker launch line names the Actions-only instance (its grant would let a fooled worker dispatch a run)."""
-    files = [p for p in sorted(ROOT.rglob("*.md")) + sorted(ROOT.rglob("*.service")) if p.name != "fleet-pr-sweep@.service"]
+    """No detached worker launch line names the Actions-only instance (its grant would let a fooled worker dispatch a run). The PR sweep and the restore drill run no model, so they may."""
+    files = [p for p in sorted(ROOT.rglob("*.md")) + sorted(ROOT.rglob("*.service")) if p.name not in {"fleet-pr-sweep@.service", "fleet-d1-restore-drill.service"}]
     for path in files:
         assert "fleet-worker-github-token@actions:" not in path.read_text(), path
