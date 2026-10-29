@@ -123,7 +123,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 20
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:
@@ -147,7 +146,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 6
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:
@@ -889,7 +887,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 10
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:
