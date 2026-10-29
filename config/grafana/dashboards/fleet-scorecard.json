@@ -34,7 +34,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Fleet-ops#10711. Four tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, and the two at the bottom, head to review verdict and approval to merge (Fleet-ops#10887). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (follow-up issue): Claude limit per merged PR. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+        "content": "Fleet-ops#10711. Four tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, and the two at the bottom, head to review verdict and approval to merge (Fleet-ops#10887). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (fleet-ops#10966): Claude limit per merged PR. Five of the six numbers have a rule in `config/grafana/provisioning/alerting/fleet-scorecard.yaml`, and each files a fleet-ops issue when it misses its target two days running. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
       }
     },
     {
@@ -290,7 +290,7 @@
       "type": "table",
       "id": 4,
       "title": "Idle agent-runner minutes while ready work waits, per day, last 14 days",
-      "description": "Target: 0. Runner-minutes on the agent pool with no agent run in flight, on days when an open agent-ready issue was waiting that is not blocked, parked or waiting on a decision. The runner count is the day's mean over online runners. A run's minutes are its own span, booked on the day it started and counted to now while it still runs. Days are UTC. The issue search reads 30 days of issues updated in that window and reads today's labels, so a long-silent wait falls outside it. An empty table means the runner metric is missing.",
+      "description": "Target: 0. Runner-minutes on the agent pool with no agent run in flight, on days when an open agent-ready issue was waiting that is not blocked, parked or waiting on a decision. A run's minutes are its own span from agent.yml and agent-dispatch.yml, booked on the day it started and counted to now while it still runs. The runner count is the day's mean over online runners. Days are UTC. The issue search reads 30 days of issues updated in that window and reads today's labels, so a long-silent wait falls outside it. It leaves archived repositories out, and the fleet's own grafana alert issues out. An empty table means the runner metric is missing.",
       "gridPos": {
         "x": 0,
         "y": 24,
@@ -321,6 +321,22 @@
           "hide": true
         },
         {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Workflow_Runs",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "owner": "Nishfleet",
+            "repository": "fleet-ops",
+            "workflow": "agent-dispatch.yml"
+          },
+          "hide": true
+        },
+        {
           "refId": "B",
           "datasource": {
             "type": "grafana-github-datasource",
@@ -330,7 +346,7 @@
           "owner": "Nishfleet",
           "repository": "",
           "options": {
-            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision",
+            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
             "timeField": 2
           },
           "hide": true
@@ -352,7 +368,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "WITH days AS (\n  SELECT FLOOR(UNIX_TIMESTAMP() / 86400) * 86400 - 86400 * n AS day_start,\n         CASE WHEN n = 0 THEN (UNIX_TIMESTAMP() - FLOOR(UNIX_TIMESTAMP() / 86400) * 86400) / 60.0 ELSE 1440 END AS minutes\n  FROM (SELECT 0 AS n UNION ALL SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n UNION ALL SELECT 4 AS n UNION ALL SELECT 5 AS n UNION ALL SELECT 6 AS n UNION ALL SELECT 7 AS n UNION ALL SELECT 8 AS n UNION ALL SELECT 9 AS n UNION ALL SELECT 10 AS n UNION ALL SELECT 11 AS n UNION ALL SELECT 12 AS n UNION ALL SELECT 13 AS n) AS spine\n), inflight AS (\n  SELECT UNIX_TIMESTAMP(run_started_at) AS started,\n         CASE WHEN status = 'completed' THEN UNIX_TIMESTAMP(updated_at) ELSE UNIX_TIMESTAMP() END AS ended\n  FROM A\n  WHERE run_started_at IS NOT NULL\n), busy AS (\n  SELECT FLOOR(started / 86400) AS day_index, SUM(CASE WHEN ended > started THEN ended - started ELSE 0 END) / 60.0 AS busy_minutes\n  FROM inflight\n  GROUP BY FLOOR(started / 86400)\n), slots AS (\n  SELECT FLOOR(UNIX_TIMESTAMP(time) / 86400) AS day_index, AVG(__value__) AS slots FROM P GROUP BY FLOOR(UNIX_TIMESTAMP(time) / 86400)\n), pool AS (SELECT AVG(__value__) AS slots FROM P), waiting AS (\n  SELECT d.day_start AS day_start, COUNT(*) AS ready_issues\n  FROM days d JOIN B ON UNIX_TIMESTAMP(B.created_at) < d.day_start + 86400 AND COALESCE(UNIX_TIMESTAMP(B.closed_at), UNIX_TIMESTAMP()) >= d.day_start\n  GROUP BY d.day_start\n)\nSELECT DATE_FORMAT(FROM_UNIXTIME(d.day_start), '%Y-%m-%d') AS day,\n       COALESCE(w.ready_issues, 0) AS ready_issues,\n       CASE WHEN COALESCE(w.ready_issues, 0) = 0 THEN 0\n            WHEN COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0) < 0 THEN 0\n            ELSE ROUND(COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0), 0) END AS idle_minutes\nFROM days d\nCROSS JOIN pool\nLEFT JOIN busy bs ON bs.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN slots sl ON sl.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN waiting w ON w.day_start = d.day_start\nORDER BY d.day_start"
+          "expression": "WITH days AS (\n  SELECT FLOOR(UNIX_TIMESTAMP() / 86400) * 86400 - 86400 * n AS day_start,\n         CASE WHEN n = 0 THEN (UNIX_TIMESTAMP() - FLOOR(UNIX_TIMESTAMP() / 86400) * 86400) / 60.0 ELSE 1440 END AS minutes\n  FROM (SELECT 0 AS n UNION ALL SELECT 1 AS n UNION ALL SELECT 2 AS n UNION ALL SELECT 3 AS n UNION ALL SELECT 4 AS n UNION ALL SELECT 5 AS n UNION ALL SELECT 6 AS n UNION ALL SELECT 7 AS n UNION ALL SELECT 8 AS n UNION ALL SELECT 9 AS n UNION ALL SELECT 10 AS n UNION ALL SELECT 11 AS n UNION ALL SELECT 12 AS n UNION ALL SELECT 13 AS n) AS spine\n), inflight AS (\n  SELECT UNIX_TIMESTAMP(run_started_at) AS started,\n         CASE WHEN status = 'completed' THEN UNIX_TIMESTAMP(updated_at) ELSE UNIX_TIMESTAMP() END AS ended\n  FROM (SELECT run_started_at, status, updated_at FROM A\n        UNION ALL SELECT run_started_at, status, updated_at FROM D) AS runs\n  WHERE run_started_at IS NOT NULL\n), busy AS (\n  SELECT FLOOR(started / 86400) AS day_index, SUM(CASE WHEN ended > started THEN ended - started ELSE 0 END) / 60.0 AS busy_minutes\n  FROM inflight\n  GROUP BY FLOOR(started / 86400)\n), slots AS (\n  SELECT FLOOR(UNIX_TIMESTAMP(time) / 86400) AS day_index, AVG(__value__) AS slots FROM P GROUP BY FLOOR(UNIX_TIMESTAMP(time) / 86400)\n), pool AS (SELECT AVG(__value__) AS slots FROM P), waiting AS (\n  SELECT d.day_start AS day_start, COUNT(*) AS ready_issues\n  FROM days d JOIN B ON UNIX_TIMESTAMP(B.created_at) < d.day_start + 86400 AND COALESCE(UNIX_TIMESTAMP(B.closed_at), UNIX_TIMESTAMP()) >= d.day_start\n  GROUP BY d.day_start\n)\nSELECT DATE_FORMAT(FROM_UNIXTIME(d.day_start), '%Y-%m-%d') AS day,\n       COALESCE(w.ready_issues, 0) AS ready_issues,\n       CASE WHEN COALESCE(w.ready_issues, 0) = 0 THEN 0\n            WHEN COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0) < 0 THEN 0\n            ELSE ROUND(COALESCE(sl.slots, pool.slots) * d.minutes - COALESCE(bs.busy_minutes, 0), 0) END AS idle_minutes\nFROM days d\nCROSS JOIN pool\nLEFT JOIN busy bs ON bs.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN slots sl ON sl.day_index = FLOOR(d.day_start / 86400)\nLEFT JOIN waiting w ON w.day_start = d.day_start\nORDER BY d.day_start"
         }
       ],
       "options": {
