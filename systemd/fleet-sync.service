@@ -246,7 +246,7 @@ ExecStart=/usr/bin/find %h/.pi/agent/skills -xtype l -printf "[fleet-sync] skill
 #    call then exited 0 with no output and nothing paged. Fail LOUD on any listed
 #    launch path (symlinks followed) whose bytes equal /bin/true. A failed unit is
 #    the page (OnFailure=). It runs on every deploy. Off switch: delete this step.
-ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan %h/.local/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
+ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.local/bin/tincan /usr/bin/syncthing %h/.hermes/hermes-agent/.hermes/bin/hermes; do if test -e "$$p" && cmp -s "$$p" /bin/true; then echo "[fleet-sync] STUB-GUARD launch path is byte-identical to /bin/true: $$p"; bad=1; fi; done; exit $$bad'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

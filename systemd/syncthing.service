@@ -9,7 +9,7 @@ StartLimitIntervalSec=10min
 StartLimitBurst=5
 
 [Service]
-ExecStart=/home/nish/.local/bin/syncthing serve --no-browser --no-restart --no-upgrade --home=/home/nish/.config/syncthing
+ExecStart=/usr/bin/syncthing serve --no-browser --no-restart --no-upgrade --home=/home/nish/.config/syncthing
 Restart=on-failure
 RestartSec=5
 SuccessExitStatus=3 4
