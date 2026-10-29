@@ -41,7 +41,7 @@ groups:
           label_replace(vector(0.9396), "vendor", "stepfun", "", "")
           or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
           or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
-          or label_replace(vector(0.9259), "vendor", "minimax", "", "")
+          or label_replace(vector(0.8968), "vendor", "minimax", "", "")
           or label_replace(vector(0.8660), "vendor", "commandcode", "", "")
           or label_replace(vector(0.9056), "vendor", "zai", "", "")
           or label_replace(vector(0.7700), "vendor", "synthetic", "", "")

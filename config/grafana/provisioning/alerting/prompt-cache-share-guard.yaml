@@ -12,7 +12,7 @@
 # 2026-10-25T08:12Z, and the floors below are it minus 0.02, except those two:
 #
 #   stepfun      0.9596 -> 0.9396      synthetic   0.8923 -> 0.7700
-#   minimax      0.9459 -> 0.9259      straitly    0.8431 -> 0.8231
+#   minimax      0.9459 -> 0.8968      straitly    0.8431 -> 0.8231
 #   opencodego2  0.9441 -> 0.9241      cline       0.7766 -> 0.7566
 #   opencodego   0.9421 -> 0.8800      anthropic   0.4531 -> 0.4331
 #   commandcode  0.9298 -> 0.8660
@@ -57,6 +57,34 @@
 # worker-capable row at about 0.91 now passes (about 4.6 points more full-price
 # input on 86 to 91% of the tokens); one at 0.90 beside the usual small rows
 # reads 0.861 and fires (a test case below).
+#
+# minimax's floor is 4.9 points down, not 2 (fleet-ops#10955). The rule fired
+# 2026-10-29T14:36Z with 7d 0.926 and 48h 0.917 against the 0.9259 floor; the
+# re-read the same day at 15:13Z gave 7d 0.9257 and 48h 0.9168 on 327M input
+# tokens. Per row over 48h: minimax-m31-worker-capable 161.9M at 0.919;
+# minimax-m31b-worker-capable 155.6M at 0.913; the two worker-cheap rows 4.2M
+# at 0.913 and 5.1M at 0.966. Every row still reports cached_tokens: the
+# ratio's `and on (model_id)` pinning gives a defined share only to a row
+# whose cached and input counters both moved in the window, and all four rows
+# read one, the dip hours included (a defined 0.003 is the field present as
+# 0, and section 6 proved a miss reports 0 rather than dropping the field).
+# The prefix held: the big-volume hours read 0.87 to 0.95 (10-28 19h: 0.940
+# and 0.918 on about 20M tokens per row; 10-28 21h: 0.935 and 0.912 on about
+# 28M and 31M), and a broken prefix or a vendor that stopped caching reads
+# low on every hour. What dragged the vendor under is the cause #10757 found
+# on opencodego and #10894 on commandcode: sparse hours on a cold cache. The
+# days where one big row carried almost no traffic read near zero (m31b 0.004
+# on 0.36M tokens on 10-24, m31b 0.008 on 0.03M on 10-26, m31 0.238 on 0.06M
+# on 10-27), and the 10-29 dip hours read 0.003 to 0.005 on under 0.3M
+# tokens while the row carrying that hour's load read 0.85 to 0.94. The
+# heavy days themselves read about 0.92 against the 0.9459 baseline (10-28:
+# 107.6M and 120.1M tokens at 0.926 and 0.921), which is the load swing
+# #10654 documented on synthetic's senior row, tighter here. The floor is
+# the fresh 48h read (0.9168) minus 2 points. The cost: a 2 to 5 point drift
+# on minimax now passes; one of the two big rows losing its cache outright
+# still takes the vendor to about 0.46 and fires, and the 1-hour paging rule
+# covers a total one. A second filing on minimax means look at the burst
+# pattern before moving the floor again.
 #
 # commandcode's floor is 6.4 points down, not 2 (fleet-ops#10894). The 48h read
 # was 0.886 (7d 0.908) on 118M tokens, with every row still reporting
@@ -179,7 +207,7 @@ groups:
                     label_replace(vector(0.9396), "vendor", "stepfun", "", "")
                     or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
                     or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
-                    or label_replace(vector(0.9259), "vendor", "minimax", "", "")
+                    or label_replace(vector(0.8968), "vendor", "minimax", "", "")
                     or label_replace(vector(0.8660), "vendor", "commandcode", "", "")
                     or label_replace(vector(0.9056), "vendor", "zai", "", "")
                     or label_replace(vector(0.7700), "vendor", "synthetic", "", "")

@@ -83,7 +83,7 @@ tests:
       - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
-        values: '0+90625000x14'
+        values: '0+87680000x14'
       - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
@@ -127,8 +127,8 @@ tests:
               label_replace(vector(0.9396), "vendor", "stepfun", "", "")
               or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
               or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
-              or label_replace(vector(0.9259), "vendor", "minimax", "", "")
-              or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+              or label_replace(vector(0.8968), "vendor", "minimax", "", "")
+              or label_replace(vector(0.8660), "vendor", "commandcode", "", "")
               or label_replace(vector(0.9056), "vendor", "zai", "", "")
               or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
               or label_replace(vector(0.8231), "vendor", "straitly", "", "")
@@ -141,7 +141,7 @@ tests:
         eval_time: 7d
         exp_samples:
           - labels: '{vendor="minimax"}'
-            value: 0.90625
+            value: 0.8768
 
   - interval: 12h
     input_series:
