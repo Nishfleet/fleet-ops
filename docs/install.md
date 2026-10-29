@@ -208,3 +208,41 @@ Global skills are updated by hand when wanted: `npx -y skills update -g -y`.
 There is no timer for it — the weekly skills-update timer was deleted on
 2026-10-24 (fleet-ops#10134), so nobody looks for one.
 
+### The tooling tree's other checkouts (fleet-ops#10546)
+
+`~/workspaces/tooling` holds more than the canonical checkout: the vault,
+`fleet-knowledge-base`, `fo-seat-spillover`, `tether`, its four `tether-p2-*`
+copies and `fleet-ops-tether-p2`, `agent-skills`, `claude-mods` and
+`last30days-skill`. The 2026-10-28 glue sweep (G9) read `git status
+--porcelain` in each, and every one was dirty as of that day: nish-vault 84
+entries, fleet-knowledge-base 63, fo-seat-spillover 17, tether 6, and one
+untracked entry each in the rest. None of it is fleet-ops work, so no sweep
+commits it, and the disposition below is what stops the next one reading the
+same count as pending work.
+
+- **nish-vault.** Memory is written in place, one fact per file. It is banked
+  by a vault sweep PR in `Nishfleet/nish-vault`, never by a fleet-ops PR and
+  never by a timer: nish-vault#22 (2026-10-15, "vault sweep 2026-10-15:
+  agent-memory updates, new notes, retro, agent-drop") is the shape.
+  **Cadence: at least once a week, and before any change that rewrites or
+  deletes memory files.** The gap loses nothing, because restic backs the
+  checkout up from its working tree (`config/restic/include.txt`), so an
+  uncommitted memory file is already in the backup set.
+- **fleet-knowledge-base, tether, agent-skills (`.claude/`), claude-mods
+  (`docs/`), tether-p2-remind, -calendar, -computer, -askfirst and
+  fleet-ops-tether-p2.** Abandoned as fleet-ops work: each is a change to that
+  repo's own content, made by a session doing that repo's work, so landing it
+  belongs to a PR in that repo. Nothing is deleted here, because an untracked
+  file is the only copy of what it holds.
+- **fo-seat-spillover.** Abandoned, and left untouched: the count includes
+  untracked `.env*` files, which hold credentials. No sweep commits or deletes
+  them.
+- **last30days-skill (`.pytest_cache/`).** The one deletion, and the one entry
+  a sweep may see again: the cache holds a test run's own output and the next
+  `pytest` run recreates it, so `retired` in `ansible/host.yml` names it and
+  every config run removes it. A repeat between two config runs is that cache
+  coming back, not a new finding.
+
+No check is added, and none would work: a workflow runs in a fresh clone and
+sees no dirty checkout, and reading `git status` in the tooling tree takes a
+session on the box. The record is the fix, plus the one `retired` line.
