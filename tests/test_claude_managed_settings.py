@@ -9,6 +9,10 @@ in `extraKnownMarketplaces` or because the box already registered it. When the
 marketplace's directory is on disk (this box, or a runner with the checkout) the
 plugin name is read out of that marketplace's own manifest, so an id no
 marketplace lists fails here instead of at Claude Code start-up.
+
+An id set to `false` is a switch-off, not an enable: it overrides an entry the
+box already has at user scope, so it needs no marketplace of its own and is not
+held to the manifest check.
 """
 import json
 import pathlib
@@ -48,9 +52,19 @@ def _known_marketplaces():
 def _enabled():
     enabled = {}
     for path in _dropins():
-        for plugin_id in _load(path).get("enabledPlugins", {}):
-            enabled[plugin_id] = path.name
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value:
+                enabled[plugin_id] = path.name
     return enabled
+
+
+def _switched_off():
+    off = {}
+    for path in _dropins():
+        for plugin_id, value in _load(path).get("enabledPlugins", {}).items():
+            if value is False:
+                off.setdefault(plugin_id, []).append(path.name)
+    return off
 
 
 def test_the_repo_ships_at_least_one_drop_in():
@@ -60,6 +74,20 @@ def test_the_repo_ships_at_least_one_drop_in():
 @pytest.mark.parametrize("path", _dropins(), ids=lambda p: p.name)
 def test_every_drop_in_is_a_json_object(path):
     _load(path)
+
+
+def test_the_playwright_plugin_is_switched_off():
+    off = _switched_off()
+    assert "playwright@claude-plugins-official" in off, (
+        "no drop-in sets playwright@claude-plugins-official to false (fleet-ops#10529: Chrome DevTools is the one browser tool)"
+    )
+    assert off["playwright@claude-plugins-official"] == ["85-no-playwright.json"], off
+    assert "playwright@claude-plugins-official" not in _enabled()
+
+
+def test_every_switched_off_plugin_is_off_in_exactly_one_drop_in():
+    twice = {plugin_id: files for plugin_id, files in _switched_off().items() if len(files) > 1}
+    assert not twice, f"switched off in more than one drop-in: {twice}"
 
 
 def test_every_enabled_plugin_names_a_known_marketplace():
