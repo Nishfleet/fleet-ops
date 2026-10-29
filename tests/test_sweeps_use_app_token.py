@@ -11,7 +11,7 @@ def test_pr_sweep_mints_and_loads_the_app_token() -> None:
     text = (SYSTEMD / "fleet-pr-sweep@.service").read_text()
     assert "Requires=fleet-worker-github-token@actions:%i.service" in text
     assert "After=fleet-worker-github-token@actions:%i.service" in text
-    assert "EnvironmentFile=%t/fleet-tokens/worker/actions:%i.env" in text
+    assert "EnvironmentFile=%t/fleet-worker-github-token/actions:%i.env" in text
     assert 'ExecStartPre=/bin/sh -c \'test -n "$$GH_TOKEN"\'' in text
     assert "env -u GH_TOKEN" not in text
 
@@ -21,14 +21,14 @@ def test_pr_sweep_revokes_its_token_before_the_next_sweep() -> None:
     stop = [line for line in text.splitlines() if line.startswith("ExecStopPost=")]
     assert len(stop) == 1
     assert "gh api -X DELETE installation/token" in stop[0]
-    assert "rm -f %t/fleet-tokens/worker/actions:%i.env" in stop[0]
+    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0]
     assert stop[0].index("installation/token") < stop[0].index("rm -f")
 
 
 def test_later_sweep_mints_a_token_per_repo_and_never_falls_back() -> None:
     text = (SYSTEMD / "later-sweep.service").read_text()
     assert 'systemctl --user start "fleet-worker-github-token@$$repo.service"' in text
-    assert "%t/fleet-tokens/worker/$$repo.env" in text
+    assert "%t/fleet-worker-github-token/$$repo.env" in text
     assert text.index("fleet-worker-github-token@") < text.index("gh issue list")
     assert text.index("fleet-worker-github-token@") < text.index("gh issue edit")
     assert "env -u GH_TOKEN" not in text

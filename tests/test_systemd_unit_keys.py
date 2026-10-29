@@ -1763,13 +1763,13 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
-    assert keys["EnvironmentFile"] == ["%t/fleet-tokens/worker/actions:%i.env"], (
+    assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
         "the Actions-write App token is minted per repo and loaded from its own env file (fleet-ops#10651)"
     )
     stop = keys["ExecStopPost"]
     assert len(stop) == 1, "one stop command: systemd reloads the EnvironmentFile for every command it spawns"
     assert "gh api -X DELETE installation/token" in stop[0], "the token is revoked as soon as the two calls end"
-    assert "rm -f %t/fleet-tokens/worker/actions:%i.env" in stop[0], "its env file is deleted with it"
+    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0], "its env file is deleted with it"
     values = " ".join(value for values in effective_directives(PR_SWEEP).values() for value in values)
     assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", values), (
         "a token literal in the unit file or in argv; the minted token reaches gh through its env file only"
@@ -1813,7 +1813,7 @@ def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status
     systemctl.write_text("#!/bin/sh\nexit 0\n")
     systemctl.chmod(0o755)
     for name in repos:
-        token = home / "run/fleet-tokens/worker" / f"{name}.env"
+        token = home / "run/fleet-worker-github-token" / f"{name}.env"
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text("GH_TOKEN=fake-app-token\n")
     log = tmp_path / "edits.log"

@@ -82,42 +82,18 @@ def pre_created(agent_text: str) -> dict[str, str]:
     return made
 
 
-def hidden_paths(lockdown_text: str) -> set[Path]:
-    """Every path one drop-in hides, as a full path."""
-    return {
-        Path(token.lstrip("-+"))
-        for value in values(lockdown_text, "InaccessiblePaths")
-        for token in shlex.split(value)
-        if token.lstrip("-+").startswith(USER_RUN)
-    }
-
-
-def covering(hidden: set[Path], name: str) -> Path | None:
-    """The hidden path that covers one runtime dir: itself, or a parent of it (#10753)."""
-    path = Path(USER_RUN + name)
-    for candidate in sorted(hidden):
-        if path == candidate or candidate in path.parents:
-            return candidate
-    return None
-
-
 def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
     """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
     later = runtime_dirs_of_user_units(unit_dirs)
-    hidden = hidden_paths(lockdown_text)
     made = pre_created(agent_text)
     bad = []
-    for name in sorted(later):
-        cover = covering(hidden, name)
-        if cover is None:
-            continue  # only a hidden runtime dir can go stale; a visible one is not this gate's business
+    for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
         mode, preserved = later[name]
-        if made.get(str(cover)) is None:
+        made_mode = made.get(USER_RUN + name)
+        if made_mode is None:
             bad.append(f"{name}: not created before start")
-        elif cover != Path(USER_RUN + name):
-            continue  # a hidden parent covers whatever a service makes inside it, whenever it makes it
-        elif int(made[str(cover)], 8) != int(mode, 8):
-            bad.append(f"{name}: mode {made[str(cover)]} differs from the service's {mode}")
+        elif int(made_mode, 8) != int(mode, 8):
+            bad.append(f"{name}: mode {made_mode} differs from the service's {mode}")
         elif not preserved:
             bad.append(f"{name}: the service does not set RuntimeDirectoryPreserve=yes")
     return bad
@@ -226,23 +202,9 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
 
 @pool
 def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lockdown_conf: Path) -> None:
-    later = runtime_dirs_of_user_units(USER_UNIT_DIRS)
-    assert {"fleet-tokens/worker", "fleet-grafana-github-token"} <= set(later), "the token runtime dirs were not found"
+    names = masked_user_run_names(lockdown_conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
+    assert len(names) >= 2, "the hidden runtime dirs made by user services were not found"
     assert uncovered(lockdown_conf.read_text(), start_conf.read_text(), USER_UNIT_DIRS) == []
-
-
-def test_the_token_dirs_sit_under_a_hidden_parent_nothing_recreates() -> None:
-    """A mask on a dir a unit makes and removes only hides the inode it saw at start; the parent is stable (#10753).
-
-    The worker token dir lives one level down, so a test or a mint that removes and recreates it cannot hand
-    the tokens to a running runner, and no unit names the hidden parent as its RuntimeDirectory.
-    """
-    parent = Path(USER_RUN + "fleet-tokens")
-    assert "fleet-tokens" not in runtime_dirs_of_user_units(USER_UNIT_DIRS), "a unit makes the hidden parent itself"
-    for name, dirs in runner_units().items():
-        assert parent in {
-            Path(t.lstrip("-+")) for v in merged_values(dirs, "InaccessiblePaths") for t in shlex.split(v)
-        }, name
 
 
 @pool

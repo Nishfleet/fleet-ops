@@ -11,7 +11,7 @@ systemd-run --user --collect --unit <name> \
   -p RuntimeMaxSec=<seconds> \
   -p Requires=fleet-worker-github-token@<repo>.service \
   -p After=fleet-worker-github-token@<repo>.service \
-  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-tokens/worker/<repo>.env" \
+  -p "EnvironmentFile=$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env" \
   -p "TemporaryFileSystem=$HOME/.config/gh" \
   -p 'ExecStartPre=/bin/sh -c '"'"'test -n "$GH_TOKEN"'"'"'' \
   -E DELIVERABLE=<absolute artifact path> \
@@ -21,7 +21,7 @@ systemd-run --user --collect --unit <name> \
 
 `<repo>` is the Nishfleet repo the worker targets. `Requires=` pulls in
 `fleet-worker-github-token@<repo>.service`, which mints a one-hour nishfleet-worker
-App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-tokens/worker/<repo>.env`;
+App token limited to that repo into `$XDG_RUNTIME_DIR/fleet-worker-github-token/<repo>.env`;
 the `EnvironmentFile=` is required (no `-`), so a failed mint means the worker never
 starts, and `ExecStartPre=` fails an empty `GH_TOKEN` before any work. `TemporaryFileSystem=`
 blanks the human gh login for the run, as agent.yml's jail does, so a worker cannot fall

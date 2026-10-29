@@ -21,13 +21,13 @@ OnFailure=fleet-unit-failed@%N.service
 
 [Service]
 Type=oneshot
-RuntimeDirectory=fleet-tokens/worker
+RuntimeDirectory=fleet-worker-github-token
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 Environment=GITHUB_API_URL=https://api.github.com
 Environment=APP_ID=4728578
 Environment=APP_KEY=%h/.config/fleet-worker/nishfleet-worker.private-key.pem
-ExecStartPre=/bin/rm -f %t/fleet-tokens/worker/%i.env %t/fleet-tokens/worker/%i.env.new
+ExecStartPre=/bin/rm -f %t/fleet-worker-github-token/%i.env %t/fleet-worker-github-token/%i.env.new
 ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   inst=%i; repo=$${inst#actions:}; perms="{\\"contents\\":\\"write\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"write\\"}"; \
   [ "$$repo" = "$$inst" ] || perms="{\\"actions\\":\\"write\\"}"; \
