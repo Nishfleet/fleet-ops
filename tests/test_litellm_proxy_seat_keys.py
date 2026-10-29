@@ -23,6 +23,15 @@ def test_every_config_var_is_passed_to_the_container():
     assert used <= passed, sorted(used - passed)
 
 
+def test_the_container_is_passed_no_var_the_router_config_does_not_read():
+    passed = set(re.findall(r"^PodmanArgs=--env=([A-Z0-9_]+)$", QUADLET, re.M))
+    used = set(re.findall(r"os\.environ/([A-Z0-9_]+)", CONFIG))
+    assert passed <= used, (
+        f"the container is passed {sorted(passed - used)} but no row in config/litellm-proxy.yaml reads it, "
+        "so the key of a provider with no router row still reaches the router"
+    )
+
+
 SEAT_FILE = {
     "ALIBABA_CODING_API_KEY": "alibaba-coding",
     "ANTHROPIC_API_KEY": "anthropic-api",
@@ -41,4 +50,4 @@ def test_every_seat_var_in_the_config_has_its_file_listed():
     listed = set(re.findall(r"^EnvironmentFile=-%h/\.config/fleet-ops/seats/([\w-]+)\.env$", QUADLET, re.M))
     used = set(re.findall(r"os\.environ/([A-Z0-9_]+)", CONFIG)) - OTHER_ENV_FILES
     assert used <= set(SEAT_FILE), sorted(used - set(SEAT_FILE))
-    assert {SEAT_FILE[var] for var in used} <= listed
+    assert {SEAT_FILE[var] for var in used} == listed, sorted(listed - {SEAT_FILE[var] for var in used})
