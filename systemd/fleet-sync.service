@@ -32,7 +32,7 @@ ExecStart=/bin/sh -c 'git -C /home/nish/workspaces/tooling/fleet-ops-deploy-clon
 #    unmerged branch; the merge below was what noticed, with the quiet "Not
 #    possible to fast-forward". This check runs before the fetch and prints the
 #    same DEPLOY-BLOCKED marker step 1e prints.
-ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || exit 0; b=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo a detached HEAD); [ "$$b" = main ] || { echo "DEPLOY-BLOCKED: the deploy clone has branch $$b checked out, so no unit or config was updated."; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then review in a worktree, not the deploy clone (fleet-ops#9437)"; exit 1; }'
+ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo "DEPLOY-BLOCKED: no deploy clone at %h/workspaces/tooling/fleet-ops-deploy-clone, so no unit or config was updated."; exit 1; }; b=$$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo a detached HEAD); [ "$$b" = main ] || { echo "DEPLOY-BLOCKED: the deploy clone has branch $$b checked out, so no unit or config was updated."; echo "  fix: git -C %h/workspaces/tooling/fleet-ops-deploy-clone switch main, then review in a worktree, not the deploy clone (fleet-ops#9437)"; exit 1; }'
 # 0b. Install the guard that keeps it on main (fleet-ops#9437): the
 #    reference-transaction hook rejects any HEAD update that is not
 #    refs/heads/main, so an accidental `git checkout` or `git switch --detach` in

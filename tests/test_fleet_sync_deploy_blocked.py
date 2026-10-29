@@ -131,14 +131,20 @@ def test_the_hook_rejects_every_ref_update_that_puts_a_branch_in_the_clone(tmp_p
         ("update-ref", "refs/heads/pr-9426", "refs/heads/main"),
         ("checkout", "-b", "zz"),
         ("switch", "--detach", "refs/remotes/origin/main"),
-        ("worktree", "add", "-b", "x", str(tmp_path / "x"), "refs/remotes/origin/main"),
     ):
         code, text = run_git(clone, *args)
         assert code != 0, args
         assert "DEPLOY-BLOCKED" in text, (args, text)
-        assert "worktree add" in text, args
     assert git(clone, "symbolic-ref", "HEAD") == "refs/heads/main"
     assert git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+def test_the_hook_names_the_fix_a_session_needs(tmp_path: Path) -> None:
+    clone = clone_with_hook(tmp_path)
+    code, text = run_git(clone, "worktree", "add", "-b", "x", str(tmp_path / "x"), "refs/remotes/origin/main")
+    assert code != 0
+    assert "DEPLOY-BLOCKED" in text
+    assert "git worktree add /home/nish/workspaces/agent-worktrees/<name> <ref>" in text
 
 
 def test_the_hook_blocks_a_fetch_that_creates_a_branch(tmp_path: Path) -> None:

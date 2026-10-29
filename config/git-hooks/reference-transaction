@@ -25,6 +25,7 @@
 # skipped, and a worktree of any other repo never loads this file at all.
 [ "$1" = prepared ] || exit 0
 [ "$(git rev-parse --absolute-git-dir)" = "$(git rev-parse --path-format=absolute --git-common-dir)" ] || exit 0
+blocked=0
 while read -r old new ref; do
   case "$ref" in
     HEAD)
@@ -38,6 +39,6 @@ while read -r old new ref; do
       continue ;;
   esac
   echo "  Review from the diff, or in a fresh worktree: git worktree add /home/nish/workspaces/agent-worktrees/<name> <ref>" >&2
-  exit 1
+  blocked=1
 done
-exit 0
+exit $blocked
