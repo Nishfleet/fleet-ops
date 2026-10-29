@@ -285,10 +285,13 @@
 # working tree. That user file is not repo-managed, so the repo cannot delete a
 # later line from it: this reads the files that can carry one and refuses the
 # deploy while a line names the variable again. A file that is not on the box is
-# skipped; grep exits 1 when nothing matches, which is the state this holds.
+# skipped; grep exits 1 when nothing matches, which is the state this holds. One
+# of the four is a symlink on this box, so the stat follows it: a link skipped as
+# "not a file" would be the one file nothing reads.
 - name: Stat the agent settings files that may carry a plugin override
   ansible.builtin.stat:
     path: "{{ item }}"
+    follow: true
   loop: "{{ agent_settings_files }}"
   register: agent_settings_paths
 
