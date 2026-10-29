@@ -1,12 +1,16 @@
-"""Runner jail: the hide must survive the directory inode, and no step may run under a hidden path (fleet-ops#10886).
+"""Runner jail: a token dir stays covered when it is made after the start, and no step runs under a hidden path (fleet-ops#10886).
 
-InaccessiblePaths= masks the inode that exists when the unit starts, so a directory a user
-service recreates in its place is unmasked until the runner restarts. The two token dirs are
-therefore covered by a TemporaryFileSystem= mount, which covers the path: the mint recreates
-the directory, the mount stays, and a job cannot read the new tokens. systemd makes the mount
-point itself when the path is absent at start (mount_tmpfs() creates it before it mounts), so
-nothing has to pre-create these dirs, and a mount that cannot be made stops the unit instead
-of leaving a job readable. runner-probe checks inside the job that every mount is live.
+InaccessiblePaths= is applied once, against the directory that exists then, and the pre-start
+mkdir that used to make these dirs ran after it, so the directory it made was never covered.
+The two token dirs are therefore covered by a TemporaryFileSystem= mount: systemd makes the
+mount point and mounts it before the runner runs, so a directory the mint creates later is
+already covered, nothing has to pre-create these dirs, and a mount that cannot be made stops
+the unit instead of leaving a job readable. A mount sits on the directory it was made on, so
+a delete-and-recreate from the host is as uncovered as a replaced mask, which is why the
+mints keep these dirs (RuntimeDirectoryPreserve=yes). runner-probe checks inside the job that
+every mount is live. The last two tests below run the real manager, on CI or a host that has
+one, and prove the mount point is made for an absent path and that a file written there
+later stays hidden from the job.
 
 A path may sit on one list or the other, never both: at one path systemd applies the more
 restrictive entry and drops the other, and InaccessiblePaths= sorts before
@@ -18,10 +22,12 @@ dir) are made by the user manager itself, so every runner drop-in is ordered aft
 (fleet-ops#10081).
 """
 
+import os
 import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -43,6 +49,19 @@ USER_RUN = "/run/user/1000/"
 # The runtime dirs the user token mints write their App tokens into (systemd/fleet-worker-github-token@.service,
 # systemd/fleet-grafana-github-token.service). A job that can read one reads a minted token.
 TOKEN_DIRS = (USER_RUN + "fleet-worker-github-token", USER_RUN + "fleet-grafana-github-token")
+IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
+SUDO = ["sudo", "-n"] if IN_CI else []
+SCOPE = [] if IN_CI else ["--user"]
+
+
+def manager_usable() -> bool:
+    """A transient unit starts here, which a jail or a session with no user bus forbids."""
+    if shutil.which("systemd-run") is None:
+        return False
+    return subprocess.run([*SUDO, "systemd-run", *SCOPE, "--scope", "--quiet", "--", "true"], capture_output=True).returncode == 0
+
+
+needs_manager = pytest.mark.skipif(not manager_usable(), reason="no systemd manager starts a unit here")
 
 
 def values(text: str, key: str) -> list[str]:
@@ -194,7 +213,7 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
 
 @pool
 def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: Path) -> None:
-    """A mount covers the path, so a directory the mint recreates in its place stays covered (fleet-ops#10886)."""
+    """The mint makes its dir after the runner started, so the path is covered by a mount and not by a mask (fleet-ops#10886)."""
     text = lockdown_conf.read_text()
     covered = mounted_paths(text)
     for name in TOKEN_DIRS:
@@ -290,3 +309,63 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     # pi's library tree, the App key dir and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
         assert tail in bound, tail
+
+
+def transient_run(properties: list[str], script: str) -> list[str]:
+    """A one-shot unit, so the manager builds the mount namespace exactly as it does for a runner."""
+    return [
+        *SUDO,
+        "systemd-run",
+        *SCOPE,
+        "--collect",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        *[arg for prop in properties for arg in ("-p", prop)],
+        "--",
+        "/bin/sh",
+        "-c",
+        script,
+    ]
+
+
+def await_file(path: Path, what: str) -> None:
+    deadline = time.monotonic() + 60
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert path.exists(), f"the transient unit never {what}"
+
+
+@needs_manager
+def test_systemd_makes_the_mount_point_when_the_path_is_absent_at_start(tmp_path: Path) -> None:
+    """The mint may create its dir after the runner started, so the mount point cannot wait for a pre-start mkdir (fleet-ops#10886)."""
+    absent = tmp_path / "absent"
+    assert not absent.exists()
+    script = f"awk -v m={shlex.quote(str(absent))} '$5 == m {{ f = 1 }} END {{ exit !f }}' /proc/self/mountinfo"
+    proc = subprocess.run(transient_run([f"TemporaryFileSystem={absent}:ro"], script), capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert absent.is_dir(), "the unit started, but the host has no mount point where systemd mounted"
+
+
+@needs_manager
+def test_a_dir_made_at_the_covered_path_after_the_start_stays_hidden(tmp_path: Path) -> None:
+    """A file the mint writes after the runner started lands inside the mount, so a job reading that path reads nothing (fleet-ops#10886)."""
+    token_dir = tmp_path / "token"
+    started, go = tmp_path / "started", tmp_path / "go"
+    script = f"touch {started}\nwhile [ ! -e {go} ]; do sleep 0.1; done\nls -A {token_dir}"
+    unit = subprocess.Popen(
+        transient_run([f"TemporaryFileSystem={token_dir}:ro"], script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        await_file(started, "started")
+        assert token_dir.is_dir(), "systemd did not make the mount point on the host"
+        # The manager creates the mount point as root, so the host write needs the same hand in CI.
+        subprocess.run([*SUDO, "touch", str(token_dir / "drive.env")], check=True)
+        go.touch()
+        out, err = unit.communicate(timeout=120)
+    finally:
+        go.touch()
+        unit.kill()
+        unit.wait()
+    assert unit.returncode == 0, err
+    assert out == "", f"the job read {out!r} through the path the unit covers: {err}"

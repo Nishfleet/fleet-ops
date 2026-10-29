@@ -22,16 +22,19 @@ runs:
           p=${p#-}; n=$((n + 1))
           if test -r "$p" || test -w "$p"; then echo "::error::$p is readable from this job"; bad=$((bad + 1)); fi
         done
-        # A path the unit covers with a TemporaryFileSystem= mount is hidden by the mount, not by
-        # the inode that was there when the runner started, so the hide survives a directory the
-        # token mint recreates (fleet-ops#10886). Whether the path reads says nothing: an empty
+        # A path the unit covers with a TemporaryFileSystem= mount is hidden by the mount, which
+        # systemd made before this job started, so a directory the mint creates after that start
+        # is already covered (fleet-ops#10886). Whether the path reads says nothing: an empty
         # tmpfs is readable by design, exactly like this runner's home tmpfs. The mount is the
-        # hide, so the path must be a mount point in this job's mount namespace. A mount that is
-        # gone leaves the host path there, and a host path is not a mount point.
+        # hide, so a path that is there must be a mount point in this job's mount namespace: a
+        # mount that is gone leaves the host path there, and a host path is not a mount point.
+        # A unit that hides a parent directory whole drops every mount nested under it
+        # (namespace.c: drop_inaccessible), so those paths are absent here and nothing is left to
+        # read; a path the unit hides below has to pass this, and one it does not is a host path.
         for p in $(systemctl show -p TemporaryFileSystem --value "$unit"); do
           p=${p%%:*}; p=${p#-}; n=$((n + 1))
-          if ! awk -v m="$p" '$5 == m {f=1} END {exit !f}' /proc/self/mountinfo; then
-            echo "::error::$p is not covered by a mount in this job"; bad=$((bad + 1))
+          if [ -e "$p" ] && ! awk -v m="$p" '$5 == m {f=1} END {exit !f}' /proc/self/mountinfo; then
+            echo "::error::$p is a host path, not a mount point, in this job"; bad=$((bad + 1))
           fi
         done
         echo "runner=$RUNNER_NAME unit=$unit checked=$n readable=$bad"
