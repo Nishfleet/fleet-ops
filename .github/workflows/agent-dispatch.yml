@@ -298,8 +298,9 @@ jobs:
   # coordinator-approval=success commit status on that sha. The comment path
   # exists because cloud sessions get 403 on POST /statuses. Both name one
   # sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
-  # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
-  # and APPROVAL below against every case in config/risky-paths.json.
+  # the hold does not re-trigger itself or the ejected job. tests/test_risky_paths_cases.py
+  # in the unit job runs CLASSIFY and APPROVAL below against every case in
+  # config/risky-paths.json.
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&
