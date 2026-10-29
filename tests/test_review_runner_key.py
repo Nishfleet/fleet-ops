@@ -112,7 +112,7 @@ def review_jobs() -> list[tuple[str, str, str]]:
 def test_the_review_jobs_read_the_router_key_from_the_credential_first() -> None:
     """These jobs run as fleet-reviewer, whose HOME holds no seat file, so the credential is the only copy."""
     jobs = review_jobs()
-    assert {job_id for _, job_id, _ in jobs} >= {"review", "arm"}, "the review runners' jobs were not found"
+    assert {job_id for _, job_id, _ in jobs} >= {"review"}, "the review runners' jobs were not found"  # arm left them (#11056)
     reads = 0
     for workflow, job_id, steps in jobs:
         for line in (l.strip() for l in steps.splitlines() if "typesafe-jev.env" in l):

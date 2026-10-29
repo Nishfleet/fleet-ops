@@ -8,7 +8,7 @@
       "nish3451",
       "nishfleet-worker[bot]",
       "github-actions[bot]",
-      "orchestrator-tried",
+      "handoff-ended",
       "orch/issue-",
       "--max-turns \"$TURNS\"",
       "ORCHESTRATE_DAILY_MAX",
