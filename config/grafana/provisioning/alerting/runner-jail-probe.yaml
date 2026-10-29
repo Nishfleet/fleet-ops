@@ -1,0 +1,75 @@
+# Agent runs red for 6h: the runner jail is stale (fleet-ops#10886).
+#
+# runner-probe is the first step of every agent job. It fails the job when a path the
+# runner unit hides is readable, or when a path the unit covers with a TemporaryFileSystem=
+# mount is not covered. A drop-in no running runner has re-read leaves the jail stale,
+# so every job on that pool fails at its own first step. The runner unit itself stays
+# active the whole time, so a rule over node_systemd_unit_state cannot see it: #10753
+# narrowed AgentRunnersDown to what that metric can see, and this rule is the job-level
+# signal that was missing.
+#
+# The rule reads the same GitHub query as the Fleet scorecard failure-share rule
+# (fleet-scorecard.yaml): the workflow runs of agent.yml in Nishfleet/fleet-ops. Its SQL
+# decides "red for 6h" by itself, with no Grafana pending state, the way
+# deploy-failed-24h decides "red for a day": at least three runs failed, not one of them
+# succeeded, and the oldest of those failures is at least 6 hours old. Three failures
+# keep a single bad run from paging, and the 6h age keeps the page from arriving before
+# the fleet has had time to recover on its own. A streak that started before the 12h
+# window still reads as over 6 hours old, so the page is not missed.
+#
+# GitHub's run data has no per-step split, so the rule cannot tell a probe failure from a
+# broken change: the annotation says which to read first. Routing as the other outage
+# rules: severity critical, so it pages hermes-urgent hourly until it resolves, and the
+# catch-all route still files the fleet-ops issue.
+#
+# 12h of window, and the plugin pages through the runs in it (100 a page): the agent
+# workflow ran about 11 times an hour in 2026-09-28 (fleet-ops#8860), so a 12h window is
+# about 130 runs, two pages. Measured against a 30s evaluation timeout from the pinned
+# image, three pages of runs took about 12s (deploy-failed.yaml).
+# Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: runner-jail-probe
+    folder: fleet
+    interval: 10m
+    rules:
+      - uid: agent-runs-red-6h
+        title: Agent runs red for 6h in fleet-ops
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 43200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Workflow_Runs
+              owner: Nishfleet
+              repository: fleet-ops
+              options: {owner: Nishfleet, repository: fleet-ops, workflow: agent.yml}
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              type: sql
+              format: alerting
+              refId: C
+              expression: |-
+                SELECT CASE WHEN f >= 3 AND s = 0 AND oldest >= 21600 THEN 1 ELSE 0 END AS stale
+                FROM (
+                  SELECT SUM(CASE WHEN conclusion = 'success' THEN 1 ELSE 0 END) AS s,
+                         SUM(CASE WHEN conclusion <> 'success' THEN 1 ELSE 0 END) AS f,
+                         MAX(CASE WHEN conclusion <> 'success' THEN UNIX_TIMESTAMP() - UNIX_TIMESTAMP(created_at) END) AS oldest
+                  FROM A
+                  WHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')
+                ) AS runs
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: '{{ if $values }}No agent run succeeded in the last 6 hours, and at least three failed, so no job passed its runner jail check.{{ else }}The fleet cannot read GitHub runs for the runner jail probe rule, so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}Read the runner-probe step of the newest failed run (https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml). A red probe is a stale jail: the runner has not re-read its drop-in, so restart the pools that show it, one pool and one green job at a time. A green probe means a change broke the work job, not the jail. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }}'
+        labels: {severity: critical, signal: runner-jail-probe}
+        isPaused: false

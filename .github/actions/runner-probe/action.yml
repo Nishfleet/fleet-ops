@@ -1,6 +1,8 @@
-# Fails the job when a path its runner unit hides (InaccessiblePaths) can be read or written (fleet-ops#9983).
+# Fails the job when a path its runner unit hides is readable or writable from the job
+# (InaccessiblePaths=), and when a path the unit covers with a TemporaryFileSystem= mount
+# is not covered (fleet-ops#9983, #10886).
 name: runner-probe
-description: Fail when a path the runner unit hides is readable from the job.
+description: Fail when a path the runner unit hides is readable from the job, or when a mount it covers a path with is gone.
 inputs:
   require-lock:
     description: Fail, not warn, when the unit hides no paths.
@@ -19,6 +21,18 @@ runs:
         for p in $(systemctl show -p InaccessiblePaths --value "$unit"); do
           p=${p#-}; n=$((n + 1))
           if test -r "$p" || test -w "$p"; then echo "::error::$p is readable from this job"; bad=$((bad + 1)); fi
+        done
+        # A path the unit covers with a TemporaryFileSystem= mount is hidden by the mount, not by
+        # the inode that was there when the runner started, so the hide survives a directory the
+        # token mint recreates (fleet-ops#10886). Whether the path reads says nothing: an empty
+        # tmpfs is readable by design, exactly like this runner's home tmpfs. The mount is the
+        # hide, so the path must be a mount point in this job's mount namespace. A mount that is
+        # gone leaves the host path there, and a host path is not a mount point.
+        for p in $(systemctl show -p TemporaryFileSystem --value "$unit"); do
+          p=${p%%:*}; p=${p#-}; n=$((n + 1))
+          if ! awk -v m="$p" '$5 == m {f=1} END {exit !f}' /proc/self/mountinfo; then
+            echo "::error::$p is not covered by a mount in this job"; bad=$((bad + 1))
+          fi
         done
         echo "runner=$RUNNER_NAME unit=$unit checked=$n readable=$bad"
         if [ "$n" -eq 0 ]; then

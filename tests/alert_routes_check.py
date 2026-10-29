@@ -57,6 +57,7 @@ URGENT = {
     "Alibaba token-plan SG idle": "money",
     "Session hop rate above 45%": "money",
     "Queue down for 2h agent-dispatch startup_failure": "outage: the queue cannot fix itself",
+    "Agent runs red for 6h in fleet-ops": "outage: every agent job fails its own jail check, so the fleet cannot work",
     **{f"Production deploy red for 24h {r}": "outage: the live site has not run main for a day" for r in (
         "Nishfleet/0509", "Nishfleet/aiconverter-app", "Nishfleet/drive",
         "Nishfleet/mailbox", "Nishfleet/siterep-public", "Nishfleet/seo-fix-kit")},

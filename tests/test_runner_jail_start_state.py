@@ -1,10 +1,21 @@
-"""Runner jail: every hidden path must exist when the runner starts (fleet-ops#10081).
+"""Runner jail: the hide must survive the directory inode, and no step may run under a hidden path (fleet-ops#10886).
 
-InaccessiblePaths= hides a path only if it exists at the moment the unit starts. A path that
-user services create later stays visible to jobs until the runner restarts. The agent runner
-drop-in therefore starts after the user manager and creates the runtime dirs that user
-services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
-(fleet-ops#10120).
+InaccessiblePaths= masks the inode that exists when the unit starts, so a directory a user
+service recreates in its place is unmasked until the runner restarts. The two token dirs are
+therefore covered by a TemporaryFileSystem= mount, which covers the path: the mint recreates
+the directory, the mount stays, and a job cannot read the new tokens. systemd makes the mount
+point itself when the path is absent at start (mount_tmpfs() creates it before it mounts), so
+nothing has to pre-create these dirs, and a mount that cannot be made stops the unit instead
+of leaving a job readable. runner-probe checks inside the job that every mount is live.
+
+A path may sit on one list or the other, never both: at one path systemd applies the more
+restrictive entry and drops the other, and InaccessiblePaths= sorts before
+TemporaryFileSystem= (namespace.c: mount_path_compare, then drop_duplicates), so a path on
+both lists is masked and the mount never happens.
+
+The paths still masked by inode (the user bus, the user systemd dir, podman, the user gpg
+dir) are made by the user manager itself, so every runner drop-in is ordered after it
+(fleet-ops#10081).
 """
 
 import re
@@ -20,7 +31,7 @@ SYSTEM = ROOT / "rootfs/etc/systemd/system"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
-# pool -> (drop-in with the start order and the pre-start step, drop-in with InaccessiblePaths=)
+# pool -> the drop-in with the start order and the lockdown
 POOLS = {
     "agent": (AGENT_DIR / "10-agent.conf", AGENT_DIR / "20-lockdown.conf"),
     "fleet-ci": (FLEET_CI_DIR / "10-fleet-ci.conf", FLEET_CI_DIR / "20-lockdown.conf"),
@@ -28,8 +39,10 @@ POOLS = {
     "vault": (VAULT_DIR / "20-lockdown.conf", VAULT_DIR / "20-lockdown.conf"),
 }
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
-USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+# The runtime dirs the user token mints write their App tokens into (systemd/fleet-worker-github-token@.service,
+# systemd/fleet-grafana-github-token.service). A job that can read one reads a minted token.
+TOKEN_DIRS = (USER_RUN + "fleet-worker-github-token", USER_RUN + "fleet-grafana-github-token")
 
 
 def values(text: str, key: str) -> list[str]:
@@ -42,61 +55,30 @@ def values(text: str, key: str) -> list[str]:
     return out
 
 
-def masked_user_run_names(lockdown_text: str) -> set[str]:
-    names = set()
-    for value in values(lockdown_text, "InaccessiblePaths"):
+def paths_of(text: str, key: str) -> set[str]:
+    """Every path one `key=` list names, with the mount options of a TemporaryFileSystem= entry stripped."""
+    out = set()
+    for value in values(text, key):
         for token in shlex.split(value):
-            path = token.lstrip("-+")
-            if path.startswith(USER_RUN):
-                names.add(path.removeprefix(USER_RUN).split("/")[0])
-    return names
+            out.add(token.split(":", 1)[0].lstrip("-+"))
+    return out
 
 
-def runtime_dirs_of_user_units(unit_dirs: list[Path]) -> dict[str, tuple[str, bool]]:
-    """RuntimeDirectory= name -> (RuntimeDirectoryMode=, preserved) of every repo user unit that sets one."""
-    found = {}
-    for unit_dir in unit_dirs:
-        for unit in sorted(unit_dir.rglob("*.service")) + sorted(unit_dir.rglob("*.conf")):
-            text = unit.read_text()
-            modes = values(text, "RuntimeDirectoryMode")
-            preserve = values(text, "RuntimeDirectoryPreserve")
-            for names in values(text, "RuntimeDirectory"):
-                for name in names.split():
-                    found[name] = (modes[0] if modes else "0755", bool(preserve) and preserve[-1] == "yes")
-    return found
+def masked_paths(text: str) -> set[str]:
+    return paths_of(text, "InaccessiblePaths")
 
 
-def pre_created(agent_text: str) -> dict[str, str]:
-    """Path -> mode of every directory an unprivileged ExecStartPre= `mkdir -p -m` makes."""
-    made = {}
-    for value in values(agent_text, "ExecStartPre"):
-        if value.startswith(("+", "!", "-", "@", ":")):
-            continue
-        argv = shlex.split(value)
-        if len(argv) < 4 or Path(argv[0]).name != "mkdir" or "-p" not in argv or "-m" not in argv:
-            continue
-        mode = argv[argv.index("-m") + 1]
-        for path in argv[1:]:
-            if path.startswith("/"):
-                made[path] = mode
-    return made
+def mounted_paths(text: str) -> set[str]:
+    return paths_of(text, "TemporaryFileSystem")
 
 
-def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
-    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
-    later = runtime_dirs_of_user_units(unit_dirs)
-    made = pre_created(agent_text)
-    bad = []
-    for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
-        mode, preserved = later[name]
-        made_mode = made.get(USER_RUN + name)
-        if made_mode is None:
-            bad.append(f"{name}: not created before start")
-        elif int(made_mode, 8) != int(mode, 8):
-            bad.append(f"{name}: mode {made_mode} differs from the service's {mode}")
-        elif not preserved:
-            bad.append(f"{name}: the service does not set RuntimeDirectoryPreserve=yes")
-    return bad
+def masked_user_run_names(text: str) -> set[str]:
+    return {p.removeprefix(USER_RUN).split("/")[0] for p in masked_paths(text) if p.startswith(USER_RUN)}
+
+
+def hidden_token_dirs(text: str) -> set[str]:
+    """The token dirs a drop-in hides, masked or mounted."""
+    return (masked_paths(text) | mounted_paths(text)) & set(TOKEN_DIRS)
 
 
 def section_values(text: str, section: str, key: str) -> list[str]:
@@ -148,21 +130,31 @@ def runner_units() -> dict[str, list[Path]]:
     return units
 
 
+def merged_paths(dirs: list[Path], key: str) -> set[str]:
+    text = "\n".join(f"{key}={value}" for value in merged_values(dirs, key))
+    return paths_of(text, key)
+
+
+def both_lists(dirs: list[Path]) -> set[str]:
+    """Paths on InaccessiblePaths= and on TemporaryFileSystem= at once: systemd keeps the more
+    restrictive of the two at one path, InaccessiblePaths= sorts first, so these mounts never happen."""
+    return merged_paths(dirs, "InaccessiblePaths") & merged_paths(dirs, "TemporaryFileSystem")
+
+
 def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
     """Paths an unprivileged ExecStartPre= touches that sit under a directory the unit hides whole.
 
     InaccessiblePaths= also applies to ExecStartPre= (same mount namespace), so a mkdir below a hidden
-    parent fails with "Permission denied" and the runner never starts. Hiding the target itself is fine:
-    it exists already, so mkdir -p finds it.
+    parent fails with "Permission denied" and the runner never starts. A directory the unit covers
+    with a mount hides its whole subtree too: a step under one writes into the empty tmpfs and never
+    reaches the host. Hiding the target itself is fine: the mount point exists already.
     """
-    hidden = set()
-    for value in merged_values(dirs, "InaccessiblePaths"):
-        hidden |= {Path(t.lstrip("-+")) for t in shlex.split(value)}
+    hidden = merged_paths(dirs, "InaccessiblePaths") | merged_paths(dirs, "TemporaryFileSystem")
     bad = []
     for value in merged_values(dirs, "ExecStartPre"):
         for arg in shlex.split(value.lstrip("-@:!")):
-            if arg.startswith("/") and hidden & set(Path(arg).parents):
-                bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & set(Path(arg).parents))[0]}")
+            if arg.startswith("/") and hidden & {str(parent) for parent in Path(arg).parents}:
+                bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & {str(parent) for parent in Path(arg).parents})[0]}")
     return bad
 
 
@@ -171,7 +163,7 @@ def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> N
     assert len(units) >= 5, "the runner drop-in dirs were not found"
     for name, dirs in units.items():
         assert pre_start_paths_under_hidden_dir(dirs) == [], name
-    # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in makes dirs in it (2026-10-23).
+    # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in once made dirs in it (2026-10-23).
     ci3 = units["actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"]
     assert FLEET_CI_DIR in ci3
     assert merged_values(ci3, "ExecStartPre") == []
@@ -188,7 +180,7 @@ def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: 
     assert pre_start_paths_under_hidden_dir([shared, own]) == [
         "ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a needs /run/user/1000/a, below hidden /run/user/1000"
     ]
-    # Hiding the target itself is fine (it exists, so mkdir -p finds it), and an empty ExecStartPre= clears the shared line.
+    # Hiding the target itself is fine (the mount point or the dir exists), and an empty ExecStartPre= clears the shared line.
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/a\n")
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000\nExecStartPre=\n")
@@ -201,91 +193,78 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
 
 
 @pool
-def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lockdown_conf: Path) -> None:
-    names = masked_user_run_names(lockdown_conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
-    assert len(names) >= 2, "the hidden runtime dirs made by user services were not found"
-    assert uncovered(lockdown_conf.read_text(), start_conf.read_text(), USER_UNIT_DIRS) == []
+def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: Path) -> None:
+    """A mount covers the path, so a directory the mint recreates in its place stays covered (fleet-ops#10886)."""
+    text = lockdown_conf.read_text()
+    covered = mounted_paths(text)
+    for name in TOKEN_DIRS:
+        assert name in covered, f"{lockdown_conf.name}: {name} is masked by inode, not covered by a mount"
 
 
-@pool
-def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
-    lines = values(start_conf.read_text(), "ExecStartPre")
-    assert lines, "no ExecStartPre= pre-create line"
-    # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
-    for conf in {start_conf, lockdown_conf}:
-        assert not any(line.startswith("+") for line in values(conf.read_text(), "ExecStartPre")), conf.name
+def test_no_path_is_masked_and_mounted_at_once() -> None:
+    units = runner_units()
+    assert len(units) >= 5, "the runner drop-in dirs were not found"
+    for name, dirs in units.items():
+        assert both_lists(dirs) == set(), f"{name}: {sorted(both_lists(dirs))} sit on both lists, so their mounts never happen"
 
 
-def test_every_runner_drop_in_that_hides_user_runtime_paths_is_covered() -> None:
-    """A new runner pool that hides /run/user/1000/ paths must be added to POOLS, not skipped."""
+def test_gate_fails_when_a_path_sits_on_both_lists(tmp_path: Path) -> None:
+    d = tmp_path / "x-.service.d"
+    d.mkdir()
+    (d / "20.conf").write_text(
+        "[Service]\nInaccessiblePaths=-/run/user/1000/fleet-worker-github-token\n"
+        "TemporaryFileSystem=/run/user/1000/fleet-worker-github-token\n"
+    )
+    assert both_lists([d]) == {"/run/user/1000/fleet-worker-github-token"}
+    (d / "20.conf").write_text(
+        "[Service]\nInaccessiblePaths=-/run/user/1000/gnupg\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token\n"
+    )
+    assert both_lists([d]) == set()
+    # Options are part of the value, not the path: a mode on the mount is the same path.
+    (d / "20.conf").write_text("[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:mode=0700\n")
+    assert both_lists([d]) == set()
+    assert merged_paths([d], "TemporaryFileSystem") == {"/run/user/1000/fleet-worker-github-token"}
+
+
+def test_every_runner_drop_in_that_hides_a_token_dir_is_covered() -> None:
+    """A new runner pool that hides a token dir, masked or mounted, must be added to POOLS, not skipped."""
     hiding = set()
     for conf in SYSTEM.glob("actions.runner.*.service.d/*.conf"):
-        if masked_user_run_names(conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS)):
+        if hidden_token_dirs(conf.read_text()):
             hiding.add(conf)
     covered = {conf for pair in POOLS.values() for conf in pair}
     assert hiding <= covered, sorted(str(c.relative_to(ROOT)) for c in hiding - covered)
 
 
-def _fixture(tmp_path: Path, mode: str = "0700", preserve: str = "RuntimeDirectoryPreserve=yes\n") -> list[Path]:
-    units = tmp_path / "systemd"
-    units.mkdir()
-    (units / "x.service").write_text(f"[Service]\nRuntimeDirectory=late-dir\nRuntimeDirectoryMode={mode}\n{preserve}")
-    return [units]
-
-
-LOCK = "[Service]\nInaccessiblePaths=-/run/user/1000/bus -/run/user/1000/late-dir\n"
-GOOD = "[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/late-dir\n"
-
-
-def test_gate_fails_when_a_late_dir_is_not_pre_created(tmp_path: Path) -> None:
-    assert uncovered(LOCK, "[Service]\n", _fixture(tmp_path)) == ["late-dir: not created before start"]
-
-
-def test_gate_fails_on_a_mode_mismatch_and_on_a_root_line(tmp_path: Path) -> None:
-    units = _fixture(tmp_path)
-    wrong = "[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0755 /run/user/1000/late-dir\n"
-    assert uncovered(LOCK, wrong, units) == ["late-dir: mode 0755 differs from the service's 0700"]
-    root = GOOD.replace("ExecStartPre=", "ExecStartPre=+")
-    assert uncovered(LOCK, root, units) == ["late-dir: not created before start"]
-
-
-def test_gate_fails_when_the_service_does_not_keep_its_dir(tmp_path: Path) -> None:
-    units = _fixture(tmp_path, preserve="")
-    assert uncovered(LOCK, GOOD, units) == ["late-dir: the service does not set RuntimeDirectoryPreserve=yes"]
-
-
-def test_gate_fails_when_the_start_order_is_missing() -> None:
-    both = "[Unit]\nAfter=user@1000.service\nWants=user@1000.service\n"
-    assert starts_after_user_manager(both) == []
-    assert starts_after_user_manager("[Service]\nNoNewPrivileges=yes\n") == [
-        "[Unit] After=user@1000.service",
-        "[Unit] Wants=user@1000.service",
-    ]
-    assert starts_after_user_manager(both.replace("Wants=", "Requires=")) == ["[Unit] Wants=user@1000.service"]
-    # Right key, wrong section: a [Service] line is not an ordering.
-    assert starts_after_user_manager("[Service]\nAfter=user@1000.service\nWants=user@1000.service\n") == [
-        "[Unit] After=user@1000.service",
-        "[Unit] Wants=user@1000.service",
-    ]
-
-
-def test_gate_accepts_a_pre_created_dir(tmp_path: Path) -> None:
-    assert uncovered(LOCK, GOOD, _fixture(tmp_path)) == []
-
-
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
-@pool
-def test_systemd_analyze_finds_no_syntax_error_in_the_dropins(tmp_path: Path, start_conf: Path, lockdown_conf: Path) -> None:
-    (tmp_path / "standin.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
-    (tmp_path / "standin.service.d").mkdir()
-    for conf in {start_conf, lockdown_conf}:
-        (tmp_path / "standin.service.d" / conf.name).write_text(conf.read_text())
-    proc = subprocess.run(
-        ["systemd-analyze", "verify", "--man=no", "./standin.service"], cwd=tmp_path, capture_output=True, text=True, check=False
-    )
-    out = proc.stdout + proc.stderr
-    # Syntax only: user@1000.service does not exist on a CI host, so the dependency itself is not resolved here.
-    assert not re.search(r"Unknown key|Unknown section|Failed to parse|Invalid|Executable", out), out
+def test_systemd_analyze_finds_no_syntax_error_in_every_runner_dropin(tmp_path: Path) -> None:
+    """One standin unit per runner unit dir, carrying every drop-in that applies to it (fleet-ops#10886).
+
+    The dependency on user@1000.service is not resolved here: that unit does not exist on a CI
+    host. The pilot runner starts a script in a root-only directory, so its "is not executable"
+    line is this host's permissions, not a syntax error.
+    """
+    (tmp_path / "standin.service").write_text("[Service]\nExecStart=/usr/bin/true\nUser=nish\n")
+    dropins = tmp_path / "standin.service.d"
+    units = runner_units()
+    assert len(units) >= 5, "the runner drop-in dirs were not found"
+    for name, dirs in units.items():
+        shutil.rmtree(dropins, ignore_errors=True)
+        dropins.mkdir()
+        files = {}
+        for d in dirs:  # prefix dirs first, so the unit's own dir wins on a same name
+            files.update({conf.name: conf for conf in d.glob("*.conf")})
+        for conf_name, conf in files.items():
+            (dropins / conf_name).write_text(conf.read_text())
+        proc = subprocess.run(
+            ["systemd-analyze", "verify", "--man=no", "./standin.service"], cwd=tmp_path, capture_output=True, text=True, check=False
+        )
+        bad = [
+            line
+            for line in (proc.stdout + proc.stderr).splitlines()
+            if re.search(r"Unknown key|Unknown section|Failed to parse|Invalid|Executable", line) and "is not executable" not in line
+        ]
+        assert bad == [], f"{name}: {bad}"
 
 
 def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
@@ -299,7 +278,14 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M"]
+    assert merged_paths(agent, "TemporaryFileSystem") == {
+        "/home/nish",
+        "/run/user/1000/fleet-worker-github-token",
+        "/run/user/1000/fleet-grafana-github-token",
+    }
+    assert [v for v in merged_values(agent, "TemporaryFileSystem") if v.startswith("/home/nish")] == [
+        "/home/nish:mode=0700,uid=1000,gid=1000,size=512M"
+    ]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree, the App key dir and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
