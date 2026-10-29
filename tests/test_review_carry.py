@@ -99,10 +99,18 @@ def approval(sha, login="github-actions[bot]", edited=False):
             "body": f"coordinator-approval: {sha}\n\nreviewer: {sha} approved."}
 
 
-def review(tmp_path, repo, base, head, comments, cfg=CFG):
+def bot_review(sha, state="APPROVED", login="github-actions[bot]"):
+    return {"user": {"login": login}, "commit_id": sha, "state": state, "body": f"reviewer: {sha} approved."}
+
+
+def review(tmp_path, repo, base, head, comments, cfg=CFG, reviews=None):
     origin, _ = repo
     bt, temp = tmp_path / "bt", tmp_path / "temp"
     temp.mkdir()
+    if reviews is None:
+        # the review approve() writes for each approval comment; a test that wants the comment alone passes []
+        reviews = [bot_review(c["body"].split("\n")[0].split(": ")[1]) for c in comments
+                   if c.get("user", {}).get("login") == "github-actions[bot]" and c["body"].startswith("coordinator-approval: ")]
     git(tmp_path, "init", "-q", str(bt))
     git(bt, "fetch", "-q", str(origin), f"{base}:refs/base", f"{head}:refs/head")
     (temp / "diff.txt").write_text(git(bt, "diff", "--no-color", "refs/base...refs/head") + "\n")
@@ -110,11 +118,12 @@ def review(tmp_path, repo, base, head, comments, cfg=CFG):
     stubs = (
         'set -euo pipefail\n'
         'git() { local a=() x; for x in "$@"; do case $x in https://github.com/*) a+=("$ORIGIN") ;; *) a+=("$x") ;; esac; done; command git "${a[@]}"; }\n'
-        'gh() { case "$*" in *"/comments"*) printf "%s" "$COMMENTS" ;; *"--jq .head.sha"*) echo "$SHA" ;; *) echo "unexpected gh $*" >&2; return 1 ;; esac; }\n'
+        'gh() { case "$*" in *"/comments"*) printf "%s" "$COMMENTS" ;; *"/reviews"*) printf "%s" "$REVIEWS" ;; *"--jq .head.sha"*) echo "$SHA" ;; *) echo "unexpected gh $*" >&2; return 1 ;; esac; }\n'
         'say() { printf "%s\\n" "$1" >> "$RUNNER_TEMP/said"; }\napprove() { echo "APPROVE $SHA" >> "$RUNNER_TEMP/said"; }\n'
         'approve_say() { approve; say "$1"; }\n'
     )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "ORIGIN": str(origin), "COMMENTS": json.dumps(comments), "SHA": head,
+           "REVIEWS": json.dumps(reviews),
            "REPO": "Nishfleet/fleet-ops", "PR": "7", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(temp / "out"), "bt": str(bt),
            "cfg": json.dumps(cfg)}
     p = subprocess.run(["bash", "-c", stubs + block() + 'echo "scope=$scope note=$note"\n'], env=env, capture_output=True, text=True)
@@ -239,3 +248,25 @@ def test_an_approved_guard_head_does_not_hand_its_approval_on(tmp_path, repo):
     c = repo[1]
     r, said, out, diff = review(tmp_path, repo, c["b1"], c["keep"], [approval(c["wf"])])
     assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout and diff.startswith("diff --git"), r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("reviews", [
+    [],  # an approval comment with no review behind it
+    [bot_review("OLD", login="someone")],  # a review of that head from another login
+    [bot_review("OTHER")],  # a review of another commit
+    [dict(bot_review("OLD"), state="COMMENTED")],  # a review that is not an approval
+], ids=["comment-alone", "other-login", "other-commit", "not-an-approval"])
+def test_a_comment_is_not_proof_of_an_approval(tmp_path, repo, reviews):
+    # any workflow on a branch of this repo posts as the same bot, so the carry also needs the review approve()
+    # wrote on that head: the head a review names is the head it approved, which a comment cannot claim
+    c = repo[1]
+    reviews = json.loads(json.dumps(reviews).replace("OLD", c["old"]).replace("OTHER", c["added"]))
+    r, said, out, diff = review(tmp_path, repo, c["b2"], c["clean"], [approval(c["old"])], reviews=reviews)
+    assert r.returncode == 0 and not said and not out and "scope=full note=" in r.stdout and diff.startswith("diff --git"), r.stdout + r.stderr
+
+
+def test_a_dismissed_review_still_carries(tmp_path, repo):
+    # a push dismisses a stale approval, and the carry is the one case where the old head is read on purpose
+    c = repo[1]
+    r, said, out, _ = review(tmp_path, repo, c["b2"], c["clean"], [approval(c["old"])], reviews=[bot_review(c["old"], "DISMISSED")])
+    assert carried(r, said, out, c["old"], c["clean"]), r.stdout + r.stderr
