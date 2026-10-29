@@ -337,7 +337,7 @@ def runner_workflows() -> dict[str, str]:
     plants a path under a simulated home to prove the engine jail hides it.
     """
     out = {}
-    for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+    for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
         lines = path.read_text().splitlines()
         if any("self-hosted" in line for line in lines if line.lstrip().startswith("runs-on:")):
             out[path.name] = "\n".join(lines)
@@ -406,5 +406,5 @@ def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
     directory, which is what made a whole-directory bind look like the smaller change.
     """
     bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
-    shipped = sorted(name for name in bound if (ROOT / "config" / name).exists())
+    shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
     assert not shipped, f"read from the deploy clone instead: {shipped}"
