@@ -3,7 +3,7 @@
 
 An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
 no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 5 minus the live orchestrate runs a sweep. Three ended or
+marker comment and no label write. At most 12 minus the live orchestrate runs a sweep. Three ended or
 re-fired hand-offs give needs-nish-decision.
 """
 import datetime
@@ -118,25 +118,25 @@ def test_the_thirty_minute_wait_is_only_for_a_priority_now_issue(tmp_path):
 
 
 def test_a_priority_now_issue_takes_a_slot_ahead_of_the_parked_backlog(tmp_path):
-    """Five 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
+    """Twelve 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
     them however short its wait (fleet-ops#10716: #10681 sat that way for 16 h)."""
-    backlog = [issue(n, hours_idle=7) for n in range(1, 6)]
-    w = run(tmp_path, backlog + [issue(9, hours_idle=0.6, labels=("orchestrator-tried", "priority-now"))])
+    backlog = [issue(n, hours_idle=7) for n in range(1, 13)]
+    w = run(tmp_path, backlog + [issue(99, hours_idle=0.6, labels=("orchestrator-tried", "priority-now"))])
     sel = edits(w, "--add-label needs-orchestrator")
-    assert 9 in sel, sel
-    assert len(sel) == 5, sel
+    assert 99 in sel, sel
+    assert len(sel) == 12, sel
 
 
-def test_batch_is_five(tmp_path):
-    w = run(tmp_path, [issue(n) for n in range(1, 8)])
-    assert len(edits(w, "--add-label needs-orchestrator")) == 5
+def test_batch_is_twelve(tmp_path):
+    w = run(tmp_path, [issue(n) for n in range(1, 15)])
+    assert len(edits(w, "--add-label needs-orchestrator")) == 12
 
 
 def test_live_runs_use_up_the_batch(tmp_path):
     """Live orchestrate jobs count, whatever the run is titled, plain or behind a stub; other jobs and
     finished orchestrate jobs do not (fleet-ops#10475)."""
     noise = [job("list") for _ in range(8)] + [job("orchestrate", "completed")]
-    w = run(tmp_path, [issue(n) for n in range(1, 5)], queued=3, other_jobs=noise)
+    w = run(tmp_path, [issue(n) for n in range(1, 15)], queued=10, other_jobs=noise)
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
 
@@ -224,7 +224,7 @@ def test_escalated_and_queued_issues_are_left_alone(tmp_path):
 
 
 def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):
-    w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=5)
+    w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=12)
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
 
