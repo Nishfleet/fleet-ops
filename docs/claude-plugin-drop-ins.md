@@ -8,17 +8,17 @@ plugins from, and the `enabledPlugins` ids. A plugin id is `name@marketplace`, a
 a marketplace that no drop-in declares and the box has not registered leaves the
 id dead, so each drop-in that enables a plugin names its own marketplace. A drop-in
 that switches a plugin off names no marketplace: the box installed the plugin at
-user scope and the drop-in only overrides that entry with `false`.
-`fleet-sync.service` fetches
-and fast-forwards the claude-mods clone, so the nish-mods directory marketplace is
-always at `origin/main` (a failure fails the unit).
+user scope and the drop-in only overrides that entry with `false`. Both marketplaces
+are `github` sources, so Claude Code loads the plugins from its plugin cache and no
+path into a working tree is involved (fleet-ops#10823).
 
-- `60-nish-mods.json` registers the nish-mods directory marketplace and enables
+- `60-nish-mods.json` registers the nish-mods marketplace (`Nishfleet/claude-mods`;
+  the repo has no tags, so no `ref`) and enables
   `model-lanes` (every subagent goes to the fleet workers) and `wake-check` (a
   Stop hook blocks a turn that ends on a promise to continue later unless a
   background wait is armed for the awaited condition).
-- `80-inbox.json` registers the inbox directory marketplace and enables `inbox`.
-  Its content is the file that was hand-written on the box, carried over as-is.
+- `80-inbox.json` registers the inbox marketplace (`petekp/inbox`, pinned to tag
+  `v0.2.14`) and enables `inbox`. Bump the `ref` by PR to take a new release.
 - `85-no-playwright.json` switches `playwright@claude-plugins-official` off, so no
   Claude Code session loads the Playwright browser tools (fleet-ops#10529: the box
   has one browser tool, the Chrome DevTools MCP). Managed settings win over the
