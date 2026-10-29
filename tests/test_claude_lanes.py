@@ -140,21 +140,13 @@ def _comments(failed=0, login="nishfleet-worker", assoc="CONTRIBUTOR"):
     return json.dumps({"comments": [{"body": f"agent run failed: https://x/{k}", "author": {"login": login}, "authorAssociation": assoc} for k in range(failed)]})
 
 
-def _before_jev_env(script):
-    assert "jev_env=" in script, "the Gate no longer sets jev_env"
-    home = script.index("jev_env=")
-    assert "pi_free() {" in script[:home], "pi_free() no longer precedes jev_env="
-    return home
-
-
 def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, comments=None):
     """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
-    livefn = next((ln for ln in script.splitlines() if ln.strip().startswith("live() {")), None)
-    assert livefn, "the Gate defines no live()"
-    start = script.rindex("pi_free() {", 0, _before_jev_env(script))
+    start = script.index("jev_env=")
+    start = script.rindex("live() {", 0, start)
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
-    seg = livefn + "\n" + script[start:end]
+    seg = script[start:end]
     b, home = _bin(tmp_path)
     prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
