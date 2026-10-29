@@ -722,10 +722,12 @@ jobs:
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           # The label this job wrote before it was renamed (fleet-ops#10863). One pass per sweep moves
           # the open issues on it, with the job's own token: a rename needs no label event, and this job
-          # runs on a hosted runner with no login. Both lines retire themselves, so `gh label delete
+          # runs on a hosted runner with no login. An issue already parked on needs-orchestrator keeps
+          # that label alone, because the sweep's exactly-one-of rule skips an issue carrying both and
+          # would never re-queue it again. Both lines retire themselves, so `gh label delete
           # orchestrator-tried` leaves one label read per sweep and no write at all.
           gh label list -R "$GITHUB_REPOSITORY" -L 300 --json name --jq 'any(.[]; .name == "orchestrator-tried")' | grep -qx true && gh label create handoff-ended -R "$GITHUB_REPOSITORY" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null || true
-          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" --state open -L 300 --json number --jq '.[].number' | xargs -r gh issue edit -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label handoff-ended || echo "::warning::retired label: the one-pass rename was refused"
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried -label:needs-orchestrator" --state open -L 300 --json number --jq '.[].number' | xargs -r gh issue edit -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label handoff-ended || echo "::warning::retired label: the one-pass rename was refused"
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:handoff-ended,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
