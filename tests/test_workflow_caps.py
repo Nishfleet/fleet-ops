@@ -172,6 +172,16 @@ def test_hand_summons_reaches_the_orchestrate_job():
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
+def test_every_task_a_condition_excludes_is_one_a_job_starts():
+    text = DISPATCH.read_text()
+    started = set(re.findall(r"inputs\.task == '([^']+)'", text))
+    excluded = set(re.findall(r"inputs\.task != '([^']+)'", text))
+    assert excluded <= started, (
+        f"agent-dispatch.yml excludes {sorted(excluded - started)} from a job's if:, and no job starts that task, "
+        "so the comparison can never be false and the job runs where its author meant to skip it"
+    )
+
+
 def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
     text = AGENT.read_text()
     assert "arm: menu=" not in text and "sub(\" · arm: " not in text, (
