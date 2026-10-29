@@ -1,4 +1,4 @@
-# Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one (Nish 2026-09-28).
+# Approved models: one line per router provider (API key variable lowercased, no _API_KEY), holding the row's model without its openai/ or anthropic/ prefix. A row outside this list needs Nish's yes, and tests/test_provider_watch.py fails CI on one; tests/evals/results/ holds the eval a no-row decision rests on (Nish 2026-09-28).
 # A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
 # Approved opencode: deepseek-v4.1-flash
 # Approved commandcode: z-ai/glm-5.3-flash
@@ -13,6 +13,7 @@
 # Long notes for this file: docs/litellm-router-notes.md
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3-flash
