@@ -26,7 +26,7 @@ names the directory, and a command that reaches the same file by a relative path
 (`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. The `*`
 prefix also matches a command that only mentions the path, so `rg -n
 '/.config/tincan/' docs` is denied too. Closing the relative-path hole needs a
-file mode or a sandbox, not another pattern.
+file mode or a sandbox, not another pattern (fleet-ops#11114).
 
 - Verify: `cmp /etc/claude-code/managed-settings.json
   rootfs/etc/claude-code/managed-settings.json` is silent (the box copy is the
