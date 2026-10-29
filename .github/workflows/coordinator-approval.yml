@@ -1,15 +1,13 @@
 name: Coordinator approval
 
-# The risky-change gate as a check GitHub enforces (fleet-ops#9383, #10292).
-# fleet-ops runs it on merge_group, where the job name is the required check
-# `coordinator-approval`. 0509 and drive call it with
-# `uses: Nishfleet/fleet-ops/.github/workflows/coordinator-approval.yml@main`
-# and require the caller's context `coordinator-approval / coordinator-approval`.
-# The CLASSIFY and APPROVAL programs, APPROVERS and the path-list URL are read
-# from fleet-ops main (or the base commit on fleet-ops), so a PR cannot loosen
-# the rules that judge it. Every failed read fails the check.
+# The risky-change gate as a required check (fleet-ops#9383, #10292): fleet-ops
+# runs it on merge_group, where the job name is the single-segment check; 0509 and
+# drive call it and require `coordinator-approval / coordinator-approval`. The
+# rules are read from fleet-ops main (the base commit on fleet-ops), so a PR
+# cannot loosen what judges it, and every failed read fails the check.
 on:
   workflow_call:
+  pull_request:
   merge_group:
 
 permissions:
@@ -21,14 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
       pull-requests: read
       statuses: read
     steps:
+      - name: Pass outside the merge queue
+        if: github.event_name != 'merge_group'
+        run: 'echo "coordinator-approval: $GITHUB_EVENT_NAME is not merge_group; the queue does the rejecting"'
       - name: Checkout the base commit (rules and path list)
+        if: github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          ref: ${{ github.event.merge_group.base_sha }}
           path: base
           persist-credentials: false
           sparse-checkout: |
@@ -36,6 +37,7 @@ jobs:
             config/risky-paths.json
           sparse-checkout-cone-mode: false
       - name: Fail a risky PR in the queue whose head has no coordinator approval
+        if: github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
@@ -45,37 +47,20 @@ jobs:
           RULES: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml
         run: |
           set -euo pipefail
-          # Rules from the base commit's agent-dispatch.yml; a caller repo has
-          # no copy, so it reads fleet-ops main by URL instead.
           src="$BASE_DIR/.github/workflows/agent-dispatch.yml"
-          if [ ! -s "$src" ] || [ "$(yq '.env.LABEL' "$src" 2>/dev/null || true)" = null ]; then
-            src=$(mktemp); curl -fsSL "$RULES" > "$src" ||
-              { echo "::error::coordinator-approval: rules unreadable"; exit 1; }
-          fi
+          [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && [ -s "$src" ] || { src=$(mktemp); curl -fsSL --max-time 20 --retry 2 "$RULES" > "$src" || { echo "::error::coordinator-approval: rules unreadable"; exit 1; }; }
           for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
             val=$(yq ".env.$v" "$src")
             [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: $v unreadable"; exit 1; }
             export "$v=$val"
           done
-          # The list: the base commit's, so a fleet-ops PR cannot loosen it; a
-          # caller repo has no copy, so fleet-ops main's URL from the rules.
-          if [ -s "$BASE_DIR/config/risky-paths.json" ]; then
-            cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json")
-          else
-            cfg=$(curl -fsSL "$(yq '.env.RISKY_PATHS_URL' "$src")" | jq -c .)
-          fi || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
-          # The queue branch is gh-readonly-queue/<base>/pr-<N>-<sha>; <N> is
-          # the entry's own PR. Entries ahead of it in the same group are
-          # commits below the tip, each titled "... (#<M>)" by the squash.
-          [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] ||
-            { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
+          [ "$GITHUB_REPOSITORY" = Nishfleet/fleet-ops ] && cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || cfg=$(curl -fsSL --max-time 20 --retry 2 "$(yq '.env.RISKY_PATHS_URL' "$src")" | jq -c .) || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
+          [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] || { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
           nums=${BASH_REMATCH[1]}
           gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" \
             --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" ||
             { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
           total=$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)
-          # One commit is the entry's own PR (named by the ref). More than one:
-          # every commit must map to a PR, or the check fails.
           if [ "$total" -gt 1 ]; then
             while IFS= read -r subject; do
               if [[ "$subject" =~ \(#([0-9]+)\)$ ]] || [[ "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]]; then
@@ -87,7 +72,6 @@ jobs:
           fi
           bad=0
           for n in $(tr ' ' '\n' <<<"$nums" | sort -un); do
-            # The live PR: a head moved after approval has no approval.
             pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
             sha=$(jq -r .head.sha <<<"$pr")
             gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
