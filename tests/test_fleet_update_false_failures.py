@@ -94,7 +94,8 @@ def test_a_real_npm_install_or_update_still_stops_the_removal():
 
 def test_a_flag_before_the_subcommand_is_still_install_activity():
     for cmdline in ("npm -g install", "npm --global update", "npm -g install @openai/codex",
-                    "npm --global update --no-audit", "npm --prefix /srv install"):
+                    "npm --global update --no-audit", "npm --prefix /srv install",
+                    "node /usr/lib/node_modules/npm/bin/npm-cli.js -g install"):
         assert matches(cmdline), cmdline
 
 
