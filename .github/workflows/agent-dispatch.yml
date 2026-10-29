@@ -696,34 +696,19 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart (fleet-ops#10420, #10475, #10716): idle 6 h, or 15 min for a
-      # priority-now issue, then re-label or dispatch; 3 ended or re-fired, then
-      # needs-nish-decision. #10681 carried priority-now and needs-orchestrator and nothing
-      # ran for an hour, because this waited 6 h.
-      #
-      # Live is either start marker: the worker gate posts `agent run started:` and the
-      # hand-off posts `orchestrator hand-off started:`, so reading the first alone made a
-      # live hand-off look idle and fired a second writer on the issue (fleet-ops#10836
-      # review). A PR on any prefix owns the issue, not only claim/ and orch/: a blocked PR on
-      # strong/issue-N was invisible here (fleet-ops#10716 scope comment). It runs only on a
-      # sweep, because a per-issue dispatch is the re-fire itself (fleet-ops#10836 review).
-      # config/quiet-issue-cases.json runs this program in CI.
-      - if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
-            [.[] | .number as $n | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not)
-                and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) then 900 else 21600 end)
+            [.[] | (.labels | map(.name)) as $l
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
-              | select([$prs[] | select(test("(^|/)issue-\($n)(-.*)?$"))] | length == 0)
-              | {number: $n, tried: ($l | index("orchestrator-tried") != null),
-                 run: ([.comments[] | select(.body | test("^(agent run started: |orchestrator hand-off started: )")) | .body
-                   | try capture("/actions/runs/(?<id>[0-9]+)").id] | last // ""),
-                 runs: [.comments[]
-                  | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                    or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
+              | select("orch/issue-\(.number)" | IN($prs[]) | not)
+              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
+                | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
+                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
@@ -735,16 +720,9 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          issues=$(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments) || fail "issue list"
-          jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" <<<"$issues" | while IFS= read -r r; do
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
-              # A run in flight owns the issue, on either start marker: a second writer on it
-              # loses the first one's work.
-              run=$(jq -r .run <<<"$r")
-              if [ -n "$run" ]; then
-                rv=$(gh run view "$run" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-                [ "$(jq -r --arg ref "orch/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ] || { echo "#$n: run live, skip"; continue; }
-              fi
               if [ "$(jq -r .act <<<"$r")" = escalate ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
@@ -755,65 +733,6 @@ jobs:
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
               fi
             done
-      # A merged PR whose own body says it does not finish the issue closed it
-      # anyway (fleet-ops#10716: #10711 was closed by a PR that covered 2 of its
-      # 6 numbers). Reopen it and quote the line, once per PR.
-      # Only the newest PR that closes this issue decides: a later PR that does
-      # finish it settles the issue (fleet-ops#10836 review). A PR that closes
-      # several issues is skipped, because "does not finish" then names no issue.
-      # config/quiet-issue-cases.json runs this program in CI.
-      - if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason != 'not_planned'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CLOSED: ${{ github.event.issue.number }}
-          NOT_FINISHED: |
-            def closes($n): (.body // "") | test("(?i)\\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\\s+#" + ($n | tostring) + "\\b");
-            [.[] | select(closes($n))] | sort_by(.mergedAt) | last // empty
-            | . as $p
-            | ([($p.body // "") | scan("(?i)\\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#([0-9]+)") | .[0]] | unique) as $closes
-            | select(($closes | length) == 1)
-            | [$p.body // "" | split("\n")[] | select(test("(?i)(does not|doesn't|did not) (finish|complete|cover)"))] as $lines
-            | select(($lines | length) > 0)
-            | {pr: $p.number, line: $lines[0]}
-        run: |
-          set -uo pipefail
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --state merged -S "#${CLOSED}" -L 30 --json number,body,mergedAt) || { echo "::warning::#$CLOSED: merged PR read failed, not reopening"; exit 0; }
-          hit=$(jq -c --argjson n "$CLOSED" "$NOT_FINISHED" <<<"$prs") || hit=
-          [ -n "$hit" ] || exit 0
-          pr=$(jq -r .pr <<<"$hit")
-          # One reopen per PR: a person who closes it again means it, and a sweep that
-          # reopened every close would fight them. The marker is the comment it posts.
-          bodies=$(gh issue view "$CLOSED" -R "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body') || { echo "::warning::#$CLOSED: comment read failed, not reopening"; exit 0; }
-          seen=$(grep -cF -- "PR #$pr says it does not finish" <<<"$bodies" || true)
-          [ "$seen" = 0 ] || { echo "#$CLOSED: already reopened once for PR #$pr, leaving it closed"; exit 0; }
-          gh issue reopen "$CLOSED" -R "$GITHUB_REPOSITORY" --comment "orchestrator: reopened. PR #$pr says it does not finish this issue: \"$(jq -r .line <<<"$hit")\"" || echo "::warning::#$CLOSED: reopen refused"
-      # A blocker with no lane label sat outside every list, so nothing ever
-      # picked it up (fleet-ops#10716: 13 of 15 blocking issues). The lane is
-      # needs-orchestrator: the orchestrator decides what to do with it.
-      # `issue_dependencies_summary` is not a `gh issue list --json` field and made
-      # every sweep exit 1 on it; `blockedBy` is the GraphQL field gh exposes
-      # (fleet-ops#10836 review). A dependency can live in another repo, so the
-      # per-issue dependency read is what filters to this one.
-      # config/quiet-issue-cases.json runs the LANE program in CI.
-      - if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LANE: |
-            [.[] | .name]
-            | if any(IN("agent-ready", "agent-in-progress", "needs-orchestrator", "orchestrator-tried", "needs-nish-decision", "agent-blocked", "needs-split", "epic")) then "has" else "none" end
-        run: |
-          set -uo pipefail
-          pairs=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready --state open -L 300 --json number,blockedBy) || { echo "::warning::lane: the agent-ready list failed, no blocker labels this sweep"; exit 0; }
-          for n in $(jq -r '.[] | select((.blockedBy.nodes // []) | any(.state == "OPEN")) | .number' <<<"$pairs"); do
-            rows=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/dependencies/blocked_by?per_page=100") || { echo "::warning::#$n: blocker read failed, skip"; continue; }
-            for b in $(jq -r --arg repo "$GITHUB_REPOSITORY" '.[] | select(.state == "open" and (.repository.full_name // "") == $repo) | .number' <<<"$rows"); do
-              labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$b" --jq '.labels') || { echo "::warning::blocker #$b: label read failed, skip"; continue; }
-              [ "$(jq -r "$LANE" <<<"$labels")" = none ] || continue
-              gh issue edit "$b" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::warning::blocker #$b: lane label refused"
-              gh issue comment "$b" -R "$GITHUB_REPOSITORY" --body "orchestrator: this issue blocks #$n and had no lane, so the sweep gave it one. Decide whether to build it, split it, or unblock #$n another way." || echo "::warning::blocker #$b: lane note refused"
-              echo "blocker #$b: needs-orchestrator (blocks #$n)"
-            done
-          done
   unblocked:
     needs: list
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
@@ -1168,7 +1087,12 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
+          # A closed issue is not active work: strip the queue and park labels, and
+          # orchestrator-tried, which marks a dead end that a close ends
+          # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
+          # record of a reserved call, not a queue state. An empty list makes the
+          # edit fail and || true swallows it, the same net effect as skipping.
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1744,10 +1668,7 @@ jobs:
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
           # work, so it does not park the issue.
-          [ "$GO" = true ] || {
-            echo "orchestrate: nothing was built on this run; no park mark"
-            exit 0
-          }
+          [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
@@ -1756,6 +1677,14 @@ jobs:
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
           fi
+          # A PR on any other branch (gate/*, claim/*) that closes the issue is
+          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
+          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
+          # Open and merged PRs count (default includeClosedPrs=false); a closed
+          # unmerged one does not. Fail closed: a read that fails or prints no
+          # count marks nothing.
+          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
+          [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host

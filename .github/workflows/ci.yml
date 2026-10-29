@@ -230,43 +230,27 @@ jobs:
         # a parse error would stop every root config change at deploy time.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
+      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
-      - name: Chrome DevTools wiring, hand-off cleanup, Claude lanes and managed settings
-        # Runs the real cleanup step from agent-dispatch.yml against a real git
-        # worktree with a stub systemctl: busy tree survives, idle tree goes.
-        # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
-        # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
-        # Cursor or pi. The same file runs the real bwrap and proves the claude lane
-        # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
-        # or a backup.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync, gh login check, needs-triage and Mac topgrade tests (fleet-ops#9967, #9706, #9308, #9932, #10508, #10766)
-        # Runs fleet-sync.service's own agent installs and its link check against a temp home.
-        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
-        # and the jail step below with plain bash in a temp home, with no
-        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
-        # touching a file.
-        # Runs the admit job's own exclusion program, band program and run block,
-        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
-        # Runs config/agent-locks.json against every rootfs unit it names, so a
-        # listener that loses a hidden path, a need, its User=, its HOME or the
-        # /home/nish/.local/bin start of its PATH fails here (fleet-ops#9977).
+      - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
+        # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_agent_locks.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py tests/test_intake_repos.py
+        run: pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+      - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
+        if: always()
+        run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -667,17 +651,15 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
-      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
-        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
-        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # The headless claude in rootfs/etc/systemd/system/tincan-listen-claude-vps.service
+        # loads only agent-tincan, no skills and no user settings. Delete a flag, or the MCP
         # file it names, and this fails. --mcp-config must come before
         # --strict-mcp-config: its value list is variadic and would eat the prompt.
         if: always()
         run: |
           set -euo pipefail
-          u=systemd/tincan-listen-claude-vps.service
+          u=rootfs/etc/systemd/system/tincan-listen-claude-vps.service
           exec_line=$(grep '^ExecStart=' "$u")
           for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
@@ -686,9 +668,9 @@ jobs:
           # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
           # settings source is ~/.claude/settings.json (the user file) and
           # --setting-sources project,local still loads the user Stop hook and plugins.
-          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
-          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          grep -qx 'WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; } # gitleaks:allow
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
+          grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against
@@ -741,59 +723,6 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
-          test "$bad" -eq 0
-      - name: A quiet priority-now item restarts itself (REQUEUE, NOT_FINISHED, LANE)
-        # Runs the list job's three programs, read out of the workflow, against every case
-        # in config/quiet-issue-cases.json (fleet-ops#10716). The grep lines pin the wiring:
-        # a quiet issue is skipped while its run is live on either start marker, the
-        # orchestrate lane is re-fired or re-labelled, the reopen acts on the merged PR, and
-        # a blocker gets the lane label. The sweep-only gate and the re-fire budget are pinned
-        # too, because a per-issue dispatch is the re-fire itself, and lifting a pause must not
-        # start hundreds of paid hand-offs in one sweep.
-        if: always()
-        run: |
-          set -euo pipefail
-          f=.github/workflows/agent-dispatch.yml
-          req=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .env.REQUEUE' "$f")
-          notf=$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .env.NOT_FINISHED' "$f")
-          lane=$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .env.LANE' "$f")
-          [ "$req" != null ] && [ -n "$req" ] && [ "$notf" != null ] && [ -n "$notf" ] && [ "$lane" != null ] && [ -n "$lane" ] || { echo "REQUEUE, NOT_FINISHED or LANE missing"; exit 1; }
-          rrun=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .run' "$f")
-          rif=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .if' "$f")
-          # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'agent run started: |orchestrator hand-off started: ' 'test("(^|/)issue-\($n)(-.*)?$")' 'priority-now")) then 900 else 21600' '[5 - $queued, 0] | max'; do
-            grep -F -- "$n" <<<"$req" >/dev/null || { echo "missing restart wiring: $n"; exit 1; }
-          done
-          # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'run live, skip' '-f task=orchestrate -f issue="$n"' '--remove-label orchestrator-tried --add-label needs-orchestrator' 'fail "PR list"'; do
-            grep -F -- "$n" <<<"$rrun" >/dev/null || { echo "missing restart wiring: $n"; exit 1; }
-          done
-          # shellcheck disable=SC2016 # the needle is literal workflow text
-          grep -F -- "inputs.issue == ''" <<<"$rif" >/dev/null || { echo "missing sweep-only gate on REQUEUE"; exit 1; }
-          nif=$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .run' "$f")
-          # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'gh issue reopen "$CLOSED"' 'already reopened once for PR #'; do
-            grep -F -- "$n" <<<"$nif" >/dev/null || { echo "missing reopen wiring: $n"; exit 1; }
-          done
-          grep -F -- '--add-label needs-orchestrator' <<<"$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .run' "$f")" >/dev/null || { echo "missing blocker wiring"; exit 1; }
-          base=$(jq -c '.base' config/quiet-issue-cases.json)
-          now=$(jq -r .now config/quiet-issue-cases.json); queued=$(jq -r '.queued // 0' config/quiet-issue-cases.json)
-          closed=$(jq -r .base.issue.number config/quiet-issue-cases.json)
-          bad=0
-          while IFS= read -r c; do
-            in=$(jq -c --argjson c "$c" '. as $b | $b * ($c.set // {})' <<<"$base")
-            got_run=""
-            case $(jq -r .prog <<<"$c") in
-              REQUEUE) rec=$(jq -c --argjson now "$now" --argjson queued "$queued" --argjson prs "$(jq -c .prs <<<"$in")" "[.issue] | [$req]" <<<"$in")
-                     got=$(jq -r '.[0].act // ""' <<<"$rec"); got_run=$(jq -r '.[0].run // ""' <<<"$rec") ;;
-              NOT_FINISHED) got=$(jq -r --argjson n "$closed" "$notf | .line // \"\"" <<<"$(jq -c .merged <<<"$in")") ;;
-              LANE) got=$(jq -r "$lane" <<<"$(jq -c .labels <<<"$in")") ;;
-            esac
-            [ "$got" = "$(jq -r .want <<<"$c")" ] && [ "$got_run" = "$(jq -r '.want_run // ""' <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got [$got|$got_run], want [$(jq -r .want <<<"$c")|$(jq -r '.want_run // ""' <<<"$c")]"; bad=1; }
-            echo "case $(jq -r .id <<<"$c"): ${got:-(silent)}${got_run:+ (run $got_run)}"
-          done < <(jq -c '.cases[]' config/quiet-issue-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_priority_now_quiet_rule.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
@@ -1558,18 +1487,18 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all six sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework, parked
-        # hand-offs) use it and none still reads the run status alone.
+        # config/sweep-liveness-events.json, and checks that all five sweep
+        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
+        # run status alone.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 6 ] || { echo "expected 6 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 6 ] || { echo "expected 6 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do
@@ -1883,7 +1812,7 @@ jobs:
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_priority_now_quiet_rule.py tests/test_deploy_failed_engine.py tests/test_grafana_fixture_drift.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py tests/test_grafana_fixture_drift.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true
