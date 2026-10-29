@@ -152,3 +152,18 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
 def test_needs_split_rule_reads_open_prs_with_that_label():
     (a,) = [d for d in _rules()["queue-stuck-pr-needs-split"]["data"] if d["refId"] != "C"]
     assert a["model"]["options"]["query"] == "org:Nishfleet is:pr is:open label:needs-split archived:false"
+
+
+def test_a_pr_waiting_for_the_coordinator_is_left_out_of_both_pr_rules():
+    rules = _rules()
+    for uid in ("queue-stuck-pr-unmerged", "queue-stuck-pr-blocked"):
+        for d in (d for d in rules[uid]["data"] if d["refId"] != "C"):
+            query = d["model"]["options"]["query"]
+            assert "-label:needs-coordinator" in query, (
+                f"{uid} {d['refId']}: a risky PR's review-risky and coordinator-approval checks are red until "
+                "an approver posts one, so counting it files a duplicate issue a day for work that waits on "
+                "purpose; the stuck-prs sweep in agent-dispatch.yml owns that class (fleet-ops#10522)"
+            )
+        assert "needs-coordinator" in rules[uid]["annotations"]["description"], (
+            f"{uid}: the issue this rule files must say why a needs-coordinator PR is left out"
+        )
