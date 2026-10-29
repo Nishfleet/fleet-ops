@@ -1,8 +1,9 @@
 """Claude Code lanes in .github/workflows/agent.yml, run from the workflow's own
 text (read out with yq, never a copy).
 
-Gate: strong-only work goes to claude-sonnet-5-5, or claude-opus-5-5 after two
-failed runs or with needs-opus. Any other issue is classified by a stubbed Jev:
+Gate: strong-only work goes to claude-sonnet-5-5, and a packet that failed twice
+escalates to the worker-capable pool (fleet-ops#10750). Any other issue is
+classified by a stubbed Jev:
 p >= 0.9 judgment goes to claude, p <= 0.1 or anything between (or a Jev error)
 to the free pi lane; the decision is logged and written to the
 job summary.
@@ -166,22 +167,26 @@ def test_one_failed_run_still_sonnet(tmp_path):
     assert _gate(tmp_path, failed=1) == "engine=claude model=claude-sonnet-5-5"
 
 
-def test_second_strike_goes_to_claude_opus(tmp_path):
-    assert _gate(tmp_path, failed=2) == "engine=claude model=claude-opus-5-5"
+def test_second_strike_escalates_to_the_worker_capable_pool(tmp_path):
+    assert _gate(tmp_path, failed=2) == "engine=pi model=claude-sonnet-5-5"
 
 
-def test_failed_comments_from_strangers_do_not_count_toward_opus(tmp_path):
+def test_failed_comments_from_strangers_do_not_count_toward_the_escalation(tmp_path):
     stranger = _comments(failed=3, login="someone-else", assoc="NONE")
     assert _gate(tmp_path, comments=stranger) == "engine=claude model=claude-sonnet-5-5"
 
 
-def test_failed_comments_from_a_member_count_toward_opus(tmp_path):
+def test_failed_comments_from_a_member_count_toward_the_escalation(tmp_path):
     member = _comments(failed=2, login="a-member", assoc="MEMBER")
-    assert _gate(tmp_path, comments=member) == "engine=claude model=claude-opus-5-5"
+    assert _gate(tmp_path, comments=member) == "engine=pi model=claude-sonnet-5-5"
 
 
-def test_needs_opus_label_goes_to_claude_opus(tmp_path):
-    assert _gate(tmp_path, labels=",strong-only,needs-opus,") == "engine=claude model=claude-opus-5-5"
+def test_no_gate_input_resolves_to_a_reviewer_model(tmp_path):
+    for k, (labels, failed) in enumerate([(",strong-only,", 0), (",bug,", 1), (",strong-only,", 2), (",bug,", 3)]):
+        d = tmp_path / str(k)
+        d.mkdir()
+        got = _gate(d, labels=labels, failed=failed)
+        assert got.endswith("model=claude-sonnet-5-5"), got
 
 
 def _route(tmp_path, jev=None, labels=",bug,", live=None, env=None):
@@ -267,9 +272,9 @@ def test_there_is_no_claude_cap(tmp_path):
     assert _route(tmp_path, ("judgment", "0.95"), live={"claude": 40})[0].startswith("engine=claude ")
 
 
-def test_needs_opus_picks_opus_and_only_claude_jobs_are_senior(tmp_path):
-    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,needs-opus,")
-    assert last == "engine=claude model=claude-opus-5-5" and "senior=false" in out
+def test_only_strong_only_is_senior(tmp_path):
+    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,")
+    assert last == "engine=claude model=claude-sonnet-5-5" and "senior=false" in out
     d = tmp_path / "b"
     d.mkdir()
     assert "senior=true" in _route(d, labels=",strong-only,")[2]
