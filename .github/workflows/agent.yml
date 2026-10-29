@@ -213,7 +213,7 @@ jobs:
           # `attempt-cap reset: <why>` from an owner, member or collaborator
           # restarts the count like a park: comment does; a comment from any other association counts for nothing.
           # shellcheck disable=SC2016 # $v is a jq variable
-          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | sub(" · arm: menu=(on|off) desk=(on|off)$"; "") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last park: comment or attempt-cap reset; parked for the orchestrator"
@@ -315,8 +315,20 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
-          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID · arm: menu=$([ $((i % 2)) = 1 ] && echo on || echo off) desk=$([ $((i / 2 % 2)) = 1 ] && [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" != false ] && echo on || echo off)"
-          printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
+          # fleet-ops#9330 2x2 trial: the Gate decides the arm once and records it on the run's own started
+          # comment; the pi lane below only obeys ARM_MENU/ARM_DESK, and every other lane reads neither flag, so it
+          # carries no suffix. desk renames the group the lane already picked (worker-public on a public repo,
+          # worker-capable otherwise) via model_group_alias, so it changes compaction alone, never the seat, and both
+          # groups carry an alias so the arm recorded here is the arm every run got. Both readers of this comment
+          # (the attempt cap above, the strike probe below) strip the suffix before they compare.
+          arm_menu=off; arm_desk=off; arm=
+          if [ "$miss" = false ] && [ "$engine" = pi ]; then
+            [ $((i % 2)) = 1 ] && arm_menu=on
+            [ $((i / 2 % 2)) = 1 ] && arm_desk=on
+            arm=" · arm: menu=$arm_menu desk=$arm_desk"
+          fi
+          gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID$arm"
+          printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" "arm_menu=$arm_menu" "arm_desk=$arm_desk" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
         env:
@@ -352,6 +364,10 @@ jobs:
           CLAUDE_MAX_TURNS: '200'
           # true for strong-only work; a judgment job that claude cannot take goes to pi, never Cursor.
           SENIOR: ${{ steps.gate.outputs.senior }}
+          # fleet-ops#9330 2x2 trial: the Gate decides the arm and records it on the
+          # started comment; this lane only obeys it.
+          ARM_MENU: ${{ steps.gate.outputs.arm_menu }}
+          ARM_DESK: ${{ steps.gate.outputs.arm_desk }}
           # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -558,9 +574,8 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             else
-              # fleet-ops#9330 2x2 trial: odd issue drops the skills menu, (issue/2) odd takes the desk alias (worker-public stays as is)
-              arm_n=${id##*-}; arm_flags=(); [ $((arm_n % 2)) = 1 ] && arm_flags+=(--no-skills)
-              [ $((arm_n / 2 % 2)) = 1 ] && [ "$pi_model" = worker-capable ] && pi_model=worker-capable-desk
+              arm_flags=(); [ "$ARM_MENU" = on ] && arm_flags+=(--no-skills)
+              [ "$ARM_DESK" = on ] && pi_model=$pi_model-desk
               cd "$dir" # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
@@ -816,7 +831,7 @@ jobs:
           # 43 bare-branch issues in 0509).
           # shellcheck disable=SC2016 # $u is a jq variable
           comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
-          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
+          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and (sub(" · arm: menu=(on|off) desk=(on|off)$"; "") | endswith($u)))' <<<"$comments" >/dev/null ||
             { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # fleet-ops#9291: a Worker death under host overload is infra, not a bad packet (the
           # 2026-10-05 overload struck 52 drive fixes into the 1-slot strong-only lane while 93 pi
