@@ -1,11 +1,21 @@
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 YQ = shutil.which("yq")
+
+IDLE_WINDOW = {
+    "ppi-commandcode": ("24h", "24h"),
+    "ppi-minimax": ("72h", "72h"),
+    "ppi-stepfun": ("24h", "24h"),
+    "ppi-zai": ("24h", "24h"),
+    "ppi-opencode-go": ("24h", "24h"),
+    "ppi-alibaba": ("7d", "24h"),
+}
 
 
 def _model_list():
@@ -28,7 +38,13 @@ def _bases(rows, prepaid_only=False):
 
 def test_every_live_paid_plan_keeps_a_router_row():
     bases = _bases(_router_rows())
-    gone = [p["name"] for p in _plans() if not p.get("rows_pending") and not any(b.startswith(p["api_base"]) for b in bases)]
+    pi = json.loads((ROOT / "config/pi-models.json").read_text())
+    pi_bases = [p.get("baseUrl", "") for p in pi["providers"].values()]
+    gone = [
+        p["name"] for p in _plans()
+        if not p.get("rows_pending")
+        and not any(b.startswith(p["api_base"]) for b in (bases if not p.get("via") == "pi-provider" else pi_bases))
+    ]
     assert not gone, f"paid plans with no router row: {gone}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
@@ -81,6 +97,62 @@ def test_removed_provider_match_is_exact_on_hostname():
     ]
     back = _removed_provider_rows(bases)
     assert back == ["https://api.cline.bot/v1", "https://ollama.com./v1", "https://ollama.com/v1"], f"removed provider match is not exact on the parsed hostname: {back}"
+
+
+def _idle_rules():
+    assert YQ, "yq must be on PATH to read the alert rule config"
+    out = subprocess.run([YQ, "-o=json", ".groups[].rules", str(ROOT / "config/grafana/provisioning/alerting/paid-plan-idle.yaml")], capture_output=True, text=True, check=True).stdout
+    return {rule["uid"]: rule for rule in json.loads(out)}
+
+
+def _window_seconds(window):
+    number, unit = re.fullmatch(r"(\d+)([hd])", window).groups()
+    return int(number) * (86400 if unit == "d" else 3600)
+
+
+def _named_windows(summary):
+    return sorted(number + ("d" if unit == "day" else "h") for number, unit in re.findall(r"for (\d+) (hour|day)s?", summary))
+
+
+def test_every_paid_plan_idle_rule_reads_the_window_its_message_names():
+    rules = _idle_rules()
+    assert sorted(rules) == sorted(IDLE_WINDOW), f"paid-plan idle rules changed: {sorted(set(rules) ^ set(IDLE_WINDOW))}"
+    bases = {plan["api_base"] for plan in _plans()}
+    wrong = {}
+    for uid, (idle, absent) in IDLE_WINDOW.items():
+        rule = rules[uid]
+        expr = rule["data"][0]["model"]["expr"]
+        base = re.search(r'api_base=~"([^"]+)"', expr)
+        shape = {
+            "plan": (base.group(1).removesuffix(".*") if base else "") in bases,
+            "summary says": _named_windows(rule["annotations"]["summary"]),
+            "increase": sorted(re.findall(r"increase\([^\[]*\[([^\]]+)\]", expr)),
+            "absence": sorted(re.findall(r"absent_over_time\([^\[]*\[([^\]]+)\]", expr)),
+            "offset": sorted(re.findall(r"\boffset\s+(\w+)", expr)),
+            "range": rule["data"][0]["relativeTimeRange"]["from"],
+            "multiplied": len(re.findall(r"== bool 0\)\s*\*\s*\(", expr)),
+            "or vector(0)": expr.count("or vector(0)"),
+            "both sides defaulted": len(re.findall(r"or vector\(0\)\)\s*==\s*bool\s*\(\s*sum\(", expr)),
+        }
+        wanted = {
+            "plan": True,
+            "summary says": sorted([idle] if idle == absent else [idle, absent]),
+            "increase": [idle],
+            "absence": [absent],
+            "offset": [idle],
+            "range": 2 * _window_seconds(idle),
+            "multiplied": 1,
+            "or vector(0)": 2,
+            "both sides defaulted": 1,
+        }
+        if shape != wanted:
+            wrong[uid] = (shape, wanted)
+    assert not wrong, (
+        "an idle rule and the alert message it sends disagree (MiniMax 72h is fleet-ops#10431, "
+        f"Alibaba 7d idle is fleet-ops#9865). {wrong}. Their summaries read "
+        f"{[rules[uid]['annotations']['summary'] for uid in wrong]}, and _named_windows reads "
+        "'for N hours/days' out of that text."
+    )
 
 
 def test_every_thinking_budget_row_drops_caller_reasoning_effort():

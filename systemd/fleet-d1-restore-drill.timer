@@ -1,0 +1,17 @@
+[Unit]
+Description=Restore-drill the newest D1 backups, monthly (fleet-ops#10594)
+# A weekly backup is only a claim until something has loaded it back. The drill
+# runs on the first of every month at 05:30 IST: the weekly export runs on
+# Mondays, so the newest artifact is then between one and seven days old, and
+# the drill never races a run in flight. It runs on this host because the private
+# key is here and on no runner. See fleet-d1-restore-drill.service for what it
+# proves and what it refuses to do.
+# Switch off: systemctl --user disable --now fleet-d1-restore-drill.timer, then
+# drop step 2l and its enable line from fleet-sync.service and delete both files.
+
+[Timer]
+OnCalendar=*-*-01 05:30:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

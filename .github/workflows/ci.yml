@@ -92,15 +92,18 @@ jobs:
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - name: zizmor over .github/workflows/
+      - name: zizmor over .github/workflows/ and .github/actions/
         # Stock security audit for workflows: dangerous triggers, template injection, persisted
         # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
-        # Policy and its kept exceptions: .github/zizmor.yml.
+        # Policy and its kept exceptions: .github/zizmor.yml. .github/actions/ is in the path because
+        # a composite action holds the same injections a workflow does, and the discovery steps below
+        # never reach it: actionlint reads workflows only, and shellcheck finds files by extension or
+        # shebang, so neither one sees a run block in an action (fleet-ops#10723).
         if: always()
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
         with:
-          args: --offline --format plain .github/workflows
+          args: --offline --format plain .github/workflows .github/actions
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
@@ -114,7 +117,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server nftables ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
@@ -139,20 +142,20 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
-          for b in beacon cursor-agent leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /usr/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
-        # Root-owned units live in rootfs/etc/systemd/system/; this covers the slices (no
-        # Exec line, so no stub), the host-config and update units and the Remote Control
-        # server. rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
-        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so awk
-        # fails the step on any verify line that names the unit. A [Install] target naming
-        # no target prints nothing, so it stays unseen.
+        # Root-owned units live in rootfs/etc/systemd/system/; the globs cover every root
+        # service, timer and path unit (the slices have no Exec line, so they need no
+        # stub). rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
+        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so the
+        # step fails on any output line from any unit (fleet-ops#10286). A [Install]
+        # target naming no target prints nothing, so it stays unseen.
         if: always()
         run: |
           shopt -s nullglob; set -o pipefail
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-deploy.service rootfs/etc/systemd/system/fleet-deploy.path rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config-boot.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer rootfs/etc/systemd/system/claude-remote-control.service 2>&1 | awk 'BEGIN { bad = 0 } /claude-remote-control[.]service:/ { bad = 1 } { print } END { exit bad }'
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
@@ -230,40 +233,31 @@ jobs:
         # a parse error would stop every root config change at deploy time.
         if: always()
         run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses, and its test files run in CI (fleet-ops#10075, #10079)
+      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
         # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
         if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml && pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_fleet_update_covers_apps.py tests/test_fleet_update_false_failures.py
+        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
       - name: The report survives a skipped registration (fleet-ops#9340)
         # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
         # pattern has no 'results' key to render and killed the run's last task.
         if: always()
         run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
-      - name: Chrome DevTools wiring, hand-off cleanup, Claude lanes and managed settings
-        # Runs the real cleanup step from agent-dispatch.yml against a real git
-        # worktree with a stub systemctl: busy tree survives, idle tree goes.
-        # Runs agent.yml's Gate and Worker scripts (read out with yq) against fakes:
-        # senior work to claude-sonnet, second strike to claude-opus, a rate limit to
-        # Cursor or pi. The same file runs the real bwrap and proves the claude lane
-        # reads only its own seat (a seat-a and a seat-b runner), never the Max dir
-        # or a backup.
-        if: always()
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_chrome_devtools_mcp.py tests/test_claude_managed_settings.py tests/test_hermes_computer_use.py tests/test_orch_cleanup_keeps_busy_worktree.py tests/test_orch_mirror_survives.py tests/test_orch_rework.py tests/test_claude_lanes.py
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: fleet-sync, gh login check, needs-triage and Mac topgrade tests (fleet-ops#9967, #9706, #9308, #9932, #10508)
-        # Runs fleet-sync.service's own agent installs and its link check against a temp home.
-        # Runs fleet-gh-login-check.service's own ExecStart against a stub gh,
-        # and the jail step below with plain bash in a temp home, with no
-        # RUNNER_ENVIRONMENT and with self-hosted: it must refuse before
-        # touching a file.
-        # Runs the admit job's own exclusion program, band program and run block,
-        # read out of agent-dispatch.yml, against a fake gh and a fake Jev router.
+      - name: gitleaks for the review-comment scan test (fleet-ops#9528)
+        # The real binary and the real rules run the review step's scanner in tests/test_review_scan.py.
         if: always()
-        run: pipx run --spec pytest==8.3.5 --pip-args=pyyaml==6.0.2 pytest -q -p no:cacheprovider tests/test_claude_max_agents.py tests/test_systemd_unit_keys.py tests/test_runner_jail_start_state.py tests/test_fleet_sync_link_guard.py tests/test_fleet_sync_deploy_blocked.py tests/test_litellm_proxy_migration_skip.py tests/test_issue_desk.py tests/test_quadlet_hardening.py tests/test_litellm_proxy_stop_not_failure.py tests/test_gh_login_check.py tests/test_hermes_xai_login_check.py tests/test_cua_desk_check.py tests/test_provider_watch.py tests/test_paid_plans.py tests/test_codex_execpolicy_floor.py tests/test_triage_admit.py tests/test_digest_reply_shape.py tests/test_digest_checks.py tests/test_red_main_sweep.py tests/test_lighthouse_wall.py tests/test_mac_topgrade.py tests/test_review_seat_try.py tests/test_intake_repos.py
+        run: d=$RUNNER_TEMP/gitleaks; mkdir -p "$d" && curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$d/g.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz && echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $d/g.tgz" | sha256sum --check --strict - && tar -xzf "$d/g.tgz" -C "$d" gitleaks
+      - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
+        # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
+        if: always()
+        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx' pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'
+      - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
+        if: always()
+        run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22
@@ -400,9 +394,9 @@ jobs:
           grep -rnE '^Exec[A-Za-z]*=(.*[^$]|)\$\{[0-9#%]|^Exec[A-Za-z]*=(.*[^A-Za-z0-9])?(sh|bash|zsh)[[:space:]]+-c[[:space:]].*([^%]%[su]|[^%]%h([^/]|$))' \
             systemd rootfs || rc=$?
           test "$rc" -eq 1
-      - name: pi seat ids resolve to litellm-proxy.yaml model_name (fleet-ops#8332)
+      - name: pi seat ids resolve to a litellm-proxy.yaml model_name or model_group_alias (fleet-ops#8332, fleet-ops#9330)
         if: always()
-        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '[.model_list[].model_name]' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
+        run: jq -n -e --argjson ids "$(jq -c '[.providers.litellm.models[].id]' config/pi-models.json)" --argjson names "$(yq -o=json '([.model_list[].model_name] + ((.router_settings.model_group_alias // {}) | keys)) | unique' config/litellm-proxy.yaml)" '($ids - $names) as $bad | if ($bad|length)==0 then true else error("unresolved pi seat ids - \($bad|join(","))") end'
       # Native provider only (#9253): openai/ on ollama.com/v1 reply ids collide in LiteLLM_SpendLogs.
       - name: Ollama rungs serve only the permitted slug on the native provider (fleet-ops#8332, fleet-ops#9253)
         if: always()
@@ -476,7 +470,7 @@ jobs:
             case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
             printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
           done || rc=1
-          # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          # The packet strings (worker and miss-review packets) put $id after the marker.
           # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
             echo "FAIL \$id before the marker in a packet string"; rc=1
@@ -588,7 +582,7 @@ jobs:
             [ "$(jq -r '.fail_post // false' <<<"$c")" = false ] || : > "$d/failpost"
             rc=0
             log=$(env PATH="$t/bin:$PATH" FAKE_DIR="$d" GITHUB_OUTPUT="$d/out" REPO=o/r ISSUE=5 GH_TOKEN=x GITHUB_SERVER_URL=https://github.com GITHUB_RUN_ID=1 \
-              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" MODEL_VAR="$(jq -r '.model_var // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
+              DAILY_MAX="$(jq -r '.daily_max // ""' <<<"$c")" RUNNER_VAR="$(jq -r '.runner_var // ""' <<<"$c")" \
               bash -c "$chk" 2>&1) || rc=$?
             if [ "$(jq -r '.want_fail // false' <<<"$c")" = true ]; then
               [ "$rc" -ne 0 ] || { echo "cap case $id: want failure, got rc 0"; bad=1; }
@@ -664,17 +658,15 @@ jobs:
           done < <(jq -c '.session_cases[]' "$cfg")
           rm -rf "$t"
           test "$bad" -eq 0
-      - name: Sweep fan-out, judge reviews and park labels stay inside their governors (fleet-ops#10169)
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_workflow_caps.py
       - name: Tincan listener keeps its start-up trim flags
-        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
-        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # The headless claude in rootfs/etc/systemd/system/tincan-listen-claude-vps.service
+        # loads only agent-tincan, no skills and no user settings. Delete a flag, or the MCP
         # file it names, and this fails. --mcp-config must come before
         # --strict-mcp-config: its value list is variadic and would eat the prompt.
         if: always()
         run: |
           set -euo pipefail
-          u=systemd/tincan-listen-claude-vps.service
+          u=rootfs/etc/systemd/system/tincan-listen-claude-vps.service
           exec_line=$(grep '^ExecStart=' "$u")
           for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
@@ -683,9 +675,9 @@ jobs:
           # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
           # settings source is ~/.claude/settings.json (the user file) and
           # --setting-sources project,local still loads the user Stop hook and plugins.
-          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
-          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          grep -qx 'WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; } # gitleaks:allow
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
+          grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against
@@ -720,10 +712,10 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
-          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          prog=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.APPROVERS' "$f")
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
-          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          run=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
@@ -738,7 +730,6 @@ jobs:
             got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
-          pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
@@ -1155,20 +1146,21 @@ jobs:
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
-            *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
-              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
+            *"issues/7/"*) case "$*" in *labels*) echo "$*" >> "$STATE/labels" ;; *) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
+              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;; esac ;;
             *"pulls/7/files"*) case "${GUARD:-}" in fail) exit 1 ;; rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;; "") echo app/routes/home.tsx ;; 1) echo .github/workflows/new.yml ;; *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;; esac ;;
             "issue "*) case "$*" in *create*) echo "$*" >> "$STATE/issues"; echo https://github.com/Nishfleet/fleet-ops/issues/99 ;; esac ;;
             *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
-              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"labels\":[{\"name\":\"needs-split\"}],\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
           cat > "$t/bin/curl" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
+            *gitleaks-private-detail*) while [ $# -gt 0 ]; do [ "$1" = -o ] && echo "[extend]" > "$2"; shift; done ;;
             *raw.githubusercontent.com*) [ -z "${GUARD_LIST_FAILS:-}" ] || exit 22; cat config/risky-paths.json ;;
             *4000/jev*) echo "{\"answers\":{\"verdict\":{\"choice\":\"$JEV_CHOICE\",\"probabilities\":{\"$JEV_CHOICE\":$JEV_P}}}}" ;;
             *4000/v1/chat/completions*) # the third reviewer: the Qwen row for the judge seat (also the assistant seat, the review fallback), unless the case says otherwise
@@ -1197,6 +1189,7 @@ jobs:
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude"
+          printf '#!/bin/sh\nexit 0\n' > "$t/bin/gitleaks"; chmod +x "$t/bin/gitleaks"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
           export GH_TOKEN=x ARM_TOKEN=y
           none=
@@ -1286,7 +1279,7 @@ jobs:
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5
@@ -1330,9 +1323,7 @@ jobs:
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
           prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 claude-fable-5-1
           built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
-          built-by-devin-and-cursor-judge-is-opus||approve|0.95|clean|none|BUILT=cursor,devin|yes|0|claude-opus-5-5
           built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
-          built-by-claude-then-cursor-first-review-is-opus||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-opus-5-5
           built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
           built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
           built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
@@ -1523,11 +1514,12 @@ jobs:
             [ "$got" = "$want" ] || { echo "case $name: live=$got (want $want)"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-liveness-events.json)
           test "$bad" -eq 0
-      - name: Router wall treats a Cursor stall as infra (fake gh)
+      - name: Router wall treats a 429 stall as infra (fake gh)
         # Runs the Router wall step's own run block, read out of agent.yml, against a fake gh and a
-        # worker.err (the Cursor line is the real one, fleet-ops#9275). A stall with the claim branch 0 ahead
-        # of main is infra: infra-failed comment, agent-ready, wall=true. With a commit pushed, on another
-        # engine, or after 3 infra requeues, it is not a wall and the strike step handles it.
+        # worker.err (a litellm RateLimitError line is the real one, fleet-ops#8543). A 429 with the
+        # claim branch 0 ahead of main is infra: infra-failed comment, agent-ready, wall=true. With
+        # a commit pushed, another error text, or after 3 infra requeues, it is not a wall and the
+        # strike step handles it.
         if: always()
         run: |
           set -euo pipefail
@@ -1547,15 +1539,14 @@ jobs:
           MOCK
           chmod +x "$t/bin/gh"
           export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops REF=claim/issue-9275 GITHUB_SERVER_URL=https://github.com
-          cursor_stall=$'Connection lost, reconnecting to https://agentn.global.api5.cursor.sh (attempt 1)...\nRetry attempt 1...\nRetriableError: Connection stalled repeatedly'
           bad=0
           # name|engine|worker.err|ahead|want wall (yes/no)
           while IFS='|' read -r name engine err ahead want; do
             export STATE=$t/$name AHEAD=$ahead ENGINE=$engine GITHUB_OUTPUT=$t/$name/out PRIOR_INFRA=0
-            [ "$name" != cursor-stall-capped ] || PRIOR_INFRA=3
+            [ "$name" != pi-429-capped ] || PRIOR_INFRA=3
             rm -rf "$STATE"; mkdir -p "$STATE"; : > "$GITHUB_OUTPUT"
             export RUNNER_TEMP=$STATE
-            printf '%b\n' "${err//@CURSOR@/$cursor_stall}" > "$RUNNER_TEMP/worker.err"
+            printf '%b\n' "$err" > "$RUNNER_TEMP/worker.err"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/wall.sh" > "$STATE/log" 2>&1 || rc=$?
             got=no
@@ -1564,15 +1555,11 @@ jobs:
             if [ "$want" = no ] && { [ -s "$STATE/commented" ] || [ -s "$STATE/edited" ]; }; then got=partial; fi
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: wall=$got (want $want) exit=$rc"; cat "$STATE/log"; bad=1; fi
           done <<'CASES'
-          cursor-stall-unpushed|cursor|@CURSOR@|0|yes
-          cursor-stall-pushed|cursor|@CURSOR@|1|no
-          cursor-stall-capped|cursor|@CURSOR@|0|no
-          pi-with-cursor-text|pi|@CURSOR@|0|no
-          cursor-other-failure|cursor|error: tool call failed|0|no
-          cursor-stall-then-429-pushed|cursor|@CURSOR@\nHTTP 429|1|no
-          router-429-unpushed|pi|litellm RateLimitError: no deployments available|0|yes
-          router-429-pushed|pi|litellm RateLimitError: no deployments available|1|no
-          devin-capacity-pushed|devin|capacity issues|1|yes
+          pi-429-unpushed|pi|litellm RateLimitError: no deployments available|0|yes
+          pi-429-pushed|pi|litellm RateLimitError: no deployments available|1|no
+          pi-429-capped|pi|litellm RateLimitError: no deployments available|0|no
+          pi-other-failure|pi|error: tool call failed|0|no
+          claude-429-unpushed|claude|litellm RateLimitError: no deployments available|0|yes
           CASES
           test "$bad" -eq 0
 
@@ -1602,7 +1589,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           run=true
-          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_deploy_failed_(rule|engine)\.py$|\.github/workflows/ci\.yml$)'; then
+          if [ "$EVENT" = pull_request ] && ! git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^(config/grafana/|containers/quadlet/fleet-grafana\.container$|systemd/fleet-grafana-provisioning\.|systemd/fleet-grafana-github-token\.|tests/test_(deploy_failed_(rule|engine)|grafana_fixture_drift)\.py$|\.github/workflows/ci\.yml$)'; then
             run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -1825,10 +1812,10 @@ jobs:
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
-      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine
+      - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20
-        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py
+        run: pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_deploy_failed_rule.py tests/test_queue_stuck_rule.py tests/test_deploy_failed_engine.py tests/test_grafana_fixture_drift.py
       - name: Grafana log on failure
         if: failure()
         run: docker logs grafana 2>&1 | cut -c1-400 | tail -n 40 || true

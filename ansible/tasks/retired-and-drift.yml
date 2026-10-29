@@ -1,0 +1,196 @@
+# A deleted timer file does not stop a timer the user manager already
+# loaded: it keeps running until it is stopped, and its next elapse would
+# start a unit whose files are gone. Stop it first, then drop the enable
+# link. A unit that is already gone answers non-zero, which is the state
+# this leaves behind.
+- name: Stop the retired seo-fix-kit D1 backup timer before its files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, stop, seofixkit-d1-backup.timer]
+  register: seofixkit_timer_stop
+  changed_when: seofixkit_timer_stop.rc == 0
+  failed_when: >-
+    seofixkit_timer_stop.rc != 0
+    and 'not loaded' not in seofixkit_timer_stop.stderr | lower
+    and 'does not exist' not in seofixkit_timer_stop.stderr | lower
+  notify:
+    - Reload nish's user manager
+
+- name: Disable the retired seo-fix-kit D1 backup timer before its files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, seofixkit-d1-backup.timer]
+  register: seofixkit_timer_disable
+  changed_when: seofixkit_timer_disable.rc == 0
+  failed_when: >-
+    seofixkit_timer_disable.rc != 0
+    and 'not loaded' not in seofixkit_timer_disable.stderr | lower
+    and 'does not exist' not in seofixkit_timer_disable.stderr | lower
+
+# The old hand-placed alertmanager config is the Telegram chat id's only
+# source on a box that never seeded the id file (#10146). Refuse to delete
+# it while that is true: with no chat id, alertmanager does not start and
+# the dead-man heartbeat and pages stop.
+- name: Stat the retired alertmanager copy and the chat id file
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/prometheus/alertmanager.yml
+    - /etc/prometheus/telegram_chat_id
+  register: retired_alertmanager
+
+- name: Refuse to delete the old alertmanager config while it holds the only chat id
+  ansible.builtin.assert:
+    that:
+      - not (retired_alertmanager.results[0].stat.exists and not retired_alertmanager.results[1].stat.exists)
+    fail_msg: >-
+      /etc/prometheus/alertmanager.yml is the only copy of the Telegram chat
+      id (/etc/prometheus/telegram_chat_id is missing). Copy the id into the
+      id file, then rerun; the old config is left in place until then.
+
+# The bridge was disabled and inactive when the audit found it, but stop it
+# first anyway, so a box that still had it running loses the listener before
+# the unit file goes. smbd.service and its Tailscale drop-in stay.
+- name: Stat the retired SMB bridge unit
+  ansible.builtin.stat:
+    path: /etc/systemd/system/tiny-studio-smb-bridge.service
+  register: retired_smb_bridge
+
+- name: Stop and disable the retired SMB bridge
+  ansible.builtin.systemd_service:
+    name: tiny-studio-smb-bridge.service
+    state: stopped
+    enabled: false
+  when: retired_smb_bridge.stat.exists
+
+# The Leviathan index timers and the Executor hub (#10625) were stopped and
+# disabled at runtime on 2026-10-28, but a box that still has them enabled
+# would fire a timer whose files this play is about to delete. Stop, then drop
+# the enable link, as the seo-fix-kit timer above does. A unit that is already
+# gone answers non-zero, which is the state this leaves behind.
+- name: Stop the retired Leviathan index timers and the Executor hub before their files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, stop, "{{ item }}"]
+  loop:
+    - leviathan-index@claude.timer
+    - leviathan-index@pi.timer
+    - leviathan-index@claude.service
+    - leviathan-index@pi.service
+    - executor.service
+  register: retired_index_executor_stop
+  changed_when: retired_index_executor_stop.rc == 0
+  failed_when: >-
+    retired_index_executor_stop.rc != 0
+    and 'not loaded' not in retired_index_executor_stop.stderr | lower
+    and 'does not exist' not in retired_index_executor_stop.stderr | lower
+  notify:
+    - Reload nish's user manager
+
+- name: Disable the retired Leviathan index timers and the Executor hub before their files go
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, "{{ item }}"]
+  loop:
+    - leviathan-index@claude.timer
+    - leviathan-index@pi.timer
+    - executor.service
+  register: retired_index_executor_disable
+  changed_when: retired_index_executor_disable.rc == 0
+  failed_when: >-
+    retired_index_executor_disable.rc != 0
+    and 'not loaded' not in retired_index_executor_disable.stderr | lower
+    and 'does not exist' not in retired_index_executor_disable.stderr | lower
+
+# The four CLI listener lanes (#44 item 9): their unit files leave the repo in
+# this release, and Restart=always would keep `cursor-agent --yolo`, `devin
+# --permission-mode dangerous` and the rest reading the inbox until something
+# stopped them. The root-scope units take systemd_service, the user-scope copies
+# step 2j of fleet-sync.service linked take nish's user manager. A unit that is
+# already gone is the state this leaves behind.
+- name: Stop and disable the retired CLI listener units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_off
+  failed_when:
+    - retired_cli_listener_off.failed | default(false)
+    - "'Could not find' not in (retired_cli_listener_off.msg | default(''))"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Stop and disable the retired CLI listeners in nish's user manager
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_user_off
+  changed_when: retired_cli_listener_user_off.rc == 0
+  failed_when: >-
+    retired_cli_listener_user_off.rc != 0
+    and 'not loaded' not in retired_cli_listener_user_off.stderr | lower
+    and 'does not exist' not in retired_cli_listener_user_off.stderr | lower
+  notify:
+    - Reload nish's user manager
+
+# Files the repo used to leave live and now removes, and files a session
+# hand-installed that the repo or a product repo now owns. Each path is named,
+# so a deletion is always a reviewed line in this file. system.control
+# holds `systemctl set-property` leftovers: the fleet-ci MemoryMax moved
+# to rootfs/.../netcup-fleet-ci-.service.d/10-fleet-ci.conf, the github-*
+# slices no longer exist on this box (no unit loaded 2026-10-03), and the
+# user-1000 `CPUQuota=` is empty, the same as unset.
+- name: Remove retired host files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ retired }}"
+  notify:
+    - Reload systemd
+    - Reload nish's user manager
+
+# Drift: the copy tasks above already put back any hand edit to a file the
+# repo ships. What is left is a file on the box that the repo does not
+# ship: a hand install. Fail on it, so it pages instead of living on
+# unreviewed. /etc/systemd/system.control must stay empty, because
+# `systemctl set-property` without --runtime writes there and bypasses
+# the repo. Symlinks are enable/mask state, not config, so only regular
+# files count.
+- name: List config files on the box in the directories the repo owns
+  ansible.builtin.find:
+    paths: "{{ owned_dirs }}"
+    recurse: true
+    file_type: file
+    hidden: true
+  register: live
+
+- name: List the files rootfs/ ships
+  ansible.builtin.find:
+    paths: "{{ rootfs }}/etc"
+    recurse: true
+    file_type: any
+    hidden: true
+  register: shipped
+
+- name: Fail on a hand-installed file
+  ansible.builtin.assert:
+    that: unmanaged | length == 0
+    fail_msg: "Hand-installed, not in fleet-ops rootfs/ (add it to the repo, delete it, or list it in /etc/fleet-ops/box-only): {{ unmanaged | join(', ') }}"
+    quiet: true
+  vars:
+    shipped_paths: "{{ shipped.files | rejectattr('isdir') | map(attribute='path') | map('replace', rootfs, '') | list }}"
+    unmanaged: >-
+      {{ live.files | map(attribute='path')
+         | difference(shipped_paths) | difference(box_only)
+         | reject('search', package_files | join('|'))
+         | reject('search', '^(' ~ (retired | map('regex_escape') | join('|')) ~ ')(/|$)')
+         | sort }}
+
+# Last on purpose: the handlers run first, so a missing credential file
+# fails this run without holding back the reloads above.
+- name: Apply pending handlers before the credential check
+  ansible.builtin.meta: flush_handlers
