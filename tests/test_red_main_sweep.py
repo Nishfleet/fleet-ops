@@ -140,11 +140,11 @@ def test_no_finished_run_does_nothing():
 
 def test_no_finished_run_and_no_default_branch_trigger_closes_its_open_issue():
     v = decide("hand.yml", None, [issue(5, file="hand.yml")], trig=("workflow_dispatch",))
-    assert v == {"action": "close", "issues": [5], "reason": "hand-only, so it cannot be green there on its own"}
+    assert v == {"action": "close", "issues": [5], "reason": "not triggered by push, schedule or workflow_run, so it cannot be green there on its own"}
 
 
 def test_no_finished_run_and_no_default_branch_trigger_leaves_a_claimed_issue_alone():
-    v = decide("hand.yml", None, [issue(5, file="hand.yml", labels=("agent-in-progress",))], trig=())
+    v = decide("hand.yml", None, [issue(5, file="hand.yml", labels=("agent-in-progress",))], trig=("workflow_dispatch",))
     assert v == {"action": "none", "issues": [], "reason": "no trigger that runs on the default branch"}
 
 
@@ -445,7 +445,7 @@ def test_sweep_closes_an_issue_for_a_workflow_that_cannot_run_on_the_default_bra
     files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
     r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c hand.yml is hand-only, so it cannot be green there on its own"]
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml is not triggered by push, schedule or workflow_run, so it cannot be green there on its own"]
 
 
 def test_sweep_skips_a_workflow_whose_file_it_cannot_read(tmp_path):
@@ -462,8 +462,8 @@ def _on_shape(tmp_path, name, on, closes):
     r, log = _sweep(tmp_path, files, [issue(5, file=name)])
     assert r.returncode == 0, r.stdout + r.stderr
     assert log == (["issue close 5 -R o/r -r completed -c "
-                    f"{name} is hand-only, so it cannot be green there on its own"] if closes else [])
-    assert f"{name}: " + ("close, hand-only, so it cannot be green there on its own" if closes else "none, no finished run on the default branch") in r.stdout
+                    f"{name} is not triggered by push, schedule or workflow_run, so it cannot be green there on its own"] if closes else [])
+    assert f"{name}: " + ("close, not triggered by push, schedule or workflow_run, so it cannot be green there on its own" if closes else "none, no finished run on the default branch") in r.stdout
 
 
 def test_a_comment_before_the_first_key_does_not_hide_a_dispatch_only_trigger(tmp_path):
@@ -482,22 +482,21 @@ def test_a_bare_scalar_on_is_read(tmp_path):
     _on_shape(tmp_path, "scalar.yml", "on: push\n", False)
 
 
-def test_an_empty_on_block_has_no_trigger(tmp_path):
-    _on_shape(tmp_path, "empty.yml", "on:\n", True)
-
-
-def test_sweep_closes_an_issue_for_a_workflow_that_has_no_finished_run_at_all(tmp_path):
-    files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
-    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert log == ["issue close 5 -R o/r -r completed -c hand.yml is hand-only, so it cannot be green there on its own"]
+def test_an_on_block_with_no_trigger_name_is_unreadable_not_a_close(tmp_path):
+    files = {1: (".github/workflows/empty.yml", "active", [], FAILED_JOBS, None, "on:\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="empty.yml")])
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "::warning::empty.yml: on: block unreadable, skipped" in r.stdout
+    assert "::error::1 of 1 workflows errored and were skipped" in r.stdout
+    assert log == []
 
 
 def test_sweep_fails_when_the_on_block_of_a_workflow_is_not_yaml(tmp_path):
     files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on: [push,\n")}
     r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
-    assert r.returncode != 0
-    assert "hand.yml: on: block unreadable, skipped" in r.stdout
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "::warning::hand.yml: on: block unreadable, skipped" in r.stdout
+    assert "::error::1 of 1 workflows errored and were skipped" in r.stdout
     assert log == []
 
 
