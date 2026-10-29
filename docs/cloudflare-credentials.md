@@ -23,18 +23,35 @@ worker packet whose acceptance needs the Cloudflare API parks with
 An interactive host session reads the token from the file, never prints it, and never copies it
 into a repo, PR or issue.
 
-## The two long-lived tokens
+## The long-lived tokens
 
 ### `~/.config/cloudflare/deploy-ci.env`
 
-User token, no expiry: Workers scripts, D1, KV, Zone read, GraphQL analytics
-(proven 2026-09-22: workers list, D1 list, KV list, `workersInvocationsAdaptive`).
-Use it for preview uploads and analytics queries.
+`CLOUDFLARE_API_TOKEN`, GraphQL analytics read only, valid only from this VPS's
+IPs, minted and rotated by `infra/cloudflare-tokens` (token key `vps-grafana`,
+45-day expiry, weekly apply). The file is written 0600 by that config and read
+by `ansible/host.yml` into the `grafana-cloudflare-api-token` Podman secret, so
+Grafana's Cloudflare data source is the only consumer. The apply's
+`ExecStartPost` starts `fleet-host-config.service`, whose `ansible/tasks/secrets.yml`
+replaces that secret when the value changes, so a rotation does not wait for the
+next host-config run.
+
+It replaced the hand-made `deploy-ci` user token (Workers scripts, D1, KV, Zone
+read, GraphQL analytics, no expiry, no IP lock), which Nish approved retiring on
+2026-10-23 (fleet-ops#10169). A preview upload or an analytics query from a hand
+session takes a 24-hour `job-*` token from the mint gate below.
+
+The old hand-made token is **not yet revoked**: it stays valid in Cloudflare
+until the owner deletes it in the dashboard, because the key-maker token may not
+delete a standing token and no runner lane can reach the token list. Until that
+delete, a copy of the old value still works from this host, so "the old token is
+invalid" is a step of the rotation, not a result of the merge.
 
 **Never use it for restore drills or any other D1 create, import, execute-write or
 delete.** A restore drill imports a backup into a local SQLite file (`sqlite3`) and
 compares row counts there; it never creates a Cloudflare database. Restore drills
-need no D1 Write token; a live row count is one read-only `COUNT` query.
+need no D1 Write token; a live row count is one read-only `COUNT` query, and it
+comes from a `job-*` token.
 
 Scratch D1 databases made by drills wrote 17M rows in 5 days (14-19 Sep) and 205k
 rows in one hour (15 Oct, fleet-ops#9781). The `cf-d1-rows-written` alarm fires
@@ -65,8 +82,8 @@ Account id: the `account_id` default in `infra/cloudflare-tokens/variables.tf`
 (an identifier, not a credential).
 
 **The minter must never be used to edit, roll or delete any token whose name does
-not start with `job-`.** That covers `deploy-ci`, `email`, the minter itself and
-everything else. Check the name first.
+not start with `job-`.** That covers the retired `deploy-ci` token, `email`, the
+minter itself and everything else. Check the name first.
 
 ### The gate
 
@@ -90,10 +107,11 @@ these hold:
 
 Anything long-lived (no expiry, or more than 24h) or broader than the gate goes
 only through a reviewed fleet-ops PR to `infra/cloudflare-tokens` (OpenTofu, PR
-9489); the PR review is the approval step. The existing long-lived `deploy-ci` and
-`email` tokens move under `infra/cloudflare-tokens` via issue 9490; until then
-they are out of scope for the minter: do not mint, roll, edit or delete them with
-it.
+9489); the PR review is the approval step. That is how the long-lived VPS
+`deploy-ci` token moved under the config (fleet-ops#10169, token key
+`vps-grafana`); the `email` token has not moved yet. The standing `deploy-ci`
+value stays out of scope for the minter until it is deleted: do not mint, roll,
+edit or delete it.
 
 ### The order of operations
 

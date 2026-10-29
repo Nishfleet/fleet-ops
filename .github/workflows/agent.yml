@@ -1052,17 +1052,19 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
-      # and a PR from a fork never reaches here at all.
+      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). Its reads run on the
+      # job's token, not the runner login's: that login's core quota can be exhausted by other work, which reddened an
+      # approved head (fleet-ops#10970). The label and comment calls keep the runner login, because a label or comment
+      # posted by GITHUB_TOKEN fires no workflow event (agent-dispatch.yml, the workflow_dispatch input note), so the
+      # orchestrator is never dispatched. A PR from a fork never reaches here at all.
       - name: Send a blocked orch PR back to the orchestrator
+        env: {GH_TOKEN: "${{ github.token }}"}
         run: |
           set -euo pipefail
-          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
-          [ "$n" != "$ref" ] || exit 0
+          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}; [ "$n" != "$ref" ] || exit 0
           rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          labels=$(gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty'); grep -q . <<<"$labels" && exit 0
           rounds=$(grep -c . <<<"$rev")
           if [ "$rounds" -gt 3 ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
