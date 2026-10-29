@@ -252,6 +252,36 @@
       - "{{ nish_home }}/.local/bin/CHANGELOG.md"
       - "{{ nish_home }}/.local/bin/LICENSE"
       - "{{ nish_home }}/.local/bin/share"
+      # The four CLI listener lanes (#44 item 9): the repo stopped shipping their
+      # units with the lanes, so the installed copy and its drop-in directory,
+      # the user-scope links step 2j of fleet-sync.service made, and the enable
+      # links nish's user manager holds all go. Left behind, the /etc copies fail
+      # the drift check and the dangling user links fail the LINK-GUARD pass. The
+      # tasks above stop and disable both scopes first. The devin drop-in is the
+      # one hand `ln -s` in that set.
+      - /etc/systemd/system/tincan-listen-command-code.service
+      - /etc/systemd/system/tincan-listen-command-code.service.d
+      - /etc/systemd/system/tincan-listen-cursor-vps.service
+      - /etc/systemd/system/tincan-listen-cursor-vps.service.d
+      - /etc/systemd/system/tincan-listen-devin-vps.service
+      - /etc/systemd/system/tincan-listen-devin-vps.service.d
+      - /etc/systemd/system/tincan-listen-opencode.service
+      - /etc/systemd/system/tincan-listen-opencode.service.d
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-command-code.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-devin-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-devin-vps.service.d/80-hardening.conf"
+      - "{{ nish_home }}/.config/systemd/user/tincan-listen-opencode.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-command-code.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-cursor-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-devin-vps.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/tincan-listen-opencode.service"
+      # The OpenCode managed config: it set chrome-devtools for the opencode CLI
+      # (agent-policy.yml no longer writes it), and no reader is left.
+      - /etc/opencode/opencode.json
+      # Retired: the unit runs the packaged /usr/bin/syncthing now, and this
+      # copy comes first on PATH (#10844).
+      - "{{ nish_home }}/.local/bin/syncthing"
     # Files kept off GitHub on purpose (they reveal access paths or backup
     # targets) are listed, one path per line, in /etc/fleet-ops/box-only on
     # the box itself. That one file is the only hand-kept list.
@@ -300,16 +330,10 @@
       - /usr/bin/google-chrome
       - --no-usage-statistics
       - --no-performance-crux
-    chrome_devtools_mcp_command: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
-    chrome_devtools_mcp_words: "{{ [chrome_devtools_mcp_bin] + chrome_devtools_mcp_args }}"
     drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
     drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
-    drive_mcp_servers: "{{ {'drive': drive_mcp_entry | combine({'args': drive_mcp_words[1:]})} }}"
     nish_config: "{{ nish_home }}/.config"
     agent_share: "{{ nish_home }}/.local/share"
-    commandcode_seat_file: "{{ nish_config }}/fleet-ops/seats/commandcode.env"
-    commandcode_auth_dir: "{{ nish_home }}/.commandcode"
-    commandcode_auth_file: "{{ commandcode_auth_dir }}/auth.json"
     # The LiteLLM Redis password: ONE root-only file that the stock password lookup creates
     # when it is missing; the Redis requirepass fragment and the proxy env file are rendered
     # from it on every run, so the two cannot differ. Deleting the file mints a new password,
@@ -325,8 +349,6 @@
       - {name: grafana-telegram-home-channel, src: "{{ nish_home }}/.hermes/.env", key: TELEGRAM_HOME_CHANNEL}
       - {name: grafana-cloudflare-api-token, src: "{{ nish_home }}/.config/cloudflare/deploy-ci.env", key: CLOUDFLARE_API_TOKEN}
       - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
-    commandcode_key_re: 'COMMANDCODE_API_KEY=["'']?([^"''\s]+)["'']?[ \t]*\r?$'
-    commandcode_seat_key: "{{ (commandcode_seat.content | default('') | b64decode) | regex_findall('(?m)^(?:export +)?' ~ commandcode_key_re) | last | default('') }}"
 
   tasks:
     - ansible.builtin.import_tasks: tasks/install-config.yml
@@ -349,6 +371,8 @@
 
     - ansible.builtin.import_tasks: tasks/services.yml
 
+    - ansible.builtin.import_tasks: tasks/syncthing.yml
+
     - ansible.builtin.import_tasks: tasks/gh-cli.yml
 
     - ansible.builtin.import_tasks: tasks/retired-and-drift.yml
@@ -364,6 +388,63 @@
     - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
+
+    # The sandbox is read at unit start, so an installed drop-in reaches no running runner
+    # until it restarts. One runner first, its own mount namespace read back, then the pool:
+    # a drop-in the unit refuses fails the deploy on one runner instead of taking every
+    # runner down blind, and the read is the proof the sandbox reached a running runner
+    # (fleet-ops#10866). A handler runs only when something notifies it, and its place in
+    # this list only sets the order, so all four listen to one topic.
+    #
+    # The canary is runner 2, not runner 1: tasks/pilot-and-retired-runners.yml leaves the
+    # pilot runner 1 stopped and disabled while it carries the agent label, and `restarted`
+    # on a stopped unit starts it, which is the state fleet-ops#10706 removed. The canary
+    # has to be a runner this play leaves running. A host with no such unit stops the deploy
+    # here with "Could not find the requested service", which is the loud result to want
+    # over a pool restart with no runner to read back first.
+    - name: Restart one agent runner
+      listen: Restart the agent runners
+      ansible.builtin.systemd_service:
+        name: actions.runner.Nishfleet.netcup-agent-2.service
+        state: restarted
+
+    - name: Read the main pid of that runner
+      listen: Restart the agent runners
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - show
+          - -p
+          - MainPID
+          - --value
+          - actions.runner.Nishfleet.netcup-agent-2.service
+      register: agent_runner_pid
+      changed_when: false
+
+    # The clone is bound with a `-` prefix, so a clone directory that is missing lets the
+    # runner start without the bind. This grep then fails the deploy, which is the result to
+    # want: a missing clone stops the deploy instead of leaving a runner without its guard.
+    - name: Fail unless that runner mounts the deploy clone read-only
+      listen: Restart the agent runners
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/grep
+          - -Eq
+          - "fleet-ops-deploy-clone ro(,|$)"
+          - "/proc/{{ agent_runner_pid.stdout | trim }}/mountinfo"
+      changed_when: false
+
+    # Runners 3 and up: the handlers above restart runner 2, and runner 1 stays stopped. One
+    # digit 3-9 and any two-digit id cover a runner this file never names, and a pattern that
+    # matches nothing is a success, so a host with no runner converges.
+    - name: Restart the rest of the agent runners
+      listen: Restart the agent runners
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - try-restart
+          - actions.runner.Nishfleet.netcup-agent-[3-9].service
+          - actions.runner.Nishfleet.netcup-agent-[0-9][0-9].service
 
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket

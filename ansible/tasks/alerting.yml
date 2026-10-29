@@ -4,20 +4,42 @@
 # silence and mute a page. The stock answer is Alertmanager's own
 # --web.config.file, which puts basic auth in front of the whole API.
 #
-# The two files that switch it on are hand-placed host state, like deadman_url
-# and the bot token: never in the repo, and never readable by nish. A credential
-# nish could read would protect nothing, because every process that can reach
-# the listener runs as nish or as the tether user this play itself creates, and
-# both are one sudo away from it. This block owns their shape and their
-# ownership, never their bytes.
-#
-# Until both halves are in place the prometheus config install below is skipped.
-# prometheus.yml now names the password file under basic_auth, and a config
-# that points at a file which is not there starts Prometheus but silently stops
-# every alert push, Watchdog included. Skipping keeps the old prometheus config
-# and the old loopback-only options file in force, so alerting keeps working
-# while the last assert of the play fails loudly and names the pair. One root
-# step fixes it for good: the runbook in the W15 proof folder.
+# The two files that switch it on are made here on the first run, as root, and
+# never overwritten: a random password Prometheus sends, and the web config with
+# its bcrypt hash. No person or agent handles the bytes, they are never in the
+# repo, and nish cannot read them (every process that reaches the listener runs
+# as nish or tether, so a credential nish could read would protect nothing).
+# The username matches prometheus.yml's basic_auth.
+
+- name: Make the password Prometheus authenticates to alertmanager with
+  ansible.builtin.copy:
+    dest: /etc/prometheus/alertmanager_password
+    content: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}\n"
+    force: false
+    owner: prometheus
+    group: prometheus
+    mode: "0600"
+  no_log: true
+
+- name: Read that password
+  ansible.builtin.slurp:
+    src: /etc/prometheus/alertmanager_password
+  register: alertmanager_new_password
+  no_log: true
+  when: not ansible_check_mode
+
+- name: Make the alertmanager web config from it
+  ansible.builtin.copy:
+    dest: /etc/alertmanager/web.yml
+    content: |
+      basic_auth_users:
+        fleet: "{{ alertmanager_new_password.content | b64decode | trim | password_hash('bcrypt') }}"
+    force: false
+    owner: root
+    group: prometheus
+    mode: "0640"
+  no_log: true
+  when: not ansible_check_mode
 
 - name: Look for the alertmanager web config
   ansible.builtin.stat:
@@ -273,6 +295,7 @@
     url: http://127.0.0.1:9093/-/ready
     url_username: "{{ (alertmanager_prometheus.content | b64decode | from_yaml).alerting.alertmanagers[0].basic_auth.username }}"
     url_password: "{{ (alertmanager_client_password.content | b64decode).strip() }}"
+    force_basic_auth: true  # without it the module waits for a challenge and the probe sees 401
     status_code: 200
   retries: 10
   delay: 2

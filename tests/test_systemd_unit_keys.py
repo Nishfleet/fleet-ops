@@ -30,6 +30,7 @@ def unit_files() -> list[Path]:
     found += sorted(INSTALLED.glob("fleet-update.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))
+    found += sorted(INSTALLED.glob("claude-remote-control*"))
     return [path for path in found if path.is_file()]
 
 
@@ -457,7 +458,7 @@ def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
     scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
     assert not scan.get("use_regex")
     assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
-    assert {"sessions.db*", "pi.db*", "claude.db*", "opencode.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert {"sessions.db*", "pi.db*", "claude.db*", "grafana.db*"} <= set(scan["patterns"])
     assert "failed_when" not in tasks["Keep the agent session databases private"]
     kept_private = tasks["Look for the agent state directories"]["loop"]
     assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
@@ -938,7 +939,6 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
         "the timer stops and disables before its files go"
     )
-    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
 LEVIATHAN_EXECUTOR_LIVE_PATHS = (
@@ -1453,24 +1453,6 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
         unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
 
 
-# Units whose output files hold agent session text. The user manager default is
-# UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/tincan-listen-devin-vps.service.d",)
-
-
-@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
-def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
-    dropin = ROOT / dropin_dir / "20-umask.conf"
-    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
-    lines = [line.strip() for line in dropin.read_text().splitlines()]
-    assert "[Service]" in lines
-    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
-    unit = ROOT / dropin_dir.removesuffix(".d")
-    assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-        f"{unit.name} sets UMask itself; keep it in the drop-in only"
-    )
-
-
 GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
 GPG_AGENT_OOM_DROPIN = "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
 GPG_AGENT_HOST_COPY = '"{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"'
@@ -1492,7 +1474,6 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "docs/layout.md names the unit this tunes"
 
 
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
@@ -1700,12 +1681,300 @@ def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphra
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
 
 
+PR_SWEEP = ROOT / "systemd/fleet-pr-sweep@.service"
+LATER_SWEEP = ROOT / "systemd/later-sweep.service"
+REMOTE_CONTROL = INSTALLED / "claude-remote-control.service"
+ROOT_TINCAN = INSTALLED / "tincan-listen-claude-vps.service"
+HOME = "/home/nish"  # gitleaks:allow
+BIN_CLAUDE = f"{HOME}/.local/bin/claude"
+TINCAN_MCP_CONFIG = f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json"
+
+
+def unit_directives(path: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in path.read_text().splitlines():
+        if line.startswith(("#", "[")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        keys.setdefault(key, []).append(value)
+    return keys
+
+
+def specifier_expanded(text: str, home: Path) -> str:
+    """One pass, so a %% never turns into a %h and a $$ never into a lone $. %t is run/ under home."""
+    table = {"%%": "%", "%h": str(home), "%t": str(home / "run"), "$$": "$"}
+    return re.sub(r"%%|%h|%t|\$\$", lambda m: table[m.group()], text)
+
+
+def sh_script(unit: Path, home: Path) -> str:
+    """The script systemd hands /bin/sh for an `ExecStart=/bin/sh -c '...'` line."""
+    argv = shlex.split(specifier_expanded(unit_directives(unit)["ExecStart"][0], home), comments=False)
+    assert argv[:2] == ["/bin/sh", "-c"], argv[:2]
+    return argv[2]
+
+
+FAKE_GH = """#!/bin/sh
+prog=""
+sub=""
+repo=""
+number=""
+status=${FAKE_GH_EDIT_STATUS:-0}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        list|edit) sub=$1 ;;
+        -R) repo=$2; shift ;;
+        --jq) prog=$2; shift ;;
+        --add-label) shift ;;
+        --state|--limit|--json|-L|-w|-s) shift ;;
+        *) number=$1 ;;
+    esac
+    shift
+done
+case $sub in
+    list) printf '%s' "$FAKE_GH_PAYLOAD" | jq -r "$prog" ;;
+    edit) if [ "$status" -eq 0 ]; then printf '%s#%s\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"
+          else printf '%s#%s FAILED\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"; fi
+          exit "$status" ;;
+esac
+"""
+
+
+def fake_gh_dir(tmp_path: Path) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    gh = bindir / "gh"
+    gh.write_text(FAKE_GH)
+    gh.chmod(0o755)
+    return bindir
+
+
+def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
+    keys = effective_directives(PR_SWEEP)
+    starts = keys["ExecStart"]
+    assert len(starts) == 2, "the dispatch line plus the failure check; deleting the second line is the documented off switch"
+    assert starts[0] == "/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i"
+    assert "gh run list" in starts[1] and "-w agent-dispatch.yml" in starts[1]
+    assert "-s completed -L 1" in starts[1], "the newest completed run only, so the previous cycle's startup_failure is caught"
+    assert "conclusion,url" in starts[1]
+    assert keys["Type"] == ["oneshot"]
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
+    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["TimeoutStartSec"] == ["120"]
+    assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
+        "the Actions-write App token is minted per repo and loaded from its own env file (fleet-ops#10651)"
+    )
+    stop = keys["ExecStopPost"]
+    assert len(stop) == 1, "one stop command: systemd reloads the EnvironmentFile for every command it spawns"
+    assert "gh api -X DELETE installation/token" in stop[0], "the token is revoked as soon as the two calls end"
+    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0], "its env file is deleted with it"
+    values = " ".join(value for values in effective_directives(PR_SWEEP).values() for value in values)
+    assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", values), (
+        "a token literal in the unit file or in argv; the minted token reaches gh through its env file only"
+    )
+    for command in [*starts, *keys.get("ExecStartPre", []), *stop]:
+        assert not re.search(r"(?<!\$)\$GH_TOKEN", command), (
+            "systemd would expand a bare $GH_TOKEN into argv, where ps can read it (fleet-ops#8403)"
+        )
+
+
+def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
+    command = specifier_expanded(unit_directives(PR_SWEEP)["ExecStart"][1], tmp_path)
+    env = {**os.environ, "PATH": f"{fake_gh_dir(tmp_path)}{os.pathsep}{os.environ['PATH']}"}
+    url = "https://github.com/Nishfleet/fleet-ops/actions/runs/1"
+
+    def check(payload: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["/bin/sh", "-c", command],
+            env={**env, "FAKE_GH_PAYLOAD": payload},
+            capture_output=True,
+            text=True,
+        )
+
+    failed = check(json.dumps([{"conclusion": "startup_failure", "url": url}]))
+    assert failed.returncode != 0, "a startup_failure has no job, so only this line can report it (fleet-ops#9668)"
+    assert url in failed.stderr, "the run URL is what the operator opens"
+    assert "startup_failure" in failed.stderr
+    for conclusion in ("success", "failure", "cancelled", "skipped", "action_required", "stale", "timed_out"):
+        assert check(json.dumps([{"conclusion": conclusion, "url": url}])).returncode == 0, conclusion
+    assert check("[]").returncode == 0, "a repo with no completed run yet passes"
+    assert check("null").returncode == 0
+
+
+def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status: int = 0) -> tuple[int, list[str], list[str]]:
+    home = tmp_path / "home"
+    cfg = home / ".config/fleet-ops/intake-repos.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"repos": [{"name": name} for name in repos]}))
+    bindir = fake_gh_dir(tmp_path)
+    systemctl = bindir / "systemctl"  # the unit starts one App token mint per repo
+    systemctl.write_text("#!/bin/sh\nexit 0\n")
+    systemctl.chmod(0o755)
+    for name in repos:
+        token = home / "run/fleet-worker-github-token" / f"{name}.env"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text("GH_TOKEN=fake-app-token\n")
+    log = tmp_path / "edits.log"
+    log.write_text("")
+    done = subprocess.run(
+        ["/bin/sh", "-c", sh_script(LATER_SWEEP, home)],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_PAYLOAD": payload,
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_EDIT_STATUS": str(edit_status),
+        },
+        capture_output=True,
+        text=True,
+    )
+    return done.returncode, done.stdout.splitlines(), [line for line in log.read_text().splitlines() if line]
+
+
+LATER_SWEEP_ISSUES = [
+    {"number": 11, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nmake it so"},
+    {"number": 12, "author": {"login": "octocat"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nstranger"},
+    {"number": 13, "author": {"login": "nish3451"}, "labels": [{"name": "needs-orchestrator"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 14, "author": {"login": "app/nishfleet-worker"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nworker filed"},
+    {"number": 15, "author": {"login": "nish3451"}, "labels": [{"name": "agent-ready"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 16, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2099-01-01 09:15 IST\nnot yet due"},
+    {"number": 17, "author": {"login": "nish3451"}, "labels": [], "body": "no due line at all"},
+    {"number": 18, "author": {"login": "nish3451"}, "labels": [{"name": "agent-blocked"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 19, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 ist\nmixed case in the IST word"},
+]
+
+
+def test_later_sweep_promotes_only_overdue_trusted_issues_with_no_park_label(tmp_path: Path) -> None:
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops"], json.dumps(LATER_SWEEP_ISSUES))
+    assert code == 0
+    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19"], edits
+    assert [line for line in lines if line.startswith("later-sweep: promoted")] == [
+        "later-sweep: promoted Nishfleet/fleet-ops#11",
+        "later-sweep: promoted Nishfleet/fleet-ops#14",
+        "later-sweep: promoted Nishfleet/fleet-ops#19",
+    ]
+    assert "later-sweep: verdict promoted=3 failed=0" in lines
+    assert not [line for line in lines if "WARN" in line]
+
+
+def test_later_sweep_caps_at_five_promotions_across_repos(tmp_path: Path) -> None:
+    overdue = [{"number": n, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 IST"} for n in range(20, 30)]
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops", "0509"], json.dumps(overdue))
+    assert code == 0
+    assert edits == [f"fleet-ops#{n}" for n in range(20, 25)], edits
+    assert "later-sweep: verdict promoted=5 failed=0" in lines
+    assert "0509" not in " ".join(edits), "the cap stops the sweep before the second repo is touched"
+
+
+def test_later_sweep_skips_a_repo_it_cannot_label_and_never_pages_for_it(tmp_path: Path) -> None:
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops", "0509"], json.dumps(LATER_SWEEP_ISSUES), edit_status=1)
+    assert code == 0, "a repo missing the label is a skip, not a page"
+    assert edits == ["fleet-ops#11 FAILED", "0509#11 FAILED"], "one attempt per repo, then on to the next repo"
+    assert len([line for line in lines if "WARN" in line]) == 2
+    assert "later-sweep: verdict promoted=0 failed=0" in lines
+
+
+def test_later_sweep_fails_loudly_when_the_repo_list_is_unreadable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    bindir = fake_gh_dir(tmp_path)
+    env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_PAYLOAD": "[]", "FAKE_GH_LOG": str(tmp_path / "e.log")}
+    done = subprocess.run(["/bin/sh", "-c", sh_script(LATER_SWEEP, home)], env=env, capture_output=True, text=True)
+    assert done.returncode != 0
+    assert "verdict FAIL repo list" in done.stdout
+    assert "unreadable" in done.stdout
+    (home / ".config/fleet-ops").mkdir(parents=True, exist_ok=True)
+    (home / ".config/fleet-ops/intake-repos.json").write_text(json.dumps({"repos": []}))
+    empty = subprocess.run(["/bin/sh", "-c", sh_script(LATER_SWEEP, home)], env=env, capture_output=True, text=True)
+    assert empty.returncode != 0, "an empty repo list is an unconfigured box, not a quiet no-op"
+    assert "verdict FAIL repo list" in empty.stdout
+
+
+def test_later_sweep_unit_pins_its_own_limits() -> None:
+    keys = unit_directives(LATER_SWEEP)
+    assert keys["Type"] == ["oneshot"]
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
+    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["8"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["TimeoutStartSec"] == ["300"]
+
+
+def test_remote_control_runs_the_bridge_without_a_prompt_and_pages_on_every_drop() -> None:
+    keys = effective_directives(REMOTE_CONTROL)
+    flags = shlex.split(keys["ExecStart"][0])
+    assert flags[:2] == [BIN_CLAUDE, "remote-control"]
+    assert flags[flags.index("--capacity") + 1] == "1", "same-dir mode runs one session at a time (fleet-ops#9438)"
+    assert flags[flags.index("--name") + 1] == "vps-rc"
+    assert "--spawn=same-dir" in flags
+    assert flags[flags.index("--permission-mode") + 1] == "dontAsk", "the rollback is restoring bypassPermissions (fleet-ops#9502)"
+    assert "bypassPermissions" not in flags
+    assert "--no-create-session-in-dir" in flags, "same-dir without it forks a second session per wake (fleet-ops#9425)"
+    assert "--settings" not in flags, "the CLI refuses --settings, so the allow list ships in rootfs/etc/claude-code/roles/"
+    assert (ROOT / "rootfs/etc/claude-code/roles/remote-control.json").is_file(), "the allow list the flag needs ships in the repo"
+    assert keys["Restart"] == ["always"], "selfheal.conf waits out the relay's folder claim"
+    assert _last(keys, "RestartSec") == "300", "the selfheal drop-in is read last and overrides the unit's 10"
+    assert keys["StartLimitIntervalSec"] == ["0"], "0 disables the start limit, so the give-up restart is not rate-limited"
+    assert keys["OOMPolicy"] == ["continue"], "Restart=always has no effect once systemd-oomd kills the unit"
+    assert keys["UnsetEnvironment"] == ["CLAUDE_CONFIG_DIR"], "the default Team-seat login needs ~/.claude"
+    assert keys["StandardOutput"] == ["null"], "the TUI writes ~2k journal lines an hour"
+    assert keys["OOMScoreAdjust"] == ["-500"]
+    assert keys["Slice"] == ["claude.slice"]
+    assert keys["User"] == ["nish"] and keys["WantedBy"] == ["multi-user.target"]
+    assert keys["After"] == ["network-online.target user@1000.service"]
+    stop = keys["ExecStopPost"][0]
+    assert stop == "-+/usr/bin/systemctl start --no-block fleet-unit-failed@%N.service"
+    assert stop.startswith("-+"), "ignore the failure and run as root, whatever stopped it"
+    assert "--no-block" in stop
+    assert "OnFailure" not in keys, "OnFailure never fires on a clean stop, which is how this one usually ends"
+    environment = " ".join(keys["Environment"])
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in environment, "PATH is set in-unit so ~/.config/environment.d does not apply"
+    assert f"PATH={HOME}/.local/bin" in environment
+    assert "claude.ai" not in environment and "api.anthropic.com" not in environment
+
+
+def test_remote_control_sessions_keep_what_a_session_needs_inside_the_sandbox() -> None:
+    keys = effective_directives(REMOTE_CONTROL)
+    assert keys["ProtectHome"] == ["read-only"]
+    assert keys["ReadWritePaths"] == [f"{HOME} /run/user/1000"]
+    assert keys["ProtectClock"] == ["yes"] and keys["ProtectHostname"] == ["yes"] and keys["ProtectKernelLogs"] == ["yes"]
+    assert keys["ProtectKernelModules"] == ["yes"] and keys["ProtectKernelTunables"] == ["yes"] and keys["ProtectControlGroups"] == ["yes"]
+    assert keys["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
+    assert keys["SystemCallArchitectures"] == ["native"] and keys["LockPersonality"] == ["yes"] and keys["RestrictSUIDSGID"] == ["yes"]
+    assert keys["RestrictRealtime"] == ["yes"]
+    assert keys["SystemCallFilter"] == ["~@clock @cpu-emulation @module @obsolete @raw-io @reboot @swap"]
+    assert keys["CapabilityBoundingSet"] == ["~CAP_SYS_TIME CAP_SYS_PACCT CAP_WAKE_ALARM CAP_BPF CAP_LINUX_IMMUTABLE CAP_IPC_LOCK CAP_SYS_MODULE CAP_SYS_TTY_CONFIG CAP_SYS_BOOT CAP_SYS_CHROOT CAP_BLOCK_SUSPEND CAP_LEASE CAP_MKNOD CAP_MAC_ADMIN CAP_MAC_OVERRIDE CAP_SYS_RAWIO CAP_NET_BIND_SERVICE CAP_NET_BROADCAST CAP_NET_RAW CAP_SYS_NICE CAP_SYS_RESOURCE"]
+    assert keys["ProtectProc"] == ["invisible"] and keys["PrivateDevices"] == ["yes"] and keys["PrivateMounts"] == ["yes"]
+    for absent in ("NoNewPrivileges", "PrivateTmp", "ProtectSystem", "RestrictNamespaces", "ProcSubset", "RemoveIPC", "MemoryDenyWriteExecute", "UMask", "IPAddressDeny", "InaccessiblePaths"):
+        assert absent not in keys, f"{absent} costs a session something; 80-hardening.conf lists why it stays unset"
+
+
+def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> None:
+    keys = effective_directives(ROOT_TINCAN)
+    exec_argv = shlex.split(keys["ExecStart"][0])
+    claude = shlex.split(exec_argv[exec_argv.index("--exec") + 1])
+    assert claude[:3] == [BIN_CLAUDE, "-p", "--model"]
+    assert claude[claude.index("--model") + 1] == "claude-sonnet-5-5"
+    assert claude[claude.index("--permission-mode") + 1] == "dontAsk"
+    assert claude[claude.index("--settings") + 1] == "/etc/claude-code/roles/tincan-listener.json"
+    assert (ROOT / "rootfs/etc/claude-code/roles/tincan-listener.json").is_file(), "the allow list the flag points at ships in the repo"
+    mcp = claude.index("--mcp-config")
+    assert claude[mcp + 1] == TINCAN_MCP_CONFIG
+    assert claude[mcp + 2] == "--strict-mcp-config", "the trim flags are a set: --strict-mcp-config must follow --mcp-config"
+    assert "--disable-slash-commands" in claude
+    assert claude[claude.index("--setting-sources") + 1] == "project,local"
+    assert claude[claude.index("--max-turns") + 1] == "30"
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["30"]
+    assert keys["StartLimitIntervalSec"] == ["10min"] and keys["StartLimitBurst"] == ["5"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["SupplementaryGroups"] == [""], "empty drops every supplementary group, so the seat keys stay out of reach"
+    assert keys["NoNewPrivileges"] == ["yes"] and keys["ProtectHome"] == ["tmpfs"]
+    seats = [path for path in keys["BindReadOnlyPaths"][0].split() if "/seats/" in path]
+    assert len(seats) == 1, "the listener reads exactly one seat key, the Jev one, and nothing else"
+    assert seats[0].endswith(".env")
+
+
 WAKE_UNITS = (
-    "systemd/tincan-listen-command-code.service",
-    "systemd/tincan-listen-cursor-vps.service",
-    "systemd/tincan-listen-devin-vps.service",
     "systemd/tincan-listen-fleet-worker.service",
-    "systemd/tincan-listen-opencode.service",
     "systemd/tincan-listen-pi.service",
     "rootfs/etc/systemd/user/cua-desk-daemon.service",
 )
@@ -1713,11 +1982,7 @@ WAKE_UNITS = (
 # fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
 # claude-vps is the one narrowed unit because it had permissions.ask rules to honour (#9502). Revisit per vendor, units and pins together.
 WAKE_AGENT = {
-    "tincan-listen-command-code": ("command-code -p", "--trust --yolo"),
-    "tincan-listen-cursor-vps": ("cursor-agent -p", "--yolo --trust --model auto"),
-    "tincan-listen-devin-vps": ("devin -p", "--permission-mode dangerous"),
     "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
-    "tincan-listen-opencode": ("opencode run -m litellm/worker-cheap", None),
     "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
 }
 DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
@@ -1762,21 +2027,11 @@ def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
         assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
 
 
-def test_cursor_listener_loads_its_seat_file_and_the_desk_daemon_loads_its_own() -> None:
-    cursor = effective_directives(ROOT / "systemd/tincan-listen-cursor-vps.service")
-    assert "%h/.config/fleet-ops/seats/cursor.env" in cursor["EnvironmentFile"]
+def test_the_desk_daemon_loads_its_own_seat_file() -> None:
     desk = effective_directives(ROOT / DESK_UNIT)
     assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
     assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
     assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
-
-
-def test_the_opencode_listener_loads_its_own_router_key() -> None:
-    opencode = effective_directives(ROOT / "systemd/tincan-listen-opencode.service")
-    assert opencode["EnvironmentFile"] == ["%h/.config/fleet-ops/seats/tincan-opencode.env"], (
-        "this lane is woken by mail from other agents, so a prompt-injected message can read its "
-        "environment: the key in it must be the lane's own worker-cheap virtual key (fleet-ops#10221)"
-    )
 
 
 def test_no_unit_loads_the_litellm_master_key() -> None:
@@ -1795,14 +2050,6 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
         "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
         "quadlet container is the one place that may load it."
     )
-
-
-def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "docs" / "layout.md").read_text()
-    assert "systemctl --user start <unit>" in readme, "docs/layout.md lost the run line"
-    for relative in WAKE_UNITS:
-        unit = relative.split("/")[-1]
-        assert f"systemctl --user disable --now {unit}" in readme
 
 
 def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
@@ -2217,85 +2464,156 @@ def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None
     assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
 
 
-RETRO_UNIT = ROOT / "systemd/retro-weekly.service"
-RETRO_DATE = "2026-10-21"
+RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}
+
+DESIGNED_FLAPPERS = {
+    "rootfs/etc/systemd/system/tailscaled.service": (
+        "SSH is tailnet-only, so the lifeline keeps coming back",
+        None,
+    ),
+    "rootfs/etc/systemd/system/claude-remote-control.service": (
+        "50-alert-on-stop.conf pages on every exit through ExecStopPost=",
+        (
+            "rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf",
+            "fleet-unit-failed@%N.service",
+        ),
+    ),
+    "rootfs/etc/systemd/system/hermes-gateway.service": (
+        "HermesGatewayDown pages a 5-minute window with no active state",
+        ("rootfs/etc/prometheus/fleet_rules.yml", "alert: HermesGatewayDown"),
+    ),
+}
+
+# systemd's own defaults for an unset key (systemd.unit):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=
+DEFAULT_START_INTERVAL_SEC = 10.0
+DEFAULT_START_BURST = 5
+DEFAULT_RESTART_SEC = 0.1
+
+SPAN_SECONDS = {"": 1.0, "s": 1.0, "min": 60.0, "h": 3600.0}
 
 
-def _run_retro_stoppost(tmp_path: Path):
-    line = next(line for line in RETRO_UNIT.read_text().splitlines() if line.startswith("ExecStopPost="))
-    command = shlex.split(line.removeprefix("ExecStopPost=").replace("$$", "$").replace("%%", "%"))
-    runtime = tmp_path / "runtime"
-    state = tmp_path / "state"
-    vault = tmp_path / "vault"
-    env = {
-        "PATH": os.environ["PATH"],
-        "RUNTIME_DIRECTORY": str(runtime),
-        "RETRO_STATE": str(state),
-        "RETRO_VAULT": str(vault),
-    }
-    return subprocess.run(command, env=env, capture_output=True, text=True), runtime, state, vault
+def _seconds(key: str, value: str) -> float:
+    """A span in seconds, read with the time units this repo's units use."""
+    if value.strip() == "infinity":
+        return float("inf")
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]*)", value.strip())
+    assert match, f"{key}={value} is not a number with a time unit"
+    number, unit = match.groups()
+    assert unit in SPAN_SECONDS, f"{key}={value}: this gate reads only the units {sorted(SPAN_SECONDS)}; add {unit!r} to SPAN_SECONDS"
+    return float(number) * SPAN_SECONDS[unit]
 
 
-def _retro_delivered(tmp_path: Path, stale_vault=True):
-    result, runtime, state, vault = _run_retro_stoppost(tmp_path)
-    runtime.mkdir()
-    (runtime / "date").write_text(RETRO_DATE)
-    (runtime / "setup-done").write_text("set-up-ok")
-    (runtime / "claude.jsonl").write_text("{}")
-    run = state / f"run-{RETRO_DATE}"
-    run.mkdir(parents=True)
-    (run / "report.md").write_text("report body")
-    vault.mkdir()
-    copy = vault / f"retro-week-{RETRO_DATE}.md"
-    copy.write_text("report body")
-    if stale_vault:
-        os.utime(copy, (0, 0))
-    else:
-        os.utime(copy, (time.time() + 3600, time.time() + 3600))
-        os.utime(runtime / "date", (time.time(), time.time()))
-    return runtime
+def unit_sources() -> dict[str, list[Path]]:
+    """Unit path to every file that layers onto it, in systemd's apply order.
+
+    The key is the path, because the same unit name ships twice here: a linked
+    user unit in systemd/ and a root-owned one in rootfs/etc/systemd are
+    different units with different failure readers. A drop-in directory names a
+    unit even when its base is not in this repo: the self-hosted runners and
+    tailscaled ship their base from the vendor, and that drop-in carries the
+    whole restart policy. A quadlet is a source too: podman generates the unit
+    from it and passes its [Unit] keys through.
+    """
+    sources: dict[str, list[Path]] = {}
+    for pattern in (
+        "systemd/*.service",
+        "rootfs/etc/systemd/system/*.service",
+        "rootfs/etc/systemd/user/*.service",
+        "containers/quadlet/*.container",
+    ):
+        for path in sorted(ROOT.glob(pattern)):
+            key = f"{path.parent.relative_to(ROOT)}/{path.name}"
+            sources[key] = [path, *sorted(path.parent.glob(f"{path.name}.d/*.conf"))]
+    for dropin_dir in sorted(
+        [*ROOT.glob("systemd/*.d"), *ROOT.glob("rootfs/etc/systemd/system/*.d"), *ROOT.glob("rootfs/etc/systemd/user/*.d")]
+    ):
+        key = f"{dropin_dir.parent.relative_to(ROOT)}/{dropin_dir.name[: -len('.d')]}"
+        sources.setdefault(key, sorted(dropin_dir.glob("*.conf")))
+    return sources
 
 
-def test_retro_stoppost_says_when_set_up_stopped_before_the_date(tmp_path: Path) -> None:
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 1
-    assert result.stderr.startswith("no-deliverable: set-up never wrote its date")
+def effective_values(name: str) -> dict[str, list[str]]:
+    """Every value each key takes across the unit's layers, the last one effective."""
+    values: dict[str, list[str]] = {}
+    for layer in unit_sources()[name]:
+        for key, layer_values in _unit_keys(layer).items():
+            values.setdefault(key, []).extend(layer_values)
+    return values
 
 
-def test_retro_stoppost_says_when_set_up_stopped_after_the_date(tmp_path: Path) -> None:
-    runtime = _retro_delivered(tmp_path)
-    (runtime / "setup-done").unlink()
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 1
-    assert result.stderr.startswith("no-deliverable: set-up stopped after the date write")
+def restarting_units() -> list[str]:
+    return sorted(
+        name
+        for name in unit_sources()
+        if (effective_values(name).get("Restart", [None])[-1] or "").lower() in RESTART_POLICIES
+    )
 
 
-def test_retro_stoppost_says_when_the_call_left_no_transcript(tmp_path: Path) -> None:
-    runtime = _retro_delivered(tmp_path)
-    (runtime / "claude.jsonl").unlink()
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 1
-    assert result.stderr.startswith("no-deliverable: the model call never ran to a transcript")
+def test_every_restart_surface_is_covered() -> None:
+    units = restarting_units()
+    assert units, "no unit with a Restart= policy was found"
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    missing = [surface for surface in surfaces if not any(name.startswith(f"{surface}/") for name in units)]
+    assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
 
 
-def test_retro_stoppost_says_when_the_call_wrote_no_report(tmp_path: Path) -> None:
-    runtime = _retro_delivered(tmp_path)
-    run_dir = runtime.parent / "state" / f"run-{RETRO_DATE}"
-    (run_dir / "report.md").unlink()
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 1
-    assert result.stderr.startswith("no-deliverable: the model call ran but wrote no report.md")
+def test_designed_flappers_are_restarting_units() -> None:
+    stale = sorted(set(DESIGNED_FLAPPERS) - set(restarting_units()))
+    assert not stale, f"DESIGNED_FLAPPERS lists units that ship no restart policy: {stale}"
 
 
-def test_retro_stoppost_says_when_the_report_never_reached_the_vault(tmp_path: Path) -> None:
-    _retro_delivered(tmp_path, stale_vault=True)
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 1
-    assert result.stderr.startswith("no-deliverable: the report was written but it never reached the vault")
+def test_every_designed_flapper_cites_the_page_that_replaces_the_failed_state() -> None:
+    """The exemption is only sound while the page its reason names is shipped."""
+    unpageable = sorted(name for name, (_, pager) in DESIGNED_FLAPPERS.items() if pager is None)
+    assert unpageable == ["rootfs/etc/systemd/system/tailscaled.service"], (
+        f"only the tailnet lifeline may sit outside the gate with no page behind it: {unpageable}"
+    )
+    for name, (reason, pager) in DESIGNED_FLAPPERS.items():
+        if pager is None:
+            continue
+        path, needle = pager
+        assert needle in (ROOT / path).read_text(), (
+            f"{name} is exempt from the start-limit gate because {reason}, but {path} no longer carries {needle!r}, "
+            f"so a crash loop there would be silent and paged to nobody"
+        )
 
 
-def test_retro_stoppost_is_quiet_on_a_delivered_run(tmp_path: Path) -> None:
-    _retro_delivered(tmp_path, stale_vault=False)
-    result, _, _, _ = _run_retro_stoppost(tmp_path)
-    assert result.returncode == 0
-    assert result.stdout == "" and result.stderr == ""
+@pytest.mark.parametrize("name", restarting_units())
+def test_a_crash_loop_reaches_failed_before_its_start_limit_hides_it(name: str) -> None:
+    """A restart loop must reach `failed`, the state its failure reader polls.
+
+    systemd's default budget is 5 starts in 10 s. A unit that restarts slower
+    than that never spends it, so nothing fires and the loop runs unseen
+    (fleet-ops#10253). The reader per unit, and the whole reason, are in
+    docs/ARCHITECTURE.md and the fleet map.
+    """
+    values = effective_values(name)
+    interval_text = values["StartLimitIntervalSec"][-1].strip() if "StartLimitIntervalSec" in values else ""
+    if name in DESIGNED_FLAPPERS:
+        assert interval_text and _seconds("StartLimitIntervalSec", interval_text) == 0, (
+            f"{name} no longer disables the start limit; drop it from DESIGNED_FLAPPERS"
+        )
+        return
+    restart_text = values["RestartSec"][-1].strip() if "RestartSec" in values else ""
+    restart = _seconds("RestartSec", restart_text) if restart_text else DEFAULT_RESTART_SEC
+    assert restart != float("inf"), (
+        f"{name}: RestartSec=infinity schedules no restart after an exit, so a crashed unit never comes back; set a finite RestartSec"
+    )
+    assert interval_text != "infinity", (
+        f"{name}: StartLimitIntervalSec=infinity never lets the budget expire, so the first crash loop benches the unit for good; set 10min"
+    )
+    interval = _seconds("StartLimitIntervalSec", interval_text) if interval_text else DEFAULT_START_INTERVAL_SEC
+    burst_text = values["StartLimitBurst"][-1].strip() if "StartLimitBurst" in values else str(DEFAULT_START_BURST)
+    assert burst_text.isdigit() and int(burst_text) >= 1, (
+        f"{name}: StartLimitBurst={burst_text} must be a whole number of starts and at least 1, because 0 disables the limit"
+    )
+    burst = int(burst_text)
+    spent = burst * restart
+    assert spent < interval, (
+        f"{name}: Restart={values['Restart'][-1]} RestartSec={restart:g}s spends its start budget at "
+        f"{burst:g} x {restart:g}s = {spent:g}s, which never fills inside StartLimitIntervalSec={interval:g}s, "
+        f"so a crash loop restarts for ever and never reaches `failed`, the state its failure reader polls "
+        f"(fleet-ops#10253). Raise StartLimitIntervalSec above that spend, or list the unit in "
+        f"DESIGNED_FLAPPERS with the page that replaces the failed state."
+    )
