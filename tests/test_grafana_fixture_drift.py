@@ -24,8 +24,8 @@ GUARD = (
     "prompt-cache-share-guard.test.rules.yml",
     "PromptCacheShareBelowBaseline",
 )
-GUARD_FIXTURE = "prompt-cache-share-guard.test.yml"
-FLOOR = re.compile(r'vector\(([0-9.]+)\), "vendor", "([a-z0-9]+)"')
+GUARD_INLINED = "prompt-cache-share-guard.test.yml"
+FLOOR = re.compile(r'vector\(([0-9.]+)\),"vendor","([^"]+)"')
 
 
 def _yq(expr, path):
@@ -73,7 +73,7 @@ def _flatten(expr):
 
 
 def _floors(expr):
-    return sorted((vendor, value) for value, vendor in FLOOR.findall(expr))
+    return sorted(set((vendor, value) for value, vendor in FLOOR.findall(_flatten(expr))))
 
 
 @pytest.mark.parametrize(("rule_file", "uid", "fixture", "alert"), FIXTURED_RULES)
@@ -106,8 +106,8 @@ def test_prompt_cache_floors_match_across_the_three_copies():
     copies = {
         deployed: _deployed_a(rule_file, uid),
         f"{FIXTURES.name}/{fixture}": _fixture_expr(fixture, alert),
-        f"{FIXTURES.name}/{GUARD_FIXTURE} promql_expr_test": "\n".join(
-            _yq("[.tests[].promql_expr_test[].expr]", FIXTURES / GUARD_FIXTURE)
+        f"{FIXTURES.name}/{GUARD_INLINED} promql_expr_test": "\n".join(
+            _yq("[.tests[].promql_expr_test[].expr]", FIXTURES / GUARD_INLINED)
         ),
     }
     expected = _floors(copies[deployed])
