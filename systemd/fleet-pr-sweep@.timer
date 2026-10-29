@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly agent-dispatch sweep for Nishfleet/%i
+Description=Agent-dispatch sweep every 15 minutes for Nishfleet/%i
 # GitHub fired agent-dispatch's '17 * * * *' schedule only 4 to 5 times a day
 # in fleet-ops, 0509 and drive (actions/runs?event=schedule, measured
 # 2026-10-11), so the "hourly" sweep, and the stuck-prs check in it that moves

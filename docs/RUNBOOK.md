@@ -290,8 +290,9 @@ paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They pag
 page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
 rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
-router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
-new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
+because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
+still-firing alert files a new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
@@ -304,6 +305,17 @@ on the first burst again, set `for: 0s` and drop the 10-minute factor; to silenc
 `isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
 promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
 deployed rule drift apart.
+
+Router dead key (fleet-ops#11063, split out in fleet-ops#11081). A second rule in the same file,
+`router-dead-key` on `signal=router-dead-key`, fires when one row parked on a 401 more than
+2 times in 6 hours and is still parking: at least one park in the last 30 minutes, held for 15
+minutes. A 401 row parks on its first failure, so a park is one cooldown, and a row cannot park
+again until that cooldown ends (15 minutes on the worker rows), which is why its bar is 2 and
+not the row rule's 5. No worker can renew a key, so this rule's issue is filed
+`needs-nish-decision`: a worker run and a hand-off on it are wasted until Nish renews the key or
+approves taking its rows out of the router. `config/grafana/tests/router-dead-key.test.yml`
+holds its bar under promtool, and `tests/alert_routes_check.py` fails when the rule, its
+threshold or its issue label drift.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
