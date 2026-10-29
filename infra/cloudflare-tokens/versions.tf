@@ -14,6 +14,12 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.14"
     }
+    # Writes the one token whose value belongs in a 0600 file on the VPS instead
+    # of a GitHub secret (main.tf, "vps-grafana").
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
 
   # State holds every token value in plain text, so it lives outside the repo
