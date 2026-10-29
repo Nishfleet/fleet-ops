@@ -16,6 +16,7 @@ FIXTURED_RULES = [
     ("paid-plan-idle.yaml", "ppi-alibaba", "paid-plan-idle.test.rules.yml", "AlibabaTokenPlanSgIdle"),
     ("paid-plan-idle.yaml", "ppi-commandcode", "paid-plan-idle.test.rules.yml", "CommandCodeIdle"),
     ("paid-plan-idle.yaml", "ppi-minimax", "paid-plan-idle.test.rules.yml", "MiniMaxIdle"),
+    ("router-dead-row.yaml", "router-dead-row", "router-dead-row.test.rules.yml", "RouterRowAnswers402403404"),
 ]
 
 
@@ -46,10 +47,14 @@ def _threshold(rule_file, uid):
     return f"> {evaluator['params'][0]:g}"
 
 
-def _fixture_expr(fixture, alert):
+def _fixture_rule(fixture, alert):
     rules = _yq(f'[.groups[].rules[] | select(.alert == "{alert}")]', FIXTURES / fixture)
     assert len(rules) == 1, f"{fixture} has {len(rules)} rules alerting {alert}, want 1"
-    return rules[0]["expr"]
+    return rules[0]
+
+
+def _fixture_expr(fixture, alert):
+    return _fixture_rule(fixture, alert)["expr"]
 
 
 QUOTED = re.compile(r'("[^"]*")')
@@ -69,4 +74,15 @@ def test_fixture_carries_the_deployed_a_expression(rule_file, uid, fixture, aler
         f"provisioning rule.\n"
         f"want {PROVISIONING.name}/{rule_file} {uid} A:\n{expected}\n"
         f"got {FIXTURES.name}/{fixture} {alert}:\n{actual}"
+    )
+
+
+@pytest.mark.parametrize(("rule_file", "uid", "fixture", "alert"), FIXTURED_RULES)
+def test_fixture_carries_the_deployed_hold(rule_file, uid, fixture, alert):
+    deployed = _rule(rule_file, uid).get("for") or "0s"
+    actual = _fixture_rule(fixture, alert).get("for") or "0s"
+    assert actual == deployed, (
+        f"{fixture} evaluates {alert} with a {actual} hold while {rule_file}'s {uid} deploys {deployed}, so "
+        f"promtool replays a different rule: the fixture stays green while the deployed hold shrinks back to a "
+        f"page on the first burst. Copy the deployed `for` into the fixture."
     )
