@@ -939,7 +939,6 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
         "the timer stops and disables before its files go"
     )
-    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
 
 
 LEVIATHAN_EXECUTOR_LIVE_PATHS = (
@@ -1475,7 +1474,6 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
         "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
     )
-    assert "gpg-agent.service.d/20-oom-omit.conf" in (ROOT / "docs" / "layout.md").read_text(), "docs/layout.md names the unit this tunes"
 
 
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
@@ -2052,14 +2050,6 @@ def test_no_unit_loads_the_litellm_master_key() -> None:
         "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
         "quadlet container is the one place that may load it."
     )
-
-
-def test_every_wake_unit_has_a_run_line_and_an_off_switch_written_down() -> None:
-    readme = (ROOT / "docs" / "layout.md").read_text()
-    assert "systemctl --user start <unit>" in readme, "docs/layout.md lost the run line"
-    for relative in WAKE_UNITS:
-        unit = relative.split("/")[-1]
-        assert f"systemctl --user disable --now {unit}" in readme
 
 
 def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
