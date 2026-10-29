@@ -1784,7 +1784,7 @@ jobs:
                   for: 0s
                   noDataState: OK
                   execErrState: Error
-                  annotations: {summary: drill, value: "1", threshold: "0", description: 'drill: systemd/fleet-worker-github-token@.service mints every worker token for one repository'}
+                  annotations: {summary: drill, value: "1", threshold: "0", description: 'drill: the worker tokens cannot read the board this rule names, and only the account owner can give the worker tokens read on it'}
                   labels: {severity: warning, signal: queue-stuck, audience: nish}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
@@ -1832,7 +1832,7 @@ jobs:
           for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill audience"' "$d/sink.log" && break; sleep 3; done
           a=$(grep '"title":"grafana alert: drill audience"' "$d/sink.log" | head -n 1 || true)
           [ -n "$a" ] || { echo "::error::the audience rule did not reach nish-ask-dispatch"; cat "$d/sink.log"; exit 1; }
-          jq -e '.labels == ["needs-nish-decision"] and (.body | contains("drill audience")) and (.body | contains("fleet-worker-github-token@.service"))' <<<"${a#BODY * }" >/dev/null \
+          jq -e '.labels == ["needs-nish-decision"] and (.body | contains("drill audience")) and (.body | contains("only the account owner can give the worker tokens read on it"))' <<<"${a#BODY * }" >/dev/null \
             || { echo "::error::nish-ask-dispatch rendered an unexpected issue"; echo "$a"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue, an audience rule filed a needs-nish-decision issue"
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
