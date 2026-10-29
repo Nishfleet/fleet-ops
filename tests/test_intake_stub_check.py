@@ -319,7 +319,10 @@ def test_the_check_runs_in_ci_and_its_tests_are_discovered():
     ci = CI.read_text()
     assert "python3 tests/intake_stub_check.py" in ci
     assert "fleet-ops#9730" in ci
-    assert "pytest -q -p no:cacheprovider tests --ignore-glob='tests/test_router_*.py'" in ci
+    # The discovering step runs pytest over tests/, ignoring only the router tests: this module needs no ci.yml edit to run.
+    step = next(l for l in ci.splitlines() if " tests " in l and "pytest -q -p no:cacheprovider" in l)
+    assert "test_router_" in step
+    assert "test_intake_stub_check" not in step
 
 
 def test_real_fleet_ops_config_and_dispatcher_are_accepted_offline():
