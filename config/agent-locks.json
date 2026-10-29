@@ -113,9 +113,8 @@
     }
   },
   "stale_user_units": {
-    "systemd/tincan-listen-claude-vps.service": "The unlocked user form of a listener that now runs as a system unit. The required ci check still reads this file for its StateDirectory and WorkingDirectory, so removing it is #9984, not this PR.",
-    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; removing the file is the same follow-up as the claude-vps one, #9984.",
-    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; removing the file is the same follow-up as the claude-vps one, #9984."
+    "systemd/tincan-listen-pi.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912.",
+    "systemd/tincan-listen-fleet-worker.service": "The unlocked user form of a listener that now runs as a system unit. It was adopted into systemd/ on main (#10220) and is disabled on the host once the system unit starts; deleting the file is #10912."
   },
   "gaps": [
     {
