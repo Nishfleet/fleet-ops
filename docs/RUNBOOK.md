@@ -264,7 +264,10 @@ compare the rule's `expression` with the repo file. Wire the pair once after mer
 `fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
 files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
 wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
-once linked, or `curl -X POST` the two endpoints.
+once linked, or `curl -X POST` the two endpoints. The service never restarts itself: systemd
+fails the `.path` unit with result `unit-start-limit-hit` the moment the service it triggers
+spends its start limit, and a `.path` unit cannot restart itself, so the wait for a Grafana
+restart lives inside the one start (fleet-ops#10848).
 
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci

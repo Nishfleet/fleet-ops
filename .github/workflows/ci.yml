@@ -159,8 +159,11 @@ jobs:
           stub=$!
           trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload; sudo systemctl reset-failed fleet-token-ci.service 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
+          # The mint is tested on its own, so the unit's own follow-up keys are
+          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that failure, so
+          # this sed is belt-and-braces rather than what keeps the step green.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
