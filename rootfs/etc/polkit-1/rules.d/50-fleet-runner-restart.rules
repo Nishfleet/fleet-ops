@@ -1,0 +1,26 @@
+// Lets user nish (the deploy-box.yml runner and the Claude lane's jobs) start and
+// restart the runner units below, and nothing else. Each one runs as its own service
+// user, so nish cannot signal it and a systemctl call from a non-root caller reaches
+// polkit first (man polkit, org.freedesktop.systemd1.manage-units). Only start and
+// restart are granted: stop, kill, enable and every other unit stay refused.
+//
+// A runner reads its sandbox at unit start, and the deploy restarts no runner
+// (fleet-ops#10898), so an installed drop-in waits for a start. Without this grant the
+// only targeted restart was root's: netcup-agent-9 and -10 run the review and arm jobs,
+// so one sandbox change left every risky PR un-reviewable until the nightly update
+// drained the pool (fleet-ops#11016). netcup-agent-1 is the pilot and runs as
+// fleet-runner for the same reason (fleet-ops#10451).
+var fleetRestartableUnits = [
+    "actions.runner.Nishfleet.netcup-agent-1.service",
+    "actions.runner.Nishfleet.netcup-agent-9.service",
+    "actions.runner.Nishfleet.netcup-agent-10.service"
+];
+
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        fleetRestartableUnits.indexOf(action.lookup("unit")) !== -1 &&
+        (action.lookup("verb") == "start" || action.lookup("verb") == "restart") &&
+        subject.user == "nish") {
+        return polkit.Result.YES;
+    }
+});
