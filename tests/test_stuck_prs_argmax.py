@@ -48,13 +48,9 @@ def pr(number):
     }
 
 
-def approver():
-    return _y(f"{STEP} | .env.APPROVERS").strip().split()[0]
-
-
 def approval(number):
     return {
-        "user": {"login": approver()}, "body": f"coordinator-approval: {number:040x}",
+        "user": {"login": "nishfleet-worker[bot]"}, "body": f"coordinator-approval: {number:040x}",
         "created_at": OLD, "updated_at": OLD, "html_url": f"https://example.invalid/{number}",
     }
 

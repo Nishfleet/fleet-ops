@@ -951,11 +951,12 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
-    # The approval is a PR comment by the runner's own gh login (REVIEW_LOGIN), never the job's GITHUB_TOKEN: its
-    # github-actions[bot] login is one a PR that adds its own workflow can post as, so it is not an approver
-    # (fleet-ops#9521). This job runs from agent.yml@main, so the PR cannot change its reviewer, and one that touches
-    # money, secrets, data, .github/ or the review rules (the guard list) needs three independent reviews. Arming is the arm job's.
-    permissions: {pull-requests: read, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447) and writes the needs-split label; contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write; the verdict writes as REVIEW_LOGIN twice (a comment and a review), so this token needs no pull-requests: write
+    # This job comments as github-actions[bot] (the job's own GITHUB_TOKEN) and posts the ruleset's Approve review.
+    # The line hold-risky counts is the arm job's, written as the worker App: a PR that adds its own workflow can
+    # post as that bot, and a pull_request-triggered job cannot mint the App token. This job runs from
+    # agent.yml@main, so the PR cannot change its reviewer. One that touches money, secrets, data, .github/ or the
+    # review rules (the guard list) needs three independent reviews. Arming is the arm job's.
+    permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
     concurrency:
@@ -966,9 +967,6 @@ jobs:
       PR: ${{ inputs.review_pr }}
       SHA: ${{ inputs.review_sha }}
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # The login the review comments and approves as: the runner's own gh login, which a PR's own workflow cannot post
-      # as (fleet-ops#9521). hold-risky's APPROVERS must equal it, and CI fails when the two drift.
-      REVIEW_LOGIN: nish3451
       # Pi sends this as x-litellm-session-id and exits 1 without it (the work job sets it the same way, #9015).
       FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -991,10 +989,8 @@ jobs:
           THIRD_FAMILY: Qwen
         run: |
           set -euo pipefail
-          # Both writes that carry the verdict go as REVIEW_LOGIN with the job token unset: gh falls back to the
-          # runner's own login, which a PR's workflow cannot post as (fleet-ops#9521).
-          say() { env -u GH_TOKEN -u GITHUB_TOKEN gh pr comment "$PR" -R "$REPO" --body "$1"; }
-          approve() { env -u GH_TOKEN -u GITHUB_TOKEN gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
+          say() { gh pr comment "$PR" -R "$REPO" --body "$1"; }
+          approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() {
             say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."
@@ -1016,11 +1012,10 @@ jobs:
           pr=$(gh api "repos/$REPO/pulls/$PR")
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
           # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), so one review
-          # per head. Each phrase must START a line of REVIEW_LOGIN's comment: the hold comment quotes the approval line, and
-          # REVIEW_LOGIN also writes comments that carry no verdict.
-          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg who "$REVIEW_LOGIN" --arg none "$none_re" --arg blk "$blk_re" '
+          # per head. Each phrase must START a line of a github-actions[bot] comment: the hold comment quotes the approval line.
+          seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
-            [.[][] | select(.user.login == $who) | (.body | split("\n")) as $l
+            [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
               | (($l | blockers) | length > 0 and all(.[]; test($none; "i"))) as $wrong
               | if any($l[]; startswith("coordinator-approval: " + $sha) or startswith("reviewer: " + $sha + " approved.") or startswith("reviewer: " + $sha + " not approved.")) then "verdict"
                 elif any($l[]; startswith("reviewer: " + $sha + " blocked.")) then (if $wrong then "none-only" else "verdict" end)
@@ -1080,7 +1075,7 @@ jobs:
           if [ "$guard" = false ]; then
             [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
             if [ "$judge_ok" = true ]; then
-              approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$SHA" "$text")"
+              approve; say "$(printf 'reviewer: %s approved. CI still has to pass before it merges.\n\n%s' "$SHA" "$text")"
               echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
             elif [ "$choice" = approve ]; then
               say "$(printf 'reviewer: %s not approved. The judge found no blocker line but was only %s%% sure, and approval needs 90%%. Push a new head for a fresh review.\n\n%s' "$SHA" "$pct" "$text")"
@@ -1142,7 +1137,7 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change touches money, secrets, data, .github/ or the review rules, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
+            approve; say "$(printf 'reviewer: %s approved. This change touches money, secrets, data, .github/ or the review rules, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
@@ -1156,7 +1151,7 @@ jobs:
           set -euo pipefail
           ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
           [ "$n" != "$ref" ] || exit 0
-          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" | jq -r --arg who "$REVIEW_LOGIN" '.[] | select(.user.login == $who) | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
+          rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
           env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
           rounds=$(grep -c . <<<"$rev")
@@ -1204,11 +1199,7 @@ jobs:
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.app-key.outputs.pem }}
-          permission-contents: write
-          permission-pull-requests: write
+        with: {app-id: "4728578", private-key: "${{ steps.app-key.outputs.pem }}", permission-contents: write, permission-pull-requests: write, permission-issues: write}
       - name: Arm the approved head
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1226,6 +1217,11 @@ jobs:
           # input switches it on, any other arm keeps the App token, and a failed file-list read
           # fails the step instead of falling to the wider login.
           files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          # The approval hold-risky and the coordinator-approval gate count: an unedited comment naming this head,
+          # written as the worker App, because the job's GITHUB_TOKEN posts as github-actions[bot] and a PR that adds
+          # its own workflow can post as that bot too (fleet-ops#9521). Only this run's own review of this exact head
+          # turns it on; a dispatch input or a stale approval never does.
+          if [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then GH_TOKEN=$ARM_TOKEN gh pr comment "$PR" -R "$REPO" --body "coordinator-approval: $SHA"; echo "approved #$PR at $SHA as the worker App"; fi
           if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
             env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
             echo "armed #$PR at $SHA (workflow edit, runner login)"

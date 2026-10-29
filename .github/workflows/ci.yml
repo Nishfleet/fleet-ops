@@ -707,7 +707,7 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
           who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
-          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
+          [ -n "$prog" ] && [ "$prog" != null ] && ! grep -q 'github-actions' <<<"$who" && grep -qF 'nishfleet-worker[bot]' <<<"$who" && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK's APPROVERS must be hold-risky's, name the worker App and not the job token's bot"; exit 1; }
           run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
@@ -1120,18 +1120,9 @@ jobs:
             export "$v=$val"
           done
           RISKY_PATHS_URL=$(yq '.jobs.review.env.RISKY_PATHS_URL' "$f"); export RISKY_PATHS_URL
-          # The review approves as the runner's gh login, so hold-risky must count that same login and no other
-          # (fleet-ops#9521): github-actions[bot] is the job token a PR's own workflow can post as.
-          REVIEW_LOGIN=$(yq '.jobs.review.env.REVIEW_LOGIN' "$f"); export REVIEW_LOGIN
           export SECOND_ROW=$SECOND_MODEL THIRD_ROW=alibaba-qwen38max-judge REVIEW_BACKOFF="0 0 0"
           # Wiring: the approval flows to the arm job in the same run, and the review step never arms or asks.
           bad=0
-          case $REVIEW_LOGIN in
-            "") echo "the review job names no REVIEW_LOGIN"; bad=1 ;;
-            github-actions*) echo "the review approves as the job token's bot: $REVIEW_LOGIN"; bad=1 ;;
-          esac
-          [ "$REVIEW_LOGIN" = "$(yq '.jobs.hold-risky.env.APPROVERS' .github/workflows/agent-dispatch.yml)" ] || { echo "the review approves as $REVIEW_LOGIN but hold-risky counts $(yq '.jobs.hold-risky.env.APPROVERS' .github/workflows/agent-dispatch.yml)"; bad=1; }
-          ! grep -q 'github-actions\[bot\]' <(yq '.jobs.review.steps[] | select(.id == "review") | .run' "$f") || { echo "the review step still names the job token's bot"; bad=1; }
           [ "$(yq '.jobs.arm.needs' "$f")" = review ] || { echo "arm job must need review"; bad=1; }
           yq '.jobs.arm.if' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job if does not read the review's approved_sha"; bad=1; }
           yq '.jobs.arm.env.SHA' "$f" | grep -q 'needs.review.outputs.approved_sha' || { echo "arm job SHA does not come from the review"; bad=1; }
@@ -1145,8 +1136,8 @@ jobs:
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           case "$*" in
-            "pr comment "*) [ -z "${GH_TOKEN:-}" ] || echo comment >> "$STATE/writes"; while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
-            *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved"; [ -z "${GH_TOKEN:-}" ] || echo review >> "$STATE/writes" ;;
+            "pr comment "*) k=set; [ -n "$ARM_TOKEN" ] && [ "$GH_TOKEN" = "$ARM_TOKEN" ] || k=unset; while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\ntoken=%s\n' "$2" "$k" >> "$STATE/comments"; break; fi; shift; done ;;
+            *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
             *"issues/7/"*) case "$*" in *labels*) echo "$*" >> "$STATE/labels" ;; *) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
               if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;; esac ;;
@@ -1225,12 +1216,10 @@ jobs:
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
               GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
-            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"; : > "$STATE/writes"
+            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
             case $e1 in
-              PRIOR=*) # a verdict the reviewer already left on this head
-                pl=${REVIEW_LOGIN} # who wrote it; a case can name another login with PRIOR_LOGIN=
-                for e in $extra; do case $e in PRIOR_LOGIN=*) pl=${e#*=} ;; esac; done
+              PRIOR=*) # a comment the bot already left on this head
                 case ${e1#PRIOR=} in
                   person-only) prior="reviewer: $SHA edits the merge guard or a workflow (or the guard list could not be read), so a person approves it. Nothing was approved or blocked automatically." ;;
                   not-judged) prior="reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again." ;;
@@ -1245,7 +1234,7 @@ jobs:
                   blocked-none-and-real) prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none.\nblocker a.yml: real problem' "$SHA")" ;;
                   *) echo "case $name: unknown PRIOR value ${e1#PRIOR=}"; bad=1; continue ;;
                 esac
-                COMMENTS=$(jq -cn --arg b "$prior" --arg u "$pl" --argjson n "$copies" '[range($n) | {user:{login:$u}, body:$b}]') ;;
+                COMMENTS=$(jq -cn --arg b "$prior" --argjson n "$copies" '[range($n) | {user:{login:"github-actions[bot]"},body:$b}]') ;;
               BUILT=*) # the worker App's builder-engine record (a bot's comment)
                 COMMENTS=$(jq -cn --arg b "builder-engine: ${e1#BUILT=}" '[{user:{login:"nishfleet-worker[bot]",type:"Bot"},body:$b}]') ;;
               BUILT_BY=*) # the same words from a person, or from another App's comment, count for nothing
@@ -1263,20 +1252,15 @@ jobs:
             rc=0
             PATH="$t/bin:$PATH" bash "$t/review.sh" > "$STATE/out" 2>&1 || rc=$?
             got=no; grep -qx "approved_sha=$SHA" "$GITHUB_OUTPUT" && got=yes
-            n=$(grep -c "^coordinator-approval: $SHA\$" "$STATE/comments" || true)
-            forged=$(grep -c '^coordinator-approval:' "$STATE/comments" || true)
+            n=$(grep -c '^coordinator-approval:' "$STATE/comments" || true)
             m=$(tr '\n' ' ' < "$STATE/models" | sed 's/ $//')
             problem=
             [ ! -s "$STATE/claude-bad" ] || problem="$problem $(tr '\n' ' ' < "$STATE/claude-bad")"
             [ "$got" = "$approved" ] || problem="approved=$got (want $approved)"
-            # The approval must be written as REVIEW_LOGIN, never with the job token: that token is
-            # github-actions[bot], which a PR that adds its own workflow can post as (fleet-ops#9521).
-            [ ! -s "$STATE/writes" ] || problem="$problem a write carried the job token: $(sort -u "$STATE/writes" | tr '\n' ' ')"
             if [ "$approved" = yes ]; then grep -q "event=APPROVE.*commit_id=$SHA" "$STATE/approved" || problem="$problem no review on the head"; elif [ -f "$STATE/approved" ]; then problem="$problem review without approval"; fi
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
-            if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
-            else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
+            [ "$n" = 0 ] || problem="$problem the review posted an approval line; only the arm job's App comment counts"
             # An approval names both served rows, so the family in the comment can be checked against the row that answered (fleet-ops#10172).
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "$SECOND_ROW" "$STATE/comments" || problem="$problem the second model was not named on the PR"
             [ "$approved" != yes ] || [ "$guard" != 1 ] || grep -qF "${THIRD_MODEL_ID:-$THIRD_ROW}" "$STATE/comments" || problem="$problem the third row was not named on the PR"
@@ -1312,8 +1296,6 @@ jobs:
           prior-person-only-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=person-only|yes|0|claude-opus-5-5 claude-fable-5-1
           prior-not-judged-comment-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=not-judged|yes|0|claude-opus-5-5 claude-fable-5-1
           prior-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=approved|no|0|
-          prior-approval-by-the-actions-bot-is-not-a-verdict||approve|0.95|clean|none|PRIOR=approved PRIOR_LOGIN=github-actions[bot]|yes|0|claude-opus-5-5
-          prior-block-by-the-actions-bot-is-not-a-verdict||approve|0.95|clean|none|PRIOR=blocked PRIOR_LOGIN=github-actions[bot]|yes|0|claude-opus-5-5
           prior-not-approved-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=not-approved|no|0|
           prior-blocked-comment-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked|no|0|
           first-header-echo-approves||approve|0.95|header_echo|none||yes|0|claude-opus-5-5
@@ -1356,7 +1338,7 @@ jobs:
           while IFS='|' read -r name head draft armed closed wf reviewed want tok code; do
             export STATE=$t/arm-$name HEAD_NOW=${head:-$SHA} DRAFT=$draft ARMED=$armed CLOSED=$closed GUARD=$wf REVIEWED=
             case $reviewed in sha) export REVIEWED=$SHA ;; other) export REVIEWED=0000000000000000000000000000000000000001 ;; esac
-            mkdir -p "$STATE"; : > "$STATE/merge"
+            mkdir -p "$STATE"; : > "$STATE/merge"; : > "$STATE/comments"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/arm.sh" > "$STATE/out" 2>&1 || rc=$?
             got=no; [ ! -s "$STATE/merge" ] || got=yes
@@ -1367,6 +1349,11 @@ jobs:
               grep -q -- "--auto" "$STATE/merge" && grep -q -- "--match-head-commit $SHA" "$STATE/merge" || problem="$problem arm lacks --auto or --match-head-commit"
               grep -q -- " token=$tok\$" "$STATE/merge" || problem="$problem arm token is not $tok"
             fi
+            # The approval is the worker App's comment on this head, and only for a head this run reviewed: the
+            # job token's github-actions[bot] is no approver, and a dispatch or a stale approved_sha never writes one.
+            want_ap=no; [ "$reviewed" != sha ] || [ "$got" != yes ] || want_ap=yes
+            got_ap=no; grep -qx "coordinator-approval: $SHA" "$STATE/comments" && grep -qx 'token=set' "$STATE/comments" && got_ap=yes
+            [ "$got_ap" = "$want_ap" ] || problem="$problem approval comment=$got_ap (want $want_ap)"
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
           done <<'CASES'
           approved-head||||||sha|yes|set|

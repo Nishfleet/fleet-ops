@@ -183,12 +183,13 @@ The rules still in force:
   Opus 5.5 for all work, Claude-built or not; the worker App's
   `builder-engine:` PR comment is still recorded, and no comment counts as
   Claude-built) and Jev for
-  approve or block (p >= 0.9), and posts that approval as the runner's own gh
-  login (the job's `REVIEW_LOGIN`, the one login `hold-risky`'s `APPROVERS`
-  counts) and as a GitHub `Approve` review on that exact head. Not as
-  `github-actions[bot]`: that is the job's own GITHUB_TOKEN, which a PR that
-  adds its own workflow can post as, so the job token has no pull-requests
-  write at all (fleet-ops#9521). The `main-merge-queue` ruleset
+  approve or block (p >= 0.9), posts a GitHub `Approve` review on that exact
+  head plus a `reviewer: <sha> approved.` comment as `github-actions[bot]` (the
+  job's GITHUB_TOKEN), and the same run's `arm` job writes the line `hold-risky`
+  counts, `coordinator-approval: <full head sha>`, as the worker App
+  (`nishfleet-worker[bot]`): no job triggered by a pull request can mint that
+  token, so a PR cannot approve itself, and the bot's own comment is no
+  approval (fleet-ops#9521). The `main-merge-queue` ruleset
   requires one approving review and dismisses it on a push, so GitHub itself
   refuses a merge on any head the reviewer did not approve; `hold-risky` gives
   the same review to a PR that is not risky.
