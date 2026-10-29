@@ -193,9 +193,9 @@ steps below already sees it, and a failed label does not stop the disarm and
 dequeue. A failed merge-state read still runs both mutations blind (with the
 REST node_id) and the re-read confirms; a PR that left the queue between the
 read and the call ("not queued") is fine, the re-read catches one still
-queued. ci.yml runs CLASSIFY and APPROVAL against every case in
-config/risky-paths.json, and runs the hold block against a fake gh with each
-read failing.
+queued. tests/test_risky_paths_cases.py in the unit job runs CLASSIFY and
+APPROVAL against every case in config/risky-paths.json, and ci.yml runs the
+hold block against a fake gh with each read failing.
 
 pull-requests: write labels the PR and disables auto-merge. contents: write is
 what GitHub asks of a merge-queue dequeue (it acts on the merge, like arming
@@ -247,7 +247,9 @@ their sweeps fail at startup (fleet-ops#10638). Every sweep runs where its
 re-queue writes find the worker App key: fleet-ops on its own runners, a caller
 on its agent runners, because a hosted runner has no ~/.config/gh and the
 `env -u GH_TOKEN` re-queue writes only print "re-queue refused" there
-(fleet-ops#10963).
+(fleet-ops#10963). A closed blocker releases at most 12 parked hand-offs a
+sweep, the requeue batch's own bound, because each one costs two writes and a
+closed epic can block hundreds (fleet-ops#11010).
 
 A split parent never closed on its own, so everything blocked by it waited
 forever (0509, 2026-09-24: ~140 issues); the job closes each open ancestor
