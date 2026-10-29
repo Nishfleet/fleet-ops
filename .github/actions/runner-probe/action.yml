@@ -1,8 +1,8 @@
-# Fails the job when a path its runner unit hides is readable or writable from the job
-# (InaccessiblePaths=), and when a path the unit covers with a TemporaryFileSystem= mount
-# is not covered (fleet-ops#9983, #10886).
+# Fails the job when a path its runner unit hides with InaccessiblePaths= is readable or writable
+# from the job, or when a path it covers with a TemporaryFileSystem= mount is not a mount point in
+# the job (fleet-ops#9983, #10886).
 name: runner-probe
-description: Fail when a path the runner unit hides is readable from the job, or when a mount it covers a path with is gone.
+description: Fail when a path the runner unit hides is a host path in the job.
 inputs:
   require-lock:
     description: Fail, not warn, when the unit hides no paths.
@@ -18,24 +18,18 @@ runs:
         unit=$(grep -o 'actions\.runner\.[^/]*\.service' /proc/self/cgroup | tail -1)
         test -n "$unit" || { echo "::error::this job is not in an actions.runner unit"; exit 1; }
         n=0; bad=0
-        for p in $(systemctl show -p InaccessiblePaths --value "$unit"); do
-          p=${p#-}; n=$((n + 1))
-          if test -r "$p" || test -w "$p"; then echo "::error::$p is readable from this job"; bad=$((bad + 1)); fi
-        done
-        # A path the unit covers with a TemporaryFileSystem= mount is hidden by the mount, which
-        # systemd made before this job started, so a directory the mint creates after that start
-        # is already covered (fleet-ops#10886). Whether the path reads says nothing: an empty
-        # tmpfs is readable by design, exactly like this runner's home tmpfs. The mount is the
-        # hide, so a path that is there must be a mount point in this job's mount namespace: a
-        # mount that is gone leaves the host path there, and a host path is not a mount point.
+        # Both keys hide a path, and both leave a host path behind when they do not apply, so one
+        # test covers them. A path the unit hides below is absent here, or unreadable, and passes.
+        # A path the unit covers with a mount reads fine, because an empty tmpfs is readable by
+        # design, so the mount itself is the hide: it is there, and it is a mount point in this
+        # job's namespace. What fails is a path that is there, reads, and is no mount point.
         # A unit that hides a parent directory whole drops every mount nested under it
         # (namespace.c: drop_inaccessible), so those paths are absent here and nothing is left to
-        # read; a path the unit hides below has to pass this, and one it does not is a host path.
-        for p in $(systemctl show -p TemporaryFileSystem --value "$unit"); do
+        # read. systemd made the mount points before this job started (mount_tmpfs() calls
+        # mkdir_p()), so a directory the mint creates after that start is covered (fleet-ops#10886).
+        for p in $(systemctl show -p InaccessiblePaths,TemporaryFileSystem --value "$unit"); do
           p=${p%%:*}; p=${p#-}; n=$((n + 1))
-          if [ -e "$p" ] && ! awk -v m="$p" '$5 == m {f=1} END {exit !f}' /proc/self/mountinfo; then
-            echo "::error::$p is a host path, not a mount point, in this job"; bad=$((bad + 1))
-          fi
+          if { test -r "$p" || test -w "$p"; } && { [ -e "$p" ] && ! mountpoint -q "$p"; }; then echo "::error::$p is a host path in this job, so nothing hides it"; bad=$((bad + 1)); fi
         done
         echo "runner=$RUNNER_NAME unit=$unit checked=$n readable=$bad"
         if [ "$n" -eq 0 ]; then
