@@ -151,6 +151,24 @@
       - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
+      # The Leviathan session-log index and the Executor MCP hub (#10625):
+      # removed from the repo, and Nish's runtime cut stopped and disabled them
+      # on 2026-10-28. Stop and disable does not remove a hand `ln -s` link or
+      # the files fleet-sync copied, and those live paths point at
+      # ~/.local/share/leviathan, which this list also deletes: a surviving link
+      # would dangle and fail the LINK-GUARD pass in fleet-sync.service. The
+      # index files hold session text, so deleting the directory is also the
+      # last 0700/0600 guard on it (agent-state.yml no longer scans it).
+      - "{{ nish_home }}/.config/systemd/user/executor.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/executor.service"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.service"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.timer"
+      - "{{ nish_home }}/.config/systemd/user/leviathan-index@.service.d/20-umask.conf"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@claude.timer"
+      - "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@pi.timer"
+      - "{{ nish_home }}/.local/bin/leviathan"
+      - "{{ nish_home }}/.local/share/leviathan"
+      - "{{ nish_home }}/.config/user-tmpfiles.d/leviathan.conf"
       # gpg-agent's OOM guard (#10138): the drop-in lived loose in nish's user
       # directory, which shadows the installed one in /etc/systemd/user, so the
       # bytes the repo ships were inert. The file, not the directory: a retired
