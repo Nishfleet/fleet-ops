@@ -180,6 +180,13 @@ def test_the_verdict_expects_the_number_of_runs_the_audit_asks_for():
     assert '[ "$have" -ge "$want" ]' in run
 
 
+def test_the_cli_version_is_declared_once_and_both_calls_use_it():
+    run = _y(f"{VERDICT} | .run")
+    assert run.count("@lhci/cli@") == 1
+    assert "cli=@lhci/cli@0.15.1;" in run
+    assert run.count('npx -y "$cli"') == 2
+
+
 def test_a_reached_verdict_fails_the_run_and_points_at_the_step_that_says_why():
     breach = json.dumps(
         [{
@@ -269,6 +276,14 @@ def test_a_breach_the_re_collect_reaches_still_fails_the_run():
         "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=1 --url=http://s/a --config=./config/lighthouserc.json",
         ASSERT,
     ]
+
+
+def test_a_report_from_no_page_does_not_count_as_one_of_its_runs():
+    files = {**_lhrs("http://s/a", 4), "lhr-9.json": "{}"}
+    code, logged, calls = _run_verdict(files, "http://s/a\n")
+    assert code == 0
+    assert "http://s/a recorded 4 of 5 runs, so the missing ones are collected once more" in logged
+    assert "--numberOfRuns=1 --url=http://s/a" in calls
 
 
 def test_a_page_is_matched_regardless_of_a_trailing_slash():
