@@ -158,6 +158,8 @@ def guard_tasks() -> dict[str, dict]:
     """The two tasks that hold the new review drop-ins back until GitHub labels their runners."""
     tasks = {t["name"]: t for t in install_config() if t.get("name") in (LABEL_READ, LABEL_HOLD)}
     assert set(tasks) == {LABEL_READ, LABEL_HOLD}, "the review runner label guard is missing: " + ", ".join(sorted(tasks))
+    names = [t["name"] for t in install_config()]
+    assert len(names) == len(set(names)), "yaml keeps the last task of a repeated name, so a guard task could be shadowed"
     return tasks
 
 
