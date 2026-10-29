@@ -223,10 +223,13 @@ The rules still in force:
   runner that matches, so a shared label empties the reservation during a
   burst. The cost is 10 of 28 runners that no longer take product work. The
   labels live at GitHub, not in ansible:
-  `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=fleet-ops' -f 'labels[]=review'`
-  (org-owner scope; the runner PAT gets 403). To switch it off, set those three
-  `runs-on` lines and the `orchestrate` line back to `[self-hosted, agent]` and
-  put `agent` back on the runners.
+  Applied 2026-10-29 with org-owner scope (the runner PAT gets 403): every
+  agent runner got `fleet-ops` (`gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`),
+  and runners 20 to 30 lost `agent` (`gh api -X DELETE .../runners/<id>/labels/agent`).
+  They already carried `review`, so product review jobs can still use them.
+  To switch it off, set those three `runs-on` lines and the `orchestrate` line
+  back to `[self-hosted, agent]`, put `agent` back on runners 20 to 30, and the
+  `fleet-ops` label can stay (nothing else asks for it).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
