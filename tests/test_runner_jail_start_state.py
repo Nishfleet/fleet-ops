@@ -301,6 +301,11 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M", "/home/nish/.config/cloudflare:ro"]  # the empty mount point the worker jail masks (#10934)
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree and the seat token files the unjailed steps read.
+    for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
+    # The App key dir is a credential, not a bind (fleet-ops#10957): systemd loads the key
+    # into the unit and the unjailed steps read $CREDENTIALS_DIRECTORY first.
+    assert [token for token in bound.split() if token.lstrip("-+").endswith("/.config/fleet-worker")] == []
+    loaded = [value.split(":")[0] for value in merged_values(agent, "LoadCredential")]
+    assert loaded == ["nishfleet-worker.private-key.pem"], loaded
