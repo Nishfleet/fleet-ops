@@ -254,7 +254,7 @@ jobs:
       - name: Every test under tests/, found by pytest, not listed here (fleet-ops#10721)
         # A new test runs without an edit to this file. The router tests need the pinned litellm, so they run in the next step.
         if: always()
-        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx pytest-xdist==3.6.1' pytest -q -p no:cacheprovider -n auto tests --ignore-glob='tests/test_router_*.py'
+        run: PATH=$RUNNER_TEMP/gitleaks:$PATH pipx run --spec pytest==8.3.5 --pip-args='pyyaml==6.0.2 jsonschema httpx jinja2 pytest-xdist==3.6.1' pytest -q -p no:cacheprovider -n auto --dist loadfile tests --ignore-glob='tests/test_router_*.py'
       - name: Router tests on the pinned litellm (tests/router_litellm_pin.py)
         if: always()
         run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
@@ -920,34 +920,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: Risky-path hold classifier (hold-risky)
-        # Runs agent-dispatch.yml's own CLASSIFY and APPROVAL programs, read out
-        # of the workflow, against every case in config/risky-paths.json, so the list
-        # and the program cannot drift from what the hold job and the
-        # coordinator-approval gate read. A case with
-        # "paths": null stands for an unreadable list, which must hold. An
-        # approval case feeds APPROVAL {sha, statuses, comments}, the shape
-        # the job builds from the head sha, its statuses and the PR's comments.
-        if: always()
-        run: |
-          prog=$(yq '.env.CLASSIFY' .github/workflows/agent-dispatch.yml)
-          label=$(yq '.env.LABEL' .github/workflows/agent-dispatch.yml)
-          [ -n "$prog" ] && [ "$prog" != null ] && [ "$label" = needs-coordinator ]
-          jq -e '.paths["*"] | length > 0' config/risky-paths.json >/dev/null
-          bad=0
-          while IFS= read -r c; do
-            cfg=$(jq -c --argjson c "$c" 'if ($c | has("paths")) then {paths: $c.paths} else . end' config/risky-paths.json)
-            got=$(jq -c --argjson cfg "$cfg" --arg label "$label" "$prog" <<<"$c")
-            [ "$(jq -r .risky <<<"$got")" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got"; bad=1; }
-          done < <(jq -c '.cases[]' config/risky-paths.json)
-          approved=$(yq '.env.APPROVAL' .github/workflows/agent-dispatch.yml)
-          ctx=$(yq '.env.CONTEXT' .github/workflows/agent-dispatch.yml)
-          [ -n "$approved" ] && [ "$approved" != null ] && [ "$ctx" = coordinator-approval ]
-          while IFS= read -r c; do
-            got=$(jq -r --arg c "$ctx" --arg who "$(jq -r '.approvers | join(" ")' <<<"$c")" "$approved" <<<"$(jq -c '{sha, statuses, comments}' <<<"$c")")
-            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "approval case $(jq -r .id <<<"$c"): got $got"; bad=1; }
-          done < <(jq -c '.approval_cases[]' config/risky-paths.json)
-          test "$bad" -eq 0
       - name: hold-risky fails closed (fake gh)
         # Runs hold-risky's own run block, read out of agent-dispatch.yml,
         # against a fake gh and curl. Each read fails in turn, and every run
@@ -1204,7 +1176,7 @@ jobs:
           : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
           gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
-          # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models
+          # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models (a seat that answers nothing is asked again, so a dead seat is listed once per REVIEW_BACKOFF delay plus the first call)
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
               GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
@@ -1280,9 +1252,9 @@ jobs:
           guard-third-no-answer|1|approve|0.95|clean|clean_ok|THIRD=none WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
           guard-third-family-down-falls-back-to-deepseek-and-names-it|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=opencodego2-ds41flash-judge|yes|0|claude-opus-5-5 claude-fable-5-1
           guard-diff-over-128-KiB-reaches-the-judge-in-a-file|1|approve|0.95|clean|clean_ok|DIFF_MID=1|yes|0|claude-opus-5-5 claude-fable-5-1
-          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-one-reviewer-dies-the-other-is-still-waited-for|1|approve|0.95|clean|clean_ok|SECOND_FAILS JUDGE_SLEEPS=3|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
           guard-list-unreadable|1|approve|0.95|clean|clean_ok|GUARD_LIST_FAILS|no|1|
-          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1
+          guard-second-no-answer|1|approve|0.95|clean|clean_ok|SECOND_FAILS|no|1|claude-opus-5-5 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1 claude-fable-5-1
           guard-third-row-not-named-is-not-approved|1|approve|0.95|clean|clean_ok|JUDGE_NO_HEADER WANT_ISSUE|no|1|claude-opus-5-5 claude-fable-5-1
           guard-third-seat-fails-once-retries-and-approves|1|approve|0.95|clean|clean_ok|THIRD_ONCE|yes|0|claude-opus-5-5 claude-fable-5-1
           guard-any-qwen-row-is-accepted|1|approve|0.95|clean|clean_ok|THIRD_MODEL_ID=alibaba-qwen38max-other|yes|0|claude-opus-5-5 claude-fable-5-1
@@ -1314,7 +1286,7 @@ jobs:
           claude-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=claude|yes|0|claude-opus-5-5 claude-fable-5-1
           other-built-guard-third-reviewer-stays-non-claude|1|approve|0.95|clean|clean_ok|BUILT=pi|yes|0|claude-opus-5-5 claude-fable-5-1
           claude-built-jev-still-decides-and-can-block||block|0.97|blocked|none|BUILT=claude|no|0|claude-opus-5-5
-          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5
+          claude-call-fails-or-seat-at-its-usage-limit-review-does-not-finish||approve|0.95|clean|none|CLAUDE_FAILS|no|1|claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5
           diff-too-large-to-review-whole-is-blocked-not-failed||approve|0.95|clean|none|DIFF_BIG=1|no|0|
           diff-read-by-git-fails-and-says-so||approve|0.95|clean|none|GIT_FAILS=1|no|1|
           CASES

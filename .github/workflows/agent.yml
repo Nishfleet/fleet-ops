@@ -903,7 +903,7 @@ jobs:
           # runner's key files and the review is posted publicly (claude honors an empty --tools,
           # checked 2026-10-10). A call that fails or answers nothing, a usage limit included, did
           # not finish: retry. No fallback to another family, no approval without this review. The guard head's second review (Fable) is the same call.
-          ask_claude() { timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2"; }
+          ask_claude() { local d out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out"; return 0; fi; done; return 1; }
           review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},

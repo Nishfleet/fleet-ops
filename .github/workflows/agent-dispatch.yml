@@ -298,8 +298,9 @@ jobs:
   # coordinator-approval=success commit status on that sha. The comment path
   # exists because cloud sessions get 403 on POST /statuses. Both name one
   # sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
-  # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
-  # and APPROVAL below against every case in config/risky-paths.json.
+  # the hold does not re-trigger itself or the ejected job. tests/test_risky_paths_cases.py
+  # in the unit job runs CLASSIFY and APPROVAL below against every case in
+  # config/risky-paths.json.
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&
@@ -472,8 +473,10 @@ jobs:
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-    # fleet-ops' own sweep runs on its runners: the re-queue writes need the worker App key there (fleet-ops#10949).
-    runs-on: ${{ fromJSON(inputs.runner || (github.repository == 'Nishfleet/fleet-ops' && '["self-hosted","fleet-ops"]' || '"ubuntu-latest"')) }}
+    # Every sweep runs where its re-queue writes find the worker App key: fleet-ops on its own
+    # runners, a caller on its agent runners. A hosted runner has no ~/.config/gh, so the
+    # `env -u GH_TOKEN` writes below only print "re-queue refused" there (fleet-ops#10963).
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     # contents: read is required because `statusCheckRollup` on a private repository
     # needs it as well as checks: read; without it GitHub answers "Resource not
     # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"
@@ -679,8 +682,10 @@ jobs:
             esac
             pages="$pages$i"$'\n'
             # A closed blocker releases a parked hand-off: re-label it on the runner login so the label event starts it (fleet-ops#10489).
-            if [ -n "$CLOSED" ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
-              for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
+            # At most 12 a sweep, the requeue batch's own bound, because each one costs two writes and a
+            # closed epic can block hundreds (fleet-ops#11010).
+            if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
+              released=$((${released:-0} + 1)); for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
             fi
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
