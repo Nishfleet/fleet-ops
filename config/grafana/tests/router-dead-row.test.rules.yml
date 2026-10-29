@@ -10,12 +10,18 @@
 #
 # tests/test_grafana_fixture_drift.py holds this expr and its `for` to the deployed
 # rule, so promtool cannot pass on a copy that drifted from it.
+#
+# The 401 branch (fleet-ops#11063) reads litellm_deployment_cooled_down_total, not
+# failure_responses: v1.105.0 writes no 401 series to failure_responses at all, and a
+# 401 row is parked on its first failure, so every park is one cooldown. Its bar is
+# more than 2 parks in 6 hours while the row parks in the last 30 minutes, because a
+# parked row cannot park again until its cooldown ends (15 minutes on the worker rows).
 groups:
 - interval: 5m
   name: router-dead-row
   rules:
   - alert: RouterRowAnswers402403404
-    expr: "((sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id!=\"\"}[1h]))\nor sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id=\"\"}[1h])))\n* on(model_id,requested_model)\n(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\"}[10m])) > bool 0))\n> 5"
+    expr: "((sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id!=\"\"}[1h]))\nor sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\",model_id=\"\"}[1h])))\n* on(model_id,requested_model)\n(sum by (model_id,requested_model) (increase(litellm_deployment_failure_responses_total{exception_status=~\"402|403|404\"}[10m])) > bool 0)\nor (sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status=\"401\"}[6h])) > 2)\n* on(model_id)\n(sum by (model_id) (increase(litellm_deployment_cooled_down_total{exception_status=\"401\"}[30m])) > bool 0))\n> 5"
     for: 15m
     labels:
       grafana_folder: fleet

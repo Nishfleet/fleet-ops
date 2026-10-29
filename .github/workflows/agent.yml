@@ -1048,7 +1048,8 @@ jobs:
             GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
@@ -1057,7 +1058,8 @@ jobs:
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
+    # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions:
       pull-requests: write
