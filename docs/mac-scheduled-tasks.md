@@ -13,15 +13,16 @@ read from memory. Vault files cited below live under
 **No clock is added on this box.** No task moves to a VPS timer, so nothing is
 built here (the GLUE-ZERO rule in `docs/ARCHITECTURE.md`). All 11 leave the
 Mac. Ten are retired outright, and one of those ten — the weekly gardener — was
-retired earlier. The last one, the weekly `seofixkit` database export, also
-leaves the Mac, but its capability has a next home in that product repo's own
-CI, and that CI needs a weekly schedule there, so it is handed to the
-coordinator instead of getting a tombstone.
+retired earlier. The last one, the weekly `seofixkit` database export, is
+retired as well, by the product repo itself: that repo deleted the export script
+and its scheduler on 2026-10-23 and moved its restore path to stock D1 Time
+Travel. The one question that path leaves open belongs to that repo and is
+Nish's, so fleet-ops#9527's hand-off is superseded rather than built.
 
 ## The two backup tasks
 
 The issue asked for these two first, because a missed backup breaks a release
-gate. They do not end the same way, and the difference matters.
+gate. Both end retired, but for different reasons, and the difference matters.
 
 - **`0509-weekly-d1-backup` — retired, nothing to port.** The task exported the
   production D1 database `0509` to an R2 bucket through wrangler logged in on
@@ -38,33 +39,42 @@ gate. They do not end the same way, and the difference matters.
   snapshot-objects copy, not a database export, so it does not stand in for the
   D1 export. The platform's Time Travel does, by that repo's own recorded
   decision. Nothing is lost by letting the Mac task die.
-- **`seofixkit-weekly-d1-backup` — retired from the Mac, capability still
-  open.** The weekly export script still exists in the `seofixkit` product repo
-  (`Nishfleet/seo-fix-kit`, `ops/backup-d1.sh`), and the Mac task was its only
-  scheduler: that repo's `.github/workflows` holds `deploy-production.yml`,
-  `pr-check.yml` and `secret-scan.yml` and no scheduled backup job. It runs
-  through wrangler OAuth on the Mac, which this box cannot hold, and Wrangler is
-  banned fleet-wide — the vault's `global-standing-rules.md` says Cloudflare work
-  uses the `cf` CLI and "No Wrangler, in any repo, CI job, packet or skill"
-  (Nish, 2026-09-28), which is also why the replacement uses `cf` and not
-  wrangler. **Hand-off:** move the weekly export into that product
-  repo's own CI, which already holds the repo's Cloudflare token and can use the
-  `cf` CLI. That hand-off is tracked in a plain issue, fleet-ops#9527, filed in
-  this repo with no label, because the worker's GitHub token reaches only
-  fleet-ops and because a label here would put Cloudflare work in the worker
-  queue. This needs the Cloudflare API, which the worker jail cannot reach
-  (AGENTS.md), so it goes to the coordinator rather than being solved with an
-  ad-hoc credential.
+- **`seofixkit-weekly-d1-backup` — retired, by the product repo.** The Mac task
+  ran `ops/backup-d1.sh` through wrangler OAuth, and the Mac held the only
+  session that script could use. The script and its out-of-repo scheduler are
+  both gone: that repo's glue audit deleted them on 2026-10-23
+  (nish3451/seo-fix-kit#304, PR #307, squash `5e978e0d`), and its
+  `docs/restore-runbook.md` documents only the stock restore path — D1 Time
+  Travel, always on, the last 30 days, no statement-size limit, nothing to
+  schedule. The dump lost that comparison on its own record: it ran weekly, so
+  it could lose up to a week of writes, and the 2026-06-12 rehearsal hit
+  `SQLITE_TOOBIG` on oversized `audit_reports.report_json` rows, so a dump
+  import silently dropped report bodies.
 
-  A loose user unit installed on this box on 2026-10-18 stood in for the Mac
-  task, broke the no-clock rule above, and had no test on its keys.
-  fleet-ops#10145 moved that unit into the product repo, next to the script it
-  runs (`ops/seofixkit-d1-backup.service`, `ops/seofixkit-d1-backup.timer`, keys
-  pinned by that repo's `test/d1-backup-unit.test.mjs`), and retired the host
-  copy: the deploy stops and disables the timer first, then deletes the files,
-  so the box ends up scheduling nothing instead of firing into a unit that is
-  gone. The export is manual until the CI job in fleet-ops#9527 lands, and D1
-  Time Travel still covers the last 30 days.
+  **Hand-off superseded.** fleet-ops#9527 asked for a weekly export in that
+  repo's own CI, using the `cf` CLI and the Cloudflare token that repo already
+  holds. Nothing is built: that repo deleted the script two weeks after the
+  issue was filed, and a CI job would rebuild the same weekly, partial,
+  same-account dump it had just removed. The token would not have carried it
+  either — the managed `seo-fix-kit` entry in `infra/cloudflare-tokens` grants
+  Workers Scripts, D1, Queues and Account Settings and no R2 permission, so an
+  upload to `seofixkit-backups` needs a scope change to a repo secret, which is
+  Nish's.
+
+  What Time Travel does not cover is an open decision, and it is Nish's, in
+  nish3451/seo-fix-kit#308: a copy that survives the database's own deletion, or
+  one older than 30 days. Cloudflare's Workflows export guide is named there as
+  the stock answer if the answer is yes — it runs inside the account on a
+  schedule, with no host scheduler and no shell script. Nothing is built here or
+  in that repo's CI until he decides.
+
+  The loose user unit that stood in for the Mac task in October is gone too, so
+  this box schedules nothing. fleet-ops#10145 and fleet-ops#10150 retired it: the
+  deploy stops and disables the timer, then deletes the three host paths. The
+  unit pair that the second of those said had moved into the product repo never
+  landed there — nish3451/seo-fix-kit#305 closed unmerged on 2026-10-28, and no
+  commit in that repo has ever contained `ops/seofixkit-d1-backup.service` — so
+  that repo schedules nothing either.
 
 ## The other nine
 
