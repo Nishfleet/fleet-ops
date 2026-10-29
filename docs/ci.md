@@ -69,8 +69,8 @@ reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that still ha
 both. Off switch: delete the rule in the organization settings. This
 repo keeps `ratchet / ratchet` either way.
 
-`.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
-sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
+`.github/workflows/secret-scan.yml` is the gitleaks scan; its steps live in
+`.github/actions/secret-scan` (pinned binary + sha256, `--redact`). fleet-ops has no deploy target. All actions are pinned to exact commit
 SHAs. `agent.yml`, `ci.yml`, `deploy-box.yml`, `lighthouse.yml` and
 `secret-scan.yml` set `timeout-minutes` on their jobs. `agent-dispatch.yml`
 sets none. Its `new`, `rework`, `ejected` and `unblocked` jobs

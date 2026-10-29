@@ -1,10 +1,4 @@
-# The fleet's ratchet, defined once: net added code lines (blank and comment lines not counted) under
-# .github/workflows, .github/actions, scripts and bin must be 0 or fewer. A repo's job `ratchet` calls
-# this @main and requires `ratchet / ratchet`. The rule runs from main; a PR that edits that job fails.
-# The org ruleset in config/org-ruleset.json requires this file in every repo, and a ruleset runs a file
-# only if it declares pull_request, pull_request_target or merge_group: pull_request for the rule, and
-# merge_group so a merge-queue entry reports the check. This repo already calls it from ci.yml, so the
-# job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not `ratchet / ratchet`.
+# The fleet's ratchet, defined once: net added code lines under .github/workflows, .github/actions, scripts and bin must be 0 or fewer. Reasons: docs/workflow-notes.md.
 name: Ratchet
 on: [workflow_call, pull_request, merge_group]
 permissions:
