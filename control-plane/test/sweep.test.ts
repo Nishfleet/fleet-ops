@@ -15,6 +15,13 @@ describe("redRework", () => {
     const { pr, issue, comments } = merge(rework.base, c.set);
     expect(redRework({ pr, issue, comments }).reason).toBe(c.want);
   });
+
+  it("an unreadable run start date aborts instead of re-dispatching", () => {
+    const { pr, issue } = merge(rework.base, {});
+    expect(() => redRework({ pr, issue, comments: [{ body: "agent run started: https://github.com/o/r/actions/runs/1", createdAt: "sometime" }] })).toThrow(
+      /unreadable run start date/,
+    );
+  });
 });
 
 describe("runLive", () => {
@@ -282,5 +289,45 @@ describe("sweep after a blocker closes", () => {
     };
     await sweep({ repo: "o/r", issue: "", closed: "1" }, { gh, sleep: async () => {}, log: (l) => lines.push(l) });
     expect(lines).toEqual(["::warning::#2: re-fire refused", "::warning::#2: re-fire refused"]);
+  });
+
+  it("never closes a parent whose sub-issue counts are missing", async () => {
+    const writes: string[] = [];
+    const gh: Gh = async (args) => {
+      const key = args.join(" ");
+      if (/\/dependencies\/blocking$/.test(key)) return ok([{ number: 2, state: "open" }]);
+      if (/\/parent$/.test(key)) return ok({ number: 9 });
+      if (key === "api repos/o/r/issues/2") return ok(issue(2, "2026-10-27T00:00:00Z", ["agent-ready"]));
+      if (key === "api repos/o/r/issues/9") return ok({ number: 9, state: "open", labels: [] });
+      if (/^issue close /.test(key)) {
+        writes.push(key);
+        return ok("");
+      }
+      return no(`unexpected ${key}`);
+    };
+    await sweep({ repo: "o/r", issue: "", closed: "1" }, { gh, sleep: async () => {}, log: () => {} });
+    expect(writes).toEqual([]);
+  });
+
+  it("closes a parent only when every sub-issue is closed", async () => {
+    const writes: string[] = [];
+    let parents = 0;
+    const gh: Gh = async (args) => {
+      const key = args.join(" ");
+      if (/\/dependencies\/blocking$/.test(key)) return ok([{ number: 2, state: "open" }]);
+      if (/\/parent$/.test(key)) return parents++ === 0 ? ok({ number: 9 }) : no("no parent");
+      if (key === "api repos/o/r/issues/2") return ok(issue(2, "2026-10-27T00:00:00Z", ["agent-ready"]));
+      if (key === "api repos/o/r/issues/9")
+        return ok({ number: 9, state: "open", labels: [], sub_issues_summary: { total: 2, completed: 2 } });
+      if (/^issue close /.test(key)) {
+        writes.push(key);
+        return ok("");
+      }
+      return no(`unexpected ${key}`);
+    };
+    await sweep({ repo: "o/r", issue: "", closed: "1" }, { gh, sleep: async () => {}, log: () => {} });
+    expect(writes).toEqual([
+      "issue close 9 -R o/r -r completed -c every sub-issue is closed, the last was #1; closing the parent",
+    ]);
   });
 });

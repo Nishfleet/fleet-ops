@@ -88,6 +88,9 @@ export function redRework(input: { pr: Pr; issue: Issue; comments: Comment[] }):
     (c) => c.body.startsWith(`${STARTED} `) && !infra.includes(c.body.slice(`${STARTED} `.length)),
   );
   const newest = started.at(-1);
+  if (newest !== undefined && Number.isNaN(Date.parse(newest.createdAt))) {
+    throw new Error(`unreadable run start date: ${newest.createdAt}`);
+  }
   let reason: string;
   if (failedAt === null) reason = "not-red";
   else if (checks.some(isPending)) reason = "pending";
@@ -172,8 +175,10 @@ export async function sweep(env: Env, deps: Deps): Promise<{ refs: string[]; sta
       if (read.code !== 0) break;
       const parent = JSON.parse(read.stdout) as Issue & { sub_issues_summary?: { total?: number; completed?: number } };
       const names = labelNames(parent);
+      const summary = parent.sub_issues_summary;
       if (parent.state !== "open") break;
-      if ((parent.sub_issues_summary?.total ?? 0) - (parent.sub_issues_summary?.completed ?? 0) !== 0) break;
+      if (summary?.total === undefined || summary.completed === undefined) break;
+      if (summary.total !== summary.completed) break;
       if (names.includes("critical-path") || names.includes("epic")) break;
       const closed = await gh(["issue", "close", String(p), "-R", repo, "-r", "completed", "-c", `every sub-issue is closed, the last was #${c}; closing the parent`]);
       if (closed.code !== 0) throw new Error(`closing parent #${p} failed: ${closed.stderr.trim()}`);
