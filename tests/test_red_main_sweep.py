@@ -153,10 +153,10 @@ def test_a_green_run_of_a_workflow_that_cannot_run_on_the_default_branch_closes_
     assert v == {"action": "close", "issues": [5], "reason": "green on the default branch again: https://example.invalid/runs/101"}
 
 
-def test_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch_is_still_reported():
-    assert decide("hand.yml", red(), [], trig=("workflow_dispatch",))["action"] == "create"
+def test_a_red_run_from_before_the_trigger_change_does_not_keep_the_issue_open():
+    assert decide("hand.yml", red(), [], trig=("workflow_dispatch",))["action"] == "none"
     v = decide("hand.yml", red(200), [issue(5, file="hand.yml", run_id=100, age=3 * DAY)], trig=("workflow_dispatch",))
-    assert v == {"action": "comment", "issues": [5], "reason": "new failing run"}
+    assert v == {"action": "close", "issues": [5], "reason": "not triggered by push, schedule or workflow_run, so it cannot be green there on its own"}
 
 
 def test_workflow_call_is_not_a_default_branch_trigger():
@@ -386,6 +386,14 @@ def test_sweep_matches_the_open_issue_instead_of_filing_another(tmp_path):
     assert "deploy.yml: none, this run is already reported" in r.stdout
 
 
+def test_sweep_closes_a_hand_only_workflow_whose_newest_run_is_an_old_red_push(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml", age=3 * DAY)])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml is not triggered by push, schedule or workflow_run, so it cannot be green there on its own"]
+    assert "hand.yml: close, not triggered by push, schedule or workflow_run" in r.stdout
+
+
 def test_sweep_comments_once_for_a_new_run_after_a_day(tmp_path):
     r, log = _sweep(tmp_path, deploy(rid=11), [issue(5, run_id=10, age=3 * DAY)])
     assert r.returncode == 0, r.stdout + r.stderr
@@ -426,11 +434,21 @@ def test_sweep_fails_when_the_workflow_list_is_unreadable(tmp_path):
     assert log == []
 
 
-def test_sweep_files_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
+def test_sweep_skips_a_present_workflow_whose_file_cannot_be_read(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")], drop=["on-hand.yml"])
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "::warning::hand.yml: file unreadable, skipped" in r.stdout
+    assert "::error::1 of 1 workflows errored and were skipped" in r.stdout
+    assert log == []
+
+
+def test_sweep_files_nothing_for_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
     files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
     r, log = _sweep(tmp_path, files, [])
     assert r.returncode == 0, r.stdout + r.stderr
-    assert len(log) == 1 and "--title Main is red: hand.yml " in log[0]
+    assert log == []
+    assert "hand.yml: none, no trigger that runs on the default branch" in r.stdout
 
 
 def test_sweep_skips_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):

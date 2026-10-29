@@ -938,6 +938,8 @@ jobs:
             | ([$open[] | select(([.labels[]?.name] | index("agent-in-progress")) == null) | .number]) as $idle
             | if ($in.present // [] | index($in.file)) == null then {action: (if ($idle | length) > 0 then "close" else "none" end), issues: $idle, reason: "gone from the default branch, so it cannot run there again"} elif $run.conclusion == "success" then
                 if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "green on the default branch again: \($run.url)"} else {action: "none", issues: [], reason: "green, nothing open"} end
+              elif ($in.trig | any(IN("push", "schedule", "workflow_run"))) | not then
+                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "not triggered by push, schedule or workflow_run, so it cannot be green there on its own"} else {action: "none", issues: [], reason: "no trigger that runs on the default branch"} end
               elif $run.conclusion == "failure" then
                 if ($open | length) == 0 then
                   if $recent > 0 then {action: "none", issues: [], reason: "an issue was filed for it within a day"}
@@ -950,8 +952,6 @@ jobs:
                     elif ($now - $last) < 86400 then {action: "none", issues: [$i.number], reason: "reported within a day"}
                     else {action: "comment", issues: [$i.number], reason: "new failing run"} end
                 end
-              elif ($in.trig | any(IN("push", "schedule", "workflow_run"))) | not then
-                if ($idle | length) > 0 then {action: "close", issues: $idle, reason: "not triggered by push, schedule or workflow_run, so it cannot be green there on its own"} else {action: "none", issues: [], reason: "no trigger that runs on the default branch"} end
               else {action: "none", issues: [], reason: "no finished run on the default branch"} end
         run: |
           set -euo pipefail
@@ -967,10 +967,10 @@ jobs:
             seen=$((seen + 1))
             run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$id/runs?branch=$branch&status=completed&per_page=10" --jq '[.workflow_runs[] | select(.head_repository.full_name == env.GITHUB_REPOSITORY and (.event | IN("push", "schedule", "workflow_dispatch", "workflow_run")) and (.conclusion | IN("success", "failure", "timed_out", "startup_failure")))] | first // empty | {id, conclusion: (if .conclusion == "success" then "success" else "failure" end), url: .html_url, at: .run_started_at}') ||
               { echo "::warning::$name: runs unreadable, skipped"; errs=$((errs + 1)); continue; }
-            # A finished run already decides the workflow, and a file the default branch does not have is
-            # closed by the tree read, so only a present file with no run needs its on: block read.
+            # A finished run does not prove the workflow still runs on the default branch: a run from before
+            # its on: changed stays the newest one, so the on: block is read for every file the branch has.
             trig='["push", "schedule", "workflow_run"]'
-            if [ -z "$run" ] && jq -e --arg f "$name" 'index($f)' <<<"$present" >/dev/null; then
+            if jq -e --arg f "$name" 'index($f)' <<<"$present" >/dev/null; then
               wf=$(gh api -H 'Accept: application/vnd.github.raw' "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$name?ref=$branch") || { echo "::warning::$name: file unreadable, skipped"; errs=$((errs + 1)); continue; }
               trig=$(yq -o=json -I=0 '[.on | (select(kind == "map") | keys) // (select(kind == "seq")) // [.] | .[]]' <<<"$wf" 2>/dev/null | jq -ce 'select(type == "array" and all(.[]; type == "string"))') || { echo "::warning::$name: on: block unreadable, skipped"; errs=$((errs + 1)); continue; }
             fi
