@@ -61,11 +61,12 @@ is covered with no file of its own, and a later check joins as one more entry in
 runs in under 60 s. Creating a ruleset is an organization setting, so it takes org-owner access:
 `gh api --method POST orgs/Nishfleet/rulesets --input config/org-ruleset.json`. It starts at
 enforcement `evaluate`, so the check reports without blocking a merge; set it to `active` once a pull
-request in a second repo shows the check in under 60 s. A workflow that a ruleset rule runs must
-declare `pull_request`, which is why `ratchet.yml` carries it beside `workflow_call` (and `merge_group`,
-so a merge-queue entry runs it too). Its job skips the ruleset's own run in this repo, where `ci.yml`
-already calls it. That run reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that
-still has a caller file runs both. Off switch: delete the rule in the organization settings. This
+request in a second repo shows the check in under 60 s. A ruleset runs a file only if it declares
+`pull_request`, `pull_request_target` or `merge_group`, so `ratchet.yml` carries `pull_request` and
+`merge_group` beside `workflow_call`: a merge-queue entry needs `merge_group`, or the check never
+reports. Its job skips the ruleset's own run in this repo, where `ci.yml` already calls it. That run
+reports the job's name, `ratchet`, not `ratchet / ratchet`; a repo that still has a caller file runs
+both. Off switch: delete the rule in the organization settings. This
 repo keeps `ratchet / ratchet` either way.
 
 `.github/workflows/secret-scan.yml` is the gitleaks scan (pinned binary +
