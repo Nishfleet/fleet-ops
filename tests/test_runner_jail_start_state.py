@@ -304,3 +304,43 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     # pi's library tree, the App key dir and the seat token files the unjailed steps read.
     for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
         assert tail in bound, tail
+
+
+def fleet_config_bind_names(dirs: list[Path]) -> set[str]:
+    """Names the runner binds under the fleet config dir, with no absolute path spelled out."""
+    names: set[str] = set()
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                match = re.fullmatch(r"/home/[^/]+/\.config/fleet-ops/(.+)", token.lstrip("-+"))
+                if match:
+                    names.add(match.group(1))
+    return names
+
+
+def test_the_agent_pool_binds_no_fleet_config_path_no_job_reads() -> None:
+    """A runner bind with no reader is exposure for nothing (fleet-ops#10826).
+
+    A path under the fleet config dir is bound because a job reads it before the engine jail
+    starts, so the names the drop-in binds and the names the workflows read are one set. The
+    eval pool's one bind is not checked: the drive eval container reads it, not a step, and
+    cutting it needs a credential moved (#10957).
+    """
+    readers: set[str] = set()
+    workflows = sorted((ROOT / ".github").rglob("*.yml")) + sorted((ROOT / ".github").rglob("*.yaml"))
+    for path in workflows:
+        readers |= set(re.findall(r"(?:\$HOME|%h|~|/home/[^/\" ]+)/\.config/fleet-ops/([A-Za-z0-9_.*-]+)", path.read_text()))
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    assert bound <= readers, f"bound with no job reading it: {sorted(bound - readers)}"
+
+
+def test_the_agent_pool_reads_a_repo_config_from_the_clone_it_binds() -> None:
+    """A file the repo ships is read from the deploy clone, not from the host config dir (fleet-ops#10826).
+
+    The clone is bound whole, so a job that needs config/litellm-proxy.yaml or config/intake-repos.json
+    has the file already. Binding the host copy as well puts a repo file inside the credential-named
+    directory, which is what made a whole-directory bind look like the smaller change.
+    """
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    shipped = sorted(name for name in bound if (ROOT / "config" / name).exists())
+    assert not shipped, f"read from the deploy clone instead: {shipped}"
