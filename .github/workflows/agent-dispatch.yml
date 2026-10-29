@@ -1411,8 +1411,7 @@ jobs:
         # were this step's kill, 28 of the 32 failing orchestrate jobs ran at least 45 of the 50 minutes,
         # and the session spends most of that wall in model latency and in the tests its change needs.
         # The measurements are on #11059. The prompt's Time budget books the last 15 minutes for landing
-        # the PR; this number, that budget and the ORCH_START clock below are held together by
-        # tests/test_workflow_caps.py.
+        # the PR, keeps its own clock, and tests/test_workflow_caps.py holds its numbers to this one.
         timeout-minutes: 75
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
@@ -1428,10 +1427,6 @@ jobs:
         run: |
           set -euo pipefail
           cd "$WORKTREE"
-          # The clock the prompt's Time budget reads: a model cannot measure minutes by feel, so the
-          # session subtracts this from `date -u +%s` (fleet-ops#11059).
-          ORCH_START="$(date -u +%s)"
-          export ORCH_START
           # The prompt from THIS checkout; a repo without one falls back to the fleet copy.
           prompt="prompts/orchestrator-handoff.md"
           if [ ! -f "$prompt" ]; then

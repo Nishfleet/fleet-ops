@@ -275,10 +275,11 @@ def test_the_orchestrate_session_books_its_wall_for_landing():
         f"minutes around a {wall}-minute session step and its cleanup (9 s before the step and 4 s after it on "
         "40942864011): at under 10 the job kills a run where the always() cleanup never runs"
     )
-    assert "export ORCH_START" in DISPATCH.read_text(), (
-        "agent-dispatch.yml no longer exports ORCH_START, so the budget the prompt states has no clock to read"
+    clock = re.search(r"date -u \+%s > /tmp/orch-session-start", text)
+    assert clock, (
+        "prompts/orchestrator-handoff.md no longer writes the start of the session to a file, so its minute "
+        "lines are unmeasurable by the model and the extra wall only lengthens a run that cannot land"
     )
-    assert "$ORCH_START" in text, (
-        "prompts/orchestrator-handoff.md no longer tells the session to read ORCH_START, so its minute lines "
-        "are unmeasurable and the extra wall only lengthens a run that cannot land"
+    assert "$(cat /tmp/orch-session-start)" in text, (
+        "the prompt writes the session start but never reads it back: the budget needs the elapsed-minutes command"
     )
