@@ -96,6 +96,10 @@ def _managed_copies():
     return tasks, copies
 
 
+def test_the_connector_drop_in_keeps_the_claude_ai_connectors_off():
+    assert _load(DROPINS / "80-claudeai-connectors.json")["disableClaudeAiConnectors"] is True
+
+
 @NEEDS_YQ
 def test_every_managed_settings_file_is_shipped_and_installed_by_a_gated_task():
     _, copies = _managed_copies()
