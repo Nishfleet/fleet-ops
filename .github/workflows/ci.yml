@@ -743,34 +743,34 @@ jobs:
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
           pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_stuck_prs_argmax.py tests/test_sweep_requeue.py tests/test_blocked_by_orchestrate.py || bad=1
           test "$bad" -eq 0
-      - name: A quiet priority-now item restarts itself (QUIET, NOT_FINISHED, LANE)
-        # Runs the list job's three new programs, read out of the workflow, against
-        # every case in config/quiet-issue-cases.json (fleet-ops#10716). The grep
-        # lines pin the wiring: a quiet issue is skipped while its run is live on
-        # either start marker, the orchestrate lane is re-fired or re-labelled, the
-        # reopen acts on the merged PR, and a blocker gets the lane label. The
-        # sweep-only gate is pinned too, because a per-issue dispatch is the
-        # re-fire itself: acting on it would fire a second writer.
+      - name: A quiet priority-now item restarts itself (REQUEUE, NOT_FINISHED, LANE)
+        # Runs the list job's three programs, read out of the workflow, against every case
+        # in config/quiet-issue-cases.json (fleet-ops#10716). The grep lines pin the wiring:
+        # a quiet issue is skipped while its run is live on either start marker, the
+        # orchestrate lane is re-fired or re-labelled, the reopen acts on the merged PR, and
+        # a blocker gets the lane label. The sweep-only gate and the re-fire budget are pinned
+        # too, because a per-issue dispatch is the re-fire itself, and lifting a pause must not
+        # start hundreds of paid hand-offs in one sweep.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          quiet=$(yq '.jobs.list.steps[] | select(.env.QUIET != null) | .env.QUIET' "$f")
+          req=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .env.REQUEUE' "$f")
           notf=$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .env.NOT_FINISHED' "$f")
           lane=$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .env.LANE' "$f")
-          [ "$quiet" != null ] && [ -n "$quiet" ] && [ "$notf" != null ] && [ -n "$notf" ] && [ "$lane" != null ] && [ -n "$lane" ] || { echo "QUIET, NOT_FINISHED or LANE missing"; exit 1; }
-          qrun=$(yq '.jobs.list.steps[] | select(.env.QUIET != null) | .run' "$f")
-          qif=$(yq '.jobs.list.steps[] | select(.env.QUIET != null) | .if' "$f")
+          [ "$req" != null ] && [ -n "$req" ] && [ "$notf" != null ] && [ -n "$notf" ] && [ "$lane" != null ] && [ -n "$lane" ] || { echo "REQUEUE, NOT_FINISHED or LANE missing"; exit 1; }
+          rrun=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .run' "$f")
+          rif=$(yq '.jobs.list.steps[] | select(.env.REQUEUE != null) | .if' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'agent run started: |orchestrator hand-off started: ' 'test("(^|/)issue-\($n)(-.*)?$")'; do
-            grep -F -- "$n" <<<"$quiet" >/dev/null || { echo "missing quiet marker: $n"; exit 1; }
+          for n in 'agent run started: |orchestrator hand-off started: ' 'test("(^|/)issue-\($n)(-.*)?$")' 'priority-now")) then 900 else 21600' '[5 - $queued, 0] | max'; do
+            grep -F -- "$n" <<<"$req" >/dev/null || { echo "missing restart wiring: $n"; exit 1; }
           done
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'run live, skip' '-f task=orchestrate -f issue="$n"' '--remove-label orchestrator-tried --add-label needs-orchestrator' 'budget=$((5 - queued))' 'the PR list failed, no re-fires this sweep'; do
-            grep -F -- "$n" <<<"$qrun" >/dev/null || { echo "missing quiet wiring: $n"; exit 1; }
+          for n in 'run live, skip' '-f task=orchestrate -f issue="$n"' '--remove-label orchestrator-tried --add-label needs-orchestrator' 'fail "PR list"'; do
+            grep -F -- "$n" <<<"$rrun" >/dev/null || { echo "missing restart wiring: $n"; exit 1; }
           done
           # shellcheck disable=SC2016 # the needle is literal workflow text
-          grep -F -- "inputs.issue == ''" <<<"$qif" >/dev/null || { echo "missing sweep-only gate on QUIET"; exit 1; }
+          grep -F -- "inputs.issue == ''" <<<"$rif" >/dev/null || { echo "missing sweep-only gate on REQUEUE"; exit 1; }
           nif=$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in 'gh issue reopen "$CLOSED"' 'already reopened once for PR #'; do
@@ -778,15 +778,15 @@ jobs:
           done
           grep -F -- '--add-label needs-orchestrator' <<<"$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .run' "$f")" >/dev/null || { echo "missing blocker wiring"; exit 1; }
           base=$(jq -c '.base' config/quiet-issue-cases.json)
-          now=$(jq -r .now config/quiet-issue-cases.json); idle=$(jq -r .idle config/quiet-issue-cases.json)
+          now=$(jq -r .now config/quiet-issue-cases.json); queued=$(jq -r '.queued // 0' config/quiet-issue-cases.json)
           closed=$(jq -r .base.issue.number config/quiet-issue-cases.json)
           bad=0
           while IFS= read -r c; do
             in=$(jq -c --argjson c "$c" '. as $b | $b * ($c.set // {})' <<<"$base")
             got_run=""
             case $(jq -r .prog <<<"$c") in
-              QUIET) rec=$(jq -c --argjson now "$now" --argjson idle "$idle" --argjson prs "$(jq -c .prs <<<"$in")" "[.issue] | $quiet" <<<"$in")
-                     got=$(jq -r '.lane // ""' <<<"${rec:-null}"); got_run=$(jq -r '.run // ""' <<<"${rec:-null}") ;;
+              REQUEUE) rec=$(jq -c --argjson now "$now" --argjson queued "$queued" --argjson prs "$(jq -c .prs <<<"$in")" "[.issue] | [$req]" <<<"$in")
+                     got=$(jq -r '.[0].act // ""' <<<"$rec"); got_run=$(jq -r '.[0].run // ""' <<<"$rec") ;;
               NOT_FINISHED) got=$(jq -r --argjson n "$closed" "$notf | .line // \"\"" <<<"$(jq -c .merged <<<"$in")") ;;
               LANE) got=$(jq -r "$lane" <<<"$(jq -c .labels <<<"$in")") ;;
             esac
@@ -1558,18 +1558,18 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all five sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
-        # run status alone.
+        # config/sweep-liveness-events.json, and checks that all six sweep
+        # reads (conflicts, stalled, orphans, red PRs, stuck rework, parked
+        # hand-offs) use it and none still reads the run status alone.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 6 ] || { echo "expected 6 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 6 ] || { echo "expected 6 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do

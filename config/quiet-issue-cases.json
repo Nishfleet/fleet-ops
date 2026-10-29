@@ -1,7 +1,7 @@
 {
- "_": "Cases for the QUIET, NOT_FINISHED and LANE programs in agent-dispatch.yml's list job (ci.yml runs them, one case per verdict). QUIET takes [issue] and answers one object per issue that must restart: `lane` is worker, orchestrate, or absent, and `run` is the id of the newest start marker (either `agent run started:` or `orchestrator hand-off started:`), which the step reads with gh run view before it fires. The base issue is #10681 at 10:20Z: open, priority-now and needs-orchestrator, last touched at 10:00Z, so 20 minutes quiet over the 15-minute idle line. NOT_FINISHED takes the merged PRs for the closed issue and answers the line of the newest PR that closes it, quoting it; a PR that closes several issues names none of them. LANE takes an issue's labels and answers has or none.",
+ "_": "Cases for the REQUEUE, NOT_FINISHED and LANE programs in agent-dispatch.yml's list job (ci.yml runs them, one case per verdict). REQUEUE takes [issue] and answers the issues it acts on: `act` is requeue or escalate, and `run` is the id of the newest start marker (either `agent run started:` or `orchestrator hand-off started:`), which the step reads with gh run view and skips while it is live. A priority-now issue goes idle after 900 s, every other parked issue after 6 h. The base issue is #10681 at 10:20Z: open, priority-now and needs-orchestrator, last touched at 10:00Z, so 20 minutes quiet over the 15-minute line. NOT_FINISHED takes the merged PRs for the closed issue and answers the line of the newest PR that closes it, quoting it; a PR that closes several issues names none of them. LANE takes an issue's labels and answers has or none.",
  "now": 1793182800,
- "idle": 900,
+ "queued": 0,
  "base": {
   "prs": [],
   "issue": {
@@ -39,13 +39,13 @@
  "cases": [
   {
    "id": "parked-quiet-15",
-   "prog": "QUIET",
-   "want": "orchestrate",
+   "prog": "REQUEUE",
+   "want": "requeue",
    "want_run": "40000000000"
   },
   {
    "id": "parked-but-touched-5m-ago",
-   "prog": "QUIET",
+   "prog": "REQUEUE",
    "want": "",
    "set": {
     "issue": {
@@ -54,27 +54,40 @@
    }
   },
   {
-   "id": "agent-ready-quiet",
-   "prog": "QUIET",
-   "want": "worker",
+   "id": "a-parked-issue-that-is-not-priority-now-waits-6h",
+   "prog": "REQUEUE",
+   "want": "",
    "set": {
     "issue": {
      "labels": [
       {
-       "name": "priority-now"
-      },
-      {
-       "name": "agent-ready"
+       "name": "needs-orchestrator"
       }
      ]
     }
-   },
-   "want_run": "40000000000"
+   }
+  },
+  {
+   "id": "a-parked-issue-not-priority-now-at-7h-restarts",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "40000000000",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "needs-orchestrator"
+      }
+     ],
+     "updatedAt": "2026-10-28T03:20:00Z"
+    }
+   }
   },
   {
    "id": "orchestrator-tried-quiet",
-   "prog": "QUIET",
-   "want": "orchestrate",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "40000000000",
    "set": {
     "issue": {
      "labels": [
@@ -86,13 +99,13 @@
       }
      ]
     }
-   },
-   "want_run": "40000000000"
+   }
   },
   {
    "id": "three-ended-hand-offs-escalate-not-restart",
-   "prog": "QUIET",
-   "want": "",
+   "prog": "REQUEUE",
+   "want": "escalate",
+   "want_run": "",
    "set": {
     "issue": {
      "comments": [
@@ -126,7 +139,7 @@
   },
   {
    "id": "open-pr-owns-it",
-   "prog": "QUIET",
+   "prog": "REQUEUE",
    "want": "",
    "set": {
     "prs": [
@@ -135,8 +148,40 @@
    }
   },
   {
+   "id": "own-pr-on-a-strong-branch-owns-it",
+   "prog": "REQUEUE",
+   "want": "",
+   "set": {
+    "prs": [
+     "strong/issue-10681"
+    ]
+   }
+  },
+  {
+   "id": "own-pr-on-a-part-branch-owns-it",
+   "prog": "REQUEUE",
+   "want": "",
+   "set": {
+    "prs": [
+     "orch/issue-10681-part2"
+    ]
+   }
+  },
+  {
+   "id": "a-nearby-issue-number-does-not-own-it",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "40000000000",
+   "set": {
+    "prs": [
+     "claim/issue-1068",
+     "claim/issue-106810"
+    ]
+   }
+  },
+  {
    "id": "waiting-on-nish-is-not-quiet",
-   "prog": "QUIET",
+   "prog": "REQUEUE",
    "want": "",
    "set": {
     "issue": {
@@ -156,7 +201,7 @@
   },
   {
    "id": "no-lane-no-restart",
-   "prog": "QUIET",
+   "prog": "REQUEUE",
    "want": "",
    "set": {
     "issue": {
@@ -169,12 +214,87 @@
    }
   },
   {
-   "id": "closed-is-not-quiet",
-   "prog": "QUIET",
+   "id": "agent-ready-is-not-a-parked-lane",
+   "prog": "REQUEUE",
    "want": "",
    "set": {
     "issue": {
-     "state": "closed"
+     "labels": [
+      {
+       "name": "priority-now"
+      },
+      {
+       "name": "agent-ready"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "agent-run-marker-is-read",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "40000000777",
+   "set": {
+    "issue": {
+     "comments": [
+      {
+       "body": "agent run started: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000777",
+       "createdAt": "2026-10-28T09:50:00Z",
+       "author": {
+        "login": "github-actions[bot]"
+       },
+       "authorAssociation": "NONE"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "the-newest-start-marker-wins",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "40000000777",
+   "set": {
+    "issue": {
+     "comments": [
+      {
+       "body": "orchestrator hand-off started: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000000",
+       "createdAt": "2026-10-28T09:20:00Z",
+       "author": {
+        "login": "github-actions[bot]"
+       },
+       "authorAssociation": "NONE"
+      },
+      {
+       "body": "agent run started: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000777",
+       "createdAt": "2026-10-28T09:50:00Z",
+       "author": {
+        "login": "github-actions[bot]"
+       },
+       "authorAssociation": "NONE"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "hand-off-started-without-a-run-url",
+   "prog": "REQUEUE",
+   "want": "requeue",
+   "want_run": "",
+   "set": {
+    "issue": {
+     "comments": [
+      {
+       "body": "orchestrator hand-off started: (no run url)",
+       "createdAt": "2026-10-28T09:50:00Z",
+       "author": {
+        "login": "github-actions[bot]"
+       },
+       "authorAssociation": "NONE"
+      }
+     ]
     }
    }
   },
@@ -219,102 +339,6 @@
       "number": 10714,
       "body": "Covered 2 of 6, does not finish.\n\nCloses #10700\n"
      }
-    ]
-   }
-  },
-  {
-   "id": "blocker-with-no-lane",
-   "prog": "LANE",
-   "want": "none",
-   "set": {
-    "labels": [
-     {
-      "name": "priority-now"
-     }
-    ]
-   }
-  },
-  {
-   "id": "blocker-already-has-a-lane",
-   "prog": "LANE",
-   "want": "has",
-   "set": {
-    "labels": [
-     {
-      "name": "agent-ready"
-     }
-    ]
-   }
-  },
-  {
-   "id": "agent-run-live-is-not-quiet",
-   "prog": "QUIET",
-   "want": "orchestrate",
-   "want_run": "40000000777",
-   "set": {
-    "issue": {
-     "comments": [
-      {
-       "body": "agent run started: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000777",
-       "createdAt": "2026-10-28T09:50:00Z",
-       "author": {
-        "login": "github-actions[bot]"
-       },
-       "authorAssociation": "NONE"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "id": "hand-off-started-without-a-run-url",
-   "prog": "QUIET",
-   "want": "orchestrate",
-   "want_run": "",
-   "set": {
-    "issue": {
-     "comments": [
-      {
-       "body": "orchestrator hand-off started: (no run url)",
-       "createdAt": "2026-10-28T09:50:00Z",
-       "author": {
-        "login": "github-actions[bot]"
-       },
-       "authorAssociation": "NONE"
-      }
-     ]
-    }
-   }
-  },
-  {
-   "id": "own-pr-on-a-strong-branch-owns-it",
-   "prog": "QUIET",
-   "want": "",
-   "set": {
-    "prs": [
-     "strong/issue-10681"
-    ]
-   }
-  },
-  {
-   "id": "own-pr-on-a-part-branch-owns-it",
-   "prog": "QUIET",
-   "want": "",
-   "set": {
-    "prs": [
-     "orch/issue-10681-part2"
-    ]
-   }
-  },
-  {
-   "id": "a-nearby-issue-number-does-not-own-it",
-   "prog": "QUIET",
-   "want": "orchestrate",
-   "want_run": "40000000000",
-   "set": {
-    "prs": [
-     "claim/issue-1068",
-     "claim/issue-106810"
     ]
    }
   },
@@ -366,6 +390,30 @@
       "number": 10722,
       "mergedAt": "2026-10-28T10:00:00Z",
       "body": "Does not finish either one.\n\nCloses #10681\nCloses #10700\n"
+     }
+    ]
+   }
+  },
+  {
+   "id": "blocker-with-no-lane",
+   "prog": "LANE",
+   "want": "none",
+   "set": {
+    "labels": [
+     {
+      "name": "priority-now"
+     }
+    ]
+   }
+  },
+  {
+   "id": "blocker-already-has-a-lane",
+   "prog": "LANE",
+   "want": "has",
+   "set": {
+    "labels": [
+     {
+      "name": "agent-ready"
      }
     ]
    }

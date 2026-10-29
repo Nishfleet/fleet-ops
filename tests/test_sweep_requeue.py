@@ -212,11 +212,14 @@ def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
 
 def test_requeue_step_runs_only_on_the_sweep_events():
     """pull_request_target and workflow_run reach this workflow too, so a gate phrased as
-    "not issues" would run the sweep's writes for them; only the two sweep triggers may."""
+    "not issues" would run the sweep's writes for them; only the two sweep triggers may, and
+    a per-issue dispatch is the re-fire itself, so this step skips it (fleet-ops#10836)."""
     expr = _y(f"{STEP} | .if")
     allowed = set(re.findall(r"github\.event_name\s*==\s*['\"]([a-z_]+)['\"]", expr))
     rest = re.sub(r"github\.event_name\s*==\s*['\"][a-z_]+['\"]", "", expr)
-    assert re.sub(r"[\s()|]", "", rest) == "", expr
+    sweep_only = r"inputs\.issue\s*==\s*['\"]{2}"
+    assert len(re.findall(sweep_only, rest)) == 1, expr
+    assert re.sub(r"[\s()|&]", "", re.sub(sweep_only, "", rest)) == "", expr
     assert allowed == {"schedule", "workflow_dispatch"}, expr
     assert allowed <= set(_yj(".on | keys")), expr
 
