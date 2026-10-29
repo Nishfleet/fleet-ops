@@ -219,6 +219,19 @@
   the Devin Tincan listener (unit file moved into `systemd/` with fleet-ops#10133),
   so its session-text output files are owner-only and the drop-in applies on every
   deploy. Applies at the next restart.
+  That drop-in covers the listener only. The Devin CLI runs in two more places,
+  and both started it group-writable: under the `netcup-agent` runners at the
+  units' 0022, which made a new log group-readable, and in nish's login shells
+  at `pam_umask`'s 0002, which made it group-writable (audit W1a,
+  `nish-vault#30`).
+  `rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-umask.conf`
+  sets `UMask=0077` for every `netcup-agent` runner — a prefix drop-in, because
+  their unit files come from the runner's own `svc.sh` — and
+  `rootfs/etc/zsh/zprofile` sets `umask 077` for nish's login shells, which is
+  how sshd and tmux start one. Both apply at the next runner restart and the
+  next login. The check after a fresh CLI run: `find ~/.local/share/devin
+  -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
+  always shows mode 777, so it is excluded).
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)

@@ -941,11 +941,16 @@ router_settings:
   # 600 s: the p99 gap inside a session is 214 s, so a live pin holds and a dead-row pin expires in 10 min. The fix is upstream (fleet-ops#9411).
   deployment_affinity_ttl_seconds: 600
   # Worker rows are order 1 (a peer set); judge is order 1 Alibaba, order 2 the OpenCode Go pair. The order filter runs for every strategy (fleet-ops#9374).
-  # worker-cheap, worker-public and assistant rise to worker-capable; worker-capable never falls down (fleet-ops#10040).
+  # A desk alias renames the group a job already picked, so the 3-day token trial changes compaction alone (fleet-ops#9330). Long note 14: docs/litellm-router-notes.md
+  model_group_alias:
+    worker-capable-desk: worker-capable
+    worker-public-desk: worker-public
+  # worker-cheap, worker-public and assistant rise to worker-capable; worker-capable never falls down (fleet-ops#10040). An alias has no chain of its own, so it needs its own fallback row.
   # A row answering 402/403 is never cooled, so that call reaches the caller and Pi retries it.
   fallbacks:
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
+    - worker-public-desk: [worker-capable]
     - assistant: [worker-capable]
     - tether: [assistant]
   cooldown_time: 60

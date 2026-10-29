@@ -366,6 +366,15 @@
             "NotFoundErrorAllowedFails": { "type": "integer", "const": 0 }
           }
         },
+        "model_group_alias": {
+          "$comment": "fleet-ops#9330 desk arm of the 3-day token trial, and nothing else: an alias renames a group Pi already picks, so Pi's compaction.modelOverrides (keyed provider/model) can shorten that arm's context without moving a single call to another seat. Only a worker group a Pi job can pick has one, which is why worker-public is here and assistant is not. Pinned as a closed map because an alias also renames the fallback chain: Router._get_model_from_alias resolves the name before routing, but fallback_lookup_groups keys on the requested name, so an alias with no fallbacks entry of its own inherits nothing and a failed row ends the call (the 'No fallback model group' shape of fleet-ops#9290). tests/test_workflow_caps.py asserts each pair here is real, that no alias name shadows a model_name, and that the desk name agent.yml builds is listed.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "worker-capable-desk": { "const": "worker-capable" },
+            "worker-public-desk": { "const": "worker-public" }
+          }
+        },
         "fallbacks": {
           "$comment": "Tether: the tether entry is exactly [assistant] (a Claude failure falls to the group Hermes already uses, never to a worker group or back), and no other group may fall into tether, so the Claude credit is spent by Tether alone. W10c: worker-capable is the strong group and never falls down, so no worker-capable entry may name worker-cheap, worker-public or assistant; a strong call with no healthy row fails at the caller.",
           "type": "array",
