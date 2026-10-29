@@ -92,15 +92,18 @@ jobs:
       - name: actionlint over .github/workflows/
         if: always()
         uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
-      - name: zizmor over .github/workflows/
+      - name: zizmor over .github/workflows/ and .github/actions/
         # Stock security audit for workflows: dangerous triggers, template injection, persisted
         # credentials, unpinned actions, over-broad permissions and App tokens. Offline: no token, cannot
         # hang on API rate limits. Nishfleet/0509#5843 adds the same image.
-        # Policy and its kept exceptions: .github/zizmor.yml.
+        # Policy and its kept exceptions: .github/zizmor.yml. .github/actions/ is in the path because
+        # a composite action holds the same injections a workflow does, and the discovery steps below
+        # never reach it: actionlint reads workflows only, and shellcheck finds files by extension or
+        # shebang, so neither one sees a run block in an action (fleet-ops#10723).
         if: always()
         uses: docker://ghcr.io/zizmorcore/zizmor:1.30.1@sha256:a2eb396d886c053073405c7a980f2139ba2248ec172243cfa3841e57196e8101
         with:
-          args: --offline --format plain .github/workflows
+          args: --offline --format plain .github/workflows .github/actions
       - name: shellcheck over shell files (extension + shebang discovery)
         if: always()
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
