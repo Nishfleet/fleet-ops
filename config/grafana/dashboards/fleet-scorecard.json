@@ -63,7 +63,7 @@
           },
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
-          "repository": "",
+          "repository": "fleet-ops",
           "options": {
             "query": "is:merged repo:Nishfleet/fleet-ops",
             "timeField": 2
@@ -78,7 +78,7 @@
           },
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
-          "repository": "",
+          "repository": "fleet-ops",
           "options": {
             "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public",
             "timeField": 2
@@ -92,7 +92,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTR(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTR(closed_at, 1, 10), 'products' FROM B) AS merged\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B) AS merged\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {
@@ -165,7 +165,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTR(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTR(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, COUNT(*) AS runs, SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) AS failed,\n       ROUND(100.0 * SUM(CASE WHEN conclusion = 'success' THEN 0 ELSE 1 END) / COUNT(*), 1) AS failed_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, conclusion FROM A UNION ALL SELECT SUBSTRING(created_at, 1, 10), conclusion FROM B) AS runs\nWHERE conclusion IN ('success', 'failure', 'timed_out', 'startup_failure')\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {

@@ -2,6 +2,7 @@
 sqlite, fires only when both consecutive 24h windows miss."""
 import json
 import pathlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -59,3 +60,23 @@ def _merged(own_today, prod_today, own_yday, prod_yday):
 @pytest.mark.parametrize("args,missed", [((5, 3, 5, 3), 1), ((5, 5, 5, 5), 1), ((5, 6, 5, 3), 0), ((5, 3, 5, 6), 0), ((0, 0, 0, 0), 0)])
 def test_products_behind_fires_only_when_both_days_miss(args, missed):
     assert _merged(*args) == missed
+
+
+DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
+GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "date_format", "min", "max", "avg", "abs", "from", "in"}
+
+
+def _targets():
+    return [t for p in json.loads(DASHBOARD.read_text())["panels"] for t in p.get("targets", [])]
+
+
+def test_dashboard_sql_calls_only_functions_grafana_allows():
+    for t in _targets():
+        for name in re.findall(r"\b([A-Za-z_]+)\s*\(", t.get("expression", "")):
+            assert name.lower() in GRAFANA_SQL_FUNCTIONS, name
+
+
+def test_dashboard_pull_request_searches_name_a_repository():
+    searches = [t for t in _targets() if t.get("queryType") == "Pull_Requests"]
+    assert len(searches) == 2
+    assert all(t["repository"] for t in searches)
