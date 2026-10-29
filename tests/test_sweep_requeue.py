@@ -1,7 +1,7 @@
 """Parked hand-offs in agent-dispatch.yml's list job (fleet-ops#10420, #10475): the step's real
 `run:` block and REQUEUE program (read out with yq) against a fake gh.
 
-An handoff-ended issue idle over 6 h goes back to needs-orchestrator (and an agent-blocked one, even with
+A handoff-ended issue idle over 6 h goes back to needs-orchestrator (and an agent-blocked one, even with
 old end markers, is left alone). A labelled idle one with no orch/issue-N PR is re-fired by a task=orchestrate
 dispatch of the calling workflow file, with a marker comment and no label write. At most 5 minus the live
 orchestrate runs a sweep. Three ended or re-fired hand-offs give needs-nish-decision. Every sweep also runs
@@ -24,8 +24,9 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
-  "issue list") case " $* " in *"label:orchestrator-tried"*) jq -r '.[].number' "$FAKE_DIR/retired.json" ;; *) cat "$FAKE_DIR/issues.json" ;; esac ;;
+  "issue list") case " $* " in *"label:orchestrator-tried"*) jq -r '[.[].name] | any(. == "orchestrator-tried")' "$FAKE_DIR/repo-labels.json" | grep -qx true && jq -r '.[].number' "$FAKE_DIR/retired.json" || true ;; *) cat "$FAKE_DIR/issues.json" ;; esac ;;
   "label create") echo "$*" >> "$FAKE_DIR/labels.log" ;;
+  "label list") jq -r '[.[].name] | any(. == "orchestrator-tried")' "$FAKE_DIR/repo-labels.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -35,7 +36,11 @@ case "$1 $2" in
     id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
-  "issue edit"|"issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  # The one-pass rename writes with the job token: this job runs on a hosted runner, where
+  # `env -u GH_TOKEN` leaves gh no login at all (fleet-ops#10963).
+  "issue edit") case " $* " in *orchestrator-tried*) [ -n "$GH_TOKEN" ] || { echo "fake gh: no token" >&2; exit 1; } ;; esac
+    echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -66,10 +71,11 @@ def job(name, status="in_progress"):
     return {"name": name, "status": status}
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), retired=()):
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), retired=(), repo_labels=("orchestrator-tried",)):
     """Every live run is titled differently (sweep, stub); only its job names say orchestrate."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
     (tmp_path / "retired.json").write_text(json.dumps([{"number": n} for n in retired]))
+    (tmp_path / "repo-labels.json").write_text(json.dumps([{"name": n} for n in repo_labels]))
     jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
     for i, j in enumerate(other_jobs):
         jobs[str(100 + i)] = {"jobs": [j]}
@@ -240,6 +246,14 @@ def test_the_retired_label_moves_its_open_issues_in_one_pass(tmp_path):
         "issue edit -R o/r --remove-label orchestrator-tried --add-label handoff-ended 4 5"]
     labels = (tmp_path / "labels.log").read_text()
     assert "label create handoff-ended" in labels and "BFD4F2" in labels
+
+
+def test_the_retired_label_pass_retires_itself(tmp_path):
+    """With the old label gone, the pass writes nothing, so it never rewrites the new label's colour
+    and description after the migration is over (fleet-ops#10863)."""
+    w = run(tmp_path, [issue(1)], retired=(4, 5), repo_labels=("handoff-ended",))
+    assert [l for l in w if "--remove-label orchestrator-tried" in l] == []
+    assert not (tmp_path / "labels.log").exists()
 
 
 def test_full_queue_requeues_nothing_but_still_escalates(tmp_path):

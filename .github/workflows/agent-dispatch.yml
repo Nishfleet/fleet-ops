@@ -709,8 +709,7 @@ jobs:
                 and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
               | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
-              | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
+                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]} | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
@@ -721,8 +720,12 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          # The label this job wrote before it was renamed (fleet-ops#10863). Until no repository carries it, one pass per sweep moves the open issues still on it: create the new label first, then re-label as the runner login, which is what writes a label event. A search, not --label, so a repository that no longer carries the old label reports none instead of failing.
-          env -u GH_TOKEN gh label create handoff-ended -R "$GITHUB_REPOSITORY" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null || echo "::warning::handoff-ended: label create refused"; gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" --state open -L 300 --json number --jq '.[].number' | xargs -r env -u GH_TOKEN gh issue edit -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label handoff-ended || echo "::warning::retired label: the one-pass rename was refused"
+          # The label this job wrote before it was renamed (fleet-ops#10863). One pass per sweep moves
+          # the open issues on it, with the job's own token: a rename needs no label event, and this job
+          # runs on a hosted runner with no login. Both lines retire themselves, so `gh label delete
+          # orchestrator-tried` leaves one label read per sweep and no write at all.
+          gh label list -R "$GITHUB_REPOSITORY" -L 300 --json name --jq 'any(.[]; .name == "orchestrator-tried")' | grep -qx true && gh label create handoff-ended -R "$GITHUB_REPOSITORY" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null || true
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" --state open -L 300 --json number --jq '.[].number' | xargs -r gh issue edit -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label handoff-ended || echo "::warning::retired label: the one-pass rename was refused"
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:handoff-ended,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
