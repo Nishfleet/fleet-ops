@@ -28,10 +28,6 @@ jobs:
         run: |
           set -euo pipefail
           systemctl is-active --quiet fleet-deploy.path || { echo "::error::fleet-deploy.path is not active"; exit 1; }
-          stamp="run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          printf '%s\n' "$stamp" > /var/lib/fleet-deploy/request
-          echo "deploy request: $stamp"
+          stamp="run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; echo "deploy request: $stamp"; printf '%s\n' "$stamp" > /var/lib/fleet-deploy/request
           until line=$(grep "^$stamp " /var/lib/fleet-deploy/result 2>/dev/null); do sleep 10; done
-          echo "deploy verdict: $line"
-          read -r _ res status _ <<<"$line"
-          if [ "$res" != success ] || [ "$status" != 0 ]; then sed -n '1,100p' /var/lib/fleet-deploy/log; exit 1; fi
+          echo "deploy verdict: $line"; read -r _ res status _ <<<"$line"; [ "$res" = success ] && [ "$status" = 0 ] || { sed -n '1,100p' /var/lib/fleet-deploy/log; exit 1; }

@@ -239,7 +239,6 @@ jobs:
           packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           : > "$RUNNER_TEMP/engines-ran"
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
-          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
             fallback=pi
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}

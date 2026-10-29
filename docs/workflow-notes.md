@@ -161,8 +161,8 @@ waits for that stamp's verdict line in `/var/lib/fleet-deploy/result`.
 the result line's exit status is the verdict. No step runs from the runner and
 no CI job can start a system unit, so the unit's own guards still gate every step
 (fleet-ops#8519, #10043). The unit allows `TimeoutStartSec=900` for both steps, so
-the job's `timeout-minutes: 10` leaves headroom without letting a hung step park
-a runner.
+the job's `timeout-minutes: 20` leaves headroom for a request that queues behind
+another without letting a hung step park a runner.
 
 ### ratchet.yml: how the rule reaches every repo
 
