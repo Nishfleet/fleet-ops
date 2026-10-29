@@ -431,7 +431,7 @@ jobs:
           # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           marker='=== FLEET-DYNAMIC-BELOW ==='
           rc=0
-          for f in prompts/worker.md prompts/miss-review.md; do
+          for f in prompts/worker.md; do
             n=$(grep -c -x -F -- "$marker" "$f" || true)
             echo "marker count in $f: $n"
             [ "$n" = 1 ] || rc=1
@@ -470,7 +470,7 @@ jobs:
             case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
             printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
           done || rc=1
-          # The packet strings (worker and miss-review packets) put $id after the marker.
+          # The packet string (the worker packet) puts $id after the marker.
           # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
             echo "FAIL \$id before the marker in a packet string"; rc=1
