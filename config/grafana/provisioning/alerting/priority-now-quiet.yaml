@@ -14,8 +14,13 @@
 #                             the freshest touch, so it cannot read as quiet.
 #   -label:needs-nish-decision an issue waiting on Nish is quiet because nobody may
 #                             move it yet.
-#   -linked:pr                a PR that closes it owns it; the queue-stuck group and
-#                             the stuck-prs sweep watch PRs.
+#   -linked:pr                a PR that closes it owns it, on any branch prefix: the
+#                             stuck-prs sweep gives every open PR over 15 minutes a
+#                             verdict (arm, ask for review, or rework), and files a
+#                             stuck-pr issue for one it cannot arm or send back. The
+#                             queue-stuck group waits 3 hours on that issue. What this
+#                             rule deliberately does not do is page for an issue whose
+#                             only problem is a PR sitting DIRTY in review.
 # A comment or label write resets updated_at, so a live hand-off stays fresh until
 # 30 minutes after its last write. A hand-off that runs past 40 minutes without a
 # comment can trip this once, and its own end comment clears it: the rule files an

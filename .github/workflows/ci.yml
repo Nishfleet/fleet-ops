@@ -746,9 +746,11 @@ jobs:
       - name: A quiet priority-now item restarts itself (QUIET, NOT_FINISHED, LANE)
         # Runs the list job's three new programs, read out of the workflow, against
         # every case in config/quiet-issue-cases.json (fleet-ops#10716). The grep
-        # lines pin the wiring: a quiet issue is skipped while its run is live, the
-        # orchestrate lane is re-fired or re-labelled, the reopen acts on the merged
-        # PR, and a blocker gets the lane label.
+        # lines pin the wiring: a quiet issue is skipped while its run is live on
+        # either start marker, the orchestrate lane is re-fired or re-labelled, the
+        # reopen acts on the merged PR, and a blocker gets the lane label. The
+        # sweep-only gate is pinned too, because a per-issue dispatch is the
+        # re-fire itself: acting on it would fire a second writer.
         if: always()
         run: |
           set -euo pipefail
@@ -758,12 +760,22 @@ jobs:
           lane=$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .env.LANE' "$f")
           [ "$quiet" != null ] && [ -n "$quiet" ] && [ "$notf" != null ] && [ -n "$notf" ] && [ "$lane" != null ] && [ -n "$lane" ] || { echo "QUIET, NOT_FINISHED or LANE missing"; exit 1; }
           qrun=$(yq '.jobs.list.steps[] | select(.env.QUIET != null) | .run' "$f")
+          qif=$(yq '.jobs.list.steps[] | select(.env.QUIET != null) | .if' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in 'run live, skip' '-f task=orchestrate -f issue="$n"' '--remove-label orchestrator-tried --add-label needs-orchestrator'; do
-            grep -F -- "$n" <<<"$qrun" >/dev/null || { echo "missing quiet wiring: $n"; exit 1; }
+          for n in 'agent run started: |orchestrator hand-off started: ' 'test("(^|/)issue-\($n)(-.*)?$")'; do
+            grep -F -- "$n" <<<"$quiet" >/dev/null || { echo "missing quiet marker: $n"; exit 1; }
           done
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          grep -F -- 'gh issue reopen "$CLOSED"' <<<"$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .run' "$f")" >/dev/null || { echo "missing reopen wiring"; exit 1; }
+          for n in 'run live, skip' '-f task=orchestrate -f issue="$n"' '--remove-label orchestrator-tried --add-label needs-orchestrator' 'budget=$((5 - queued))' 'the PR list failed, no re-fires this sweep'; do
+            grep -F -- "$n" <<<"$qrun" >/dev/null || { echo "missing quiet wiring: $n"; exit 1; }
+          done
+          # shellcheck disable=SC2016 # the needle is literal workflow text
+          grep -F -- "inputs.issue == ''" <<<"$qif" >/dev/null || { echo "missing sweep-only gate on QUIET"; exit 1; }
+          nif=$(yq '.jobs.list.steps[] | select(.env.NOT_FINISHED != null) | .run' "$f")
+          # shellcheck disable=SC2016 # the needles are literal workflow text
+          for n in 'gh issue reopen "$CLOSED"' 'already reopened once for PR #'; do
+            grep -F -- "$n" <<<"$nif" >/dev/null || { echo "missing reopen wiring: $n"; exit 1; }
+          done
           grep -F -- '--add-label needs-orchestrator' <<<"$(yq '.jobs.list.steps[] | select(.env.LANE != null) | .run' "$f")" >/dev/null || { echo "missing blocker wiring"; exit 1; }
           base=$(jq -c '.base' config/quiet-issue-cases.json)
           now=$(jq -r .now config/quiet-issue-cases.json); idle=$(jq -r .idle config/quiet-issue-cases.json)
@@ -771,12 +783,14 @@ jobs:
           bad=0
           while IFS= read -r c; do
             in=$(jq -c --argjson c "$c" '. as $b | $b * ($c.set // {})' <<<"$base")
+            got_run=""
             case $(jq -r .prog <<<"$c") in
-              QUIET) got=$(jq -r --argjson now "$now" --argjson idle "$idle" --argjson prs "$(jq -c .prs <<<"$in")" "[.issue] | $quiet | .lane // \"\"" <<<"$in") ;;
+              QUIET) rec=$(jq -c --argjson now "$now" --argjson idle "$idle" --argjson prs "$(jq -c .prs <<<"$in")" "[.issue] | $quiet" <<<"$in")
+                     got=$(jq -r '.lane // ""' <<<"${rec:-null}"); got_run=$(jq -r '.run // ""' <<<"${rec:-null}") ;;
               NOT_FINISHED) got=$(jq -r --argjson n "$closed" "$notf | .line // \"\"" <<<"$(jq -c .merged <<<"$in")") ;;
               LANE) got=$(jq -r "$lane" <<<"$(jq -c .labels <<<"$in")") ;;
             esac
-            [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got [$got], want [$(jq -r .want <<<"$c")]"; bad=1; }
+            [ "$got" = "$(jq -r .want <<<"$c")" ] && [ "$got_run" = "$(jq -r '.want_run // ""' <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got [$got|$got_run], want [$(jq -r .want <<<"$c")|$(jq -r '.want_run // ""' <<<"$c")]"; bad=1; }
           done < <(jq -c '.cases[]' config/quiet-issue-cases.json)
           pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_priority_now_quiet_rule.py || bad=1
           test "$bad" -eq 0

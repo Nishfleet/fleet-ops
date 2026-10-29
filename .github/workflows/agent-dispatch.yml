@@ -738,15 +738,25 @@ jobs:
       # nothing ran for an hour, because the re-queue above waits 6 h). Every
       # sweep, in the lane the issue already has: an agent-ready one is in
       # `refs` above, and a parked one is re-fired or re-labelled here after 15
-      # minutes. Nothing is fired for an issue whose newest agent run is live,
-      # and one with three ended hand-offs is left to the escalation above.
+      # minutes. Nothing is fired for an issue whose newest run is live, and one
+      # with three ended hand-offs is left to the escalation above. It fires only
+      # on a sweep, never on a per-issue dispatch (that dispatch is the re-fire).
       # config/quiet-issue-cases.json runs this program in CI.
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      #
+      # Live is either start marker: the worker gate posts `agent run started:`
+      # and the orchestrator hand-off posts `orchestrator hand-off started:`, so
+      # reading the first alone made a live hand-off look quiet and fired a
+      # second writer on the same issue (fleet-ops#10836 review).
+      #
+      # A PR on any prefix owns the issue, not only claim/ and orch/: a blocked
+      # PR on strong/issue-N was invisible here (fleet-ops#10716 scope comment).
+      - if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           QUIET: |
-            .[] | (.labels | map(.name)) as $l
+            .[] | .number as $n
+            | (.labels | map(.name)) as $l
             | select(.state == "open")
             | select(($l | any(IN("needs-nish-decision", "agent-blocked", "needs-split", "epic"))) | not)
             | (if ($l | index("agent-ready")) then "worker"
@@ -754,61 +764,93 @@ jobs:
                elif ($l | index("orchestrator-tried")) then "orchestrate"
                else "none" end) as $lane
             | select($lane != "none")
-            | select((["claim/issue-\(.number)", "orch/issue-\(.number)"] | any(IN($prs[]))) | not)
+            | select(([$prs[] | select(test("(^|/)issue-\($n)(-.*)?$"))] | length) == 0)
             | select((.updatedAt | fromdateiso8601) < $now - $idle)
-            | {number: .number, lane: $lane, tried: ($l | index("orchestrator-tried") != null),
+            | {number: $n, lane: $lane, tried: ($l | index("orchestrator-tried") != null),
                ended: ([.comments[] | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: "))))] | length),
-               run: ([.comments[] | select(.body | startswith("agent run started: ")) | .body] | last // "")}
+               run: ([.comments[] | select(.body | test("^(agent run started: |orchestrator hand-off started: )")) | .body
+                 | try capture("/actions/runs/(?<id>[0-9]+)").id] | last // "")}
             | select(.ended < 3)
         run: |
           set -uo pipefail
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { echo "::error::quiet: the PR list failed; no re-fires this sweep"; exit 1; }
-          gh issue list -R "$GITHUB_REPOSITORY" -l priority-now --state open -L 300 --json number,state,labels,updatedAt,comments |
-            jq -c --argjson now "$(date +%s)" --argjson idle 900 --argjson prs "$prs" "$QUIET" | while IFS= read -r r; do
+          # Without the PR list the sweep cannot prove which issues already have a PR,
+          # and a re-fire then puts a second writer on someone's branch: skip, loudly.
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { echo "::warning::quiet: the PR list failed, no re-fires this sweep"; exit 0; }
+          # At most 5 minus the live orchestrate jobs, the bound the re-queue above uses,
+          # so lifting a pause cannot start hundreds of paid hand-offs in one sweep.
+          queued=0
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id') || { echo "::warning::quiet: run list failed, counting 0 live"; ids=; }
+          for id in $ids; do # live orchestrate jobs: a job name is set on any caller
+            c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length') || { echo "::warning::quiet: job read failed, budget from the count so far"; break; }
+            queued=$((queued + c))
+          done
+          budget=$((5 - queued)); [ "$budget" -gt 0 ] || budget=0
+          issues=$(gh issue list -R "$GITHUB_REPOSITORY" -l priority-now --state open -L 300 --json number,state,labels,updatedAt,comments) || { echo "::warning::quiet: the priority-now list failed, no re-fires this sweep"; exit 0; }
+          jq -c --argjson now "$(date +%s)" --argjson idle 900 --argjson prs "$prs" "$QUIET" <<<"$issues" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
               # The lane a quiet worker item needs is the one the refs list already gave it.
               if [ "$(jq -r .lane <<<"$r")" = worker ]; then echo "#$n quiet, worker lane: already in refs"; continue; fi
-              # A run in flight owns the issue: a second writer on it loses the first one's work.
+              # A run in flight owns the issue, on either marker: a second writer on
+              # it loses the first one's work.
               run=$(jq -r .run <<<"$r")
-              if [[ $run =~ /actions/runs/([0-9]+) ]]; then
-                status=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status --jq .status) || { echo "::warning::#$n: run read failed, skip"; continue; }
+              if [ -n "$run" ]; then
+                status=$(gh run view "$run" -R "$GITHUB_REPOSITORY" --json status --jq .status) || { echo "::warning::#$n: run read failed, skip"; continue; }
                 if [ "$status" != completed ]; then echo "#$n: run live, skip"; continue; fi
               fi
+              if [ "$budget" -le 0 ]; then echo "#$n: quiet, no re-fire budget left this sweep"; continue; fi
+              budget=$((budget - 1))
               # Re-labelling fires the issues.labeled event the orchestrate job listens for.
+              # Both paths leave the marker, the same strike the 3-ended stop counts.
               if [ "$(jq -r .tried <<<"$r")" = true ]; then
                 env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: quiet re-label refused"
               else
                 gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: quiet re-fire refused; does $wf declare the task and issue inputs?"
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
               fi
+              gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
             done
       # A merged PR whose own body says it does not finish the issue closed it
       # anyway (fleet-ops#10716: #10711 was closed by a PR that covered 2 of its
-      # 6 numbers). Reopen it and quote the line.
+      # 6 numbers). Reopen it and quote the line, once per PR.
+      # Only the newest PR that closes this issue decides: a later PR that does
+      # finish it settles the issue (fleet-ops#10836 review). A PR that closes
+      # several issues is skipped, because "does not finish" then names no issue.
       # config/quiet-issue-cases.json runs this program in CI.
       - if: github.event_name == 'issues' && github.event.action == 'closed' && github.event.issue.state_reason != 'not_planned'
         env:
           GH_TOKEN: ${{ github.token }}
           CLOSED: ${{ github.event.issue.number }}
           NOT_FINISHED: |
-            [.[] | . as $p
-             | [$p.body // "" | split("\n")[] | select(test("(?i)(does not|doesn't|did not) (finish|complete|cover)"))] as $lines
-             | select(($lines | length) > 0)
-             | select(($p.body // "") | test("(?i)\\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\\s+#" + ($n | tostring) + "\\b"))
-             | {pr: $p.number, line: $lines[0]}] | .[-1] // empty
+            def closes($n): (.body // "") | test("(?i)\\b(close[sd]?|fix(es|ed)?|resolve[sd]?)\\s+#" + ($n | tostring) + "\\b");
+            [.[] | select(closes($n))] | sort_by(.mergedAt) | last // empty
+            | . as $p
+            | ([($p.body // "") | scan("(?i)\\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#([0-9]+)") | .[0]] | unique) as $closes
+            | select(($closes | length) == 1)
+            | [$p.body // "" | split("\n")[] | select(test("(?i)(does not|doesn't|did not) (finish|complete|cover)"))] as $lines
+            | select(($lines | length) > 0)
+            | {pr: $p.number, line: $lines[0]}
         run: |
           set -uo pipefail
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --state merged -S "#${CLOSED}" -L 10 --json number,body) || { echo "::warning::#$CLOSED: merged PR read failed, not reopening"; exit 0; }
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --state merged -S "#${CLOSED}" -L 30 --json number,body,mergedAt) || { echo "::warning::#$CLOSED: merged PR read failed, not reopening"; exit 0; }
           hit=$(jq -c --argjson n "$CLOSED" "$NOT_FINISHED" <<<"$prs") || hit=
           [ -n "$hit" ] || exit 0
-          gh issue reopen "$CLOSED" -R "$GITHUB_REPOSITORY" --comment "orchestrator: reopened. PR #$(jq -r .pr <<<"$hit") says it does not finish this issue: \"$(jq -r .line <<<"$hit")\"" || echo "::warning::#$CLOSED: reopen refused"
+          pr=$(jq -r .pr <<<"$hit")
+          # One reopen per PR: a person who closes it again means it, and a sweep that
+          # reopened every close would fight them. The marker is the comment it posts.
+          bodies=$(gh issue view "$CLOSED" -R "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body') || { echo "::warning::#$CLOSED: comment read failed, not reopening"; exit 0; }
+          seen=$(grep -cF -- "PR #$pr says it does not finish" <<<"$bodies" || true)
+          [ "$seen" = 0 ] || { echo "#$CLOSED: already reopened once for PR #$pr, leaving it closed"; exit 0; }
+          gh issue reopen "$CLOSED" -R "$GITHUB_REPOSITORY" --comment "orchestrator: reopened. PR #$pr says it does not finish this issue: \"$(jq -r .line <<<"$hit")\"" || echo "::warning::#$CLOSED: reopen refused"
       # A blocker with no lane label sat outside every list, so nothing ever
       # picked it up (fleet-ops#10716: 13 of 15 blocking issues). The lane is
       # needs-orchestrator: the orchestrator decides what to do with it.
+      # `issue_dependencies_summary` is not a `gh issue list --json` field and made
+      # every sweep exit 1 on it; `blockedBy` is the GraphQL field gh exposes
+      # (fleet-ops#10836 review). A dependency can live in another repo, so the
+      # per-issue dependency read is what filters to this one.
       # config/quiet-issue-cases.json runs the LANE program in CI.
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.issue == '')
         env:
           GH_TOKEN: ${{ github.token }}
           LANE: |
@@ -816,10 +858,10 @@ jobs:
             | if any(IN("agent-ready", "agent-in-progress", "needs-orchestrator", "orchestrator-tried", "needs-nish-decision", "agent-blocked", "needs-split", "epic")) then "has" else "none" end
         run: |
           set -uo pipefail
-          for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready --state open -L 300 --json number,issue_dependencies_summary \
-            --jq '.[] | select(.issue_dependencies_summary.blocked_by > 0) | .number'); do
-            blocked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/dependencies/blocked_by?per_page=100" --jq '.[] | select(.state == "open") | .number') || { echo "::warning::#$n: blocker read failed, skip"; continue; }
-            for b in $blocked; do
+          pairs=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready --state open -L 300 --json number,blockedBy) || { echo "::warning::lane: the agent-ready list failed, no blocker labels this sweep"; exit 0; }
+          for n in $(jq -r '.[] | select((.blockedBy.nodes // []) | any(.state == "OPEN")) | .number' <<<"$pairs"); do
+            rows=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/dependencies/blocked_by?per_page=100") || { echo "::warning::#$n: blocker read failed, skip"; continue; }
+            for b in $(jq -r --arg repo "$GITHUB_REPOSITORY" '.[] | select(.state == "open" and (.repository.full_name // "") == $repo) | .number' <<<"$rows"); do
               labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$b" --jq '.labels') || { echo "::warning::blocker #$b: label read failed, skip"; continue; }
               [ "$(jq -r "$LANE" <<<"$labels")" = none ] || continue
               gh issue edit "$b" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator || echo "::warning::blocker #$b: lane label refused"
