@@ -48,7 +48,7 @@ def test_every_prepaid_row_is_a_listed_plan():
     assert not unlisted, f"prepaid rows not in config/paid-plans.json: {unlisted}. Changing config/paid-plans.json needs Nish (CODEOWNERS)"
 
 
-SINGLE_ROW_TIERS = {"senior", "tether", "assistant"}
+SINGLE_ROW_TIERS = {"tether", "assistant"}
 
 
 def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exists():
@@ -58,7 +58,7 @@ def test_every_router_tier_keeps_two_deployments_and_every_fallback_target_exist
     for row in _model_list():
         tiers[row["model_name"]] = tiers.get(row["model_name"], 0) + 1
     thin = {t: n for t, n in tiers.items() if n < (1 if t in SINGLE_ROW_TIERS else 2)}
-    assert not thin, f"router tiers below their floor (2 rows, senior, tether and assistant 1): {thin}. Only senior, tether and assistant may hold one row (fleet-ops#10040, fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
+    assert not thin, f"router tiers below their floor (2 rows, tether and assistant 1): {thin}. Only tether and assistant may hold one row (fleet-ops#9980; assistant since OpenCode Go key 2 left on 2026-10-26, and it falls to worker-capable)"
     groups = {row["model_name"] for row in _model_list()}
     missing = [(src, dst) for entry in json.loads(cfg_out) for src, dsts in entry.items() for dst in dsts if dst not in groups]
     assert not missing, f"fallbacks naming a group with no row: {missing}"

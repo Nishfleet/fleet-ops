@@ -1,5 +1,16 @@
 # Approved models per provider (Nish 2026-09-28: models are provider specific; a row outside this list needs his yes; no benching).
 # Long note 1: docs/litellm-router-notes.md
+# Approved models, one line per router provider (API key variable lowercased, no _API_KEY), as the row's model without its openai/ or anthropic/ prefix. tests/test_provider_watch.py fails CI on a row outside this list.
+# A provider in config/provider-watch.json with no row needs a line here: "# No row for <provider>, YYYY-MM-DD: <reason>".
+# Approved opencode: deepseek-v4.1-flash
+# Approved commandcode: z-ai/glm-5.3-flash
+# Approved minimax: MiniMax-M3.1-Flash-Preview
+# Approved stepfun: step-5-preview
+# Approved synthetic: hf:zai-org/GLM-5.3-Flash
+# Approved zai: glm-5.3-flash
+# Approved straitly: deepseek/deepseek-v4-1-flash
+# Approved alibaba-coding: qwen3.8-max
+# Approved anthropic: claude-sonnet-5-5
 # Anthropic: claude-sonnet-5-5, in the tether group only (Nish 2026-10-22, fleet-ops#9980 comment 6347106070, and 2026-10-23, Nishfleet/tether#7). The row, its fallback to assistant and its cost are recorded above the router_settings block.
 # Cline: stealth/space-bunny-alpha. (Historical: no Cline row remains since 2026-10-23; the same goes for the Cline entries in the free-rows lines above.)
 # Alibaba Model Studio Token Plan (fleet-ops#9220): qwen3.8-max is a judge/orchestrator row only, never a worker rung (Nish 2026-09-08, #4445), so the row below is the only way that seat answers.
@@ -36,7 +47,7 @@
 # Background health checks stay off: they spend the same free quota (Nish 2026-09-28) and
 # would probe every paid row.
 # Long note 3: docs/litellm-router-notes.md
-# Pareto removed 2026-10-22 (Nish, "yes, also remove pareto", fleet-ops#10040): both rows (worker-capable and senior) are gone; the senior row is the Synthetic GLM-5.3-Flash row below. PARETO_API_KEY stays in place.
+# Pareto removed 2026-10-22 (Nish, "yes, also remove pareto", fleet-ops#10040): both rows (worker-capable and senior) are gone. PARETO_API_KEY stays in place.
 # Devin: SWE 2 only, through the devin CLI lane in agent.yml (no router route: 404 on every base).
 # Long note 4: docs/litellm-router-notes.md
 model_list:
@@ -273,41 +284,31 @@ model_list:
     id: straitly-ds41flashb-worker-public
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Long note 5: docs/litellm-router-notes.md
+- model_name: worker-capable
+  # Former senior row (fleet-ops#10608): GLM-5.3-Flash is a worker model only, so the senior group is gone and its two paid slots serve workers.
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
     api_base: https://api.synthetic.new/openai/v1
     api_key: os.environ/SYNTHETIC_API_KEY
     tags:
     - prepaid
-    - senior
     order: 1
-    # The key's 8th slot. 12 parallel calls on this key gave 8x200 and 4x429 "Too many concurrent requests", so 8 one-slot rows sit at
-    # the measured working concurrency, never over it; the 4 that failed were calls 9 to 12. config/litellm-proxy.schema.json caps Synthetic at 8 one-slot rows.
-    max_parallel_requests: 1
-    # 60 s, not the 900 s of the sibling Synthetic rows: the senior group has one or two rows, so a long park takes half or all of the tier
-    # out. On 2026-10-12 a Synthetic 502 (BadGatewayError, which no allowed_fails_policy key covers) parked the row 900 s at 06:14 UTC, and
-    # review-risky's retries at 06:18 and 06:22 found no senior deployment, so #9602 and #9588 got no second review. A pool 429 re-probed
-    # every 60 s costs one fast failed call a minute; the worker rows keep 900 s because their groups have dozens of other rows.
-    cooldown_time: 60
-    # No max_budget. LiteLLM prices Synthetic GLM-5.3-Flash at $0 (/global/spend/models 2026-10-12: total_spend 0.0), so a dollar cap
-    # on this row could never trip. Its share of the shared prepaid pool is capped by the one slot above: at most 1 of 7 concurrent calls.
+    weight: 1
+    cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
-    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic (same Synthetic GLM-5.3-Flash lane as worker-cheap)."
-    id: synthetic-glm53flash-senior
+    cache_proof: "2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic."
+    id: synthetic-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
-- model_name: senior
-  # Second GLM reviewer row (2026-10-28): the senior tier had one Synthetic row at one slot, so every workflow-edit review queued behind it, and Synthetic ends 2026-11-12 (fleet-ops#10530).
+- model_name: worker-capable
+  # Former senior row (fleet-ops#10608), the z.ai Coding Plan slot added for reviews in #10566.
   litellm_params:
     model: openai/glm-5.3-flash
     api_base: https://api.z.ai/api/coding/paas/v4
     api_key: os.environ/ZAI_API_KEY
     tags:
-    - senior
     - prepaid
     - zai
     order: 1
@@ -315,16 +316,16 @@ model_list:
     # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
     # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
     # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
+    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so the plan's own 429 is the cap and no row holds a slot count (note 12).
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10694). Long note 12: docs/litellm-router-notes.md
     cooldown_time: 900
   model_info:
     mode: chat
     supports_prompt_caching: true
     cache_proof: "Z.AI caches automatically and reports cached_tokens (https://docs.z.ai/guides/capabilities/cache); 202 of 302 non-Pi callers show cached_tokens>0 (10048 of 10124 on 2026-10-03) while Pi's streamed replies carry no prompt_tokens_details (0 of 7652): LiteLLM v1.98.0 drops it (#9357). Direct probe blocked by the 429 code 1310 weekly limit until 2026-10-09."
-    id: zai-glm53flash-senior
+    id: zai-glm53flashi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
 - model_name: worker-cheap
@@ -338,9 +339,8 @@ model_list:
     weight: 1
     # Nish 2026-10-04: more lanes. Re-probe 23:20 IST: 12 parallel GLM-5.3-Flash calls gave 8x200 and 4x429 "Too many concurrent requests"
     # (the 2026-09-19 limit of 1 per model is gone). The 500 requests / 5 h pool showed 0 used, the weekly $24 token credit 99% left,
-    # and the one row got 16 calls in 24 h. 7 rows x 1 = 7 concurrent, under the measured 8; the senior row (fleet-ops#9596) is the 8th slot. The 500 / 5 h pool is the real wall:
+    # and the one row got 16 calls in 24 h. No row holds a slot count (fleet-ops#10694, note 12): past 8 calls the provider answers 429 and the row cools. synthetic-glm53flashe-worker-capable is the former senior row (fleet-ops#10608). The 500 / 5 h pool is the real wall:
     # a pool 429 cools a row 15 min, and the rolling window refills by itself.
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -358,7 +358,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -376,7 +375,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -394,7 +392,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -412,7 +409,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -430,7 +426,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -448,7 +443,6 @@ model_list:
     - prepaid
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -470,10 +464,9 @@ model_list:
     # Nish 2026-10-04: use the z.ai Coding Plan. One row per group got ~126 of ~6,500 worker calls (2%) in the 24 h to 22:30 IST,
     # and the plan dashboard showed 25% of the weekly 10K credits used with 5 days left (resets 2026-10-09 22:22 IST).
     # simple-shuffle picks uniformly among rows, so ten rows give it ~8x the share of new tasks (the StepFun pattern above).
-    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so 1 per row x 10 rows stays at the cap.
+    # Coding-plan key: 12 parallel probes gave 10x200 and 2x429 "Rate limit reached for requests" (2026-10-04 23:00 IST, with live router traffic on the same key), so the plan's own 429 is the cap and no row holds a slot count (note 12).
     # General /api/paas/v4 answers 429 code 1113 (no balance) for this key.
     # A 5-hour or weekly plan-limit 429 cools a row 15 min, then it retries by itself, so the reset is used without a human.
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -492,7 +485,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -511,7 +503,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -530,7 +521,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -549,7 +539,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -568,7 +557,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -587,7 +575,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -606,7 +593,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -625,7 +611,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -644,7 +629,6 @@ model_list:
     - zai
     order: 1
     weight: 1
-    max_parallel_requests: 1
     cooldown_time: 900
   model_info:
     mode: chat
@@ -785,12 +769,20 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
+    # Long note 13: docs/litellm-router-notes.md (fleet-ops#10762)
+    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15".
+    # The router's own aggregate on this key measured 3.93 concurrent on 2026-10-29, 3.8x under that ceiling, so the ceiling is held by demand and not by the lane count.
     # Nish 2026-10-02: StepFun gets 10 slots. simple-shuffle picks among rows, and one row got 562 of 10,512 worker calls (5%),
     # 58M tokens = ~22% of the Pro plan's pace (8000M/month), in the 24 h to 15:00 IST. Ten rows give it ~10x the share of new tasks.
     # Nish: using the month's credit before the reset is fine; tokens must go to productive work.
-    # max_parallel_requests is per row, so the account's 13 router lanes are split 2 + 2 + 2 + 1 + 1 + 1 + 1 + 1 + 1 + 1 across the rows.
-    max_parallel_requests: 2
+    # Nish 2026-10-29 (#10762): no row holds a slot count. litellm v1.105.0 never returns a streamed call's slot when its client is gone
+    # before the first chunk (note 12), so the first leak jams a capped row until the router restarts, and 2 slots only mean a row needs
+    # two leaks. Measured on the live router over the 101 min to 2026-10-28 22:15Z: 3,453 router slot rejections, 2,808 of them on the
+    # seven 1-slot rows and 645 on the three 2-slot rows, against 22 provider 429s, and the group's 15-minute failure ratio was 10.1%.
+    # The Step Plan Pro cap of 15 concurrent stays enforced by demand (the router's own aggregate on this key measured 3.93 concurrent)
+    # and by the provider's own 429, which cools this rung for cooldown_time and retries by itself (#8653). Reproduced on the v1.105.0
+    # source: a one-slot row refused every call after one abandoned stream, and a row with no cap kept answering. The schema refuses a
+    # StepFun row that carries a slot count (#10694 took the same cap off the Synthetic and z.ai rows).
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -810,8 +802,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -831,8 +823,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 2
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -852,8 +844,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -873,8 +865,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -894,8 +886,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -915,8 +907,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -936,8 +928,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -957,8 +949,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -978,8 +970,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    # Step Plan Pro (2026-10-01) account cap is 15 concurrent: 20- and 40-way bursts answered 14 x 200 and 429 "concurrency reached, current: 16, limit: 15". 13 leaves 2 for direct `pi --provider stepfun` use, because a concurrency 429 cools this rung for cooldown_time.
-    max_parallel_requests: 1
+    # No max_parallel_requests (fleet-ops#10762): v1.105.0 never returns a streamed call's slot when its client is gone before the first
+    # chunk, so the first leak jams a capped row until the router restarts. See the note on the stepfun-step5preview-worker-capable row.
     # Step Plan credit ran out 2026-09-25 11:15 IST (fleet-ops#8653): a 429 cools this rung 15 min, then it retries by itself: refilled credit is used without a human, and a concurrency 429 idles it only briefly.
     cooldown_time: 900
   model_info:
@@ -1169,8 +1161,7 @@ router_settings:
   # #9710 took every space-bunny row out by 10-13; zero injection rows since 2026-10-05 11:59 UTC (checked
   # 10-24). A future stealth-preview row from any reseller walks back into the failure mode described above.
   # A failed run still escalates once, at task level, to the senior Cursor lane (agent.yml first
-  # strike adds strong-only). senior has one row (GLM-5.3-Flash on Synthetic, fleet-ops#10040) and no fallback of its own, so a judge call that
-  # falls to senior ends there and cannot cycle.
+  # strike adds strong-only). judge has no fallback: GLM-5.3-Flash is a worker model only (fleet-ops#10608).
   # W10c: worker-capable never falls to worker-cheap. Before the dead Ollama rows left (fleet-ops#10033), about 26% of worker-capable
   # calls were answered from the worker-cheap group (router:capable_answered_by_cheap:ratio_1d). A strong group with no healthy row now fails
   # the call, and the RouterStrongGroupNoHealthyRow rule in rootfs/etc/prometheus/fleet_rules.yml says so. Only same-tier or upward
@@ -1178,7 +1169,6 @@ router_settings:
   # Accepted trade (W10c plan, fleet-ops#10040): a call whose picked row fails and has no peer left reaches the caller
   # (Pi retries), including a row answering 402/403, which the router never cools (a 404 does park on its first failure).
   fallbacks:
-    - judge: [senior]
     - worker-cheap: [worker-capable]
     - worker-public: [worker-capable]
     - assistant: [worker-capable]
@@ -1192,7 +1182,7 @@ router_settings:
   enable_tag_filtering: false
   retry_policy:
     # Long note 9: docs/litellm-router-notes.md
-    AuthenticationErrorRetries: 0
+    AuthenticationErrorRetries: 1
     RateLimitErrorRetries: 2
     TimeoutErrorRetries: 1
     InternalServerErrorRetries: 1
