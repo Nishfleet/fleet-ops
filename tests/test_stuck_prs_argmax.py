@@ -5,10 +5,10 @@ A PR whose comments JSON passes the 131072-byte single-argument limit is
 judged like any other, and one PR whose verdict errors is skipped with a
 warning while the rest are judged and the job still fails at the end.
 
-A stuck-PR report whose PR merged or closed is closed before the slots are
-counted, so it stops holding one; a report whose PR is still open at the
-reported head, and a report with no `stuck-pr: #<n> <sha>` marker, are left
-alone.
+A stuck-PR report whose PR merged, closed or moved past the reported head is
+closed before the slots are counted, so it stops holding one; a report whose PR
+is still open at the reported head, and a report with no `stuck-pr: #<n> <sha>`
+marker, are left alone and still hold their slots.
 """
 import json
 import os
@@ -30,11 +30,16 @@ case "$1 $2" in
   "pr checks") echo '[]' ;;
   "pr comment") echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "pr view")
-    while IFS=$'\t' read -r num state sha; do
-      [ "$num" = "$3" ] && { printf '%s%s\n' "$state" "$sha"; exit 0; }
-    done < "$FAKE_DIR/pr-states.tsv"
-    echo "fake gh: no pr view fixture for $3" >&2
-    exit 1 ;;
+    case "$*" in
+      *"--json mergeable"*) echo '{}' ;;
+      *"--json state,headRefOid --jq .state + .headRefOid"*)
+        while IFS=$'\t' read -r num state sha; do
+          [ "$num" = "$3" ] && { printf '%s%s\n' "$state" "$sha"; exit 0; }
+        done < "$FAKE_DIR/pr-states.tsv"
+        echo "fake gh: no pr view fixture for $3" >&2
+        exit 1 ;;
+      *) echo "fake gh: pr view call drifted: $*" >&2; exit 1 ;;
+    esac ;;
   "issue list")
     case "$*" in *'Stuck PR'*) cat "$FAKE_DIR/reports.tsv" ;; *) echo '[]' ;; esac ;;
   "issue close") echo "$*" >> "$FAKE_DIR/writes.log" ;;
@@ -158,24 +163,29 @@ def test_open_prs_keep_their_reports_and_their_slots(tmp_path):
     assert outputs["file"] == "[]"
 
 
-@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
-def test_a_done_pr_closes_its_report_and_frees_its_slot(tmp_path, state):
+@pytest.mark.parametrize("state,head", [
+    pytest.param("MERGED", None, id="merged"),
+    pytest.param("CLOSED", None, id="closed"),
+    pytest.param("OPEN", "f" * 40, id="head-moved"),
+])
+def test_a_done_pr_closes_its_report_and_frees_its_slot(tmp_path, state, head):
     reports, shas = _three_reports()
     r, outputs = _run(tmp_path, {6001: []}, reports=reports, conflicting={6001},
-                      pr_states={n: ("OPEN", sha) for n, sha in shas.items()} | {5001: (state, shas[5001])})
+                      pr_states={n: ("OPEN", sha) for n, sha in shas.items()}
+                      | {5001: (state, head or shas[5001])})
     assert r.returncode == 0, r.stdout + r.stderr
-    writes = _writes(tmp_path)
-    assert "issue close 9001" in writes
-    assert "PR #5001" in writes
-    assert "issue close 9002" not in writes
-    assert "issue close 9003" not in writes
+    writes = _writes(tmp_path).splitlines()
+    assert any(line.startswith("issue close 9001 ") and "PR #5001" in line for line in writes)
+    assert not any(line.startswith(("issue close 9002 ", "issue close 9003 ")) for line in writes)
     assert [int(x["pr"]) for x in json.loads(outputs["file"])] == [6001]
 
 
 def test_a_report_with_no_marker_is_untouched(tmp_path):
-    r, outputs = _run(tmp_path, {6001: []}, reports=[(9004, "", "")], conflicting={6001})
+    reports = [(9004, "", ""), (9005, "", ""), (9006, "", "")]
+    r, outputs = _run(tmp_path, {6001: []}, reports=reports, conflicting={6001})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "issue close" not in _writes(tmp_path)
+    assert outputs["file"] == "[]"
 
 
 @pytest.mark.parametrize("job", ["stuck-review", "stuck-arm", "stuck-rework", "stuck-file"])
