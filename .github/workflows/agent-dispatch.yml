@@ -429,23 +429,17 @@ jobs:
     outputs:
       refs: ${{ steps.list.outputs.refs }}
     steps:
-      # The two label writes below must start a workflow, and a write made with
-      # GITHUB_TOKEN never does. The worker App token does, and it holds
-      # actions: write for the re-fire dispatch (fleet-ops#10949). A schedule
-      # run on a GitHub-hosted runner has no App key, so the mint is skipped
-      # and those writes warn, exactly as they did without a credential; they
-      # never fall back to a runner login.
+      # The label writes below must start a workflow, which a GITHUB_TOKEN write never does: the
+      # worker App token does, with actions: write for the re-fire dispatch (fleet-ops#10949).
       - name: Read App private key
         id: app-key
         run: |
           keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::warning::no worker App key on this runner; the label writes and the re-fire stay off"; exit 0; }
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           grep . "$keyfile" | sed 's/^/::add-mask::/'
           { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
-          echo have=true >> "$GITHUB_OUTPUT"
       - name: App token
         id: app-token
-        if: steps.app-key.outputs.have == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
