@@ -54,3 +54,44 @@ def test_the_sweep_tests_pass() -> None:
 
     assert passed("Test Files") == 1, clean
     assert passed("Tests") >= 40, clean
+
+
+MOCK_GH = """#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list"|"pr list") echo '[]' ;;
+  *) echo "mock gh: unexpected call: $*" >&2; exit 1 ;;
+esac
+"""
+
+
+def test_the_entry_point_boots_under_plain_node(tmp_path) -> None:
+    """`node control-plane/src/sweep.ts` is the workflow's whole run block: it must start, sweep,
+    and write the two step outputs, with no bundler and no vitest in the path."""
+    node = pathlib.Path(shutil.which("node") or "")
+    assert node.is_file(), "node is not installed"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    gh = fake / "gh"
+    gh.write_text(MOCK_GH)
+    gh.chmod(0o755)
+    out = tmp_path / "github-output"
+    out.write_text("")
+    env = {
+        "PATH": f"{fake}:{node.parent}:/usr/bin:/bin",
+        "GH_TOKEN": "x",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_OUTPUT": str(out),
+        "GITHUB_EVENT_NAME": "schedule",
+    }
+    run = subprocess.run(
+        ["node", "control-plane/src/sweep.ts"],
+        cwd=PACKAGE.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "unexpected call" not in run.stderr, run.stderr
+    assert out.read_text() == 'refs=[]\nstalled_refs=[]\n', out.read_text()
