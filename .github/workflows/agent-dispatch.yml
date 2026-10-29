@@ -63,6 +63,63 @@ env:
     | [$w[] | select(.name | contains("(" + $ref + ")"))] as $mine
     | (if ($mine | length) > 0 then $mine else $w end) as $j
     | if ($j | length) > 0 then ($j | any(.[]; .status | live)) else (.status | live) end
+  LABEL: needs-coordinator
+  CONTEXT: coordinator-approval
+  # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
+  # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
+  # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
+  # nish3451 is an optional override: a typed comment.
+  APPROVERS: nish3451 github-actions[bot]
+  RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+  # stdin: {repo, labels, files, patches, changed_files}; $cfg:
+  # risky-paths.json or null. patches is [{file, patch}] with patch null
+  # when the API sent none (large or binary). Risky is a path hit (under
+  # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
+  # added diff line matching a "diff" entry for that file, or a file such
+  # an entry covers with no patch. A list cut at 3000 files, an empty
+  # list or an unreadable path list all count as risky.
+  CLASSIFY: |
+    . as $pr
+    | (($cfg // {}).paths // null) as $p
+    | (($cfg // {}).safe // []) as $safe
+    | (($cfg // {}).diff // []) as $diff
+    | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
+    | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
+    | [$pr.files[] | . as $f
+        | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
+                 or any($own[]; . as $re | $f | test($re; "i")))] as $hits
+    | [($pr.patches // [])[] | . as $x
+        | $diff[] | . as $d
+        | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
+        | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
+          elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
+          else empty end] as $dhits
+    | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
+       + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
+       + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
+       + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
+       + ($hits | unique | .[:10] | map("path \(.)"))
+       + ($dhits | unique | .[:10])) as $why
+    | {risky: ($why | length > 0), why: $why}
+  # stdin: {sha, statuses, comments}. sha is the current head;
+  # statuses are that sha's, newest first (GitHub's order); comments are
+  # the PR's issue comments. Status path: only the newest status for
+  # CONTEXT counts, so a later failure revokes it. Comment path: an
+  # approver's comment, never edited (updated_at == created_at, so an old
+  # comment cannot be edited onto a new sha), with a line exactly
+  # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+  APPROVAL: |
+    . as $in
+    | ($who | split(" ") | map(select(length > 0))) as $approvers
+    | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
+    | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
+    | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
+    | ($full and any(($in.comments // [])[];
+        (.user.login // "") as $l
+        | any($approvers[]; . == $l)
+          and .created_at != null and .updated_at == .created_at
+          and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
+    | $by_status or $by_comment
 jobs:
   # FLEET_DISPATCH_PAUSED is true: say so once per event a dispatch job would have acted on.
   # It starts and writes nothing. Skipped work is not lost: the sweep update.yml runs after
@@ -264,64 +321,6 @@ jobs:
       contents: write
       pull-requests: write
       statuses: read
-    env:
-      LABEL: needs-coordinator
-      CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
-      APPROVERS: nish3451 github-actions[bot]
-      RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # stdin: {repo, labels, files, patches, changed_files}; $cfg:
-      # risky-paths.json or null. patches is [{file, patch}] with patch null
-      # when the API sent none (large or binary). Risky is a path hit (under
-      # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
-      # added diff line matching a "diff" entry for that file, or a file such
-      # an entry covers with no patch. A list cut at 3000 files, an empty
-      # list or an unreadable path list all count as risky.
-      CLASSIFY: |
-        . as $pr
-        | (($cfg // {}).paths // null) as $p
-        | (($cfg // {}).safe // []) as $safe
-        | (($cfg // {}).diff // []) as $diff
-        | (if ($p | type) == "object" and ($p["*"] | type) == "array" then $p["*"] else ["."] end) as $star
-        | (if ($p | type) == "object" then [$p | to_entries[] | select(.key != "*" and (.key | ascii_downcase) == ($pr.repo | ascii_downcase)) | .value[]] else [] end) as $own
-        | [$pr.files[] | . as $f
-            | select((any($safe[]; . as $re | $f | test($re; "i")) | not) and any($star[]; . as $re | $f | test($re; "i"))
-                     or any($own[]; . as $re | $f | test($re; "i")))] as $hits
-        | [($pr.patches // [])[] | . as $x
-            | $diff[] | . as $d
-            | select(($x.file | test($d.files; "i")) and (if $d.not_files == null then true else ($x.file | test($d.not_files; "i") | not) end))
-            | if $x.patch == null then (if $d.hold_no_patch == true then "no diff for \($x.file) (\($d.id))" else empty end)
-              elif ([$x.patch | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | join(" ") | test($d.pattern; "i")) then "diff \($d.id) in \($x.file)"
-              else empty end] as $dhits
-        | ([if any($pr.labels[]; . == $label) then "label \($label)" else empty end]
-           + [if ($p | type) != "object" then "risky-path list unreadable" else empty end]
-           + [if ($pr.files | length) == 0 then "no changed files listed" else empty end]
-           + [if $pr.changed_files >= 3000 then "\($pr.changed_files) changed files, list cut at 3000" else empty end]
-           + ($hits | unique | .[:10] | map("path \(.)"))
-           + ($dhits | unique | .[:10])) as $why
-        | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
-      APPROVAL: |
-        . as $in
-        | ($who | split(" ") | map(select(length > 0))) as $approvers
-        | ([($in.statuses // [])[] | select(.context == $c)] | .[0] // {}) as $s
-        | ($s.state == "success" and any($approvers[]; . == ($s.creator.login // ""))) as $by_status
-        | (($in.sha // "") | test("^[0-9a-f]{40}$")) as $full
-        | ($full and any(($in.comments // [])[];
-            (.user.login // "") as $l
-            | any($approvers[]; . == $l)
-              and .created_at != null and .updated_at == .created_at
-              and any((.body // "") | split("\n")[] | rtrimstr("\r"); . == "\($c): \($in.sha)"))) as $by_comment
-        | $by_status or $by_comment
     steps:
       - name: Hold a risky PR whose head has no coordinator approval
         id: hold
