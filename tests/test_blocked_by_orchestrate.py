@@ -1,9 +1,8 @@
 """GitHub "blocked by" in the coordinator path (fleet-ops#10489): the real `run:` blocks of
 agent-dispatch.yml against a fake gh.
 
-The orchestrate issue step skips a blocked issue. When an issue closes, the list job collects each
-unblocked needs-orchestrator dependent and the parked job re-labels it (remove, then add) on the
-worker App token, because the list job runs hosted, where no login exists (fleet-ops#10963).
+The orchestrate issue step skips a blocked issue. When an issue closes, the list job
+re-labels each unblocked needs-orchestrator dependent (remove, then add, on the runner login).
 """
 import json
 import os
@@ -14,7 +13,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
 ISSUE_STEP = '.jobs.orchestrate.steps[] | select(.id == "issue")'
 LIST_STEP = '.jobs.list.steps[] | select(.id == "list")'
-PARKED_STEP = '.jobs.parked.steps[] | select(.env.PARKED)'
 
 FAKE_GH = r"""#!/usr/bin/env bash
 q=.; for ((i = 1; i <= $#; i++)); do [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }; done
@@ -80,37 +78,18 @@ def close(tmp_path, dependents):
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
-    out = (tmp_path / "out").read_text()
-    log = tmp_path / "writes.log"
-    return (log.read_text().splitlines() if log.exists() else []), out
-
-
-def release(tmp_path, out):
-    """The parked job's write step, for the released numbers the list step published."""
-    released = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)["released"]
-    (tmp_path / "writes.log").write_text("")
-    env = {**_fake(tmp_path), "GH_TOKEN": "app", "PARKED": "[]", "RELEASED": released, "REPO": "o/r",
-           "RUN_URL": "https://example.invalid/runs/1"}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{PARKED_STEP} | .run")],
-                       env=env, capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
     log = tmp_path / "writes.log"
     return log.read_text().splitlines() if log.exists() else []
 
 
 def test_closing_a_blocker_refires_the_unblocked_dependent(tmp_path):
-    w, out = close(tmp_path, {2: (["needs-orchestrator"], 0)})
-    assert w == [], "the list job runs hosted, where no login exists, so it cannot write it itself"
-    assert 'released=["2"]' in out, out
-    w = release(tmp_path, out)
+    w = close(tmp_path, {2: (["needs-orchestrator"], 0)})
     assert [l.split("|")[0] for l in w] == [
         "issue edit 2 -R o/r --remove-label needs-orchestrator",
         "issue edit 2 -R o/r --add-label needs-orchestrator"]
-    assert all(l.endswith("token=app") for l in w), "the re-fire must run on the App token, whose label event starts a workflow"
+    assert all(l.endswith("token=none") for l in w), "the re-fire must run on the runner login, not the job token"
 
 
 def test_still_blocked_or_unparked_dependents_are_left_alone(tmp_path):
-    w, out = close(tmp_path, {2: (["needs-orchestrator"], 1), 3: (["agent-ready"], 0)})
+    w = close(tmp_path, {2: (["needs-orchestrator"], 1), 3: (["agent-ready"], 0)})
     assert w == []
-    assert 'released=[]' in out, out
-    assert release(tmp_path, out) == []
