@@ -317,8 +317,11 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
             f.write_text(tok[4:] if tok.startswith("RAW:") else f"CLAUDE_CODE_OAUTH_TOKEN={tok}\n" if tok else "")
             f.chmod(0o600)
     script = _step("work", "Worker")
-    env = {
-        **os.environ,
+    # No runner environment names a Claude seat any more (#10741), and the lane sets the
+    # config dir itself, per attempt, inside the attempt's subshell. The ambient shell's
+    # own CLAUDE_CONFIG_DIR would otherwise decide what the fallthrough engine inherits.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_")}
+    env.update({
         "HOME": str(home),
         "PATH": f"{b}:{SYS_PATH}",
         "STATE": str(state),
@@ -339,7 +342,7 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "AHEAD": ahead,
         "CLAUDE_FAIL_SEAT": fail_seat,
         "CLAUDE_FAIL_OUT": fail_out,
-    }
+    })
     paths = [home / SEATS_REL / f"claude-seat-{x}.env" for x in "ab"] + [home / ".local/share/claude-seat-backup", home / ".claude-max", home / ".claude-other-seat", seat_a / ".credentials.json", home / ".claude/.credentials.json", home / ".claude.json"]
     env["PROBE_PATHS"] = " ".join(map(str, paths))
     # The step runs under GitHub's default shell, which is `bash -eo pipefail`, so the
@@ -596,7 +599,7 @@ def test_every_jail_line_mounts_each_path_once(tmp_path, name):
     seat_a = home / ".claude-vps"
     (home / ".claude").mkdir(parents=True)
     seat_a.mkdir()
-    line = (lines[name].replace("$HOME", str(home)).replace("$seat_a", str(seat_a))
+    line = (lines[name].replace("$HOME", str(home))
             .replace("$hide_all", _hides(home, "")).replace("$hide_but_a", _hides(home, str(seat_a))))
     paths = _mount_paths(line)
     assert paths
@@ -709,7 +712,7 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
 
     def expand(name):
-        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
+        line = lines[name].replace("$HOME", str(home))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
         return line.split() + ["--"]
@@ -849,7 +852,7 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
     (bk / "creds").write_text("planted")
     for x in "ab":
         (seats / f"claude-seat-{x}.env").write_text(f"CLAUDE_CODE_OAUTH_TOKEN={_tok_env(x)}\n")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".claude-vps")).replace("$hide_all", _hides(home, ""))
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$hide_all", _hides(home, ""))
     for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
@@ -876,6 +879,7 @@ def test_token_never_reaches_the_engine_a_rate_limit_falls_through_to(tmp_path, 
     assert "fallthrough: pi (claude rate limit)" in r.stdout and ran == ["claude", "pi"]
     env = _fallback_env(tmp_path)
     assert "pi TOK=unset" in env, env
+    assert "CCD=unset" in env, env  # the seat's config dir is exported in the attempt's subshell only
     assert "claude-config" not in env and _tok_env("a") not in env and _tok_env("b") not in env
 
 
@@ -1008,7 +1012,7 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     (home / ".local/share").mkdir(parents=True)
     (home / ".local/share/claude-seat-backup").symlink_to(vault / "backup")
     (seats / "claude-seat-a.env").symlink_to(vault / "tok.env")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".claude-vps")).replace("$hide_all", _hides(home, ""))
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$hide_all", _hides(home, ""))
     for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
