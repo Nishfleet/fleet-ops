@@ -927,7 +927,7 @@ jobs:
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
-          printf 'review=%s\narm=%s\nrework=%s\nfile=%s\n' "$review" "$arm" "$rework" "$file" | tee -a "$GITHUB_OUTPUT"
+          { echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"; } | tee -a "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
   # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.
