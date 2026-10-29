@@ -87,3 +87,22 @@ rules:
         - "/systemd/"
         - "/rootfs/"
         - "/.github/"
+  # The Ubuntu syncthing build has no `upgrade` command, so the daily update's
+  # self-upgrade step failed every night (#10844). The package comes from
+  # Syncthing's own apt repository now (ansible/tasks/syncthing.yml), so
+  # `apt dist-upgrade` is its only updater and the unit runs --no-upgrade.
+  - id: no-syncthing-self-upgrade
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      syncthing must not upgrade itself: the packaged build carries no
+      upgrader, and the call failed the daily update every night (fleet-ops
+      #10844). `apt dist-upgrade` moves the package from Syncthing's own
+      repository (ansible/tasks/syncthing.yml).
+    pattern-regex: '(?i)\bsyncthing["'']?[ \t]*,[ \t]*["'']?upgrade\b|\bsyncthing[ \t]+upgrade\b'
+    paths:
+      include:
+        - "/ansible/"
+        - "/systemd/"
+        - "/rootfs/"
+        - "/.github/"

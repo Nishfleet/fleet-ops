@@ -11,9 +11,10 @@ It runs `ansible/update.yml` as root through `ansible-pull`:
    trigger, the guard included.)
 2. Prune: apt cache, Docker containers stopped for a day, dangling Docker and
    Podman images, old build cache, the npm and uv caches.
-3. Update: `apt dist-upgrade`, `autoremove`, `needrestart -r a`, then each
+3. Update: `apt dist-upgrade` (which carries syncthing, from Syncthing's own
+   apt repository), `autoremove`, `needrestart -r a`, then each
    user-level tool through its own updater (npm globals, pi, claude and its
-   plugins, cursor-agent, devin, uv, bun, rclone, syncthing). Stale npm
+   plugins, cursor-agent, devin, uv, bun, rclone). Stale npm
    staging dirs (`.*-stage-*` under the npm global root) are deleted first,
    because one left by an interrupted self-update makes `npm update --global`
    exit non-zero.

@@ -103,7 +103,11 @@
 - `systemd/syncthing.service` and `tigervnc.service` — stock vendor
   binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
-  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  nothing. Syncthing's binary is a package now, from Syncthing's own apt
+  repository (`ansible/tasks/syncthing.yml`), so the daily dist-upgrade keeps it
+  current and `ExecStart` names `/usr/bin/syncthing`; the hand-placed copy under
+  `~/.local/bin` was retired (#10844). TigerVNC's binary is still hand-placed.
+  The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
   `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`

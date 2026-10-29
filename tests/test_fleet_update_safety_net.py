@@ -1,10 +1,12 @@
 """The daily update's safety net: a restic snapshot before any update step and the update's healthchecks ping."""
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
 import pytest
+import yaml
 import ansible_host
 
 if not shutil.which("yq"):
@@ -66,3 +68,12 @@ def test_host_config_builds_the_healthchecks_curl_config_from_the_box():
 
 def test_semgrep_blocks_the_return_of_yt_dlp_self_update():
     assert "no-yt-dlp-self-update" in (ROOT / ".semgrep/no-glue.yml").read_text()
+
+
+def test_the_syncthing_rule_catches_the_call_that_failed_every_night():
+    rules = yaml.safe_load((ROOT / ".semgrep/no-glue.yml").read_text())["rules"]
+    pattern = next(rule["pattern-regex"] for rule in rules if rule["id"] == "no-syncthing-self-upgrade")
+    call = 'argv: [syncthing, upgrade, "--home=/home/nish/.config/syncthing"]'
+    assert re.search(pattern, call), "the rule no longer matches the self-upgrade call that failed the run (#10844)"
+    unit = "ExecStart=/usr/bin/syncthing serve --no-browser --no-restart --no-upgrade"
+    assert not re.search(pattern, unit), "the rule fires on the unit's own flags"

@@ -1,0 +1,27 @@
+# syncthing comes from Syncthing's own apt repository, so the daily
+# dist-upgrade in update.yml keeps it current. The build it installs carries no
+# upgrader (its version string ends in `[noupgrade, noupgrade]`), and the unit
+# runs /usr/bin/syncthing, so there is no self-update step to keep (#10844).
+- name: Install the Syncthing apt key
+  ansible.builtin.get_url:
+    url: https://syncthing.net/release-key.gpg
+    dest: /etc/apt/keyrings/syncthing-archive-keyring.gpg
+    mode: "0644"
+
+- name: Add the Syncthing apt repository
+  ansible.builtin.deb822_repository:
+    name: syncthing
+    types: deb
+    uris: https://apt.syncthing.net/
+    suites: syncthing
+    components: stable
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/syncthing-archive-keyring.gpg
+
+- name: Install syncthing from the Syncthing repository
+  ansible.builtin.apt:
+    name: syncthing
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300

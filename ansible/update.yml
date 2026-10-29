@@ -599,26 +599,9 @@
           register: tincan_listeners
           ignore_errors: true
 
-        # syncthing upgrade exits 4 once it has replaced the binary and 2 when
-        # none is newer. The unit runs with --no-upgrade, so the new binary
-        # only runs after the restart below.
-        - name: Upgrade syncthing through its own upgrader
-          become: true
-          become_user: nish
-          environment: "{{ nish_env }}"
-          ansible.builtin.command:
-            argv: [syncthing, upgrade, "--home={{ nish_env.HOME }}/.config/syncthing"]
-            stdin: ""
-          register: syncthing_upgrade
-          changed_when: syncthing_upgrade.rc == 4
-          failed_when: syncthing_upgrade.rc not in [0, 4] and 'no upgrade available' not in (syncthing_upgrade.stdout ~ syncthing_upgrade.stderr)
-          timeout: 600
-          ignore_errors: true
-
-        - name: Restart syncthing on its new binary
-          ansible.builtin.command:
-            argv: [systemctl, --user, --machine=nish@.host, restart, syncthing.service]
-          when: syncthing_upgrade is changed
+        # syncthing is not updated here: it comes from Syncthing's own apt
+        # repository (ansible/tasks/syncthing.yml), so the dist-upgrade above
+        # moves it, and its package build carries no upgrader at all (#10844).
 
         # Cua Spaces has no apt repository, so its newest stable release that is
         # at least cua_min_age_hours old (or the tag pinned in cua_spaces_tag)
@@ -1280,7 +1263,6 @@
               - "(tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not ((podman_autoupdate | default({})).failed | default(false))"
               - "not (plugin_results | default({})).failed | default(false)"
-              - "not (syncthing_upgrade | default({})).failed | default(false)"
               - "cua_update_failed is not defined"
               - "(versions_after | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "not (hermes_update | default({})).failed | default(false)"
