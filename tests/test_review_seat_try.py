@@ -17,11 +17,20 @@ def functions():
     return run[run.index("family_of() {"):run.index("# After every retry")]
 
 
-def seat_try(tmp_path, headers, body, want="Qwen", used="Jev Claude"):
+def delays():
+    text = WF.read_text()
+    declared = re.search(r'REVIEW_BACKOFF: "([^"]+)"', text).group(1).split()
+    fallback = re.search(r"\$\{REVIEW_BACKOFF:-([^}]+)\}", text).group(1).split()
+    assert declared == fallback
+    return declared
+
+
+def seat_try(tmp_path, headers, body, want="Qwen", used="Jev Claude", ask=None, backoff="0"):
     (tmp_path / "h").write_text(headers)
     (tmp_path / "b").write_text(body)
-    script = functions() + 'ask_row() { cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }\n' + f'seat_try judge third "{want}" "{used}"; echo "rc=$?"; cat "$RUNNER_TEMP/third-why" 2>/dev/null; cat "$RUNNER_TEMP/third-row" 2>/dev/null\n'
-    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0", "H": str(tmp_path / "h"), "B": str(tmp_path / "b"), "PATH": "/usr/bin:/bin"}
+    stub = ask or 'ask_row() { cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }'
+    script = functions() + stub + f'\nseat_try judge third "{want}" "{used}"; echo "rc=$?"; cat "$RUNNER_TEMP/third-why" 2>/dev/null; cat "$RUNNER_TEMP/third-row" 2>/dev/null\n'
+    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": backoff, "H": str(tmp_path / "h"), "B": str(tmp_path / "b"), "PATH": "/usr/bin:/bin"}
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
 
 
@@ -87,8 +96,7 @@ def test_stepfun_row_is_refused_once_stepfun_reviewed(tmp_path):
 
 
 def test_row_of_the_wrong_family_is_refused(tmp_path):
-    headers = OK_HEADERS.replace("synthetic-glm53flash-senior", "alibaba-qwen38max-judge")
-    out = seat_try(tmp_path, headers, OK_BODY, want="GLM", used="")
+    out = seat_try(tmp_path, OK_HEADERS, OK_BODY, want="GLM", used="")
     assert "rc=1" in out and "(Qwen), not the GLM family" in out
 
 
@@ -103,20 +111,16 @@ def test_empty_answer_is_refused(tmp_path):
 
 
 def test_retries_run_out_on_a_failed_call(tmp_path):
-    script = functions() + 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; return 7; }\nseat_try senior second GLM ""; echo "rc=$?"; cat "$RUNNER_TEMP/second-why"\n'
-    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0 0", "PATH": "/usr/bin:/bin"}
-    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+    n = len(delays())
+    out = seat_try(tmp_path, "", "", backoff=" ".join(["0"] * n), ask='ask_row() { echo x >> "$RUNNER_TEMP/calls"; return 7; }\n')
     assert "rc=1" in out and "curl exit 7" in out
-    assert len((tmp_path / "calls").read_text().splitlines()) == 3
-    assert not (tmp_path / "second.txt").exists()
+    assert len((tmp_path / "calls").read_text().splitlines()) == n + 1
+    assert not (tmp_path / "third.txt").exists()
 
 
 def test_a_failed_call_is_retried_until_a_review_lands(tmp_path):
-    (tmp_path / "h").write_text(OK_HEADERS)
-    (tmp_path / "b").write_text(OK_BODY)
-    script = functions() + 'ask_row() { echo x >> "$RUNNER_TEMP/calls"; [ "$(wc -l < "$RUNNER_TEMP/calls")" -gt 1 ] || return 7; cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }\nseat_try senior second GLM ""; echo "rc=$?"; cat "$RUNNER_TEMP/second-row"\n'
-    env = {"RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": "0 0", "H": str(tmp_path / "h"), "B": str(tmp_path / "b"), "PATH": "/usr/bin:/bin"}
-    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
-    assert "rc=0" in out and out.endswith("synthetic-glm53flash-senior")
+    n = len(delays())
+    out = seat_try(tmp_path, OK_HEADERS, OK_BODY, backoff=" ".join(["0"] * n), ask='ask_row() { echo x >> "$RUNNER_TEMP/calls"; [ "$(wc -l < "$RUNNER_TEMP/calls")" -gt 1 ] || return 7; cp "$H" "$RUNNER_TEMP/$2-headers.txt"; cp "$B" "$RUNNER_TEMP/$2-body.json"; }\n')
+    assert "rc=0" in out and out.endswith("alibaba-qwen38max-judge")
     assert len((tmp_path / "calls").read_text().splitlines()) == 2
-    assert (tmp_path / "second.txt").read_text() == "APPROVE"
+    assert (tmp_path / "third.txt").read_text() == "APPROVE"
