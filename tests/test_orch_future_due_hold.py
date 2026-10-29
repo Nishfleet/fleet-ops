@@ -72,7 +72,7 @@ def edits(writes):
 
 
 @pytest.mark.parametrize("body", [FUTURE, "prose first\n\ndue: 2099-01-01 09:00 IST\n"], ids=["first-line", "mid-body"])
-def test_a_future_due_parks_on_hold_and_never_marks_it_tried(tmp_path, body):
+def test_a_future_due_parks_on_hold_and_never_marks_it_ended(tmp_path, body):
     out, writes = run(tmp_path, body)
     assert edits(writes) == [
         "issue edit 11011 -R Nishfleet/fleet-ops --add-label on-hold --remove-label needs-orchestrator"
@@ -96,7 +96,7 @@ def test_a_future_due_parks_on_hold_and_never_marks_it_tried(tmp_path, body):
     ],
     ids=["past", "none", "month-13", "not-IST", "one-digit-hour", "empty"],
 )
-def test_a_past_missing_or_unreadable_due_marks_it_tried_as_today(tmp_path, body):
+def test_a_past_missing_or_unreadable_due_marks_it_ended_as_today(tmp_path, body):
     _, writes = run(tmp_path, body)
     assert edits(writes) == [
         "issue edit 11011 -R Nishfleet/fleet-ops --add-label handoff-ended --remove-label needs-orchestrator"
