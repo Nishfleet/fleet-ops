@@ -565,7 +565,7 @@ jobs:
                 --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
                 --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
             else
-              [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || exit # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
+              [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
               echo "/worker $id" | $jail pi --print --no-context-files --continue \
                 --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
                 --append-system-prompt "$HOME/AGENTS.md" \
