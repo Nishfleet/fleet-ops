@@ -423,7 +423,7 @@ jobs:
       # the first call of every run pays full price (fleet-ops#9363). Static
       # first, then the marker line, then everything dynamic. To switch this
       # gate off, delete this step (the next line down to the one before
-      # "Miss-review event filter").
+      # "Orchestrate event filter").
       - name: Static prompt prefix before the dynamic marker (fleet-ops#9363)
         if: always()
         shell: bash
@@ -476,25 +476,6 @@ jobs:
             echo "FAIL \$id before the marker in a packet string"; rc=1
           fi
           exit "$rc"
-      - name: Miss-review event filter
-        if: always()
-        run: |
-          jq -e '
-            def fire:
-              (.miss_review == "live") and (
-                (.event_name == "issues" and .action == "labeled" and .label == "agent-failed")
-                or (.event_name == "issues" and .action == "reopened")
-                or (.event_name == "issue_comment" and .action == "created" and ((.body // "") | startswith("park:") or startswith("opus-vet:")) and ((.author_association // "") | IN("OWNER","MEMBER","COLLABORATOR")))
-                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == false) and ((.head_ref // "") | startswith("claim/issue-")) and .head_repo == .repository)
-                or (.event_name == "pull_request_target" and .action == "closed" and (.merged == true) and ((.title // "") | startswith("Revert")) and .head_repo == .repository)
-                or (.event_name == "workflow_dispatch" and .task == "miss-review" and ((.issue // "") | length) > 0)
-                or (.event_name == "schedule" and .requeued == true)
-              );
-            (.cases | map(select(.want != fire)) | if length == 0 then true else error("filter mismatch: \(map(.id)|join(","))") end)
-          ' config/miss-review-events.json
-          jq -r '.needles[]' config/miss-review-events.json | while IFS= read -r n; do
-            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing needle: $n"; exit 1; }
-          done
       - name: Orchestrate event filter
         if: always()
         run: |
@@ -821,7 +802,7 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          gated="new rework conflicts remerge ejected list unblocked miss-review miss-review-pr miss-stalled orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
+          gated="new rework conflicts remerge ejected list unblocked orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
           guards="hold-risky close-claim rework-note"
           bad=0
           for j in $(yq '.jobs | keys | .[]' "$f"); do

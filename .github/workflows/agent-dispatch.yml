@@ -35,8 +35,8 @@ on:
         type: string
         default: '"ubuntu-latest"'
   # pull_request_target, not pull_request: pull_request never runs while a PR has a merge
-  # conflict. Invariant: nothing in this file checks out PR code. ejected and miss-review-pr
-  # run only for same-repo heads; hold-risky only calls the API and never runs the head.
+  # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
+  # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
     types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
@@ -1106,56 +1106,6 @@ jobs:
             gh pr close "$pr" -R "$GITHUB_REPOSITORY" --delete-branch \
               --comment "issue #$ISSUE closed with this claim PR open; closing it here (fleet-ops#8457)"
           done
-  # Miss review. Off unless vars.MISS_REVIEW is live. One review per issue (concurrency group);
-  # agent.yml's Gate skips a second event inside 1 h and owns the failed / agent attempt cap.
-  miss-review:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && (
-        (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'agent-failed') ||
-        (github.event_name == 'issues' && github.event.action == 'reopened') ||
-        (github.event_name == 'issue_comment' && github.event.action == 'created' &&
-          (startsWith(github.event.comment.body, 'park:') || startsWith(github.event.comment.body, 'opus-vet:')) &&
-          (github.event.comment.author_association == 'OWNER' ||
-           github.event.comment.author_association == 'MEMBER' ||
-           github.event.comment.author_association == 'COLLABORATOR')) ||
-        (github.event_name == 'workflow_dispatch' && inputs.task == 'miss-review' && inputs.issue != '')
-      )
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: claim/issue-${{ github.event.issue.number || inputs.issue }}-miss-review
-  miss-review-pr:
-    if: >-
-      vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && github.event_name == 'pull_request_target' &&
-      github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.pull_request.merged == false && startsWith(github.event.pull_request.head.ref, 'claim/issue-')) ||
-       (github.event.pull_request.merged == true && startsWith(github.event.pull_request.title, 'Revert')))
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ startsWith(github.event.pull_request.head.ref, 'claim/issue-') && format('{0}-miss-review', github.event.pull_request.head.ref) || format('claim/issue-{0}-miss-review', github.event.pull_request.number) }}
-  miss-stalled:
-    needs: list
-    if: vars.FLEET_DISPATCH_PAUSED != 'true' && vars.MISS_REVIEW == 'live' && needs.list.outputs.stalled_refs != '' && needs.list.outputs.stalled_refs != '[]'
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
-      matrix:
-        ref: ${{ fromJSON(needs.list.outputs.stalled_refs) }}
-    concurrency:
-      group: miss-review-${{ github.repository }}-${{ matrix.ref }}
-      cancel-in-progress: false
-    uses: Nishfleet/fleet-ops/.github/workflows/agent.yml@main # runner group 3 allows only agent.yml@refs/heads/main; a SHA pin strands every job
-    permissions: {contents: read, issues: write, pull-requests: write}
-    with:
-      ref: ${{ matrix.ref }}
   admit:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
