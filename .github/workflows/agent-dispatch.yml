@@ -709,8 +709,7 @@ jobs:
               | {number, tried: ($l | index("agent-blocked") != null), newest: (.comments[-1].body // ""), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
-              | select((.tried | not) or ((.runs | length) > 0 and (.newest | startswith("blocked-on: ") | not)))
-              | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
+              | select((.tried | not) or ((.runs | length) > 0 and (.newest | startswith("blocked-on: ") | not))) | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
@@ -723,11 +722,7 @@ jobs:
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           # The retired label's open issues move here rather than by hand: nothing below
           # lists orchestrator-tried, so a leftover would lose its only restart path.
-          old=$(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" -L 300 --json number --jq '.[].number') ||
-            { echo "::warning::the orchestrator-tried list failed; those issues wait for the next sweep"; old=; }
-          for n in $old; do
-            gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked --remove-label orchestrator-tried || echo "::warning::#$n: relabel refused"
-          done
+          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" -L 300 --json number --jq '.[].number' | xargs -rI{} gh issue edit {} -R "$GITHUB_REPOSITORY" --add-label agent-blocked --remove-label orchestrator-tried || echo "::warning::the orchestrator-tried relabel failed; those issues wait for the next sweep"
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:agent-blocked,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
