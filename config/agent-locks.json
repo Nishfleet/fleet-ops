@@ -118,15 +118,9 @@
   },
   "gaps": [
     {
-      "agent": "amp-runner-nish and amp-runner-rajeev",
-      "unit": null,
-      "reason": "Still user units under ~/.config/systemd/user, so their settings are ignored on this box. They need the same move to system units with a service user, and their own live probe, before they can be switched.",
-      "issue": "#9982"
-    },
-    {
       "agent": "issue-desk",
-      "unit": null,
-      "reason": "Still a user unit under systemd/, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
+      "unit": "systemd/tincan-listen-issue-desk.service",
+      "reason": "Still a user unit, systemd/tincan-listen-issue-desk.service, added in #10152 after this contract was written, so its settings are ignored on this box and it can read the fleet's keys; it needs the same system unit and live ask before it can be switched.",
       "issue": "#10813"
     },
     {
