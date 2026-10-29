@@ -23,7 +23,15 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
-  "issue list") cat "$FAKE_DIR/issues.json" ;;
+  "issue list")
+    q=; jqf=; prev=; for a in "$@"; do
+      [ "$prev" = "-S" ] && q=$a
+      [ "$prev" = "--jq" ] && jqf=$a
+      prev=$a
+    done
+    sel=$(jq --arg q "$q" '([$q | select(startswith("label:")) | sub("^label:"; "") | split(",") | .[]] | map(select(. != ""))) as $want
+      | if ($want | length) == 0 then . else [.[] | . as $i | select(any($want[]; . as $w | any($i.labels[]?.name; . == $w)))] end' "$FAKE_DIR/issues.json")
+    if [ -n "$jqf" ]; then jq -r "$jqf" <<< "$sel"; else printf '%s' "$sel"; fi ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -232,13 +240,27 @@ def test_requeue_step_runs_only_on_the_sweep_events():
     assert allowed <= set(_yj(".on | keys")), expr
 
 
-def test_a_stranger_cannot_escalate_an_issue(tmp_path):
+def test_a_stranger_cannot_escalate_or_unpark_an_issue(tmp_path):
     i = issue(1, ended=3)
     for c in i["comments"]:
         c["authorAssociation"] = "NONE"
     w = run(tmp_path, [i])
     assert edits(w, "--add-label needs-nish-decision") == []
+    assert edits(w, "--add-label needs-orchestrator") == []
+
+
+def test_a_comment_after_the_marker_still_requeues(tmp_path):
+    i = issue(1, ended=1)
+    i["comments"].append({"body": "why did this end?", "authorAssociation": "OWNER", "author": {"login": "nish3451"}})
+    w = run(tmp_path, [i])
     assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_the_retired_label_is_migrated_without_a_hand_step(tmp_path):
+    """Nothing else lists orchestrator-tried, so a leftover issue loses its restart path."""
+    w = run(tmp_path, [issue(1, labels=("orchestrator-tried",))])
+    assert edits(w, "--remove-label orchestrator-tried") == [1]
+    assert edits(w, "--add-label needs-orchestrator") == []
 
 
 def test_list_job_asks_no_more_than_the_caller_stubs_grant():

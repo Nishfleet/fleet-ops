@@ -696,7 +696,7 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; an ended hand-off is agent-blocked plus its comment (fleet-ops#10455); 3 ended or re-fired, then needs-nish-decision.
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; an ended hand-off is agent-blocked plus its comment (fleet-ops#10455); 3 ended or re-fired, then needs-nish-decision. An agent-blocked issue restarts only on a marker from a trusted author that no later blocked-on: note overrides, so a stranger's comment cannot unpark it.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -709,7 +709,7 @@ jobs:
               | {number, tried: ($l | index("agent-blocked") != null), newest: (.comments[-1].body // ""), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
-              | select((.tried | not) or (.newest | startswith("orchestrator hand-off ended without a PR: ")))
+              | select((.tried | not) or ((.runs | length) > 0 and (.newest | startswith("blocked-on: ") | not)))
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
         run: |
@@ -721,6 +721,13 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
+          # The retired label's open issues move here rather than by hand: nothing below
+          # lists orchestrator-tried, so a leftover would lose its only restart path.
+          old=$(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried" -L 300 --json number --jq '.[].number') ||
+            { echo "::warning::the orchestrator-tried list failed; those issues wait for the next sweep"; old=; }
+          for n in $old; do
+            gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked --remove-label orchestrator-tried || echo "::warning::#$n: relabel refused"
+          done
           gh issue list -R "$GITHUB_REPOSITORY" -S "label:agent-blocked,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
             jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
               n=$(jq -r .number <<<"$r")
@@ -1093,7 +1100,7 @@ jobs:
           # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
           # record of a reserved call, not a queue state. An empty list makes the
           # edit fail and || true swallows it, the same net effect as skipping.
-          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator"))] | join(",")')" || true
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
