@@ -1066,7 +1066,6 @@ jobs:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - id: app-key
         uses: Nishfleet/fleet-ops/.github/actions/app-key@main
-      # A PR that edits .github/workflows/** can only be armed by a token that may write them (fleet-ops#10949).
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
