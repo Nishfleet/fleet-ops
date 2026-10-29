@@ -365,6 +365,21 @@ def test_the_agent_pool_binds_no_fleet_config_path_no_job_reads() -> None:
     assert not unread, f"bound with no job reading it: {unread}"
 
 
+def fleet_config_dir(dirs: list[Path]) -> str:
+    """The fleet config dir as the drop-in spells it, read off a bind inside it.
+
+    Read rather than written out: a literal home path in this file is a private detail, and the
+    check then follows the path the drop-in binds, not the home this host happens to have.
+    """
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                head, sep, _ = token.lstrip("-+").partition("/.config/fleet-ops/")
+                if sep:
+                    return head + "/.config/fleet-ops"
+    raise AssertionError("the agent pool binds nothing under the fleet config dir")
+
+
 def test_the_agent_pool_binds_no_directory_that_holds_the_fleet_config() -> None:
     """A bind of the config dir or a parent of it exposes every credential in it (fleet-ops#10826).
 
@@ -372,9 +387,9 @@ def test_the_agent_pool_binds_no_directory_that_holds_the_fleet_config() -> None
     named-path line instead of cutting them. The name scan cannot see that bind, because it matches
     a path inside the directory, so the regression gets its own check.
     """
-    config = "/home/nish/.config/fleet-ops"
-    wide: set[str] = set()
     dirs = runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    config = fleet_config_dir(dirs)
+    wide: set[str] = set()
     for key in ("BindReadOnlyPaths", "BindPaths"):
         for value in merged_values(dirs, key):
             for token in shlex.split(value):
