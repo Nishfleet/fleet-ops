@@ -945,7 +945,7 @@ jobs:
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
     # The approval is a PR comment by github-actions[bot] (the job's own GITHUB_TOKEN). This job runs from
     # agent.yml@main, so the PR cannot change its reviewer. A PR that adds its own workflow could post as the
-    # same bot, so one that touches money, secrets, data or the review gate (the guard list) needs three independent reviews. Arming is the arm job's.
+    # same bot, so one that touches money, secrets, data or the review rules (the guard list) needs three independent reviews. Arming is the arm job's.
     permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
@@ -1076,7 +1076,7 @@ jobs:
           fi
           # A guard or workflow head also needs two more reviewers (Fable 5.1 on a Claude seat, and Qwen), each ending on APPROVE with no blocker line.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
-          cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change touches money, secrets, data or the review gate. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
+          cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change touches money, secrets, data or the review rules. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # The third reviewer is called directly, not through pi, because the answering row is only in the response headers
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
@@ -1127,11 +1127,11 @@ jobs:
           done
           [ "$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)" = "$SHA" ] || { echo "head moved during review; the newer event reviews it"; exit 0; }
           if [ "$judge_ok" = true ] && [ "$both" = true ]; then
-            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change touches money, secrets, data or the review gate, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
+            approve; say "$(printf 'coordinator-approval: %s\n\nreviewer: %s approved. This change touches money, secrets, data or the review rules, so three independent reviews had to pass. The judge (%s, %s%% sure, no blocker line) and two more reviewers (%s) both approved with no blockers. CI still has to pass before it merges.\n\nFirst review:\n%s%s' "$SHA" "$SHA" "$JUDGE_FAMILY" "$pct" "${used#* }" "$text" "$all")"
             echo "approved_sha=$SHA" >> "$GITHUB_OUTPUT"
           else
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
-            say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data or the review gate, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
+            say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
       # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
       # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
