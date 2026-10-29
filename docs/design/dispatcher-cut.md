@@ -149,16 +149,17 @@ fewer hours, then by more lines.
 | 2 | `conflicts` and `remerge` (#10807) | dispatch | 63 | 1 | **63** | a conflicted claim PR waits for the sweep, not seconds |
 | 3 | log excerpt in `rework-note` (#10808) | dispatch | 20 | 0.5 | **40** | the comment names the run, not the log lines |
 | 4 | `Start the next ready issue` becomes one dispatch (#10809) | agent.yml | 67 | 2 | **34** | a freed lane waits up to the sweep interval |
-| 5 | infra retry ledger becomes `run_attempt` plus `gh run rerun` (#10810) | agent.yml | 30 | 1.5 | **20** | a retry stays on the same engine by design |
-| 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
+| 5 | infra retry ledger becomes `run_attempt` plus `gh run rerun` (#10810) | agent.yml | 30 | 1.5 | **20** | a retry stays on the same engine by design || 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
 | 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | a hand-off that died unpushed loses those commits, so its prompt's push-as-soon-as-checks-pass rule is the precondition, not a preference |
 
 Total: 346 lines and 11.5 hours, 30 lines per hour on average. That is 210 lines
 of `agent-dispatch.yml` (12% of it), 132 of `agent.yml` (9%), and 4 occurrences
 of the one label name `agent-in-progress` in `config/intake-repos.json`,
 `config/orchestrate-events.json`, `docs/intake-enrolment.md` and
-`docs/red-main-issues.md`, all counted in row 6. Rows 1 and 2 delete jobs and
-repo variables, not labels, so they carry no config lines.
+`docs/red-main-issues.md`, all counted in row 6. Rows 1 and 2 delete jobs, not
+labels, so they carry no config lines. Row 1 also retires the `MISS_REVIEW`
+repo variable: no job reads it once its three jobs are gone, and the value is
+recorded in that issue before the delete.
 
 Issue numbers are creation order, not row order: row 6's issue was filed after
 row 7's, so #10814 comes before #10811 in the list.
@@ -232,14 +233,29 @@ labelling one fires the hand-off immediately, and the design it implements
 should be on `main` first.
 
 Each PR states which row it is, carries the offline gate results
-(`actionlint`, `zizmor`, `shellcheck`) in its body, and for rows 5, 6 and 7 a
-live run id. A row whose proof fails is reverted by reverting its PR: nothing
-here is a migration, and no row changes data.
+(`actionlint`, `zizmor`, `shellcheck`), the diff-scoped semgrep result, and for
+rows 5, 6 and 7 a live run id.
+
+Two facts set the wall time. Every row edits `.github/workflows/`, so every
+row's PR is held until its exact head carries a coordinator approval: the 11.5
+hours are work time, and the queue is the rest. And the worker App token cannot
+push a workflow file, so the hand-off applies each row, not a worker.
+
+Row 5's one new command needs a credential answer, and the answer is the one
+row 4 already uses: `gh run rerun` runs as the runner login (`env -u GH_TOKEN`),
+the same login the dispatch step calls with today, so no token gains a scope.
+The `run_attempt` read uses the App token's existing `actions: read`.
+
+Rolling back a row is that row's PR reverted, plus one `gh variable set` for a
+row that deleted a repo variable: the value is recorded in the row's issue
+before the delete, so the restore is one line. No row touches a database or a
+host file, and no row is a migration.
 
 ## What would tell us this was wrong
 
-- Row 1: a claim PR goes red and gets no rework note within a day while
-  `MISS_REVIEW` is unset, so the sweep's `red` class missed it.
+- Row 1: a claim PR goes red and gets its rework note from the sweep with the
+  `MISS_REVIEW` variable gone, so the note's presence is the test and the
+  variable cannot be flipped back to hide a miss.
 - Row 2: a conflicted claim PR sits past one sweep with no note.
 - Row 3: a worker reports a red PR it could not fix because the comment carried
   no failing line, twice.
@@ -249,6 +265,8 @@ here is a migration, and no row changes data.
   `run_attempt` is still under the cap.
 - Row 6: a worker run that parks, strikes or requeues leaves an issue that the
   Gate then admits twice, or the sweep never requeues an issue whose run died.
+  A run-list read that fails must hold the issue, never admit it: an unread run
+  list looks like "no worker on this", which is the double admit.
 - Row 7: a hand-off loses work to a fresh checkout, or a live hand-off cannot
   open its PR from a per-job workspace.
 
