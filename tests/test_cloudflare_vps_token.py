@@ -74,8 +74,33 @@ def test_the_apply_republishes_the_secret_that_grafana_mounts():
     assert "restart fleet-grafana.service" in post
     assert "--replace" in post and "secret inspect" in post, "restart Grafana only when the value changed"
     assert "{{.SecretData}}" in post
-    assert 'printf %s "$$new" |' in post, "the value must reach podman on stdin, never argv"
+    assert 'printf %%s "$$new" |' in post, "%s is a systemd specifier for the user's shell, not a printf format"
     assert "grafana-cloudflare-api-token" in HOST.read_text()
+
+
+def test_the_apply_refuses_to_start_without_the_addresses_file():
+    """A failed plan renews nothing, so name the missing file before tofu runs."""
+    text = UNIT.read_text()
+    pres = [line for line in text.splitlines() if line.startswith("ExecStartPre=")]
+    check = pres[0]
+    assert "vps-cidrs.tfvars" in check and "exit 1" in check
+    assert pres[1].startswith("ExecStartPre=%h/.local/bin/tofu"), "the check runs before tofu"
+    assert "README.md" in check, "the failure must say where the format is"
+
+
+def test_the_grafana_queries_are_account_level_so_no_zone_group_is_needed():
+    """The token carries no zone group, so a zone-scoped query would 401."""
+    queried = set()
+    for path in (ROOT / "config/grafana").rglob("*.yaml"):
+        text = path.read_text()
+        queried |= set(re.findall(r"\b[a-z0-9][A-Za-z0-9]*AdaptiveGroups\b", text))
+        assert "viewer { zones" not in text and "zones(" not in text, f"{path} queries a zone dataset"
+    assert queried, "the spend watch queries no dataset at all"
+    assert re.search(r"zone\s+= \[\]", _entry("vps-grafana"))
+    # A missing permission answers with an error, not with rows, and every rule
+    # in that file turns an execution error into an alert.
+    spend = (ROOT / "config/grafana/provisioning/alerting/cloudflare-spend.yaml").read_text()
+    assert spend.count("execErrState: Error") == spend.count("noDataState:")
 
 
 def test_only_the_github_secret_tokens_take_the_gha_prefix():

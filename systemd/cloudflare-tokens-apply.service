@@ -46,6 +46,7 @@ EnvironmentFile=%h/.config/cloudflare/token-minter.env
 EnvironmentFile=-%h/.config/cloudflare/tofu-state-encryption.env
 Environment=TF_DATA_DIR=%h/.cache/fleet-ops/cloudflare-tokens-tofu
 Environment=TF_IN_AUTOMATION=1
+ExecStartPre=/bin/sh -c 'test -s %h/.config/cloudflare/vps-cidrs.tfvars || { echo "cloudflare-tokens-apply: missing %h/.config/cloudflare/vps-cidrs.tfvars (vps_cidrs; see infra/cloudflare-tokens/README.md, VPS-only tokens). Without it the plan fails closed and no token rotates." >&2; exit 1; }'
 ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
 # GitHub: the nishfleet-secrets App, not the owner's personal login (fleet-ops#10601). The key file is 0600 in a
 # 0700 directory; its contents go to the provider through the environment of this one process only.
@@ -57,7 +58,10 @@ ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfle
 # otherwise leave Grafana holding the token this apply just deleted until the
 # next host-config run, and the Cloudflare spend watch (fleet-ops#9355) would
 # read nothing meanwhile. So the apply republishes it itself: the value goes to
-# podman on stdin, never argv, and Grafana restarts only when it changed.
-ExecStartPost=/bin/sh -c 'set -e; f=%h/.config/cloudflare/deploy-ci.env; test -s "$$f"; new=$$(/usr/bin/sed -n "s/^CLOUDFLARE_API_TOKEN=//p" "$$f"); test -n "$$new"; set --; if /usr/bin/podman secret inspect grafana-cloudflare-api-token >/dev/null 2>&1; then test "$$new" = "$$(/usr/bin/podman secret inspect --showsecret --format "{{.SecretData}}" grafana-cloudflare-api-token)" && exit 0; set -- --replace; fi; /usr/bin/printf %s "$$new" | /usr/bin/podman secret create "$$@" grafana-cloudflare-api-token -; exec /usr/bin/systemctl --user restart fleet-grafana.service'
+# podman on stdin, never argv, and Grafana restarts only when it changed. There
+# is no host-config timer (deploy-box.yml starts fleet-host-config.service only
+# on a push to main, or at boot), so the window has no other bound. The format
+# is %%s, not %s: %s is a systemd specifier for the user's shell.
+ExecStartPost=/bin/sh -c 'set -e; f=%h/.config/cloudflare/deploy-ci.env; test -s "$$f"; new=$$(/usr/bin/sed -n "s/^CLOUDFLARE_API_TOKEN=//p" "$$f"); test -n "$$new"; set --; if /usr/bin/podman secret inspect grafana-cloudflare-api-token >/dev/null 2>&1; then test "$$new" = "$$(/usr/bin/podman secret inspect --showsecret --format "{{.SecretData}}" grafana-cloudflare-api-token)" && exit 0; set -- --replace; fi; /usr/bin/printf %%s "$$new" | /usr/bin/podman secret create "$$@" grafana-cloudflare-api-token -; exec /usr/bin/systemctl --user restart fleet-grafana.service'
 TimeoutStartSec=900
 UMask=0077

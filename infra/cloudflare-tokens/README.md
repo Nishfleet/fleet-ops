@@ -148,7 +148,8 @@ that include reaches the box (the next `fleet-host-config` run after merge) the
 state is not backed up, and `/etc/restic/` itself is root-owned, so this repo
 cannot prove what the live list holds; check with
 `grep cloudflare-tokens /etc/restic/include.txt`. If the state is lost, delete
-the old tokens in the Cloudflare dashboard (names start `gha-`) and apply again
+the old tokens in the Cloudflare dashboard (names start `gha-`, and
+`vps-grafana-` for the host token, which is not a GitHub secret) and apply again
 to mint fresh ones.
 
 ### State encryption
