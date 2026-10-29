@@ -28,9 +28,9 @@ def test_vps_token_is_ip_locked_and_read_only():
     assert "vps_only    = true" in entry
     assert re.search(r"zone\s+= \[\]", entry)
     groups = re.search(r"account\s+= \[([^\]]*)\]", entry).group(1)
-    assert groups, "the VPS token needs the one group its consumer calls"
-    for name in re.findall(r'"([^"]+)"', groups):
-        assert name.endswith(" Read"), f"{name} is not read-only"
+    assert set(re.findall(r'"([^"]+)"', groups)) == {"Account Analytics Read"}, (
+        "the consumer queries account-level GraphQL datasets only, so a wider group is unused access"
+    )
 
 
 def test_vps_token_writes_the_file_and_key_ansible_reads():
@@ -75,6 +75,8 @@ def test_the_apply_republishes_the_secret_that_grafana_mounts():
     assert "--replace" in post and "secret inspect" in post, "restart Grafana only when the value changed"
     assert "{{.SecretData}}" in post
     assert 'printf %%s "$$new" |' in post, "%s is a systemd specifier for the user's shell, not a printf format"
+    assert "/usr/bin/printf" not in post, "an external printf puts the value in argv, which /proc reads"
+    assert "is-active --quiet" in post, "a failed restart must be retried on the next run"
     assert "grafana-cloudflare-api-token" in HOST.read_text()
 
 
@@ -97,8 +99,6 @@ def test_the_grafana_queries_are_account_level_so_no_zone_group_is_needed():
         assert "viewer { zones" not in text and "zones(" not in text, f"{path} queries a zone dataset"
     assert queried, "the spend watch queries no dataset at all"
     assert re.search(r"zone\s+= \[\]", _entry("vps-grafana"))
-    # A missing permission answers with an error, not with rows, and every rule
-    # in that file turns an execution error into an alert.
     spend = (ROOT / "config/grafana/provisioning/alerting/cloudflare-spend.yaml").read_text()
     assert spend.count("execErrState: Error") == spend.count("noDataState:")
 
@@ -107,4 +107,5 @@ def test_only_the_github_secret_tokens_take_the_gha_prefix():
     """The README's lost-state cleanup deletes `gha-` tokens, so the host one must not match."""
     name = next(line for line in MAIN.read_text().splitlines() if line.strip().startswith("name") and "formatdate" in line)
     assert 'each.value.file == null ? "gha-" : ""' in name
+    assert "${each.key}-" in name, "the rendered name starts with the map key"
     assert _entry("vps-grafana").count("file        = ") == 1

@@ -60,8 +60,10 @@ ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfle
 # read nothing meanwhile. So the apply republishes it itself: the value goes to
 # podman on stdin, never argv, and Grafana restarts only when it changed. There
 # is no host-config timer (deploy-box.yml starts fleet-host-config.service only
-# on a push to main, or at boot), so the window has no other bound. The format
-# is %%s, not %s: %s is a systemd specifier for the user's shell.
-ExecStartPost=/bin/sh -c 'set -e; f=%h/.config/cloudflare/deploy-ci.env; test -s "$$f"; new=$$(/usr/bin/sed -n "s/^CLOUDFLARE_API_TOKEN=//p" "$$f"); test -n "$$new"; set --; if /usr/bin/podman secret inspect grafana-cloudflare-api-token >/dev/null 2>&1; then test "$$new" = "$$(/usr/bin/podman secret inspect --showsecret --format "{{.SecretData}}" grafana-cloudflare-api-token)" && exit 0; set -- --replace; fi; /usr/bin/printf %%s "$$new" | /usr/bin/podman secret create "$$@" grafana-cloudflare-api-token -; exec /usr/bin/systemctl --user restart fleet-grafana.service'
+# on a push to main, or at boot), so the window has no other bound. Two systemd
+# details: the format is %%s, because %s is a specifier for the user's shell,
+# and printf takes no path, because an external printf would put the value in
+# its argv and /proc/<pid>/cmdline is world-readable.
+ExecStartPost=/bin/sh -c 'set -e; f=%h/.config/cloudflare/deploy-ci.env; test -s "$$f"; new=$$(/usr/bin/sed -n "s/^CLOUDFLARE_API_TOKEN=//p" "$$f"); test -n "$$new"; if /usr/bin/podman secret inspect grafana-cloudflare-api-token >/dev/null 2>&1; then if test "$$new" = "$$(/usr/bin/podman secret inspect --showsecret --format "{{.SecretData}}" grafana-cloudflare-api-token)"; then /usr/bin/systemctl --user is-active --quiet fleet-grafana.service || exec /usr/bin/systemctl --user restart fleet-grafana.service; exit 0; fi; set -- --replace; fi; printf %%s "$$new" | /usr/bin/podman secret create "$$@" grafana-cloudflare-api-token -; exec /usr/bin/systemctl --user restart fleet-grafana.service'
 TimeoutStartSec=900
 UMask=0077

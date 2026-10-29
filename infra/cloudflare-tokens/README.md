@@ -106,10 +106,14 @@ environment secret slots before 2026-10-09. The retirement is decided
   expiry, no IP lock, and Workers, D1, KV and Zone read permissions for a
   consumer that needs one read-only group. **Not yet revoked**: its value still
   sits in `~/.config/cloudflare/deploy-ci.env` until the first apply rewrites
-  that file with the minted token, and the old token stays valid in Cloudflare
-  until the owner deletes it in the dashboard, the same way as the per-repo
-  tokens. Until that delete, a leaked copy of the old value still works, so the
-  revocation is the last step of the rotation and is not implied by this PR. A
+  that file with the minted token, and that file then holds exactly one line, so
+  a copy of the old value has to be taken out of it before that apply. The old
+  token stays valid in Cloudflare
+  until the owner deletes it in the dashboard. That delete is the one step this
+  config cannot do, unlike the per-repo tokens, which the apply destroys itself
+  once it has minted their replacements. Until that delete, a leaked copy of the
+  old value still works, so the revocation is the last step of the rotation and
+  is not implied by this PR. A
   preview upload or an analytics query from a hand session takes a 24-hour
   `job-*` token from the mint gate (`docs/cloudflare-credentials.md`), not a
   standing one.
@@ -319,8 +323,10 @@ then keep working until their expiry date (at most 45 days after the last apply)
    whichever secrets you still want by hand.
 3. Remove `infra/cloudflare-tokens/`, the renewal units in `systemd/`, the
    `cloudflare-tokens-tofu` job and the tofu stub step in
-   `.github/workflows/ci.yml`, the OpenTofu tasks in `ansible/host.yml`, and the
-   state line in `config/restic/include.txt`.
+   `.github/workflows/ci.yml`, the OpenTofu tasks in `ansible/host.yml` (in the
+   same step: destroy deletes `deploy-ci.env`, so a `grafana_secrets` entry left
+   pointing at it fails the next host-config run), and the state line in
+   `config/restic/include.txt`.
 4. Delete `~/.local/state/fleet-ops/cloudflare-tokens/` and
    `~/.config/cloudflare/token-minter.env`, and revoke the minter token in the
    Cloudflare dashboard.
