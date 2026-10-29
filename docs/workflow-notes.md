@@ -307,6 +307,49 @@ a block of its own because the workflow may not grow (the ratchet).
 `tests/test_arm_allowlist.py` runs the step against a fake `gh` for each layout and
 control, and pins the review job's `FLEET_TASK_ID` (#9428) in the same file.
 
+### agent.yml: the 2026-10 diet audit (fleet-ops#11068)
+
+Issue #11068 asked for four cuts to agent.yml. All four are live, so the audit
+deleted nothing and records why, with a run that shows each one working.
+
+Counting agent.yml's own runs does not count `work`. A called workflow's jobs
+run inside the caller's run, named `<caller job> / work`, so agent.yml's run
+list holds only its own runs: 58 in the 30 days to 2026-10-30, 38 `schedule`
+and 20 `workflow_dispatch`. Run 40880205007 (2026-10-29T13:15:02Z) shows
+`unblocked (claim/issue-10900) / work` success and
+`unblocked (claim/issue-10913) / work` success. agent-dispatch.yml holds ten
+`uses: agent.yml@main` lines. Six pass a `ref` and so start `work` (new,
+rework, remerge, ejected, unblocked, stuck-rework), two start `review`
+(review-risky, stuck-review), `stuck-arm` starts `arm` and `stuck-file` starts
+`stuck`. No dispatch input is needed.
+
+`report` is already deleted (fleet-ops#9336, commit 0d572d6ca). The `Strike or
+requeue` step in `work` does its work, and ci.yml line 1258 fails a PR that
+adds the job back.
+
+`review`'s rework block stays. The orchestrator starts on the
+`needs-orchestrator` label, and `GITHUB_TOKEN` fires no event on a label or a
+comment, so this block is the only route that sends a blocked `orch/issue-N`
+PR back, and it must post as the worker App. The 3-round cap lives in the same
+step. tests/test_orch_rework.py runs it.
+
+`inish-daily`'s runner-probe is not a copy of ci.yml's jail step. ci.yml plants
+fake logins on a throwaway GitHub-hosted runner and runs bwrap's mounts. The
+probe reads the live runner unit's `InaccessiblePaths` as its own user and
+fails when a hidden path is readable, and only the box has that unit. The
+`work` job runs the same probe on the same runner group, but every
+agent-dispatch.yml job that reaches `work` carries
+`vars.FLEET_DISPATCH_PAUSED != 'true'`, while `inish-daily`'s own `if:` has no
+pause term and fires at 02:00 and 05:00 UTC. On a paused fleet its probe is the
+only one left.
+
+`stuck` stays. agent-dispatch.yml's `stuck-file` (line 914) is a live caller
+and passes all four inputs (`stuck_pr`, `stuck_sha`, `stuck_reason`,
+`stuck_url`): run 40957777296 shows `stuck-file (11052, …) / stuck` success.
+ci.yml lines 631 to 634 pin the wiring (`stuck-review:review_pr
+stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fail when the job
+is gone.
+
 ### coordinator-approval.yml: the merge-queue gate
 
 The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
