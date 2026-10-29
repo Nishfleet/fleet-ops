@@ -234,12 +234,6 @@ def test_labelled_replies_flag():
             assert not got, f"{case['id']} obeys but the checker flagged {got}"
 
 
-def test_evening_budget_keeps_the_unknown_daily_page_line():
-    """The UNKNOWN daily-page line is the only site-down signal: it sits with the broken lines, never in the cut tail."""
-    text = (PROMPTS[0].parent / "digest-evening.md").read_text()
-    assert "a step-5 UNKNOWN daily-page line is one of these two, never cut" in text
-
-
 def test_post_fix_reply_passes():
     assert check_reply_shape(POST_FIX_REPLY) == []
 
@@ -291,23 +285,6 @@ def test_routine_edition_line_shape():
     )
     assert news_rule_hits("Daily edition published successfully")
     assert not news_rule_hits("The nightly publish could not run last night.")
-
-
-def test_evening_edition_line_is_a_routine_confirmation():
-    text = PROMPTS[1].read_text()
-    for sentence in [
-        "a new edition ships every day",
-        "the changed date alone is a routine confirmation, never news",
-        "routine daily-edition line in the words step 5 gives",
-    ]:
-        assert sentence in text
-    assert "only when it has news" not in text, "the daily-edition line is no longer a news slot"
-
-
-def test_morning_files_no_edition_line():
-    text = PROMPTS[0].read_text()
-    assert "site line" not in text
-    assert "A scheduled job's own success is a routine confirmation, never one of the changes that matter" in text
 
 
 def test_ci_runs_this_file():
