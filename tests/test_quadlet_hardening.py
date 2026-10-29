@@ -1,4 +1,4 @@
-"""Every quadlet has a restart policy, a memory cap and a digest-pinned image."""
+"""Every quadlet has a restart policy, a memory cap, a digest-pinned image and no registry auto-update on that pin."""
 
 import re
 from pathlib import Path
@@ -67,6 +67,89 @@ def test_image_is_pinned_by_digest(path: Path) -> None:
     images = values(parse(path), "Container", "Image")
     assert len(images) == 1, f"{path.name}: expected one [Container] Image= line"
     assert DIGEST.search(images[0]), f"{path.name}: Image={images[0]} must end in @sha256:<64 hex>"
+
+
+def image_tag(image: str) -> str | None:
+    """The tag of an image reference, or None when it carries none. A digest is not a tag."""
+    name = image.split("@", 1)[0].rsplit("/", 1)[-1]
+    _, separator, tag = name.partition(":")
+    return tag if separator else None
+
+
+def is_pinned(image: str) -> bool:
+    """A digest, or a tag other than latest, changes only when a PR changes it."""
+    return bool(DIGEST.search(image)) or image_tag(image) not in {None, "latest"}
+
+
+def carries_registry_autoupdate(autoupdate: list[str]) -> bool:
+    return any("registry" in [part.strip() for part in value.split(",")] for value in autoupdate)
+
+
+def autoupdate_violation(image: str, autoupdate: list[str]) -> str | None:
+    registry = carries_registry_autoupdate(autoupdate)
+    pinned = is_pinned(image)
+    if pinned and registry:
+        return (
+            f"Image={image} is pinned (a tag other than latest, or a digest), so it must not carry "
+            "AutoUpdate=registry: podman auto-update would move an image that changes only by PR"
+        )
+    if not pinned and not registry:
+        return (
+            f"Image={image} is a floating tag, so it needs AutoUpdate=registry: "
+            "podman auto-update is the only thing that moves it"
+        )
+    return None
+
+
+@pytest.mark.parametrize("path", quadlets(), ids=lambda path: path.name)
+def test_autoupdate_matches_the_image_pin(path: Path) -> None:
+    sections = parse(path)
+    images = values(sections, "Container", "Image")
+    assert len(images) == 1, f"{path.name}: expected one [Container] Image= line"
+    violation = autoupdate_violation(images[0], values(sections, "Container", "AutoUpdate"))
+    assert violation is None, f"{path.name}: {violation}"
+
+
+DIGEST_SUFFIX = "@sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("image", "autoupdate", "want"),
+    [
+        pytest.param("docker.io/library/postgres:16" + DIGEST_SUFFIX, ["registry"], "pinned", id="digest-and-registry"),
+        pytest.param(
+            "docker.io/library/postgres:16" + DIGEST_SUFFIX, ["local,registry"], "pinned", id="digest-and-registry-list"
+        ),
+        pytest.param("docker.io/library/postgres:16" + DIGEST_SUFFIX, [], None, id="digest-without-autoupdate"),
+        pytest.param("ghcr.io/berriai/litellm:v1.105.0", ["registry"], "pinned", id="version-tag-and-registry"),
+        pytest.param("ghcr.io/berriai/litellm:v1.105.0", [], None, id="version-tag-without-autoupdate"),
+        pytest.param("docker.io/library/postgres:16", ["registry"], "pinned", id="tag-16-and-registry"),
+        pytest.param(
+            "ghcr.io/viren070/aiostreams:latest" + DIGEST_SUFFIX,
+            ["registry"],
+            "pinned",
+            id="latest-digest-and-registry",
+        ),
+        pytest.param("ghcr.io/viren070/aiostreams:latest", [], "floating", id="latest-without-autoupdate"),
+        pytest.param("ghcr.io/viren070/aiostreams:latest", ["local"], "floating", id="latest-with-local-only"),
+        pytest.param("ghcr.io/viren070/aiostreams:latest", ["registry"], None, id="latest-with-registry"),
+        pytest.param("ghcr.io/viren070/aiostreams", [], "floating", id="untagged-without-autoupdate"),
+        pytest.param("ghcr.io/viren070/aiostreams", ["registry"], None, id="untagged-with-registry"),
+        pytest.param(
+            "registry.example.com:5000/fleet/proxy:latest",
+            [],
+            "floating",
+            id="registry-port-floating-without-registry",
+        ),
+        pytest.param("registry.example.com:5000/fleet/proxy:16", [], None, id="registry-port-version-tag"),
+    ],
+)
+def test_autoupdate_detector(image: str, autoupdate: list[str], want: str | None) -> None:
+    violation = autoupdate_violation(image, autoupdate)
+    if want is None:
+        assert violation is None, violation
+    else:
+        assert violation is not None and want in violation, violation
 
 
 SIZE = re.compile(r"(\d+)\s*([KMGTPE]?)", re.IGNORECASE)
