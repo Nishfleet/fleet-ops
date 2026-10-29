@@ -37,9 +37,9 @@ verdict. Verdicts are `stock` (GitHub does it, we already lean on it), `cut`
 (deletable, filed as its own issue), and `keep` (no stock equivalent; the one
 line says why).
 
-Two names repeat below. "The dispatcher" is the two workflow files. "The
-sweep" is one job in them: `list`, which runs on the hourly schedule (`cron:
-17 * * * *`) and reads state instead of events.
+Two names repeat below. "The dispatcher" is the two workflow files. "The sweep"
+is the scheduled run of `agent-dispatch.yml` (`cron: 17 * * * *`), whose two
+readers are `list` (the issue queue) and `stuck-prs` (the open PRs).
 
 | Home-made mechanism | Stock feature | Verdict |
 |---|---|---|
@@ -106,7 +106,8 @@ re-derive a fact GitHub already stores — the infra retry count (a run's
 6), the hand-off's checkout cache (a per-job workspace, row 7) — and every job
 that duplicates a class the sweep already owns (rows 1 to 4).
 
-Rows 1 to 4 take five dispatch jobs and one log read off the event path. Row 6
+Rows 1 to 4 take five dispatch jobs, one log read and one relabel dance off the
+event path. Row 6
 also removes one of the sweep's seven classes, the orphan label class, because
 it exists only because the label can be left behind. Five others stay ("Kept"
 below), and the seventh, `stalled_refs`, goes with row 1's follow-up: B's rule
@@ -154,19 +155,19 @@ fewer hours, then by more lines.
 | # | Delete | File(s) | Lines | Hours | Lines/h | Cost |
 |---|---|---|---|---|---|---|
 | 1 | `miss-review`, `miss-review-pr`, `miss-stalled` (#10806) | dispatch | 48 | 0.5 | **96** | none: `MISS_REVIEW` is unset |
-| 2 | `conflicts` and `remerge` (#10807) | dispatch | 63 | 1 | **63** | a conflicted claim PR waits for the sweep, not seconds |
+| 2 | `conflicts` and `remerge` (#10807) | dispatch | 63 | 1 | **63** | a conflicted claim PR waits for the sweep's `stuck-prs` job, up to an hour, not seconds |
 | 3 | log excerpt in `rework-note` (#10808) | dispatch | 20 | 0.5 | **40** | the comment names the run, not the log lines |
 | 4 | `Start the next ready issue` becomes one dispatch (#10809) | agent.yml | 67 | 2 | **34** | a freed lane waits up to the sweep interval |
-| 5 | infra retry becomes rerun-in-place: the sweep calls `gh run rerun` and `attempt` is the count (#10810) | agent.yml | 30 | 1.5 | **20** | a retry is the same run's next attempt, and a park starts a new run, so the count resets with it |
+| 5 | infra retry becomes rerun-in-place: the sweep calls `gh run rerun` and `attempt` is the count (#10810) | agent.yml | 30 | 1.5 | **20** | a retry is the same run's next attempt, up to the sweep interval later, and a park starts a new run, so the count resets with it |
 | 6 | `agent-in-progress` becomes the issue's live runs (#10814) | dispatch, agent.yml, config, docs | 59 | 3 | **20** | the Gate and the sweep read runs, not a label |
 | 7 | mirror and worktree cache become `actions/checkout` (#10811) | dispatch | 59 | 3 | **20** | an unpushed hand-off loses those commits: accepted, not mitigable, and its prompt's step 4 rule (commit and push as soon as the checks pass) is what keeps it rare |
 
 Total: 346 lines and 11.5 hours, 30 lines per hour on average. That is 210 lines
-of `agent-dispatch.yml` (12% of it), 132 of `agent.yml` (9%), and 4 occurrences
-of the one label name `agent-in-progress` in `config/intake-repos.json`,
+of `agent-dispatch.yml` (12% of it), 132 of `agent.yml` (9%), and 4 lines of
+the one label name `agent-in-progress`, one in each of `config/intake-repos.json`,
 `config/orchestrate-events.json`, `docs/intake-enrolment.md` and
 `docs/red-main-issues.md`. Row 6's 59 is 20 in the dispatcher, 35 in `agent.yml`
-and those 4. Rows 1 and 2 delete jobs, not labels, so they carry no config
+and those 4 lines. Rows 1 and 2 delete jobs, not labels, so they carry no config
 lines. Row 1 also retires the `MISS_REVIEW` repo variable: no job reads it once
 its three jobs are gone, and the value is recorded in that issue before the
 delete.
@@ -188,8 +189,9 @@ got its run displaced, the chain #9269 counted at 258 cancelled runs. Rows 5
 to 7 are the ones that need a live run as proof and the ones that change how a
 worker is retried, where it builds, and how it is seen as
 held, so they are last on purpose even though rows 6 and 7 tie for the largest
-single delete, and the tie is broken by creation order, which is why row 6 comes
-first.
+single delete. The tie is broken by reach: row 6 touches four paths and row 7
+one, so one live run proves more of row 6. Creation order explains the numbers
+and nothing else.
 
 ## Kept, with why
 
@@ -274,16 +276,20 @@ row's PR is held until its exact head carries a coordinator approval: the 11.5
 hours are work time, and the queue is the rest. And the worker App token cannot
 push a workflow file, so the hand-off applies each row, not a worker.
 
-Row 5's one new command needs a credential answer, and the answer is the one
-row 4 already uses: both calls run as the runner login (`env -u GH_TOKEN`), not
-the App token, which has no Actions permission at all. The `attempt` read is
-made today with that login; `gh run rerun` is the one new call, and it adds no
-scope. The caller is the sweep, not the dying run: a run cannot rerun itself
-while it runs. `--failed` reruns only failed jobs, so a cancelled or timed-out
-run needs the plain `gh run rerun <id>`. The verdict itself travels as one
-annotation instead of a comment: the run prints `::warning::infra: <signature>`,
-and the sweep reads it from that job's check run. Row 3 does not use this read
-because a worker needs the failing log line, while row 5 only needs the verdict.
+Row 5's one new command needs a credential answer, and it is a mixed one. The
+reads are free: `list` already declares `actions: read`, so `gh run view --json
+attempt` and the run's annotations work on the job token, and `rework-note`
+already reads `--log-failed` the same way, which is why row 3 needs no new
+credential either. A rerun is a write, and the App token has none, so `gh run
+rerun` runs as the runner login (`env -u GH_TOKEN`), the same login that
+dispatches the sweep today (`gh workflow run`, `agent.yml:916`), because the App
+token may lack `actions: write`. No token gains a scope. The caller is the sweep,
+not the dying run: a run cannot rerun itself while it runs. `--failed` reruns
+only failed jobs, so a cancelled or timed-out run needs the plain `gh run rerun
+<id>`. The verdict travels as one annotation instead of a comment: the run
+prints `::warning::infra: <signature>`, and the sweep reads it from that job's
+check run, `/commits/<sha>/check-runs/<id>/annotations`, because a check run is
+addressed by id while a count of comments means re-reading all of them.
 
 The run's branch is the join to its issue: `claim/issue-<N>`, which is what
 `gh run list --branch` reads and what row 6 relies on. A `claim/issue-N-miss-review`
@@ -307,7 +313,9 @@ database or a host file, and no row is a migration.
 - Row 4: a freed lane sits idle for more than one sweep interval while ready
   work waits, twice in a week.
 - Row 5: the same engine fails the same way on a run already at `attempt` 4,
-  past the infra rerun cap of 3, and nothing strikes.
+  past the infra rerun cap of 3, and nothing strikes. The reset path has its own
+  signal: a park followed by a rerun of the same run in the same hour, which
+  would mean the park did not end the run it reset.
 - Row 6: a worker run that parks, strikes or requeues leaves an issue the Gate
   then admits twice, or the sweep never requeues an issue whose run died.
 - Row 7: a hand-off loses work to a fresh checkout, or a live hand-off cannot
