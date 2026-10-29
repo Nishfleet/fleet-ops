@@ -553,11 +553,11 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'R2 Standard storage grew {{ $values.E.Value | humanize }}B in 30 days'
+          summary: 'R2 Standard storage grew {{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B in 30 days'
           description: 'The account total grew by more than 4 GB against the same hour 30 days ago. It is the middle tier between cf-r2-bucket-growth, which compares one bucket against itself 24 hours ago and so misses a leak that adds under 2 GB a day to each of several buckets, and cf-r2-standard-total, which pages at 30 GB. Measured 2026-10-21 (fleet-ops#9943): the account holds about 23 GB, the restic live repository and its 30-day-locked copy held about 10 GB each before the retention prune, whose kept set is about 1.5 GiB, and the 0509-snapshots pair ramps to about 12.5 GiB over a year under its 365-day lifecycle rules (0509#5950), which is about 1 GB a month. The line sits about 4x above that designed ramp, and the drain of the locked copy to 2026-11-21 shrinks the total, so neither the designed growth nor the drain fires it. Severity warning: it files a fleet-ops issue through the cloudflare-spend contact point and never reaches hermes-urgent.'
-          value: '{{ $values.E.Value | humanize }}B growth in 30 days'
+          value: '{{ with index $values "E" }}{{ if .Value }}{{ .Value | humanize }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}B growth in 30 days'
           threshold: 'over 4 GB (4000000000 bytes) growth in 30 days'
-          top: 'bucket {{ $labels.resource }}'
+          top: 'bucket {{ with $labels.resource }}{{ . }}{{ else }}unknown resource{{ end }}'
         labels: {severity: warning, signal: cloudflare-spend, product: r2-storage}
         isPaused: false
 
