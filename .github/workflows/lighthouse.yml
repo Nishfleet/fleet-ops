@@ -1,4 +1,4 @@
-# The fleet's Lighthouse speed budget, defined once: the caller passes the URLs, the assertions are
+# The fleet's Lighthouse speed budget, defined once: the caller passes the URLs, the assertions are config/lighthouserc.json.
 name: Lighthouse
 
 on:
