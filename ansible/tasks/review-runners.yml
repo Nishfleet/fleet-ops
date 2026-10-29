@@ -15,23 +15,8 @@
     home: /var/lib/fleet-reviewer
     create_home: true
 
-# The key is Nish's to install. A unit whose LoadCredential= cannot be read does not
-# start, so the deploy says so here instead of taking both review runners down later.
-- name: Read the reviewer App key in the credential store
-  ansible.builtin.stat:
-    path: /etc/credstore/nishfleet-reviewer.private-key.pem
-  register: reviewer_key
-
-- name: Fail when the reviewer App key is missing or not root-only
-  ansible.builtin.assert:
-    that:
-      - reviewer_key.stat.exists
-      - reviewer_key.stat.pw_name == 'root'
-      - reviewer_key.stat.mode == '0600'
-    fail_msg: >-
-      /etc/credstore/nishfleet-reviewer.private-key.pem must exist, be owned by root and
-      be mode 0600: the review runners load it as a credential and will not start without it.
-
+# The registration is copied once: only while the copy has no runsvc.sh, so a re-run
+# never overwrites the runner's live state.
 - name: Copy the review runners to the review user once
   ansible.builtin.copy:
     src: "{{ nish_home }}/.local/share/agent-runner/{{ item }}/"
@@ -98,7 +83,7 @@
 - name: Point the review runner PATH at the bound tool directories
   ansible.builtin.replace:
     path: "/var/lib/fleet-reviewer/{{ item }}/.path"
-    regexp: "^{{ nish_home }}/"
+    regexp: "{{ nish_home }}/"
     replace: /var/lib/fleet-reviewer/
   loop: [9, 10]
   when: ('/var/lib/fleet-reviewer/' ~ item ~ '/.path') is exists
@@ -112,3 +97,23 @@
     owner: fleet-reviewer
     group: fleet-reviewer
     mode: '0700'
+
+# The key is Nish's to install. A unit whose LoadCredential= cannot be read does not
+# start, so the deploy says so instead of taking both review runners down later. These two
+# tasks are last, and install-config.yml's copy of the drop-ins comes after this file: a
+# missing key stops the deploy before a drop-in names a credential that is not there, and
+# the two runners keep running on nish meanwhile.
+- name: Read the reviewer App key in the credential store
+  ansible.builtin.stat:
+    path: /etc/credstore/nishfleet-reviewer.private-key.pem
+  register: reviewer_key
+
+- name: Fail when the reviewer App key is missing or not root-only
+  ansible.builtin.assert:
+    that:
+      - reviewer_key.stat.exists
+      - reviewer_key.stat.pw_name == 'root'
+      - reviewer_key.stat.mode == '0600'
+    fail_msg: >-
+      /etc/credstore/nishfleet-reviewer.private-key.pem must exist, be owned by root and
+      be mode 0600: the review runners load it as a credential and will not start without it.

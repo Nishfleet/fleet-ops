@@ -243,7 +243,7 @@ jobs:
           # as a rate limit in the Worker, which falls through (below). There is no
           # cap on live claude workers: nothing stock gives N slots, and
           # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
-          jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
+          jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
           # judgment_p: asks Jev whether the issue needs engineering judgment and sets
           # jp to the probability of yes (empty when the call fails). The issue text
           # is shown as data. Jev types the answer; the 0.9 and 0.1 lines are the
@@ -1240,7 +1240,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.read-token.outputs.token }}
         run: |
-          key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") # gitleaks:allow
+          key=$(sed -n 's/^LITELLM_JEV_KEY=//p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") # gitleaks:allow
           [ -n "$key" ] || { echo "::error::LITELLM_JEV_KEY missing from the Jev seat file (Jev ranks through the router's /jev, not TypeSafe direct); an unranked edition is not worth 40 minutes of model time"; exit 1; }
           admin() { curl -sf --max-time 30 --config <(sed -n 's|^LITELLM_MASTER_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/litellm-master-key.env") -H 'Content-Type: application/json' "$@"; }; key_alias="inish-daily-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; router_key="$RUNNER_TEMP/router-key.env"
           trap '[ -s "$router_key" ] && { admin -d @<(sed -n "s/^LITELLM_MASTER_KEY=\(.*\)/{\"keys\":[\"\1\"]}/p" "$router_key") http://127.0.0.1:4000/key/delete > /dev/null || echo "::warning::could not revoke $key_alias; it expires in 3h"; }' EXIT; (umask 077; admin -d "{\"models\":[\"worker-capable\"],\"duration\":\"3h\",\"max_budget\":5,\"key_alias\":\"$key_alias\"}" http://127.0.0.1:4000/key/generate | jq -er '"LITELLM_MASTER_KEY=" + (.key | strings)' > "$router_key") || { echo "::error::could not mint the inish-daily router key"; exit 1; }
