@@ -22,7 +22,14 @@ case "$*" in
   "api repos/"*"/git/ref/heads/"*) exit "$GH_REF_EXISTS" ;;
   "api repos/"*"/issues/"*) echo 0 ;;
   "api repos/"*"/pulls"*) [ "${GH_PULLS_FAIL:-0}" = 0 ] || exit 1; while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PULLS" ;;
-  "issue edit"*|"issue comment"*) if [ -n "${ISSUE_TOKEN:-}" ] && [ "${GH_TOKEN:-}" != "$ISSUE_TOKEN" ]; then echo "403 the write must carry the App token, so its label fires the dispatch: $*" >&2; exit 1; fi ;;
+  "issue edit"*|"issue comment"*) if [ -n "${ISSUE_TOKEN:-}" ] && [ "${GH_TOKEN:-}" != "$ISSUE_TOKEN" ]; then echo "403 the write must carry the App token, so its label fires the dispatch: $*" >&2; exit 1; fi
+    # Real gh refuses the whole edit when the label is not on the repo: GH_HAS_LABELS is that repo's labels, and a label this run created counts too.
+    for ((i = 1; i <= $#; i++)); do
+      [ "${!i}" != --remove-label ] || { j=$((i + 1)); l=${!j}
+        grep -q "^label create $l " "$GH_LOG" && continue
+        case " ${GH_HAS_LABELS-needs-orchestrator handoff-ended agent-ready needs-nish-decision} " in *" $l "*) continue ;; esac
+        echo "'$l' not found" >&2; exit 1; }
+    done ;;
 esac
 exit 0
 """
@@ -74,11 +81,11 @@ SHA = "a" * 40
 OTHER = "b" * 40
 
 
-def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels="", cross=False):
+def _review(tmp_path, ref="orch/issue-77", reviews=(SHA,), labels="", cross=False, **extra):
     body = "".join(f"{s}\n" for s in reviews)
     pr = json.dumps({"headRefName": ref, "isCrossRepository": cross})
     return _env(tmp_path, PR="5", SHA=SHA, GH_PR_JSON=pr, GH_REVIEWS=body, GH_LABELS=labels,
-                GH_TOKEN="job-token", ISSUE_TOKEN="app-token")
+                GH_TOKEN="job-token", ISSUE_TOKEN="app-token", **extra)
 
 
 SEND = ("agent.yml", "review", "Send a blocked orch PR back to the orchestrator")
@@ -99,6 +106,15 @@ def test_nothing_is_sent_back_when_it_does_not_apply(tmp_path, case):
     env, log = _review(tmp_path, **kw)
     assert _run(_block(*SEND), env).returncode == 0
     assert "issue edit" not in log.read_text()
+
+
+def test_the_send_back_creates_handoff_ended_on_a_repo_that_never_ended_a_hand_off(tmp_path):
+    env, log = _review(tmp_path, GH_HAS_LABELS="needs-orchestrator")
+    r = _run(_block(*SEND), env)
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text()
+    assert "label create handoff-ended" in calls
+    assert "--remove-label handoff-ended" in calls
 
 
 def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
