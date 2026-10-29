@@ -46,6 +46,9 @@ def test_a_retired_runners_directory_goes_only_once_its_registration_does():
     read = tasks()["Read which retired runner directories still hold a registration"]
     rm = tasks()["Remove the directory of a retired runner whose registration is gone"]
     assert names.index("Remove the retired agent runner units") < names.index("Read which retired runner directories still hold a registration")
+    assert names.index("Read which retired runner directories still hold a registration") < names.index(
+        "Remove the directory of a retired runner whose registration is gone"
+    )
     assert sorted(read["ansible.builtin.find"]["patterns"]) == [".credentials", ".runner"]
     assert read["ansible.builtin.find"]["hidden"] is True
     assert rm["loop"] == "{{ agent_runner_retired_ids }}"

@@ -435,7 +435,9 @@
 
             # Every link's target is kept, not just bin's: bin and externals name
             # the same version in two directories, so keeping only the bin target
-            # would delete the version externals runs from.
+            # would delete the version externals runs from. An empty keep set means
+            # the links could not be read, and then nothing is a candidate: the
+            # whole task skips rather than deleting every version on the host.
             - name: Remove the runner version directories no runner points at
               ansible.builtin.file:
                 path: "{{ item }}"
@@ -444,6 +446,7 @@
                 {{ runner_version_dirs.files | map(attribute='path')
                    | reject('in', runner_version_targets.results | map(attribute='stat.lnk_source') | list)
                    | list }}
+              when: runner_version_targets.results | length > 0
               register: runner_version_prune
 
         - name: Upgrade every Ubuntu package (security and regular updates)
@@ -1355,6 +1358,9 @@
                 build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
               # Which runner version directories the prune removed, one path per line.
               runner_version_dirs_removed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('changed') | map(attribute='item') | list }}"
+              # false means the prune could not read any runner's link and skipped,
+              # which is not the same as finding nothing to remove.
+              runner_version_prune_ran: "{{ not ((runner_version_prune | default({})).skipped | default(false)) }}"
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"

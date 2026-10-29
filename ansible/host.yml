@@ -300,6 +300,7 @@
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
     digest_prompts:
       - digest-morning
       - digest-evening
