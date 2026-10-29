@@ -86,3 +86,67 @@ Switch off: delete the three step-2d install lines and step 5b, the tmpfiles
 file and its live copy in `~/.config/user-tmpfiles.d/`, then
 `rm ~/.claude-max/agents`. The live agent files stay as plain files.
 
+### Session retention: the vendor sweep, pinned (fleet-ops#9447)
+
+`rootfs/etc/claude-code/managed-settings.d/90-session-retention.json` pins
+Claude Code's stock transcript retention, `cleanupPeriodDays`, at 30 days. The
+install task copies the whole drop-in directory, so the file needs no new
+ansible task. Without the pin the retention rides the vendor default of the
+installed version: real, but implicit — a version change, a user setting or a
+`--settings` flag could move it and nothing in the repo would show the value.
+The key is honored only from managed settings — the installed 2.1.312 binary
+carries the schema note "`cleanupPeriodDays` is only honored from the
+organization's managed settings" — so the drop-in is the one place it can be
+set repo-side. The pin also covers the lanes that run with `--setting-sources
+project,local`: without a managed pin those lanes skip the sweep outright,
+because the binary returns "Skipping retention cleanup: userSettings source is
+disabled (--setting-sources) and no enabled source provides
+cleanupPeriodDays." With the pin installed the key sits in a source those
+lanes do not disable, so they sweep at 30 instead of skipping — every worker,
+review and tincan lane on this box starts with `--setting-sources
+project,local` (agent.yml's review job, agent-dispatch.yml's claude lanes,
+the tincan listener commands).
+
+The sweep is Claude Code's, not a fleet unit: it runs at most once per 24 hours
+(marker `~/.claude/.last-cleanup`), is triggered by the first prompt submit in
+any Claude Code process including `claude -p`, and retention is project-dir
+granular — a project dir with no write in the retention window is deleted
+whole; a dir with any recent write keeps all its transcripts, even old ones.
+One class never ages out: transcripts created or last written by a desktop-host
+surface (Claude Desktop, Cowork) are exempt from the sweep "until deleted
+another way" (the binary's own description), and this box's `claude
+remote-control` serves Claude Desktop, so its relayed sessions sit in that
+class. So a project dir whose slug is only used by the worker lanes is deleted
+whole once the task goes stale, and the project-dir count is bounded; within a
+dir Nish keeps alive, transcripts accumulate until he prunes it.
+
+Measured 2026-10-29, `~/.claude/projects` before the pin: 822 project dirs,
+3,868 transcripts, 1.7 GB, and a hard cliff at the default — 31 transcripts
+older than 29 days, 6 older than 30, none older than 31.2. Re-measured
+2026-10-30 21:20 IST: 9 transcripts older than 31 days survive, all written
+2026-09-28 and none older than 32.3 days — 8 inside the `-home-nish` project
+dir, which holds 951 transcripts fresh within 30 days, and 1 inside a
+2026-09-28 remote-control session dir.
+
+Warning: never point `--settings` at a small `cleanupPeriodDays`, even to test
+the sweep. The cutoff is box-wide and deletion has no trash: a 1-day test value
+removed 229 stale project dirs (562 files) on this host in one run
+(fleet-ops#9447). The pinned value is the stock 30 the lanes with full
+sources already ran at; the change of behavior is coverage — once the file is
+installed, the `project,local` lanes sweep where before they skipped.
+
+- Verify: `jq -e . /etc/claude-code/managed-settings.d/90-session-retention.json`
+  prints `{"cleanupPeriodDays": 30}` once the install runs, and
+  `stat -c '%y' ~/.claude/.last-cleanup` reads inside the last 24 hours (the
+  sweep ran; measured 2026-10-30 19:55 IST). Retention is dir-granular and
+  desktop-host-written sessions never age out, so
+  `find ~/.claude/projects -name '*.jsonl' -mtime +31 | wc -l` is not 0 on a
+  box Nish uses daily; the honest check is the measurement above — the
+  survivors are within days of the cutoff and live in freshly written or
+  desktop-exempt dirs.
+- Switch it off: a PR that deletes the file from `rootfs/` and adds
+  `/etc/claude-code/managed-settings.d/90-session-retention.json` to `retired`
+  in `ansible/host.yml`; the next `fleet-host-config.service` run removes the
+  installed file and retention returns to the vendor default of the installed
+  version.
+
