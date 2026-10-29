@@ -8,15 +8,13 @@ on:
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
   # No input sweeps exactly like the hourly schedule.
-  # task=miss-review with issue=<N> replays a miss review on that issue
-  # (0509#6912 class) without claiming it as a builder run.
   workflow_dispatch:
     inputs:
       issue:
         description: 'Issue number to dispatch, overrides the sweep and its claim-PR append'
         type: string
       task:
-        description: 'miss-review to replay a miss on issue, orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
+        description: 'orchestrate to hand a parked issue to the orchestrator, empty for a normal sweep'
         type: string
   # Nishfleet/0509 keeps only a trigger stub that calls this file, so the
   # dispatch logic has one copy. github.* is the caller's, so every job below
@@ -486,7 +484,6 @@ jobs:
     permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
-      stalled_refs: ${{ steps.list.outputs.stalled_refs }}
     steps:
       - id: list
         env:
@@ -539,7 +536,6 @@ jobs:
             fi
             echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
           }
-          stalled_refs='[]'
           if [ -n "$ISSUE" ]; then
             # One issue, no PR append: the jq below and agent.yml's Gate re-check, so a split or parked issue is skipped.
             nums=$ISSUE
@@ -568,7 +564,6 @@ jobs:
               if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
                 echo "requeued #$n: claimed with no live run and no claim PR"
-                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
               fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
@@ -695,7 +690,6 @@ jobs:
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
-          echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
@@ -782,7 +776,7 @@ jobs:
       # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
       # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
       # A close by this step fires no workflow (github.token), so the list job is the way
-      # back: it requeues the issue (no live run, no open claim PR) and adds its miss-review.
+      # back: it requeues the issue (no live run, no open claim PR).
       - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
         continue-on-error: true
         with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
