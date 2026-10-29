@@ -198,9 +198,9 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: 'Session hop rate {{ $values.B.Value | printf "%.1f" }}% in the worst hour of the last 6 h'
+          summary: 'Session hop rate {{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}% in the worst hour of the last 6 h'
           description: 'A router session is answering on a different row key than its previous call. A session pin is first-writer-wins and is refreshed only when the row it names is chosen again, so a pin held by a row in cooldown scatters every later call in that session across the group and throws away the prompt cache the previous call built. This is the fleet-ops#9361 leak: 17.1% of non-first calls, 90.4M cached tokens re-read in 5.6 days. Replay the diagnostic SQL in config/grafana/provisioning/alerting/session-hop.yaml for the session ids, and check the live pins with `redis-cli --scan --pattern "deployment_affinity:*" | head` (read-only). Do NOT remove or bench a router row without Nish''s explicit yes (2026-10-02 rule). Re-ordering rows needs Nish.'
-          value: '{{ $values.B.Value | printf "%.1f" }}% of non-first calls'
+          value: '{{ with index $values "B" }}{{ if .Value }}{{ .Value | printf "%.1f" }}{{ else }}no reading{{ end }}{{ else }}no reading{{ end }}% of non-first calls'
           threshold: 'more than 45% in any hour with 50 or more non-first calls'
         labels: {severity: critical, signal: session-hop}
         isPaused: false
