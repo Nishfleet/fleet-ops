@@ -148,11 +148,11 @@
       "issue": ""
     },
     {
-      "id": "dispatch-miss-review",
+      "id": "dispatch-admit",
       "want": false,
       "orchestrate": "live",
       "event_name": "workflow_dispatch",
-      "task": "miss-review",
+      "task": "admit",
       "issue": "9211"
     },
     {
