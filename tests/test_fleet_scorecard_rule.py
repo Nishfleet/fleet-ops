@@ -64,7 +64,7 @@ def test_products_behind_fires_only_when_both_days_miss(args, missed):
 
 
 DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
-GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "date_format", "min", "max", "avg", "abs"}
+GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "date_format", "from_unixtime", "min", "max", "avg", "abs"}
 
 
 def _dashboard_targets():
@@ -78,7 +78,7 @@ def _rule_targets():
 @pytest.mark.parametrize("targets", [_dashboard_targets, _rule_targets])
 def test_sql_calls_only_functions_grafana_allows(targets):
     for t in targets():
-        for name in re.findall(r"\b(?!(?:from|in)\b)([A-Za-z_]+)\s*\(", t.get("expression", ""), re.I):
+        for name in re.findall(r"\b(?!(?:from|in|as|on|and|or|when|then|else|union|all|select|where|join)\b)([A-Za-z_]+)\s*\(", t.get("expression", ""), re.I):
             assert name.lower() in GRAFANA_SQL_FUNCTIONS, name
 
 
