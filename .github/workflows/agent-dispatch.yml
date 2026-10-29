@@ -562,14 +562,24 @@ jobs:
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-              [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                echo "requeued #$n: claimed with no live run and no claim PR"
-                stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
+              if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                # A failed read is not proof the run died: skip, never requeue a live worker.
+                rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+                [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ] || continue
+              else
+                # agent.yml's Gate labels the issue and posts "agent run started:" one line apart, so
+                # a live worker carries the comment within seconds and a label without one is a run
+                # that died between the two lines (fleet-ops#10899: 0509#7070 held the label 24 days
+                # with no branch, no PR and no comment). The label's own age is then the proof, read
+                # at the 15-minute idle cutoff stuck-prs uses; no label event at all is no proof
+                # either way, so it is skipped.
+                labelled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events?per_page=100" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "agent-in-progress") | .created_at' | tail -n1)
+                [ -n "$labelled" ] || { echo "::warning::#$n: no agent-in-progress label event, skip"; continue; }
+                [ "$(date -u -d "$labelled" +%s)" -lt "$(( $(date +%s) - 900 ))" ] || continue
               fi
+              gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+              echo "requeued #$n: claimed with no live run and no claim PR"
+              stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
             # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
@@ -614,16 +624,9 @@ jobs:
                 jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
                 while IFS= read -r n; do
                   body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
-                  if [ -z "$body" ]; then
-                    echo "claim/issue-$n"
-                    continue
-                  fi
-                  if [[ $body =~ actions/runs/([0-9]+) ]]; then
-                    id=${BASH_REMATCH[1]}
-                  else
-                    echo "::error::agent run started comment on #$n has no run id" >&2
-                    exit 1
-                  fi
+                  [ -n "$body" ] || { echo "claim/issue-$n"; continue; }
+                  [[ $body =~ actions/runs/([0-9]+) ]] || { echo "::error::agent run started comment on #$n has no run id" >&2; exit 1; }
+                  id=${BASH_REMATCH[1]}
                   rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
                   live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
                   [ "$live" = true ] || echo "claim/issue-$n"
