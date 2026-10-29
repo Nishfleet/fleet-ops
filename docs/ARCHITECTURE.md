@@ -209,6 +209,27 @@ The rules still in force:
   coordinator subagent polling every 20 minutes) is retired: the
   `review-risky` event's review job decides it, and no session polls for it
   (docs/incidents/2026-10-08-held-pr-approver-loop-retired.md, fleet-ops#9459).
+- **fleet-ops gets runners first (fleet-ops#10717).** GitHub hands queued
+  self-hosted jobs out first come, first served, so a product burst put
+  fleet-ops work behind it. Every agent runner carries the label `fleet-ops`,
+  and `netcup-agent-20` to `-30` (not the offline `-23`) do not carry `agent`,
+  so no build can take those 10; they keep `review`. agent.yml's
+  `work`, `stuck` and `inish-daily` jobs and agent-dispatch.yml's `orchestrate`
+  job ask for `[self-hosted, fleet-ops]` when `github.repository` (the caller)
+  is fleet-ops, and `[self-hosted, agent]` for every other caller, so fleet-ops
+  can use every live runner while products share the rest, and no product
+  repo can request the reserved label. `agent` has to come off, for the reason
+  the two review runners record above: GitHub hands a queued build to any idle
+  runner that matches, so a shared label empties the reservation during a
+  burst. The cost is 10 of 28 runners that no longer take product work. The
+  labels live at GitHub, not in ansible:
+  Applied 2026-10-29 with org-owner scope (the runner PAT gets 403): every
+  agent runner got `fleet-ops` (`gh api -X POST orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=fleet-ops'`),
+  and runners 20 to 30 lost `agent` (`gh api -X DELETE .../runners/<id>/labels/agent`).
+  They already carried `review`, so product review jobs can still use them.
+  To switch it off, set those three `runs-on` lines and the `orchestrate` line
+  back to `[self-hosted, agent]`, put `agent` back on runners 20 to 30, and the
+  `fleet-ops` label can stay (nothing else asks for it).
 
 The full audit (rungs, counts, second wave) is git history
 (fleet-ops#8029/#8034).
