@@ -121,6 +121,11 @@ policies:
         group_interval: 5m
         repeat_interval: 12h
         continue: true
+      # A cost rule is critical, so the first route above pages it every hour. This
+      # route must file its issue on the same cadence: at 12h a group that stayed
+      # firing paged twelve times and filed one issue, so eleven pages landed with
+      # no issue of their own (fleet-ops#9859). tests/alert_routes_check.py fails
+      # when this route repeats slower than the page.
       - receiver: cloudflare-spend-dispatch
         object_matchers:
           - [signal, "=", cloudflare-spend]
@@ -128,7 +133,7 @@ policies:
         group_by: [alertname, product, resource]
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 12h
+        repeat_interval: 1h
       - receiver: router-dead-row-dispatch
         object_matchers:
           - [signal, "=", router-dead-row]

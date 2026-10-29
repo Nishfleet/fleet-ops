@@ -1722,7 +1722,7 @@ jobs:
           # owner to the image's grafana uid), so a mode the reader cannot use fails here.
           chmod 0700 "$d/tok"; chmod 0600 "$d/tok/token"
           sed -e 's|https://api.github.com/repos/Nishfleet/fleet-ops/issues|http://127.0.0.1:18796/|' \
-              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: 12h|repeat_interval: 1m|' -e 's|repeat_interval: 24h|repeat_interval: 1m|' \
+              -e 's|group_interval: 5m|group_interval: 10s|' -e 's|repeat_interval: [0-9][0-9smhdw]*|repeat_interval: 1m|' \
               config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml > "$d/prov/contact.yaml"
           cat > "$d/prov/fixture.yaml" <<'YAML'
           apiVersion: 1
@@ -1770,6 +1770,21 @@ jobs:
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: drill-generic}
+                - uid: drill-spend
+                  title: drill spend
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", top: drill-db, description: drill}
+                  labels: {signal: cloudflare-spend, product: drill, resource: drill-db}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
           : > "$d/sink.log"
@@ -1812,6 +1827,14 @@ jobs:
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
           echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+          # A cost page must never land without an issue of its own (fleet-ops#9859):
+          # the spend route repeats as often as the page, so this still-firing group
+          # delivers a second issue. The webhook cannot comment or close, so one
+          # issue per page is one POST per repeat.
+          for _ in $(seq 1 80); do [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] && break; sleep 3; done
+          [ "$(grep -c '"title":"cost alarm: drill spend drill-db"' "$d/sink.log")" -ge 2 ] \
+            || { echo "::error::a still-firing cost rule filed one issue, not one per page"; sort "$d/sink.log" | uniq -c; exit 1; }
+          echo "reload drill: a still-firing cost rule filed one issue per page"
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20

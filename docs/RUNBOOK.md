@@ -270,7 +270,8 @@ Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cl
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
-`cloudflare-spend-dispatch`. The webhook
+`cloudflare-spend-dispatch`, and that route repeats every hour, the same cadence as the page, so a
+page of a still-firing rule never lands without an issue of its own (fleet-ops#9859). The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
@@ -287,8 +288,11 @@ rules, any new rule) is `warning`: it does not page. Every firing alert, of eith
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
 router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
 new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
-without being on the urgent list (or the reverse), or a critical alert would re-send slower than
-hourly. To make a new rule page, add it to the list there with the reason and label it critical.
+without being on the urgent list (or the reverse), a critical alert would re-send slower than
+hourly, or a cost rule's issue route repeats slower than its page (fleet-ops#9859: the spend route
+repeated every 12h while the cost rules paged hourly, so a group that stayed firing paged twelve
+times and filed one issue). To make a new rule page, add it to the list there with the reason and
+label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
 
 Router dead-row persistence (fleet-ops#9562). `router-dead-row.yaml` fires only when a row
@@ -323,7 +327,15 @@ fleet-grafana-github-token.timer` and `systemctl --user mask fleet-grafana-githu
 (the quadlet's `Wants=` also mints once per Grafana start); the webhook then sends an empty token (401), the delivery
 rule pages hermes-urgent, and spend alerts still reach Telegram. CI proof:
 `tests/github_app_stub.py` plus the "GitHub App token unit mints and refreshes" step run the
-unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does.
+unit's real ExecStart under systemd against a stub that checks the JWT the way GitHub does. The
+"A provisioning reload re-reads the token file the contact points name" step boots the pinned
+Grafana image against a local sink, swaps the token file, calls the admin reload and reads the
+Authorization header of the next delivery: it must carry the new token with no restart
+(fleet-ops#9445), and a still-firing cost rule must file one issue per page (fleet-ops#9859). To
+run that step outside CI, copy its `run:` block out of `.github/workflows/ci.yml`, swap `docker`
+for `podman`, and swap `--user "$(id -u):$(id -g)"` for `--user 0:0`: rootless podman maps the
+container's grafana uid (472) to a subuid on the host, so the 0700 token dir stops being readable
+and every delivery fails, while container root is the host user and can read it.
 
 `CI_RUNNER` is absent by default and only exists while CI runs on Blacksmith. Set it by hand
 (fleet-ops#9670 retired the hourly auto-flip, and deleted the variable it left behind):
