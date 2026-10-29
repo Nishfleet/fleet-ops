@@ -779,6 +779,13 @@ jobs:
       rework: ${{ steps.find.outputs.rework }}
       file: ${{ steps.find.outputs.file }}
     steps:
+      # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
+      # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
+      # A close by this step fires no workflow (github.token), so the list job is the way
+      # back: it requeues the issue (no live run, no open claim PR) and adds its miss-review.
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
+        continue-on-error: true
+        with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
@@ -920,10 +927,7 @@ jobs:
             file=$(add "$file" "$(jq -nc --arg p "$n" --arg s "$sha" --arg r "$reason" --arg u "$url" '{pr: $p, sha: $s, reason: $r, url: $u}')" "$slots")
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
-          echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
-          {
-            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
-          } >> "$GITHUB_OUTPUT"
+          { echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"; } | tee -a "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
   # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.

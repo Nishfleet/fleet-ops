@@ -705,10 +705,10 @@ jobs:
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          prog=$(yq '.jobs.stuck-prs.steps[0].env.STUCK' "$f")
-          who=$(yq '.jobs.stuck-prs.steps[0].env.APPROVERS' "$f")
+          prog=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.STUCK' "$f")
+          who=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.APPROVERS' "$f")
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
-          run=$(yq '.jobs.stuck-prs.steps[0].run' "$f")
+          run=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
