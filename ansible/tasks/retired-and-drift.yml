@@ -148,10 +148,14 @@
 # A retired path that is a git working tree of its own gets the alertmanager
 # treatment: read at delete time, not once when the list was written, and
 # refused while it holds work that exists nowhere else (fleet-ops#10540). The
-# checkout, then its uncommitted edits, its stash, and whether origin/main
-# carries its HEAD. A path that is already gone is the state the delete leaves
-# behind, so it passes. Reads are check_mode-proof, so a --check run refuses
-# the same delete.
+# checkout, then its uncommitted edits, its stash, whether any ref a remote
+# does not carry holds a commit, and whether origin/main carries its HEAD. The
+# four reads run as nish, like every other read of a nish tree in this play,
+# because git refuses a repository whose owner is not the caller and the play
+# runs as root. A path that is already gone is the state the delete leaves
+# behind, so it passes. Reads are check_mode-proof, so a --check run refuses the
+# same delete. A read that fails says why in the refusal, not in a raw git
+# error, so the delete stops either way.
 - name: Stat the retired git checkouts
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -166,22 +170,41 @@
          | map(attribute='item') | list }}
 
 - name: Read the uncommitted work of each retired git checkout
+  become: true
+  become_user: nish
   ansible.builtin.command:
     argv: [git, -C, "{{ item }}", status, --porcelain]
   loop: "{{ retired_checkouts_present }}"
   register: retired_checkout_dirty
   changed_when: false
   check_mode: false
+  failed_when: false
 
 - name: Read the stash of each retired git checkout
+  become: true
+  become_user: nish
   ansible.builtin.command:
     argv: [git, -C, "{{ item }}", stash, list]
   loop: "{{ retired_checkouts_present }}"
   register: retired_checkout_stash
   changed_when: false
   check_mode: false
+  failed_when: false
+
+- name: Read whether a ref no remote carries holds a commit
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", log, --all, --not, --remotes, --oneline]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_unpushed
+  changed_when: false
+  check_mode: false
+  failed_when: false
 
 - name: Read whether origin/main carries each retired git checkout's HEAD
+  become: true
+  become_user: nish
   ansible.builtin.command:
     argv: [git, -C, "{{ item }}", merge-base, --is-ancestor, HEAD, origin/main]
   loop: "{{ retired_checkouts_present }}"
@@ -190,18 +213,25 @@
   check_mode: false
   failed_when: false
 
+- name: Note which retired git checkouts hold work that exists nowhere else
+  ansible.builtin.set_fact:
+    retired_checkouts_holding_work: >-
+      {{ ((retired_checkout_dirty.results + retired_checkout_stash.results
+           + retired_checkout_unpushed.results + retired_checkout_merged.results)
+          | selectattr('stdout') | map(attribute='item') | list
+          + (retired_checkout_dirty.results + retired_checkout_stash.results
+             + retired_checkout_unpushed.results + retired_checkout_merged.results)
+            | rejectattr('rc', 'equalto', 0) | map(attribute='item') | list)
+         | unique | sort }}
+
 - name: Refuse to delete a retired git checkout that holds work nothing else has
   ansible.builtin.assert:
     that:
-      - retired_checkout_dirty.results | selectattr('stdout') | list | length == 0
-      - retired_checkout_stash.results | selectattr('stdout') | list | length == 0
-      - retired_checkout_merged.results | selectattr('rc', 'ne', 0) | list | length == 0
+      - retired_checkouts_holding_work | length == 0
     fail_msg: >-
       Refusing to delete retired checkouts that hold work origin/main does not
-      carry: {{ ((retired_checkout_dirty.results | selectattr('stdout') | map(attribute='item') | list)
-                + (retired_checkout_stash.results | selectattr('stdout') | map(attribute='item') | list)
-                + (retired_checkout_merged.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list))
-               | unique | join(', ') }}. Push, commit or discard that work, or
+      carry, or that git cannot read: {{ retired_checkouts_holding_work | join(', ') }}.
+      Push, commit or discard that work, or
       fetch the clone and rerun; the paths stay in place until then.
 
 - name: Remove retired host files
