@@ -109,58 +109,18 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          MISS_REVIEW: ${{ vars.MISS_REVIEW }}
         run: |
           # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
           # the issue number is the leading digits (fleet-ops#8793).
           i=${REF#claim/issue-}; i=${i%%-*}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
-          miss=false
-          case $REF in *-miss-review) miss=true ;; esac
-          live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # A miss event fires once; a silent lanes-full skip would lose the
-          # review for good, so it leaves a replay line on the issue instead.
-          miss_full() {
-            gh issue comment "$i" -R "$REPO" --body "miss-review skipped: the $engine review lane is full. Replay: gh workflow run agent-dispatch.yml -R $REPO -f task=miss-review -f issue=$i"
-            skip lanes-full
-          }
-          miss_go() {
-            [ "$MISS_REVIEW" = live ] || skip miss-review-off
-            last=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | select(.body | startswith("miss-review:")) | .createdAt] | last // empty')
-            if [ -n "$last" ]; then
-              last_s=$(date -d "$last" +%s)
-              now_s=$(date +%s)
-              [ $((now_s - last_s)) -lt 3600 ] && skip debounce
-            fi
-            engine=pi
-            # The worker-capable row count is the dispatch headroom. No row carries a slot
-            # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
-            # rows. One lane per seat is a lower bound on the group's concurrency and sits
-            # above the 22 measured runners, so this stays a safety valve, not a throttle.
-            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
-            [ "$(live pi)" -lt "$slots" ] || miss_full
-            printf '%s\n' miss=true "issue=$i" "engine=$engine" go=true >> "$GITHUB_OUTPUT"
-            exit 0
-          }
           # A claim ref can name a number that is not an issue in the calling
           # repo (fleet-ops#8772: inish-site dispatched fleet-ops' #8136): a
           # 404 is a skip, any other gh failure still fails the step.
           err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) ||
             { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
           issue=$(gh api "repos/$REPO/issues/$i")
-          if [ "$miss" = true ] && jq -e '.pull_request' <<<"$issue" >/dev/null; then
-            orig=$(jq -r '.body // ""' <<<"$issue" | grep -oE 'Reverts [^[:space:]]*#[0-9]+' | grep -oE '[0-9]+$' | head -1)
-            if [ -n "$orig" ]; then
-              i=$(gh pr view "$orig" -R "$REPO" --json closingIssuesReferences --jq '.[0].number // empty')
-              [ -n "$i" ] || i=$orig
-            else
-              i=$(gh pr view "$i" -R "$REPO" --json closingIssuesReferences --jq '.[0].number // empty')
-              [ -n "$i" ] || skip missing-issue
-            fi
-            issue=$(gh api "repos/$REPO/issues/$i")
-          fi
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
-          if [ "$miss" = true ]; then miss_go; fi
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
@@ -206,7 +166,6 @@ jobs:
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last park: comment or attempt-cap reset; parked for the orchestrator"
-            if [ "$MISS_REVIEW" = live ]; then miss_go; fi
             skip cap
           fi
 
@@ -305,7 +264,7 @@ jobs:
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
-        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -330,7 +289,6 @@ jobs:
         # VPS; only errors (stderr) reach the log. The Gate picks the engine.
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
-          MISS: ${{ steps.gate.outputs.miss }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           # Claude lane: Sonnet always (the Gate decides). The other lanes have no
           # turn cap, only the 55 minute step wall; this is a backstop under it.
@@ -343,7 +301,6 @@ jobs:
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
-          [ "$MISS" = true ] && id=$id-miss
           # The worker runs in its own PID namespace: when it exits (or this step is cancelled), the kernel kills every process it started, including ones that setsid/daemonize past the runner's snapshot-based orphan cleanup (actions/runner#4601). Before this, a headless Chrome outlived its job by 13h and a worker's gh-checks poller held node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820). Same cgroup, so agent.slice memory limits still apply.
           # The empty tmpfs mounts hide Nish's own gh login (admin:org, delete_repo, workflow; backups included) and every Cloudflare token from the worker, which reads outsider comments: a fooled model cannot read what the jail does not show (fleet-ops#9274). The worker's gh and git push use GH_TOKEN, the App token. ci.yml runs this exact line and fails if either path can be read.
           # The Claude seats' logins are hidden the same way, from every engine but claude: seat a is the runner's CLAUDE_CONFIG_DIR (unset means one default login, and the already-hidden gh directory stands in so the line never names a path that is not there), seat b is the default login's credentials file and ~/.claude.json, which an empty bind replaces. The claude lane sees only the seat it runs on: claude_jail_a hides the default login, claude_jail_b hides seat a. ci.yml runs these three lines and fails if a hidden file can be read. A runner with no default login is fine: bwrap creates a missing bind target (checked 2026-10-10), so the line never refuses to start.
@@ -360,19 +317,13 @@ jobs:
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
           # Plain git, local edits kept (no reset, clean or checkout -B); a failed switch fails the step.
-          if [ "$MISS" != true ]; then
-            [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
-            git -C "$dir" fetch -v origin
-            git -C "$dir" switch "$REF"
-          fi
+          [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
+          git -C "$dir" fetch -v origin
+          git -C "$dir" switch "$REF"
           # Static text, the marker line, then the target id: the id is the only
           # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
-          if [ "$MISS" = true ]; then
-            packet="Miss review. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md (read AGENTS.md beside worker.md first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
-          else
-            packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
-          fi
+          packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
           # Engines that actually start, for the builder-engine record the review
           # reads (a fallthrough marks both).
           : > "$RUNNER_TEMP/engines-ran"
@@ -473,23 +424,14 @@ jobs:
             set +a
             # fleet-ops#9330 2x2 trial arm, from the issue number ($id is claim/issue-<n>, the same field the
             # claude seat parity above reads): odd n -> no skills menu, (n/2) odd -> desk, the alias group with earlier
-            # compaction. The miss branch below uses neither, so miss-review is not an arm.
+            # compaction.
             mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public; arm_flags=(); [ $(( ${id##*-} % 2 )) = 1 ] && arm_flags+=(--no-skills)
-            if [ "$MISS" = true ]; then
-              echo "$packet" | $jail pi --print --no-context-files \
-                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-                --append-system-prompt "$HOME/AGENTS.md" \
-                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/miss-review.md" \
-                --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-                --exclude-tools subagent --provider litellm --model "$pi_model" >/dev/null
-            else
-              [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
-              echo "/worker $id" | $jail pi --print --no-context-files --continue \
-                --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
-                --append-system-prompt "$HOME/AGENTS.md" \
-                --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
-                --exclude-tools subagent "${arm_flags[@]}" --provider litellm --model "$pi_model" >/dev/null
-            fi
+            [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
+            echo "/worker $id" | $jail pi --print --no-context-files --continue \
+              --append-system-prompt "$HOME/workspaces/tooling/fleet-ops-deploy-clone/AGENTS.md" \
+              --append-system-prompt "$HOME/AGENTS.md" \
+              --session-dir "$HOME/.pi/agent/sessions/agent-$id" \
+              --exclude-tools subagent "${arm_flags[@]}" --provider litellm --model "$pi_model" >/dev/null
           elif [ "$ENGINE" != claude ]; then
             echo "no lane for ENGINE='$ENGINE'" >&2
             exit 1
@@ -499,7 +441,7 @@ jobs:
         # or not (see the review job). Posted on the PR by
         # the worker App, so only the App's own comment counts there. A PR with no such
         # comment (the orchestrator's, a person's session) counts as Claude-built.
-        if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        if: always() && steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GATE_ENGINE: ${{ steps.gate.outputs.engine }}
@@ -561,7 +503,7 @@ jobs:
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
       - name: Arm auto-merge as the App
-        if: steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
@@ -617,15 +559,8 @@ jobs:
         # GitHub blocked_by dependency (4), or a PR on the claim branch.
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
-          MISS: ${{ steps.gate.outputs.miss }}
-          ISSUE_N: ${{ steps.gate.outputs.issue }}
         run: |
-          i=${ISSUE_N:-}
-          [ -n "$i" ] || { i=${REF#claim/issue-}; i=${i%%-*}; }
-          if [ "$MISS" = true ]; then
-            gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body | select(startswith("miss-review:"))] | length' | grep -qxE '[1-9][0-9]*'
-            exit $?
-          fi
+          i=${REF#claim/issue-}; i=${i%%-*}
           issue=$(gh api "repos/$REPO/issues/$i")
           [ "$(jq -r .state <<<"$issue")" = open ] || exit 0
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || exit 0
@@ -788,7 +723,7 @@ jobs:
         # Gate would admit, so a lanes-full skip never chains. Re-adding
         # agent-ready as the App fires `issues: labeled`, the same event a
         # person's label sends; the Gate still decides.
-        if: always() && steps.gate.outputs.go == 'true' && steps.gate.outputs.miss != 'true'
+        if: always() && steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
         run: |
@@ -851,14 +786,11 @@ jobs:
       - name: Clean workspace
         if: always()
         env:
-          MISS: ${{ steps.gate.outputs.miss }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
         run: |
           i=${REF#claim/issue-}
           id=${REPO#*/}-${i%%-*}
-          if [ "$MISS" = true ]; then
-            rm -rf "$HOME/workspaces/agent-worktrees/issue-$id-miss"
-          elif [ "$WORKER_OUTCOME" = success ]; then # a failed run keeps its dir: the retry resumes in it
+          if [ "$WORKER_OUTCOME" = success ]; then # a failed run keeps its dir: the retry resumes in it
             rm -rf "$HOME/workspaces/agent-worktrees/issue-$id"
           fi
   review:
@@ -976,7 +908,7 @@ jobs:
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
-          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$HOME/.config/fleet-ops/seats/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
+          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
           { [ -n "${review//[[:space:]]/}" ] && jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; } || { say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp")
           p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
@@ -1002,7 +934,7 @@ jobs:
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change touches money, secrets, data, .github/ or the review rules. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
           # The third reviewer is called directly, not through pi, because the answering row is only in the response headers
           # (x-litellm-model-id). The key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
-          jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
+          jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
               && curl -sS --connect-timeout 30 --max-time 480 127.0.0.1:4000/v1/chat/completions --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "$jev_env") \
@@ -1052,24 +984,40 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with the runner login, no GH_TOKEN: this job holds no issues grant, so GITHUB_TOKEN cannot label,
-      # and a PR from a fork never reaches here at all.
+      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). Its reads run on the
+      # job's token, not the runner login's: that login's core quota can be exhausted by other work, which reddened an
+      # approved head (fleet-ops#10970). The label and comment are posted as the worker App, because a label or comment
+      # posted by GITHUB_TOKEN fires no workflow event (agent-dispatch.yml, the workflow_dispatch input note), so the
+      # orchestrator is never dispatched. No step here reads a login file, so the step runs on the review runners, whose
+      # user has none (fleet-ops#10950). A PR from a fork never reaches here at all.
+      - name: Read App private key for the rework label
+        id: rework-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
+      - name: App token for the rework label
+        id: rework-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with: {app-id: "4728578", private-key: "${{ steps.rework-key.outputs.pem }}", permission-issues: write}
       - name: Send a blocked orch PR back to the orchestrator
+        env: {GH_TOKEN: "${{ github.token }}", ISSUE_TOKEN: "${{ steps.rework-token.outputs.token }}"}
         run: |
           set -euo pipefail
-          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
-          [ "$n" != "$ref" ] || exit 0
+          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}; [ "$n" != "$ref" ] || exit 0
           rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
-          env -u GH_TOKEN -u GITHUB_TOKEN gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          labels=$(gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty'); grep -q . <<<"$labels" && exit 0
           rounds=$(grep -c . <<<"$rev")
           if [ "$rounds" -gt 3 ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
-            env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm
@@ -1088,8 +1036,6 @@ jobs:
       REPO: ${{ github.repository }}
       PR: ${{ inputs.arm_pr || inputs.review_pr }}
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
-      # The head this run's own review job approved; empty on an arm_pr dispatch.
-      REVIEWED: ${{ inputs.arm_pr == '' && needs.review.outputs.approved_sha || '' }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Read App private key
@@ -1113,6 +1059,8 @@ jobs:
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-contents: write
           permission-pull-requests: write
+          # A PR that edits .github/workflows/** can only be armed by a token that may write them (fleet-ops#10949).
+          permission-workflows: write
       - name: Arm the approved head
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1123,20 +1071,10 @@ jobs:
           [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event decides"; exit 0; }
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
-          # This job's App token is minted without the workflows permission, so GitHub refuses its arm on a PR that edits
-          # .github/workflows/**. For such a PR the arm uses the runner user's gh login
-          # (GH_TOKEN and GITHUB_TOKEN unset), as the orchestrator job does, but only when this
-          # run's review job just approved this exact head (REVIEWED). No comment or dispatch
-          # input switches it on, any other arm keeps the App token, and a failed file-list read
-          # fails the step instead of falling to the wider login.
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -q '^\.github/workflows/' <<<"$files" && [ -n "$REVIEWED" ] && [ "$REVIEWED" = "$SHA" ]; then
-            env -u GH_TOKEN -u GITHUB_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"
-            echo "armed #$PR at $SHA (workflow edit, runner login)"
-          else
-            GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-            echo "armed #$PR at $SHA"
-          fi
+          # The token carries the workflows permission, so a PR that edits .github/workflows/** arms the same way as
+          # any other: no gh login of the runner user, and no file listing to decide it (fleet-ops#10949, #10950).
+          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
+          echo "armed #$PR at $SHA"
   # Files one orchestrator issue for a PR that has waited over an hour and that no worker
   # owns: a session's own branch, or a claim PR whose issue is closed or deleted (40 of 53
   # waiting fleet PRs on 2026-10-11). The App token files it so the needs-orchestrator label

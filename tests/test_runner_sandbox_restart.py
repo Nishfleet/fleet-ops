@@ -9,6 +9,7 @@ that run reads the read-only clone bind back on a runner it restarted, so the
 guard still gets its live proof (fleet-ops#10866).
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -18,6 +19,8 @@ from ansible_host import play
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
 POOL = "actions.runner.Nishfleet.netcup-agent-.service.d"
+REVIEW_POOL_9 = "actions.runner.Nishfleet.netcup-agent-9.service.d"
+REVIEW_POOL_10 = "actions.runner.Nishfleet.netcup-agent-10.service.d"
 CLONE = "fleet-ops-deploy-clone"
 RELOAD = "Reload systemd"
 DRAIN = "Wait until those jobs finish"
@@ -72,8 +75,21 @@ def clone_pools() -> list[str]:
     )
 
 
-def test_the_agent_pool_is_the_only_pool_that_binds_the_deploy_clone() -> None:
-    assert clone_pools() == [POOL], "a second pool that binds the deploy clone needs the read-back in ansible/update.yml"
+def test_every_pool_that_binds_the_deploy_clone_is_read_back() -> None:
+    """The nightly update greps one restarted runner's mountinfo, picked by unit name (fleet-ops#10866).
+
+    A pool that binds the clone outside that name pattern is never read back, so its bind
+    ships unproven: the review runners bind it too, and their unit names still match.
+    """
+    pools = clone_pools()
+    assert set(pools) == {POOL, REVIEW_POOL_9, REVIEW_POOL_10}
+    pick = next(t for t in update()["always"] if t["name"] == PICK)
+    selector = re.search(r"select\('match', '([^']+)'\)", pick["ansible.builtin.set_fact"]["agent_runner"]).group(1)
+    selector = selector.replace("\\\\", "\\")
+    for pool in pools:
+        assert re.search(selector, pool.removesuffix(".service.d") + ".service"), (
+            f"{pool} binds the deploy clone but no runner of it is read back"
+        )
 
 
 def test_a_sandbox_change_is_installed_and_the_daemon_reloaded() -> None:
