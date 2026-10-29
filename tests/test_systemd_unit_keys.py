@@ -1907,7 +1907,9 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
-    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["StartLimitIntervalSec"] == ["15min"] and keys["StartLimitBurst"] == ["3"], (
+        "one timer period: each 15-minute timer start counts against the budget, so 1h with burst 3 failed every fourth sweep"
+    )
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
     assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
