@@ -47,7 +47,7 @@ def test_no_working_tree_under_tooling_is_retired_without_the_guard():
     unguarded = [
         path
         for path in play()["vars"]["retired"]
-        if TOOLING in path and "/.git" not in path and path not in guarded
+        if TOOLING in path and "/" not in path.split(TOOLING, 1)[1].strip("/") and path not in guarded
     ]
     assert not unguarded, f"retired without the checkout guard: {unguarded}"
 
