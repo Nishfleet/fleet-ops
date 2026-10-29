@@ -171,18 +171,17 @@ The rules still in force:
   check: their `agent-dispatch.yml` stubs call this shared workflow and their
   rulesets require no `coordinator-approval`.
   The `review` and `arm` jobs run on `[self-hosted, review]`: runners
-  `netcup-agent-9` to `netcup-agent-12` carry the labels
-  `self-hosted, review` and not `agent`, so no build can take them and a review
-  never waits behind a multi-hour build (fleet-ops#10587). With `agent` kept,
-  GitHub hands a queued build to any idle runner that matches, so builds would
-  starve reviews again. The labels live at GitHub, not in ansible:
+  `netcup-agent-9` and `-10` carry the labels `self-hosted, review` and not `agent`, so no
+  build can take them and a review never waits behind a multi-hour build (fleet-ops#10587).
+  With `agent` kept, GitHub hands a queued build to any idle runner that matches, so builds
+  would starve reviews again. Runners `netcup-agent-11` and `-12` still carry `agent` and
+  `fleet-ops`, and the technical lead sets their labels after the merge, so
+  install-config.yml reads the org runner list as nish and holds the two new drop-ins back
+  until GitHub reports both runners with `review` and neither worker label: until then the
+  unit keeps `User=nish` on the nish runner directory, which takes no review job, and no
+  worker job meets the reviewer key. A read that cannot run holds them back as well
+  (fleet-ops#11069). The labels live at GitHub, not in ansible:
   `gh api -X PUT orgs/Nishfleet/actions/runners/<id>/labels -f 'labels[]=self-hosted' -f 'labels[]=review'`.
-  Runners 11 and 12 still carry `agent` and `fleet-ops` when this change merges, and the
-  technical lead sets their labels after the merge, so install-config.yml reads the org
-  runner list as nish and holds the two new drop-ins back until GitHub reports both
-  runners with `review` and neither worker label: until then the unit keeps `User=nish`
-  on the nish runner directory, which takes no review job, and no worker job meets the
-  reviewer key. A read that cannot run holds them back as well (fleet-ops#11069).
   To switch it off, give those four runners `agent` back and set both `runs-on`
   lines back to `[self-hosted, agent]`.
   Those four runners run as the no-sudo service user `fleet-reviewer`, in their own HOME,

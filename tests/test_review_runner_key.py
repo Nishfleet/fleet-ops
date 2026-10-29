@@ -168,15 +168,17 @@ def test_the_label_read_is_the_org_runner_list_read_as_nish() -> None:
     assert task["become"] is True and task["become_user"] == "nish", "the read runs as the login the box's other GitHub reads use"
     assert task["environment"] == "{{ nish_env }}"
     assert task["ignore_errors"] is True, "a read that cannot run must hold the drop-in back, not fail the deploy"
+    assert task["until"] == "new_review_runner_labels.rc == 0", "one API blip must not hold a rollout back for a whole deploy cycle"
+    assert task["retries"] == 3 and task["delay"] == 20, "the count in update.yml retries this same endpoint for the same reason"
     names = [t.get("name") for t in install_config()]
     assert names.index("Install systemd units, slices and drop-ins") < names.index(LABEL_READ) < names.index(LABEL_HOLD)
 
 
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq is not installed, so the filter cannot run")
 def test_the_label_filter_names_a_runner_once_it_takes_only_review_jobs() -> None:
     """The filter decides the rollout, so it runs for real against the shape GitHub answers with."""
     jq = shutil.which("jq")
-    if jq is None:
-        return
+    assert jq is not None
     argv = guard_tasks()[LABEL_READ]["ansible.builtin.command"]["argv"]
     filt = argv[argv.index("--jq") + 1]
 
@@ -218,4 +220,5 @@ def test_the_hold_takes_back_only_the_two_new_review_dropins() -> None:
     task = guard_tasks()[LABEL_HOLD]
     assert task["ansible.builtin.file"]["state"] == "absent"
     assert task["loop"] == [11, 12], "runners 9 and 10 have been review-only since they were labelled"
-    assert "actions.runner.Nishfleet.netcup-agent-" in task["ansible.builtin.file"]["path"]
+    assert task["ansible.builtin.file"]["path"] == "/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-{{ item }}.service.d/30-review-user.conf", "a path that names no runner number can hold any runner's drop-in back"
+    assert task["notify"] == "Reload systemd", "systemd forgets a drop-in only on a daemon-reload, and the copy reports ok once the file is on the box"
