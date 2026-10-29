@@ -1369,8 +1369,8 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all five sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
+        # config/sweep-liveness-events.json, and checks that all four sweep
+        # reads (stalled, orphans, red PRs, stuck rework) use it and none still reads the
         # run status alone.
         if: always()
         run: |
@@ -1378,9 +1378,9 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 4 ] || { echo "expected 4 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 4 ] || { echo "expected 4 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do
