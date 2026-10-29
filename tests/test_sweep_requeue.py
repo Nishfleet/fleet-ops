@@ -1,10 +1,11 @@
 """Parked hand-offs in agent-dispatch.yml's list job (fleet-ops#10420, #10475): the step's real
 `run:` block and REQUEUE program (read out with yq) against a fake gh.
 
-An orchestrator-tried issue idle over 6 h goes back to needs-orchestrator. A labelled idle one with
-no orch/issue-N PR is re-fired by a task=orchestrate dispatch of the calling workflow file, with a
-marker comment and no label write. At most 12 minus the live orchestrate runs a sweep, and a closed
-blocker releases at most 12. Three ended or re-fired hand-offs give needs-nish-decision.
+A handoff-ended issue idle over 6 h goes back to needs-orchestrator (and an agent-blocked one, even with
+old end markers, is left alone). A labelled idle one with no orch/issue-N PR is re-fired by a task=orchestrate
+dispatch of the calling workflow file, with a marker comment and no label write. At most 12 minus the live
+orchestrate runs a sweep, and a closed blocker releases at most 12. Three ended or re-fired hand-offs give
+needs-nish-decision.
 """
 import datetime
 import json
@@ -25,7 +26,7 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 FAKE_GH = r"""#!/usr/bin/env bash
 cred() { [ -n "$GH_TOKEN" ] || [ -e "$FAKE_DIR/login" ] || { echo "gh: no credential: $*" >&2; exit 4; }; }
 case "$1 $2" in
-  "issue list") cat "$FAKE_DIR/issues.json" ;;
+  "issue list") case "$*" in *"-S label:handoff-ended,needs-orchestrator "*) ;; *) echo "fake gh: unexpected search: $*" >&2; exit 1 ;; esac; cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -60,7 +61,7 @@ def _yj(expr):
                                      capture_output=True, text=True).stdout)
 
 
-def issue(number, hours_idle=7, ended=1, labels=("orchestrator-tried",), refired=0):
+def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0):
     t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_idle)
     comments = [{"body": f"{ENDED}{number}{i}", "authorAssociation": "OWNER", "author": {"login": "nish3451"}}
                 for i in range(ended)]
@@ -115,7 +116,7 @@ def test_idle_six_hours_requeues_and_fresh_waits(tmp_path):
 def test_a_quiet_priority_now_issue_waits_thirty_minutes_not_six_hours(tmp_path):
     """#10681 carried priority-now and needs-orchestrator and nothing ran for an hour, because this
     waited 6 h (fleet-ops#10716)."""
-    labelled = ("orchestrator-tried", "priority-now")
+    labelled = ("handoff-ended", "priority-now")
     w = run(tmp_path, [issue(1, hours_idle=0.6, labels=labelled),
                        issue(2, hours_idle=0.4, labels=labelled)])
     assert edits(w, "--add-label needs-orchestrator") == [1]
@@ -136,7 +137,7 @@ def test_a_priority_now_issue_takes_a_slot_ahead_of_the_parked_backlog(tmp_path)
     """Twelve 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
     them however short its wait (fleet-ops#10716: #10681 sat that way for 16 h)."""
     backlog = [issue(n, hours_idle=7) for n in range(1, 13)]
-    w = run(tmp_path, backlog + [issue(99, hours_idle=0.6, labels=("orchestrator-tried", "priority-now"))])
+    w = run(tmp_path, backlog + [issue(99, hours_idle=0.6, labels=("handoff-ended", "priority-now"))])
     sel = edits(w, "--add-label needs-orchestrator")
     assert 99 in sel, sel
     assert len(sel) == 12, sel
@@ -262,8 +263,14 @@ def test_three_tries_escalate_not_requeue(tmp_path):
 
 
 def test_escalated_and_queued_issues_are_left_alone(tmp_path):
-    w = run(tmp_path, [issue(1, ended=3, labels=("orchestrator-tried", "needs-nish-decision")),
-                       issue(2, labels=("orchestrator-tried", "needs-orchestrator"))])
+    w = run(tmp_path, [issue(1, ended=3, labels=("handoff-ended", "needs-nish-decision")),
+                       issue(2, labels=("handoff-ended", "needs-orchestrator"))])
+    assert w == []
+
+
+def test_an_agent_blocked_handoff_is_left_alone(tmp_path):
+    """agent-blocked is a live block, not an ended hand-off: an old end marker is neither a re-queue nor a strike."""
+    w = run(tmp_path, [issue(1, ended=3, labels=("handoff-ended", "agent-blocked"))])
     assert w == []
 
 

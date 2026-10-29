@@ -176,7 +176,7 @@ jobs:
             # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
             # rows. One lane per seat is a lower bound on the group's concurrency and sits
             # above the 22 measured runners, so this stays a safety valve, not a throttle.
-            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
           # Claude does the judgment work, the free workers do the mechanical work,
@@ -303,9 +303,10 @@ jobs:
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
           hide_but_a=$(claude_hides "$seat_a"); cred_hide=$(if [ -d /run/credentials ]; then echo --tmpfs /run/credentials; fi)
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker $cred_hide --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker $cred_hide --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
+          # The runner keeps the file commands a job writes to $GITHUB_OUTPUT (the minted App PEM among them, fleet-ops#11051) under $RUNNER_TEMP/_runner_file_commands for the whole job, and the unit mounts the App key's credential dir, so both go under an empty tmpfs in every jail. The orchestrator jail in agent-dispatch.yml hides the same two paths, and names the credential dir rather than reading $CREDENTIALS_DIRECTORY: a runner started with a cleared environment would set no flag and leave the key readable (fleet-ops#10957).
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
@@ -741,7 +742,7 @@ jobs:
           # since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29 rows. One
           # lane per seat is a lower bound on the group's concurrency and sits above the 22
           # measured runners, so this stays a safety valve, not a throttle.
-          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
           strong_free=false; regular_free=false
           # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
           # falls through to pi in the Worker.
@@ -941,8 +942,9 @@ jobs:
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
-          resp=$(curl -s 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") -H 'content-type: application/json' -d "$body")
-          { [ -n "${review//[[:space:]]/}" ] && jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; } || { say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
+          # An unreachable router is "the judge gave no answer", not a dead step: this call's failure is caught so the comment below posts instead of set -e ending the step (fleet-ops#9800).
+          resp=$(curl -sS --max-time 30 127.0.0.1:4000/jev --config <(sed -n 's|^LITELLM_JEV_KEY=\(.*\)|header = "Authorization: Bearer \1"|p' "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env") -H 'content-type: application/json' -d "$body") || why=" (the judge call failed with curl exit $?)"
+          { [ -n "${review//[[:space:]]/}" ] && jq -e '.answers.verdict.choice' <<<"$resp" >/dev/null 2>&1; } || { say "reviewer: $SHA could not be judged, because the review text was empty or the judge gave no answer${why:-}. Nothing was approved or blocked. Push a new head to try again."; exit 0; }
           choice=$(jq -r '.answers.verdict.choice // "block"' <<<"$resp"); p=$(jq -r --arg c "$choice" '.answers.verdict.probabilities[$c] // 0' <<<"$resp")
           # A review can be steered by the diff it reads, so a line that looks like the approval line is dropped from everything posted.
           shown=$(grep -viE '^[[:space:]]*coordinator-approval:' <<<"$review" || true)
@@ -1024,13 +1026,7 @@ jobs:
       # user has none (fleet-ops#10950). A PR from a fork never reaches here at all.
       - name: Read App private key for the rework label
         id: rework-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          while IFS= read -r line || [ -n "$line" ]; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done < "$keyfile"
-          { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       - name: App token for the rework label
         id: rework-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1048,7 +1044,8 @@ jobs:
             GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            GH_TOKEN=$ISSUE_TOKEN gh label create handoff-ended -R "$REPO" --force --color BFD4F2 --description "Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" >/dev/null
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
@@ -1057,7 +1054,8 @@ jobs:
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    runs-on: [self-hosted, review]  # the review runners, so an approved head arms without waiting behind a build
+    # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 10
     permissions:
       pull-requests: write
@@ -1070,13 +1068,8 @@ jobs:
       SHA: ${{ inputs.arm_sha || needs.review.outputs.approved_sha }}
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
-      - name: Read App private key
-        id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          grep . "$keyfile" | sed 's/^/::add-mask::/'
-          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+      - id: app-key
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -1151,14 +1144,9 @@ jobs:
           pushed=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://raw.githubusercontent.com/Nishfleet/inish-site/main/data/editions/$today.json" || true)
           echo "today=$today live=${live:-unknown} pushed=$pushed"
           if [ "$live" = "$today" ] || [ "$pushed" = 200 ]; then echo "done=true" >> "$GITHUB_OUTPUT"; else echo "done=false" >> "$GITHUB_OUTPUT"; fi
-      - name: Read App private key
-        if: steps.live.outputs.done != 'true'
+      - if: steps.live.outputs.done != 'true'
         id: app-key
-        run: |
-          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
-          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
-          grep . "$keyfile" | sed 's/^/::add-mask::/'
-          { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
+        uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       # Two tokens for Nishfleet/inish-site: a read-only one for the jailed
       # model (the candidate fetch calls the GitHub search API), and a
       # contents-write one minted only after the model has finished, for the
@@ -1204,12 +1192,9 @@ jobs:
           echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"; x_key=$(sed -n 's/^X_BEARER_TOKEN=//p' "$HOME/.config/fleet-ops/seats/x-api.env" 2>/dev/null | head -n 1 | tr -d "\"'" || true); [ -z "$x_key" ] || echo "::add-mask::$x_key" # gitleaks:allow
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; }
-          # The App key is a systemd credential, and the credential directory is readable by
-          # the unit's user, which is every jailed engine: hide it with the rest (fleet-ops#10957).
-          # The directory is named, not $CREDENTIALS_DIRECTORY, and only when it exists: a runner
-          # whose unit has not restarted yet has no credential dir and no flag, so the jail starts.
+          # The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine: hide it by name, not through $CREDENTIALS_DIRECTORY, which a runner started with a cleared environment would leave empty (fleet-ops#10957).
           hide_all=$(claude_hides ""); cred_hide=$(if [ -d /run/credentials ]; then echo --tmpfs /run/credentials; fi)
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"

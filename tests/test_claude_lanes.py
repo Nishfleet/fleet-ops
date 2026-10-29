@@ -148,7 +148,7 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path)
-    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "senior=$senior"\necho "engine=$engine model=$claude_model"\n'
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -272,15 +272,7 @@ def test_there_is_no_claude_cap(tmp_path):
     assert _route(tmp_path, ("judgment", "0.95"), live={"claude": 40})[0].startswith("engine=claude ")
 
 
-def test_only_strong_only_is_senior(tmp_path):
-    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,")
-    assert last == "engine=claude model=claude-sonnet-5-5" and "senior=false" in out
-    d = tmp_path / "b"
-    d.mkdir()
-    assert "senior=true" in _route(d, labels=",strong-only,")[2]
-
-
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -317,7 +309,6 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "REPO": "o/r",
         "CLAUDE_MODEL": model,
         "CLAUDE_MAX_TURNS": "200",
-        "SENIOR": senior,
         "CLAUDE_RC": str(claude_rc),
         "CLAUDE_OUT": claude_out,
         "CLAUDE_ERR": claude_err,
@@ -450,13 +441,6 @@ def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, i
     assert ran == ["pi"]
 
 
-def test_both_logins_missing_sends_non_senior_work_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", senior="false", login_a=None, login_b=None)
-    assert r.returncode == 0, r.stderr
-    assert "fallthrough: pi (claude login missing)" in r.stdout
-    assert claude == "" and ran == ["pi"]
-
-
 def test_claude_worker_runs_with_hooks_disabled(tmp_path):
     r, _, claude, _, _, _ = _worker(tmp_path, "claude")
     assert r.returncode == 0, r.stderr
@@ -536,7 +520,7 @@ def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
     lines = _step("work", "Worker").splitlines()
     a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a_dir="))
     b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
-    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    prog = "live() { echo 0; }\nENGINE=claude fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": str(seat_a_dir), "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     seat, cfg = r.stdout.splitlines()[-1].split()
@@ -587,28 +571,47 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
-    cred = tmp_path / "credentials"
-    cred.mkdir()
-    (cred / "key").write_text("planted")
+    runner_temp = home / "runner-temp"
+    creds = home / "runner-creds"
+    (runner_temp / "_runner_file_commands").mkdir(parents=True)
+    (runner_temp / "_runner_file_commands/pem").write_text("planted")
+    creds.mkdir()
+    (creds / "pem").write_text("planted")
+    opt = "$cred_hide"
 
-    def expand(name):
-        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat)).replace("$cred_hide", f"--tmpfs {cred}")
+    def expand(name, cred_dir=creds):
+        line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
-        return line.split() + ["--"]
+        line = line.replace("$RUNNER_TEMP", str(runner_temp))
+        assert opt in line, name
+        # cred_dir=None is the runner whose unit mounts no credential dir: the jail
+        # hides nothing there and still starts.
+        return (line.replace(opt, "") if cred_dir is None else line.replace(opt, f"--tmpfs {cred_dir}")).split() + ["--"]
 
     def read_all(name):
         cmd = expand(name)
         out = {}
-        paths = {"a": seat_a / ".credentials.json", "b": home / ".claude/.credentials.json", "cj": home / ".claude.json", "file": home / ".claude-backup.json", "cred": cred / "key"}
+        paths = {"a": seat_a / ".credentials.json", "b": home / ".claude/.credentials.json", "cj": home / ".claude.json", "file": home / ".claude-backup.json"}
         paths.update({f"bk{i}": d / "creds" for i, d in enumerate(backups)})
         for key, path in paths.items():
             r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
             out[key] = "planted" in r.stdout
         return out
 
-    none = {k: False for k in ("b", "cj", "file", "cred", "bk0", "bk1", "bk2")}
-    # Every other engine reads no login at all, and no engine reads the App key's credential.
+    def read_app_key(name, cred_dir):
+        """What the jail shows of the runner's App key (fleet-ops#11051): the minted
+        PEM and the key dir $CREDENTIALS_DIRECTORY names. cred_dir=None is the runner
+        that sets none; rc 0 proves the jail started."""
+        cmd = expand(name, cred_dir)
+        out = {}
+        for key, path in {"pem": runner_temp / "_runner_file_commands/pem", "dir": creds / "pem"}.items():
+            r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
+            out[key] = r.returncode == 0 and "planted" in r.stdout
+        return out
+
+    none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
+    # Every other engine reads no login at all.
     assert read_all("jail_base") == {"a": False, **none}
     # The claude lane reads the seat the issue's parity picks and nothing else: no other
     # seat, no Max dir, no backup, no plain backup file.
@@ -616,6 +619,11 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
     else:
         assert read_all("claude_jail_a") == {"a": True, **none}
+    for jail in ("jail_base", "claude_jail_a", "claude_jail_b"):
+        assert read_app_key(jail, creds) == {"pem": False, "dir": False}, jail
+    assert read_app_key("jail_base", None) == {"pem": False, "dir": True}
+    argv = expand("jail_base", creds)
+    assert argv[argv.index(str(creds)) - 1] == "--tmpfs"
 
 
 TOK = "tok-%s-planted"
@@ -732,17 +740,14 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
     (bk / "creds").write_text("planted")
     for x in "ab":
         (seats / f"claude-seat-{x}.env").write_text(f"CLAUDE_CODE_OAUTH_TOKEN={_tok_env(x)}\n")
-    cred = tmp_path / "credentials"
-    cred.mkdir()
-    (cred / "key").write_text("planted")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, "")).replace("$cred_hide", f"--tmpfs {cred}")
-    for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds", cred / "key"):
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
+    for path in (seats / "claude-seat-a.env", seats / "claude-seat-b.env", bk / "creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
 
 
 def test_judgment_job_rate_limited_falls_through_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit", senior="false")
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit")
     assert r.returncode == 0, r.stderr
     assert "claude -p" in claude and ran == ["claude", "pi"]
 
@@ -769,7 +774,7 @@ def test_token_file_is_parsed_not_run_and_defines_nothing_else(tmp_path):
     # A token file is read, never sourced: its other lines run no code and export nothing.
     marker = tmp_path / "ran-as-shell"
     raw = f"RAW:OTHER=1\ntouch {marker}\nCLAUDE_CODE_OAUTH_TOKEN={_tok_env('a')}\n"
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", senior="false", tok_a=raw)
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=raw)
     assert r.returncode == 0, r.stderr
     assert f"TOK={_tok_env('a')}" in claude and "auth=token" in r.stdout
     assert not marker.exists()
@@ -830,7 +835,7 @@ def test_both_tokens_revoked_fails_once_each_and_does_not_fall_through(tmp_path)
 
 
 def test_rate_limit_is_not_an_auth_failure_and_does_not_retry(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert _tokens_tried(claude) == [_tok_env("a")] and "retrying" not in r.stdout and ran == ["claude", "pi"]
 
@@ -885,11 +890,8 @@ def test_real_jail_hides_a_symlinked_token_file_and_backup_dir(tmp_path):
     (home / ".local/share").mkdir(parents=True)
     (home / ".local/share/claude-seat-backup").symlink_to(vault / "backup")
     (seats / "claude-seat-a.env").symlink_to(vault / "tok.env")
-    cred = tmp_path / "credentials"
-    cred.mkdir()
-    (cred / "key").write_text("planted")
-    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, "")).replace("$cred_hide", f"--tmpfs {cred}")
-    for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds", cred / "key"):
+    line = lines["jail_base"].replace("$HOME", str(home)).replace("$seat_a", str(home / ".config/gh")).replace("$hide_all", _hides(home, ""))
+    for path in (seats / "claude-seat-a.env", home / ".local/share/claude-seat-backup/creds", vault / "tok.env", vault / "backup/creds"):
         r = subprocess.run(line.split() + ["--", "cat", str(path)], capture_output=True, text=True)
         assert "planted" not in r.stdout, path
 
@@ -903,7 +905,7 @@ case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;
 def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
-    start = script.index("# A still-firing alert re-files")
+    start = script.index("if jq -e '.title|startswith(\"alert: \")'")
     end = script.index("skip duplicate-alert; fi\n", start)
     end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
     b = tmp_path / "bin"

@@ -198,10 +198,15 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
-      - name: Only the urgent rules are critical and page Nish hourly; every rule files a fleet issue (fleet-ops#9445)
-        run: |
-          sudo apt-get install -y -q python3-yaml >/dev/null
-          python3 tests/alert_routes_check.py
+      - name: Only the urgent rules are critical and page Nish hourly, and every enrolled dispatch stub forwards every pull_request_target type (fleet-ops#9445, #9730)
+        # Both read a repo file with python3-yaml and hold a contract written as prose: the alert
+        # routes against docs/grafana-alerts.md, and each config/intake-repos.json repo's stub against
+        # the nine pull_request_target types precondition 3 of docs/intake-enrolment.md requires, the
+        # list read from fleet-ops's own stub at the base ref so a PR cannot loosen the list that
+        # judges it. One step and one install, and the reason is in docs/workflow-notes.md.
+        if: always()
+        env: {GH_TOKEN: "${{ github.token }}", BASE_REF: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"}
+        run: sudo apt-get install -y -q python3-yaml >/dev/null && python3 tests/alert_routes_check.py && python3 tests/intake_stub_check.py
 
   unit:
     runs-on: ubuntu-latest
@@ -288,11 +293,13 @@ jobs:
           # happen.
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
-          tmp_home=$(mktemp -d); export CREDENTIALS_DIRECTORY=$tmp_home/.cred-ci
-          export HOME="$tmp_home"
+          tmp_home=$(mktemp -d)
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-ci"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
-          # On the runner the App key is a systemd credential; the jail must hide the
-          # credential directory the same way it hides $HOME/.config/fleet-worker
+          # On the runner the App key is a systemd credential, so a jail must hide the
+          # credential directory the same way it hides $HOME/.config/fleet-worker.
+          # agent.yml names the directory instead of reading $CREDENTIALS_DIRECTORY,
+          # which a runner started with a cleared environment would leave empty
           # (fleet-ops#10957).
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
@@ -323,14 +330,17 @@ jobs:
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
           test ! -e "$HOME/.config/fleet-worker/planted-key"
+          test ! -e "$CREDENTIALS_DIRECTORY/planted-key"
           trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
-          echo planted > "$HOME/.config/fleet-worker/planted-key"; echo planted > "$CREDENTIALS_DIRECTORY/planted-key"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          echo planted > "$CREDENTIALS_DIRECTORY/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
-            # $HOME is the line's only expansion; no eval of file text.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
+            # The line's own variables expand. No eval of file text. bwrap refuses
+            # an unexpanded token, so a line that keeps one fails here.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
             read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
             # No engine but claude can read either Claude seat's login: the bound
@@ -349,13 +359,14 @@ jobs:
               *'--tmpfs $HOME/.config/fleet-ops'*)
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
+                "${jail[@]}" test ! -e "$CREDENTIALS_DIRECTORY/planted-key"
                 sealed=$((sealed + 1)) ;;
             esac
           done
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$cred_hide/--tmpfs $CREDENTIALS_DIRECTORY}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"

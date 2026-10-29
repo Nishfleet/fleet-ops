@@ -84,6 +84,29 @@ def _searches(targets):
     return [t for t in targets() if t.get("queryType") == "Pull_Requests"]
 
 
+def _expressions():
+    return [t.get("expression", "") for t in _dashboard_targets() + _rule_targets()]
+
+
+def _grouped_select_lists(sql):
+    words = [(m.start(), m.group().upper()) for m in re.finditer(r"[A-Za-z_]+", sql)]
+    depth, level = [], 0
+    for char in sql:
+        depth.append(level)
+        level += char == "("
+        level -= char == ")"
+    lists = []
+    for index, (position, word) in enumerate(words):
+        if word != "GROUP" or index + 1 == len(words) or words[index + 1][1] != "BY":
+            continue
+        opening = next((p for p, w in reversed(words[:index]) if depth[p] == depth[position] and w == "SELECT"), None)
+        if opening is None:
+            continue
+        closing = next((p for p, w in words if p > opening and depth[p] == depth[position] and w == "FROM"), len(sql))
+        lists.append(sql[opening:closing])
+    return lists
+
+
 def _declared_products():
     return {r["name"] for r in json.loads(INTAKE.read_text())["repos"] if r.get("product") is True}
 
@@ -176,3 +199,11 @@ def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than
 @pytest.mark.parametrize("targets,expression", [(_dashboard_targets, _dashboard_products_expression), (_rule_targets, _rule_products_expression)])
 def test_the_expression_counts_every_repository_it_queries(targets, expression):
     assert {t["refId"] for t in _searches(targets)} == set(re.findall(r"\bFROM ([A-Z])\b", expression()))
+
+
+def test_no_grouped_select_list_holds_a_scalar_subquery():
+    expressions = [e for e in _expressions() if "GROUP BY" in e]
+    assert expressions
+    for expression in expressions:
+        for select_list in _grouped_select_lists(expression):
+            assert not re.search(r"\(\s*SELECT\b", select_list, re.I), select_list
