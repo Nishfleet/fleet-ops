@@ -177,6 +177,17 @@ regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit
 condition = "AND"
 
 [[allowlists]]
+description = "fleet-sync.service step 2.1 (fleet-ops#10125) stops the retired weekly retro units and the stale user-scope tincan listener, then unlinks their live links and drop-in, so it names those paths under the user config dir. The first commit of that PR wrote them as literals; the shipped step spells them with %h, but a PR scan reads every commit and history cannot be rewritten on an open PR. Only these paths are allowed, so a new home path in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)systemd/fleet-sync\.service$''']
+regexes = [
+  '''^home/nish/\.config/systemd/user/retro-weekly(-api)?\.(service|timer|socket)$''',
+  '''^home/nish/\.config/systemd/user/(timers|sockets)\.target\.wants/retro-weekly(-api)?\.(timer|socket)$''',
+  '''^home/nish/\.config/systemd/user/tincan-listen-claude-vps\.service\.d(/10-nish-seat\.conf)?$''',
+]
+condition = "AND"
+
+[[allowlists]]
 description = "The SSH socket drop-in must name the box's own tailnet address: a ListenStream= line takes an address and not a name, and a unit line cannot carry an inline gitleaks:allow comment. The same address is already published in systemd/tigervnc.service, allowlisted below for the same reason (fleet-ops#10541). Only that one address is allowed in this file"
 targetRules = ["private-tailscale-ipv4"]
 paths = ['''(^|/)rootfs/etc/systemd/system/ssh\.socket\.d/override\.conf$''']

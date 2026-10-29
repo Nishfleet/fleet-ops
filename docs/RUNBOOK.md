@@ -104,10 +104,11 @@ per-issue copies (`reviewer-issue-<N>.md`, removed under fleet-ops#8659) are
 loaded by nothing.
 
 Wiring a new unit or prompt is one `ln -sfn` into the deploy clone, once
-(full commands in README). Every root-owned file under `/etc` that the repo
+(full commands in [Install](install.md)). Every root-owned file under `/etc` that the repo
 ships lives in `rootfs/` and is `fleet-host-config.service`'s job (Ansible's
 `ansible-pull` of `ansible/host.yml`, started by deploy-box.yml on every merge
-and by a daily timer). Its `daemon-reload` re-applies a changed slice cap to
+and once after every boot by `fleet-host-config-boot.timer`; the daily timer is
+gone, fleet-ops#10457). Its `daemon-reload` re-applies a changed slice cap to
 the running slice (fleet-ops#8862). A failed run is in
 `journalctl -u fleet-host-config.service`; a `Hand-installed` line names a file
 to add under `rootfs/`, delete, or list in `/etc/fleet-ops/box-only`. What still
@@ -118,6 +119,15 @@ gone (fleet-ops#8238).
 After a slice change, both the unit and the cgroup must read the new cap:
 `systemctl show agent.slice -p MemorySwapMax` and
 `cat /sys/fs/cgroup/agent.slice/memory.swap.max` (1073741824, not infinity).
+
+### Version tags
+
+One tag exists, `v1`, on the first auto-merge arm (fleet-ops#4303). Tag when a
+state is worth naming: a release, a point to roll back to, or a container image
+bump. Nothing in `.github/` reads a tag, so a tag deploys and reverts nothing by
+itself: the deploy runs from `main`'s tip, and a rollback is a revert commit on
+`main` (the auto-revert organ writes that one when a deploy goes red). Create
+one with `git tag -a <name> -m "<why>"` and push it, and keep it on `main`.
 
 ### Shell startup files
 
@@ -507,7 +517,8 @@ token passes the line above.
 ## Unattended Claude runs (fleet-ops#9502)
 
 Two units run Claude with nobody watching: `tincan-listen-claude-vps.service`
-(user unit, the tincan inbox drainer) and `claude-remote-control.service`
+(system unit, the tincan inbox drainer; its user-level copy was retired in
+fleet-ops#10125) and `claude-remote-control.service`
 (system unit, the Remote Control server). Both used to pass
 `--permission-mode bypassPermissions`, which skips every check, so the
 `permissions.ask` rules (force-push, `reset --hard`, `reboot`, `restic forget`,
@@ -561,9 +572,9 @@ dontAsk on Remote Control is intended: Nish cannot approve a one-off command
 from the phone. A denied call is reported in the session and there is no
 prompt to tap.
 
-The tincan unit goes live after merge, when fleet-sync has the new file and
-the user unit is reloaded (`systemctl --user daemon-reload && systemctl
---user restart tincan-listen-claude-vps.service`). Remote Control stays on
+The tincan unit goes live after merge, when fleet-host-config has the new file and
+the root unit is reloaded (`sudo systemctl daemon-reload && sudo systemctl
+restart tincan-listen-claude-vps.service`). Remote Control stays on
 the old `ExecStart` until Nish restarts it.
 
 **Where denials show.** Each denied call is reported twice: in the unit's
