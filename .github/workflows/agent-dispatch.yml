@@ -697,20 +697,22 @@ jobs:
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
+      # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
-              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
+              | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
