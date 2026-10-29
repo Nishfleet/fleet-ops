@@ -9,6 +9,7 @@ healthy answer must still reach the verdict.
 import pathlib
 import subprocess
 
+import pytest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -56,11 +57,12 @@ def judge(tmp_path, curl_exit, curl_body=""):
     return r, posted.read_text() if posted.exists() else ""
 
 
-def test_unreachable_router_posts_the_could_not_be_judged_comment(tmp_path):
-    r, posted = judge(tmp_path, 7)
+@pytest.mark.parametrize("curl_exit", [7, 28])
+def test_unreachable_router_posts_the_could_not_be_judged_comment(tmp_path, curl_exit):
+    r, posted = judge(tmp_path, curl_exit)
     assert r.returncode == 0, r.stderr
     assert "could not be judged" in posted
-    assert "curl exit 7" in posted
+    assert f"curl exit {curl_exit}" in posted
 
 
 def test_healthy_verdict_still_reaches_the_decision(tmp_path):
