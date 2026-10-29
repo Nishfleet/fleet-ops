@@ -677,7 +677,7 @@ jobs:
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}
               elif ($no | length) > 0 then {class: "stuck", reason: "the reviewer did not approve \($s7)", url: ($no[-1].html_url // "")}
-              elif ($asked | length) - ($held | length) >= 3 or ($asked | length) >= 12 then {class: "stuck", reason: "the review of \($s7) gave no verdict after \($asked | length) tries (\($held | length) held at a usage limit)", url: ($asked[-1].html_url // "")}
+              elif ($asked | length) - ($held | length) >= 3 or ($asked | length) >= 12 then {class: "stuck", reason: ("the review of \($s7) gave no verdict after \($asked | length) tries" + (if ($held | length) > 0 then " (\($held | length) held at a usage limit)" else "" end)), url: ($asked[-1].html_url // "")}
               else {class: "review", reason: "no review verdict on \($s7)", url: ""} end
         run: |
           set -euo pipefail
