@@ -18,23 +18,33 @@ def _steps():
     return json.loads(out)
 
 
+def _issue_json(step):
+    lines = step["run"].splitlines()
+    start = next(n for n, ln in enumerate(lines) if ln.strip() == "issue_json() {")
+    end = next(n for n, ln in enumerate(lines[start:], start) if ln.strip() == "}")
+    return [ln.strip() for ln in lines[start:end + 1]]
+
+
 def test_redispatch_is_a_continue_on_error_step_before_the_pick():
     ids = [s.get("id") for s in _steps()]
     assert ids.index("redispatch") < ids.index("list")
     step = _steps()[ids.index("redispatch")]
     assert step["continue-on-error"] is True
-    assert step["if"] == ("github.event_name == 'schedule' || "
-                          "(github.event_name == 'workflow_dispatch' && inputs.issue == '')")
+    assert step["if"] == "${{ inputs.issue == '' && github.event.issue.number == '' }}"
     assert "prs=${prs:-[]}" in step["run"]
 
 
 def test_the_redispatch_reads_an_issue_without_merging_stderr():
     steps = {s.get("id"): s for s in _steps()}
     run = steps["redispatch"]["run"]
-    assert "issue_json() {" in run
     assert 'issue=$(issue_json "$n")' in run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err"' in run
     assert "2>&1" not in run
-    assert "issue_json() {" in steps["list"]["run"]
+
+
+def test_both_issue_json_copies_are_identical():
+    steps = {s.get("id"): s for s in _steps()}
+    assert _issue_json(steps["redispatch"]) == _issue_json(steps["list"])
 
 
 def test_the_pick_warns_when_the_redispatch_failed():

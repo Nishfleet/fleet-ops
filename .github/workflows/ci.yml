@@ -677,7 +677,7 @@ jobs:
               exit 1 ;;
             "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
             "pr list "*--head*) echo '0' | emit ;;
-            "pr list"*) serve "$d/prs.json" ;;
+            "pr list"*) [ -z "${FAIL_PR_LIST:-}" ] || { echo 'gh: HTTP 502 (pr list)' >&2; exit 1; }; serve "$d/prs.json" ;;
             "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
             "run view"*) echo '"completed"' | emit ;;
             "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
@@ -718,6 +718,22 @@ jobs:
             [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
             grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
           done
+          # A read fault in the re-dispatch no longer costs the hour (fleet-ops#9368): the step is
+          # continue-on-error, so GitHub hands the pick empty outputs and outcome=failure. The pick
+          # must still exit 0 with the queued issues, and say why no claim PRs were appended.
+          : > "$t/out"; rc=0
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 \
+            CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] || { echo "the re-dispatch did not fail on a pr list fault"; exit 1; }
+          [ ! -s "$t/out" ] || { echo "the failed re-dispatch still wrote outputs: $(cat "$t/out")"; exit 1; }
+          : > "$t/out"; rc=0
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x ISSUE='' CLOSED='' PRS='' REDISPATCH=failure \
+            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || rc=$?
+          cat "$t/err2"
+          [ "$rc" -eq 0 ] || { echo "the sweep exited $rc after a failed re-dispatch"; exit 1; }
+          grep -F 'claim-PR re-dispatch failed; this run appends no claim PRs' "$t/err2" >/dev/null || { echo "the pick did not warn about the failed re-dispatch"; exit 1; }
+          got=$(sed -n 's/^refs=//p' "$t/out")
+          [ "$got" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $got"; exit 1; }
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
