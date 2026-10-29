@@ -11,6 +11,8 @@
 # Approved anthropic: claude-sonnet-5-5
 # anthropic answers in the tether group only (fleet-ops#9980; Nishfleet/tether#7).
 # Long notes for this file: docs/litellm-router-notes.md
+# Devin and Cursor CLI lanes retired (item 9, 2026-10-28): Devin had no router route (404 on every base).
+# OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
 # Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
 # That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
@@ -123,7 +125,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 20
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:
@@ -147,7 +148,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 6
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:
@@ -889,7 +889,6 @@ model_list:
     - opencode-go
     order: 1
     weight: 10
-    max_parallel_requests: 4
     # 6 h, sized to OpenCode Go's monthly quota wall (fleet-ops#9122).
     cooldown_time: 21600
   model_info:

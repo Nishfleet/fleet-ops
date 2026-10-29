@@ -71,7 +71,7 @@ groups:
 
       - uid: scorecard-products-behind
         title: Products not ahead of fleet-ops in merged PRs two days running
-        condition: C
+        condition: H
         data:
           - refId: A
             relativeTimeRange: {from: 259200, to: 0}
@@ -90,16 +90,66 @@ groups:
               datasource: {type: grafana-github-datasource, uid: fleet-github}
               queryType: Pull_Requests
               owner: Nishfleet
-              repository: fleet-ops
-              options: {owner: Nishfleet, repository: fleet-ops, query: "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public", timeField: 2}
+              repository: "0509"
+              options: {owner: Nishfleet, repository: "0509", query: "is:merged repo:Nishfleet/0509", timeField: 2}
               refId: B
           - refId: C
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: aiconverter-app
+              options: {owner: Nishfleet, repository: aiconverter-app, query: "is:merged repo:Nishfleet/aiconverter-app", timeField: 2}
+              refId: C
+          - refId: D
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: rera-report-card
+              options: {owner: Nishfleet, repository: rera-report-card, query: "is:merged repo:Nishfleet/rera-report-card", timeField: 2}
+              refId: D
+          - refId: E
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: siterep-public
+              options: {owner: Nishfleet, repository: siterep-public, query: "is:merged repo:Nishfleet/siterep-public", timeField: 2}
+              refId: E
+          - refId: F
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: tether
+              options: {owner: Nishfleet, repository: tether, query: "is:merged repo:Nishfleet/tether", timeField: 2}
+              refId: F
+          - refId: G
+            relativeTimeRange: {from: 259200, to: 0}
+            datasourceUid: fleet-github
+            model:
+              datasource: {type: grafana-github-datasource, uid: fleet-github}
+              queryType: Pull_Requests
+              owner: Nishfleet
+              repository: TinyStudio.io-public
+              options: {owner: Nishfleet, repository: TinyStudio.io-public, query: "is:merged repo:Nishfleet/TinyStudio.io-public", timeField: 2}
+              refId: G
+          - refId: H
             datasourceUid: __expr__
             model:
               datasource: {type: __expr__, uid: __expr__}
               type: sql
               format: alerting
-              refId: C
+              refId: H
               expression: |-
                 SELECT CASE WHEN p0 + o0 > 0 AND p1 + o1 > 0 AND p0 <= o0 AND p1 <= o1 THEN 1 ELSE 0 END AS missed
                 FROM (
@@ -111,6 +161,16 @@ groups:
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at) AS age, 'fleet-ops' AS plane FROM A
                     UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM B
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM C
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM D
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM E
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM F
+                    UNION ALL
+                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM G
                   ) AS merged
                 ) AS windows
         noDataState: OK
