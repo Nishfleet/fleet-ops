@@ -89,7 +89,6 @@ The same 80-minute window, so the rows are directly comparable:
 | stepfun-step5previewj-worker-capable | 221 | 0 | 221 |
 | stepfun-step5previewb-worker-capable | 193 | 1 | 192 |
 | opencodego2-ds41flash-worker-capable | 134 | 0 | 134 |
-| pareto-glm53flash-worker-capable | 90 | 0 | 90 |
 | zen-spacebunny-worker-capable | 28 | 0 | 28 |
 
 | vendor | verdict | proof |

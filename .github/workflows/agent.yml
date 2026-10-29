@@ -1052,26 +1052,47 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). The label is
-      # set with this job's GITHUB_TOKEN (issues: write, fleet-ops#10447), so no runner login is read, and a PR
-      # from a fork never reaches here at all.
+      # A blocked coordinator PR (orch/issue-N) goes back to the orchestrator (fleet-ops#10435). Its reads run on the
+      # job's token, not the runner login's: that login's core quota can be exhausted by other work, which reddened an
+      # approved head (fleet-ops#10970). The label and comment are posted as the worker App, because a label or comment
+      # posted by GITHUB_TOKEN fires no workflow event (agent-dispatch.yml, the workflow_dispatch input note), so the
+      # orchestrator is never dispatched. No step here reads a login file, so the step runs on the review runners, whose
+      # user has none (fleet-ops#10950). A PR from a fork never reaches here at all.
+      - name: Read App private key for the rework label
+        id: rework-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          {
+            printf 'pem<<APP_PRIVATE_KEY_END\n'
+            cat "$keyfile"
+            printf 'APP_PRIVATE_KEY_END\n'
+          } >> "$GITHUB_OUTPUT"
+      - name: App token for the rework label
+        id: rework-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.rework-key.outputs.pem }}
+          permission-issues: write
       - name: Send a blocked orch PR back to the orchestrator
-        env:
-          GH_TOKEN: ${{ github.token }}
+        env: {GH_TOKEN: "${{ github.token }}", ISSUE_TOKEN: "${{ steps.rework-token.outputs.token }}"}
         run: |
           set -euo pipefail
-          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}
-          [ "$n" != "$ref" ] || exit 0
+          ref=$(gh pr view "$PR" -R "$REPO" --json headRefName,isCrossRepository --jq 'if .isCrossRepository then "fork" else .headRefName end'); n=${ref#orch/issue-}; [ "$n" != "$ref" ] || exit 0
           rev=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]") | .body | capture("^reviewer: (?<s>[0-9a-f]{40}) blocked\\.") | .s')
           grep -qx "$SHA" <<<"$rev" || exit 0
-          gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty' | grep -q . && exit 0
+          labels=$(gh issue view "$n" -R "$REPO" --json labels --jq '[.labels[].name] | index("needs-orchestrator") // empty'); grep -q . <<<"$labels" && exit 0
           rounds=$(grep -c . <<<"$rev")
           if [ "$rounds" -gt 3 ]; then
-            gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
-            gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework cap: PR #$PR was blocked $rounds times, 3 rework rounds are the limit. Needs Nish: take it over, or close the PR."
           else
-            gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
-            gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
+            GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label orchestrator-tried
+            GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
   # Arms an approved head: the review job's own approval in the same run, or one the hourly sweep found (stuck-arm).
   # It arms as the worker App and re-reads the PR, so a moved head or a closed PR is left alone. --match-head-commit makes the arm

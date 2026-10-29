@@ -1246,7 +1246,7 @@ jobs:
                 COMMENTS=$(jq -cn --arg b "$prior" --argjson n "$copies" '[range($n) | {user:{login:"github-actions[bot]"},body:$b}]') ;;
               BUILT=*) # the worker App's builder-engine record (a bot's comment)
                 COMMENTS=$(jq -cn --arg b "builder-engine: ${e1#BUILT=}" '[{user:{login:"nishfleet-worker[bot]",type:"Bot"},body:$b}]') ;;
-              BUILT_BY=*) # the same words from a person, or from another App's comment, count for nothing
+              BUILT_BY_*=*) # the same words from a person, or from another App's comment, count for nothing
                 COMMENTS=$(jq -cn --arg b "builder-engine: ${e1#*=}" --arg u "${e1%%=*}" '[{user:{login: (if $u == "BUILT_BY_PERSON" then "someone" else "github-actions[bot]" end), type: (if $u == "BUILT_BY_PERSON" then "User" else "Bot" end)},body:$b}]') ;;
             esac
             # Every token of the extra column sets one env var, except THIRD=, which names
