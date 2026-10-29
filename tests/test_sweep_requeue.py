@@ -235,8 +235,12 @@ def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
     counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE"))
     assert counted, "REQUEUE no longer counts ended hand-offs with a startswith() prefix"
     prefix = counted.group(1)
-    posted = [m for line in _y(".jobs.orchestrate.steps[] | select(.run) | .run").splitlines()
-              for m in re.findall(r'--body "([^"]*)"', line) if "gh issue comment" in line]
+    run = _y(".jobs.orchestrate.steps[] | select(.run) | .run")
+    bodies = [b for line in run.splitlines() if "gh issue comment" in line
+              for b in re.findall(r'--body "([^"]*)"', line)]
+    from_var = {b.lstrip("$") for b in bodies if b.startswith("$")}
+    posted = [b for b in bodies if not b.startswith("$")]
+    posted += [v for name, v in re.findall(r'\b(\w+)="([^"]*)"', run) if name in from_var]
     assert prefix in [body.split("$")[0] for body in posted], (prefix, posted)
 
 
