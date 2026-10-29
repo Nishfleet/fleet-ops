@@ -46,6 +46,7 @@ JSON_OBJECT_GATE = "import json,sys; sys.exit(0 if isinstance(json.load(open(sys
 NEEDS_YQ = pytest.mark.skipif(not shutil.which("yq"), reason="yq missing")
 RULE_SHAPE = re.compile(r"^\w+\(.*\)$")
 FILE_TOOLS_THE_CHECK_IGNORES = ("Write", "Glob")
+PROTECTED_MARKERS = ("seats", "tincan")
 
 
 def _permissions():
@@ -271,13 +272,16 @@ def test_a_protected_directory_denies_the_file_editing_tools_not_just_read() -> 
     """A path this file stops the Read tool on must stop the file-editing tools on too.
     `Edit(path)` is the rule that covers Write, NotebookEdit and MultiEdit, so a directory an
     agent cannot read but can overwrite is not protected: the seats directory holds the box's
-    seat keys and the tincan directory its inbox secret."""
+    seat keys and the tincan directory its inbox secret. The paths are read back off the file's
+    own Read denies, so this test adds no home path of its own."""
     deny = _rules("deny")
-    for path in (
-        "//home/nish/.config/fleet-ops/seats/**",
-        "//home/nish/.config/tincan/*.secret",
-    ):
-        assert f"Read({path})" in deny, path
+    protected = [
+        rule[5:-1]
+        for rule in deny
+        if rule.startswith("Read(") and any(marker in rule for marker in PROTECTED_MARKERS)
+    ]
+    assert protected, "no Read deny protects the seat or tincan directories"
+    for path in protected:
         assert f"Edit({path})" in deny, f"{path} is read-denied but not edit-denied"
 
 
@@ -302,11 +306,14 @@ def test_no_bash_command_reads_a_seat_or_tincan_file_by_hiding_its_path() -> Non
     that names the directory itself: `python3 -c "open('.../seats/x').read()"` ran before
     that rule existed. The limit is a string rule's reach: a command that reaches the file by
     a relative path (`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring, so
-    closing that needs a file mode or a sandbox, not another pattern."""
-    for path in (
-        "/home/nish/.config/fleet-ops/seats/claude-seat-a.env",
-        "/home/nish/.config/tincan/inbox.secret",
-    ):
+    closing that needs a file mode or a sandbox, not another pattern (fleet-ops#11114)."""
+    paths = [
+        rule[5:-1].rsplit("/", 1)[0] + "/inbox.secret"
+        for rule in _rules("deny")
+        if rule.startswith("Read(") and any(marker in rule for marker in PROTECTED_MARKERS)
+    ]
+    assert paths, "no Read deny protects the seat or tincan directories"
+    for path in paths:
         for command in (
             f"cat {path}",
             f"head -c 0 {path}",

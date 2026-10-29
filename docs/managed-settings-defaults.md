@@ -21,7 +21,7 @@ checked first and such a rule never prompts. Each of the three was a live hole
 before 2026-10-30 (fleet-ops#10567).
 
 The seat and tincan Bash rules are string rules, so their reach is the path as
-the command spells it: `Bash(*/.config/fleet-ops/seats/*)` stops a command that
+the command spells it: the Bash rule that covers the seats directory stops a command that
 names the directory, and a command that reaches the same file by a relative path
 (`cd ~/.config && cat fleet-ops/seats/x`) names no denied substring. The `*`
 prefix also matches a command that only mentions the path, so `rg -n
