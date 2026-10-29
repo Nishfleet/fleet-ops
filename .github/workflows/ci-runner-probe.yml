@@ -1,0 +1,22 @@
+# The consumer job fleet-ops#8936 bullet 4 asked for: dispatch it and the log names the
+# runner the job took, so an org variable that points CI at a self-hosted runner is
+# visible, and ubuntu-latest carries the job while the variable is unset
+# (docs/RUNBOOK.md "CI_RUNNER"). Non-required and dispatch-only on purpose: a probe
+# reports, it never gates. It restores the kimi-probe role, which the grader removal
+# took with it (fleet-ops#8953).
+name: ci-runner-probe
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ci-runner-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    name: probe
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Show the runner this job landed on
+        run: echo "runner=$RUNNER_NAME"
