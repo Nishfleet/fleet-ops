@@ -147,9 +147,10 @@ row 5 adds, on a login that already makes the other one.
 ## Delete list, ordered by lines removed per hour of work
 
 Hours are the whole job: the edit, the offline gates (`actionlint`,
-`zizmor`, `shellcheck`), and the proof the row demands. Lines are net removed
-from the files named. Rates are rounded to the nearest integer, ties broken by
-fewer hours, then by more lines.
+`zizmor`, `shellcheck`), and the proof the row can produce the same day (a live
+run id). The post-merge observation window is not in the hours and is counted
+separately. Lines are net removed from the files named. Rates are rounded to the
+nearest integer, ties broken by fewer hours, then by more lines, then by reach.
 
 | # | Delete | File(s) | Lines | Hours | Lines/h | Cost |
 |---|---|---|---|---|---|---|
@@ -187,7 +188,7 @@ Every number above comes from one command, so anyone can re-run it:
 | per-job line counts | `awk` over each job's span in the same two files |
 | the three ruleset ids and their required checks | `gh api repos/<repo>/rulesets` and `.../rulesets/<id>` |
 | `gh run rerun` is unused | `grep -rn 'gh run rerun' .github/` |
-| the 258 cancelled runs | #9269's own count, which `gh run list --limit 1000 --json conclusion` reproduces for any window |
+| the 258 cancelled runs | #9269's own count, which `gh run list --limit 1000 --json conclusion \| jq '[.[] \| select(.conclusion == "cancelled")] \| length'` reproduces for any window |
 | the deleted labels and variables | `grep -rn 'agent-in-progress\|MISS_REVIEW' config/ docs/ .github/ prompts/` |
 
 The line counts are pinned to `fa9a6445a` because `main` moves: a row's cost is
@@ -222,13 +223,15 @@ numbers and nothing else.
 - **`stuck-prs` (168).** The single retry authority. GitHub has no "PR with no
   verdict for 15 minutes" event, and this job is where every such class
   converges.
-- **`list`'s five remaining classes.** Triaging is not a class: the sweep has
-  seven. Row 6 takes the orphan label class and row 1 kills `stalled_refs` by
-  removing the refs it looks for, which leaves five: a required check that never
-  reported, an unarmed PR, a red claim PR, a deleted issue, and a label the
-  triage event missed. Each is a fact no stock object stores (a check that never
-  ran, a missing arm, a red head, a 410, a variable), and the sweep is the only
-  mover that reads state rather than events.
+- **`list`'s five live classes, plus one dead one.** Triaging is not a class:
+  the sweep has seven. Row 6 takes the orphan label class, which leaves six, and
+  row 1 stops creating the `-miss-review` refs that `stalled_refs` looks for, so
+  that class finds nothing and its code waits for a follow-up (below). The five
+  live ones are: a required check that never reported, an unarmed PR, a red
+  claim PR, a deleted issue, and a label the triage event missed. Each is a fact
+  no stock object stores (a check that never ran, a missing arm, a red head, a
+  410, a variable), and the sweep is the only mover that reads state rather than
+  events.
 - **`red-main` (85).** Files one issue per red workflow and closes it when the
   workflow is green. Nothing stock files and closes issues.
 - **`close-claim` (32).** `delete_branch_on_merge` cleans a merged claim
@@ -297,8 +300,8 @@ the check-run annotations read fine; `rework-note` already reads `--log-failed`
 the same way, which is why row 3 needs no new credential either. A rerun is a
 write and `github.token` has only the read, so `gh run rerun` runs as the runner
 login (`env -u GH_TOKEN`), the same login that dispatches the sweep today (`gh
-workflow run`, `agent.yml:916`). No token gains a scope. The caller is the
-sweep, not the dying run: a run cannot rerun itself while it runs. `--failed`
+workflow run`, `agent.yml:916` at `fa9a6445a`). No token gains a scope. The
+caller is the sweep, not the dying run: a run cannot rerun itself while it runs. `--failed`
 reruns only failed jobs, so a cancelled or timed-out run needs the plain `gh run
 rerun <id>`. The verdict travels as one annotation instead of a comment: the run
 prints `::warning::infra: <signature>`, the sweep lists the run's jobs, keeps
@@ -328,9 +331,11 @@ database or a host file, and no row is a migration.
 - Row 4: a freed lane sits idle for more than one sweep interval while ready
   work waits, twice in a week.
 - Row 5: the same engine fails the same way on a run already at `attempt` 4,
-  past the infra rerun cap of 3, and nothing strikes. The reset path has its own
-  signal: a park followed by a rerun of the same run in the same hour, which
-  would mean the park did not end the run it reset.
+  one past the infra rerun cap of 3, which the row keeps and now reads from the
+  run (a rerun adds one to `attempt`, so the cap counts reruns), and nothing
+  strikes. The reset path has its own signal: a park followed by a rerun of the
+  same run in the same hour, which would mean the park did not end the run it
+  reset.
 - Row 6: a worker run that parks, strikes or requeues leaves an issue the Gate
   then admits twice, or the sweep never requeues an issue whose run died.
 - Row 7: a hand-off loses work to a fresh checkout, or a live hand-off cannot
