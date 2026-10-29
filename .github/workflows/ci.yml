@@ -1341,11 +1341,11 @@ jobs:
             fi
             if [ -n "$problem" ]; then echo "arm case $name: $problem"; cat "$STATE/out" "$STATE/merge"; bad=1; fi
           done <<'CASES'
-          approved-head||||yes|set|
-          workflow-edit-arms-with-app-token||||yes|set|
-          workflow-edit-stale-sha|0000000000000000000000000000000000000001|||no||
-          workflow-edit-draft||1||no||
-          workflow-edit-already-armed|||1|no||
+          approved-head|||||yes|set|
+          workflow-edit-arms-with-app-token|||||yes|set|
+          workflow-edit-stale-sha|0000000000000000000000000000000000000001||||no||
+          workflow-edit-draft||1|||no||
+          workflow-edit-already-armed|||1||no||
           closed||||1|no||
           CASES
           test "$bad" -eq 0
