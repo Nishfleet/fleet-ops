@@ -111,6 +111,16 @@ def test_the_thirty_minute_wait_is_only_for_a_priority_now_issue(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [2]
 
 
+def test_a_priority_now_issue_takes_a_slot_ahead_of_the_parked_backlog(tmp_path):
+    """Five 7-hour hand-offs filled every slot of the sweep, so a priority-now issue queued behind
+    them however short its wait (fleet-ops#10716: #10681 sat that way for 16 h)."""
+    backlog = [issue(n, hours_idle=7) for n in range(1, 6)]
+    w = run(tmp_path, backlog + [issue(9, hours_idle=0.55, labels=("orchestrator-tried", "priority-now"))])
+    sel = edits(w, "--add-label needs-orchestrator")
+    assert 9 in sel, sel
+    assert len(sel) == 5, sel
+
+
 def test_batch_is_five(tmp_path):
     w = run(tmp_path, [issue(n) for n in range(1, 8)])
     assert len(edits(w, "--add-label needs-orchestrator")) == 5

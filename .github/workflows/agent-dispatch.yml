@@ -708,11 +708,11 @@ jobs:
               | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) then 1800 else 21600 end)
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
-              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
+              | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
