@@ -477,6 +477,11 @@ groups:
       # same hour 30 days ago, so a spread or trickling leak shows up as growth
       # whatever any single bucket does. Query B is the hour ending 30 days
       # back, the same shape as cf-r2-bucket-growth's 24-hour-back B.
+      # Query R joins the account growth to the top-bucket row, because a
+      # scalar frame carries no labels and the top annotation needs one.
+      # Accepted blind spot: a planned bulk write raises the total for good,
+      # so a restore or a re-upload of more than 4 GB files an issue every
+      # 12 hours until the 30-day-old baseline catches up, up to a month.
       # Severity warning, not critical: cloudflare-spend-contact.yaml sends
       # only critical to hermes-urgent, so this rule files a fleet-ops issue
       # and never pages. tests/alert_routes_check.py holds that: a rule outside
