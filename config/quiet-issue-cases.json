@@ -1,0 +1,246 @@
+{
+ "_": "Cases for the QUIET, NOT_FINISHED and LANE programs in agent-dispatch.yml's list job (ci.yml runs them, one case per verdict). QUIET takes [issue] and answers one object per issue that must restart: `lane` is worker, orchestrate, or absent. The base issue is #10681 at 10:20Z: open, priority-now and needs-orchestrator, last touched at 10:00Z, so 20 minutes quiet over the 15-minute idle line. NOT_FINISHED takes the merged PRs for the closed issue and answers the line, quoting it. LANE takes an issue's labels and answers has or none.",
+ "now": 1793182800,
+ "idle": 900,
+ "base": {
+  "prs": [],
+  "issue": {
+   "number": 10681,
+   "state": "open",
+   "labels": [
+    {
+     "name": "priority-now"
+    },
+    {
+     "name": "needs-orchestrator"
+    }
+   ],
+   "updatedAt": "2026-10-28T10:00:00Z",
+   "comments": [
+    {
+     "body": "orchestrator hand-off started: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000000",
+     "createdAt": "2026-10-28T09:20:00Z",
+     "author": {
+      "login": "github-actions[bot]"
+     },
+     "authorAssociation": "NONE"
+    }
+   ]
+  },
+  "labels": [],
+  "merged": [
+   {
+    "number": 10711,
+    "body": "Fixes 2 of the 6 numbers: this does not finish the issue.\n\nCloses #10681\n"
+   }
+  ]
+ },
+ "cases": [
+  {
+   "id": "parked-quiet-15",
+   "prog": "QUIET",
+   "want": "orchestrate"
+  },
+  {
+   "id": "parked-but-touched-5m-ago",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "issue": {
+     "updatedAt": "2026-10-28T10:15:00Z"
+    }
+   }
+  },
+  {
+   "id": "agent-ready-quiet",
+   "prog": "QUIET",
+   "want": "worker",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "priority-now"
+      },
+      {
+       "name": "agent-ready"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "orchestrator-tried-quiet",
+   "prog": "QUIET",
+   "want": "orchestrate",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "priority-now"
+      },
+      {
+       "name": "orchestrator-tried"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "three-ended-hand-offs-escalate-not-restart",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "issue": {
+     "comments": [
+      {
+       "body": "orchestrator hand-off ended without a PR: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000001",
+       "createdAt": "2026-10-28T09:00:00Z",
+       "author": {
+        "login": "nish3451"
+       },
+       "authorAssociation": "OWNER"
+      },
+      {
+       "body": "orchestrator hand-off ended without a PR: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000002",
+       "createdAt": "2026-10-28T09:20:00Z",
+       "author": {
+        "login": "nish3451"
+       },
+       "authorAssociation": "OWNER"
+      },
+      {
+       "body": "orchestrator re-fired by the sweep: https://github.com/Nishfleet/fleet-ops/actions/runs/40000000003",
+       "createdAt": "2026-10-28T09:40:00Z",
+       "author": {
+        "login": "github-actions[bot]"
+       },
+       "authorAssociation": "NONE"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "open-pr-owns-it",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "prs": [
+     "claim/issue-10681"
+    ]
+   }
+  },
+  {
+   "id": "waiting-on-nish-is-not-quiet",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "priority-now"
+      },
+      {
+       "name": "needs-orchestrator"
+      },
+      {
+       "name": "needs-nish-decision"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "no-lane-no-restart",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "issue": {
+     "labels": [
+      {
+       "name": "priority-now"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "closed-is-not-quiet",
+   "prog": "QUIET",
+   "want": "",
+   "set": {
+    "issue": {
+     "state": "closed"
+    }
+   }
+  },
+  {
+   "id": "pr-says-it-does-not-finish",
+   "prog": "NOT_FINISHED",
+   "want": "Fixes 2 of the 6 numbers: this does not finish the issue."
+  },
+  {
+   "id": "pr-does-not-finish-without-the-close-line",
+   "prog": "NOT_FINISHED",
+   "want": "",
+   "set": {
+    "merged": [
+     {
+      "number": 10712,
+      "body": "This does not finish the issue.\n\nRelates to #10681\n"
+     }
+    ]
+   }
+  },
+  {
+   "id": "pr-finishes-the-issue",
+   "prog": "NOT_FINISHED",
+   "want": "",
+   "set": {
+    "merged": [
+     {
+      "number": 10713,
+      "body": "All six numbers are covered.\n\nCloses #10681\n"
+     }
+    ]
+   }
+  },
+  {
+   "id": "pr-closes-another-issue",
+   "prog": "NOT_FINISHED",
+   "want": "",
+   "set": {
+    "merged": [
+     {
+      "number": 10714,
+      "body": "Covered 2 of 6, does not finish.\n\nCloses #10700\n"
+     }
+    ]
+   }
+  },
+  {
+   "id": "blocker-with-no-lane",
+   "prog": "LANE",
+   "want": "none",
+   "set": {
+    "labels": [
+     {
+      "name": "priority-now"
+     }
+    ]
+   }
+  },
+  {
+   "id": "blocker-already-has-a-lane",
+   "prog": "LANE",
+   "want": "has",
+   "set": {
+    "labels": [
+     {
+      "name": "agent-ready"
+     }
+    ]
+   }
+  }
+ ]
+}
