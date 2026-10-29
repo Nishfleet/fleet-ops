@@ -80,6 +80,8 @@ const ask = (unit, verb, user) =>
 const rows = [
   ["actions.runner.Nishfleet.netcup-agent-9.service", "restart", "nish", "yes"],
   ["actions.runner.Nishfleet.netcup-agent-10.service", "start", "nish", "yes"],
+  ["actions.runner.Nishfleet.netcup-agent-11.service", "restart", "nish", "yes"],
+  ["actions.runner.Nishfleet.netcup-agent-12.service", "start", "nish", "yes"],
   ["actions.runner.Nishfleet.netcup-agent-9.service", "stop", "nish", "no"],
   ["actions.runner.Nishfleet.netcup-agent-2.service", "restart", "nish", "no"],
   ["actions.runner.Nishfleet.netcup-agent-9.service", "restart", "jev", "no"],
@@ -95,4 +97,4 @@ for (const [unit, verb, user, want] of rows) {
         [node, str(harness), str(script)], capture_output=True, text=True, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.count("ok ") == 5
+    assert result.stdout.count("ok ") == 7

@@ -1,6 +1,6 @@
 """Review runners run as fleet-reviewer and take the reviewer App key from the credential store (fleet-ops#10950).
 
-Runners 9 and 10 are the only units the review job and the arm job run on, so they are the
+Runners 9 to 12 are the only units the review job and the arm job run on, so they are the
 only units that may hold the reviewer App key. It arrives by bare name, which systemd reads
 from /etc/credstore (root-owned 0600): a source path would be a readable copy under a home
 directory, and a second unit that loaded it would be a second identity that can post an
@@ -22,6 +22,8 @@ SEATS = "${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}"
 REVIEW_USERS = {
     "actions.runner.Nishfleet.netcup-agent-9.service.d/30-review-user.conf",
     "actions.runner.Nishfleet.netcup-agent-10.service.d/30-review-user.conf",
+    "actions.runner.Nishfleet.netcup-agent-11.service.d/30-review-user.conf",
+    "actions.runner.Nishfleet.netcup-agent-12.service.d/30-review-user.conf",
 }
 
 
