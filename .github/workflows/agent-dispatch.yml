@@ -638,8 +638,7 @@ jobs:
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
               | select((any($l[]; IN("needs-nish-decision", "agent-blocked")) | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
-                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)))
-              | select("orch/issue-\(.number)" | IN($prs[]) | not)
+                and (($l | index("handoff-ended") != null) != ($l | index("needs-orchestrator") != null)) and ("orch/issue-\(.number)" | IN($prs[]) | not))
               | {number, ended: ($l | index("handoff-ended") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select((((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login == "nishfleet-worker")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
