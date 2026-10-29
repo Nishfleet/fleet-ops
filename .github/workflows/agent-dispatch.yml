@@ -487,7 +487,7 @@ jobs:
     outputs:
       refs: ${{ steps.list.outputs.refs }}
       stalled_refs: ${{ steps.list.outputs.stalled_refs }}
-      parked: ${{ steps.list.outputs.parked }}
+      parked: ${{ steps.requeue.outputs.parked }}
       released: ${{ steps.list.outputs.released }}
     steps:
       - id: list
@@ -709,7 +709,8 @@ jobs:
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
       # Selection only: this job runs hosted, where the sweep token fires no label event and no
       # fleet credential exists, so the parked job below holds the writes (fleet-ops#10963).
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - id: requeue
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -720,12 +721,12 @@ jobs:
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or ((.author.login | IN("nishfleet-worker[bot]", "github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
+                  or ((.author.login | IN("nishfleet-worker", "nishfleet-worker[bot]", "github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
             | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
-          fail() { echo "::error::$1 failed, nothing is parked this sweep"; queued=5; }
+          fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
           queued=0; ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id') || fail "run list"
           for id in $ids; do # live orchestrate jobs: a job name is set on any caller
             c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length') || { fail "job read"; break; }
@@ -733,7 +734,7 @@ jobs:
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
           rows=$(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
-            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE") || { fail "issue list"; rows=[]; }
+            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE") || { fail "issue list"; exit 1; }
           echo "parked=${rows:-[]}" >> "$GITHUB_OUTPUT"
   # The parked hand-offs the list job selected. This job, not the list job, holds
   # the writes, because the list job runs on a GitHub-hosted runner: there the
@@ -760,7 +761,7 @@ jobs:
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
       ((needs.list.outputs.released != '' && needs.list.outputs.released != '[]') ||
        (needs.list.outputs.parked != '' && needs.list.outputs.parked != '[]'))
-    runs-on: [self-hosted, agent]
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
     timeout-minutes: 10
     # The App token does every write; the job's own token is not used.
     permissions: {}

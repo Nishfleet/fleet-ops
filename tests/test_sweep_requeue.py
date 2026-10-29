@@ -10,14 +10,14 @@ runs a sweep. Three ended or re-fired hand-offs give needs-nish-decision.
 The list job selects and the parked job writes, because the list job runs on a GitHub-hosted
 runner: the sweep token there fires no issues event, so a label write re-queues nothing, and no
 fleet credential exists, so both writes were refused on every run and 51 hand-offs sat on
-handoff-ended (fleet-ops#10963). The write job runs on the agent pool and writes on the worker App
+handoff-ended (fleet-ops#10963). The write job runs on the runner selection the orchestrate job uses (the fleet-ops runner group on fleet-ops, the agent pool elsewhere) and writes on the worker App
 token, the same two steps admit uses: writing needs-orchestrator fires the labeled event the
 orchestrate job waits for, and the App sender is on its allowlist. A refused write fails the job
 and posts no marker, so the sweep's strike counts only a write that landed.
 
 The fake gh answers `issue list` from a file, so it proves the request, not the order GitHub
 answers in. A refused write is FAIL_EDIT, which is what a login-less runner and a token without
-issues: write both look like.
+issues: write both look like. A refused comment is FAIL_COMMENT, and a read failure is FAIL_ISSUES. A comment read returns the App as `nishfleet-worker` with no `[bot]` suffix, so the strike counter names that login too.
 """
 import datetime
 import json
@@ -37,7 +37,7 @@ ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/
 
 FAKE_GH = r"""#!/usr/bin/env bash
 case "$1 $2" in
-  "issue list") cat "$FAKE_DIR/issues.json" ;;
+  "issue list") [ -z "$FAIL_ISSUES" ] || exit 1; cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
     [ -z "$FAIL_RUNS" ] || exit 1
@@ -46,7 +46,8 @@ case "$1 $2" in
     [ -z "$FAIL_JOBS" ] || exit 1
     id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
     jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
-  "issue edit"|"issue comment") [ -z "$FAIL_EDIT" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue edit") [ -z "$FAIL_EDIT" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
+  "issue comment") [ -z "$FAIL_EDIT$FAIL_COMMENT" ] || exit 1; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 """
@@ -252,7 +253,43 @@ def test_three_refused_writes_do_not_escalate(tmp_path):
         run(tmp_path, i, fail={"FAIL_EDIT": "1"})
     log = tmp_path / "writes.log"
     w = log.read_text().splitlines() if log.exists() else []
-    assert edits(w, "--add-label needs-orchestrator") == []
+    assert edits(w, "--add-label needs-orchestrator") == [], "no write landed, so no re-fire"
+    assert not edits(w, "--add-label needs-nish-decision"), "three refused writes do not escalate to a human"
+
+
+def test_a_refused_marker_fails_the_job_though_the_write_landed(tmp_path):
+    """A landed re-fire write whose marker is refused still fails the job.
+
+    The re-fire is two label writes plus a comment marker. When only the comment is refused the
+    label writes land and the issue is re-queued, but the strike counter will not see a marker,
+    so the job must fail on a non-zero exit to keep a re-fired issue countable (fleet-ops#10963).
+    """
+    w, text, code = run(tmp_path, [issue(1, ended=0, labels=("needs-orchestrator",))],
+                       fail={"FAIL_COMMENT": "1"}, out=True)
+    assert edits(w, "--add-label needs-orchestrator") == [1], "the re-fire write landed"
+    assert edits(w, "--remove-label needs-orchestrator") == [1], "the churn removed the label first"
+    assert not [l for l in w if l.startswith("issue comment")], "the refused marker left no comment"
+    assert code != 0, "a re-fire without its marker fails the job even though the write landed"
+    assert "re-fire marker refused" in text
+
+
+def test_a_sweep_that_cannot_read_its_candidates_goes_red(tmp_path):
+    """A selection step that cannot read its candidates fails, it does not report empty success.
+
+    The `gh issue list` read sits in a command substitution piped to jq. Before, a read failure
+    fell back to `rows=[]`, so a broken sweep looked like a clean sweep with nothing selected and
+    the re-queues never fired. The step must exit non-zero so the run is red (fleet-ops#10963).
+    """
+    _fake_gh(tmp_path, [issue(1)])
+    (tmp_path / "github_output").write_text("")
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path),
+           "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "GITHUB_OUTPUT": str(tmp_path / "github_output"),
+           "WORKFLOW_REF": "o/r/.github/workflows/stub.yml@refs/heads/main", "FAIL_ISSUES": "1",
+           "REQUEUE": _y(f"{STEP} | .env.REQUEUE")}
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{STEP} | .run")],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "::error::issue list failed" in r.stdout + r.stderr
 
 
 def test_refires_count_toward_the_three_strikes(tmp_path):
@@ -264,10 +301,12 @@ def test_refires_count_toward_the_three_strikes(tmp_path):
     assert [l for l in w if l.startswith("issue comment 2 ") and "runs/40786326904" in l]
 
 
-@pytest.mark.parametrize("login", ["github-actions", "github-actions[bot]", "nishfleet-worker[bot]"])
+@pytest.mark.parametrize("login", ["github-actions", "github-actions[bot]", "nishfleet-worker", "nishfleet-worker[bot]"])
 def test_actions_token_marker_counts_under_graphql_and_rest_login(tmp_path, login):
     """gh issue list (GraphQL) names the Actions token github-actions, the REST API
-    github-actions[bot], and the worker App token the parked job writes on nishfleet-worker[bot]."""
+    github-actions[bot], and the worker App token the parked job writes on nishfleet-worker
+    (no [bot] suffix). A marker the sweep itself writes must count under every spelling, or the
+    strike cap never removes the label (fleet-ops#10963)."""
     i = issue(1, ended=0, labels=("needs-orchestrator",), refired=3)
     for c in i["comments"]:
         c["author"] = {"login": login}
@@ -401,7 +440,15 @@ def test_a_refused_release_fails_the_job(tmp_path):
 
 
 def test_the_list_job_publishes_the_selection_as_its_parked_output():
-    assert _y(".jobs.list.outputs.parked") == "${{ steps.list.outputs.parked }}\n"
+    """The list job publishes the parked selection as a job output the write job reads.
+
+    `steps.<id>.outputs.<name>` reads only the step that holds that id, so the output must name
+    the step that writes `parked`. Pointing it at the `list` step -- which writes only
+    refs/stalled_refs/released -- leaves `parked` empty and the write job never fires, the very
+    failure this change fixes. The detector ties the output to the step that writes it.
+    """
+    assert _y(".jobs.list.outputs.parked") == "${{ steps.requeue.outputs.parked }}\n"
+    assert _y(f"{STEP} | .id").strip() == "requeue", "the selection step carries the id the output names"
     assert 'echo "parked=${rows:-[]}" >> "$GITHUB_OUTPUT"' in _y(f"{STEP} | .run")
 
 
@@ -416,9 +463,13 @@ def test_the_write_job_is_its_own_job_that_nothing_depends_on():
 
 def test_the_write_job_writes_on_the_worker_app_token():
     """The list job runs hosted, where the sweep token fires no label event and no fleet credential
-    exists, so the write job runs on the agent pool and mints the worker App token: the same write
-    admit makes, the sender the orchestrate job's allowlist names."""
-    assert _yj(".jobs.parked.runs-on") == ["self-hosted", "agent"]
+    exists, so the write job mints the worker App token: the same write admit makes, the sender the
+    orchestrate job's allowlist names. Its runner is orchestrate's selection -- the fleet-ops runner
+    group on fleet-ops, the agent pool elsewhere -- because a bare `[self-hosted, agent]` label
+    queues to a 24 h expiry on the fleet-ops runner (fleet-ops#10717)."""
+    runs_on = _y(".jobs.parked.runs-on")
+    assert runs_on == _y(".jobs.orchestrate.runs-on"), "the parked job uses orchestrate's runner selection"
+    assert "github.repository == 'Nishfleet/fleet-ops'" in runs_on and '["self-hosted","fleet-ops"]' in runs_on
     assert _yj(".jobs.parked.permissions") == {}
     assert "create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510" in _y(".jobs.parked.steps[] | select(.uses) | .uses")
     assert _y(f"{PARKED} | .env.GH_TOKEN") == "${{ steps.app-token.outputs.token }}\n"
