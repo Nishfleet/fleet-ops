@@ -23,8 +23,8 @@ def _iso(ts):
     return subprocess.run(["date", "-u", "-d", f"@{ts}", "+%Y-%m-%dT%H:%M:%SZ"], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def decide(file, run, issues):
-    payload = json.dumps({"file": file, "run": run, "issues": issues})
+def decide(file, run, issues, trig=("push",)):
+    payload = json.dumps({"file": file, "run": run, "trig": list(trig), "issues": issues})
     out = subprocess.run(
         ["jq", "-c", "--argjson", "now", str(NOW), _y(f"{FIND} | .env.RED_MAIN")],
         input=payload, check=True, capture_output=True, text=True,
@@ -97,12 +97,14 @@ def test_duplicates_are_judged_on_the_lowest_number():
 
 def test_green_run_closes_every_open_issue():
     v = decide("deploy.yml", green(), [issue(9), issue(5), issue(7, state="CLOSED", closed_ago=DAY)])
-    assert v == {"action": "close", "issues": [5, 9], "reason": "main is green again"}
+    assert v == {"action": "close", "issues": [5, 9], "reason": "main is green again",
+                 "msg": "deploy.yml is green on the default branch again: https://example.invalid/runs/101"}
 
 
 def test_green_run_leaves_an_issue_a_worker_has_claimed():
     v = decide("deploy.yml", green(), [issue(5, labels=("agent-in-progress",)), issue(9)])
-    assert v == {"action": "close", "issues": [9], "reason": "main is green again"}
+    assert v == {"action": "close", "issues": [9], "reason": "main is green again",
+                 "msg": "deploy.yml is green on the default branch again: https://example.invalid/runs/101"}
 
 
 def test_green_run_with_only_a_claimed_issue_does_nothing():
@@ -138,6 +140,26 @@ def test_no_finished_run_does_nothing():
     assert decide("deploy.yml", None, [])["action"] == "none"
 
 
+def test_no_finished_run_and_no_default_branch_trigger_closes_its_open_issue():
+    v = decide("hand.yml", None, [issue(5, file="hand.yml")], trig=("workflow_dispatch",))
+    assert v == {"action": "close", "issues": [5], "reason": "no trigger that runs on the default branch",
+                 "msg": "hand.yml has no trigger that runs on the default branch, so it can never be green there"}
+
+
+def test_no_finished_run_and_no_default_branch_trigger_leaves_a_claimed_issue_alone():
+    v = decide("hand.yml", None, [issue(5, file="hand.yml", labels=("agent-in-progress",))], trig=())
+    assert v == {"action": "none", "issues": [], "reason": "no trigger that runs on the default branch"}
+
+
+def test_workflow_call_is_not_a_default_branch_trigger():
+    assert decide("hand.yml", None, [issue(5, file="hand.yml")], trig=("workflow_call", "workflow_dispatch"))["action"] == "close"
+    assert decide("deploy.yml", red(), [], trig=("push", "workflow_dispatch"))["action"] == "create"
+
+
+def test_a_red_run_of_a_workflow_that_cannot_run_on_the_default_branch_still_closes_its_issue():
+    assert decide("hand.yml", red(), [issue(5, file="hand.yml")], trig=("workflow_dispatch",))["action"] == "close"
+
+
 FAKE_GH = r"""#!/usr/bin/env bash
 d=$FAKE_DIR
 args=("$@")
@@ -153,9 +175,11 @@ case "$1" in
       repos/o/r/actions/workflows/*status=success*) f=$d/green-$(basename "${url%%/runs*}").json ;;
       repos/o/r/actions/workflows/*/runs\?*) f=$d/runs-$(basename "${url%%/runs*}").json ;;
       repos/o/r/actions/runs/*/jobs*) f=$d/jobs-$(echo "$url" | sed 's|.*/runs/\([0-9]*\)/jobs.*|\1|').json ;;
+      repos/o/r/contents/*) f=$d/on-$(basename "${url%%\?*}"); [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; } ;;
       *) echo "fake gh: unexpected api: $url" >&2; exit 1 ;;
     esac
     [ -f "$f" ] || { echo "fake gh: no fixture $f" >&2; exit 1; }
+    [ -n "$jqx" ] || { cat "$f"; exit 0; }
     jq -r "$jqx" "$f" ;;
   issue)
     case "$2" in
@@ -173,7 +197,9 @@ def _setup(tmp_path, files, issues, repo="o/r"):
     fake.mkdir()
     (fake / "repo.json").write_text(json.dumps({"default_branch": "main"}))
     workflows = []
-    for wid, (path, state, runs, jobs, green_sha) in files.items():
+    for wid, spec in files.items():
+        path, state, runs, jobs, green_sha = spec[:5]
+        (fake / f"on-{path.rsplit('/', 1)[-1]}").write_text(spec[5] if len(spec) > 5 else "on:\n  push:\n  workflow_dispatch:\n")
         workflows.append({"id": wid, "path": path, "state": state})
         (fake / f"runs-{wid}.json").write_text(json.dumps({"workflow_runs": runs}))
         (fake / f"green-{wid}.json").write_text(json.dumps({"workflow_runs": [{"head_sha": green_sha}] if green_sha else []}))
@@ -349,6 +375,55 @@ def test_sweep_fails_when_the_workflow_list_is_unreadable(tmp_path):
     assert log == []
 
 
+def test_sweep_skips_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == []
+    assert "hand.yml: none, no trigger that runs on the default branch" in r.stdout
+
+
+def test_sweep_closes_an_issue_for_a_workflow_that_cannot_run_on_the_default_branch(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it can never be green there"]
+
+
+def test_sweep_closes_an_issue_for_a_workflow_whose_file_is_gone(tmp_path):
+    r, log = _sweep(tmp_path, deploy(), [issue(5)], drop=["on-deploy.yml"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == ["issue close 5 -R o/r -r completed -c deploy.yml has no trigger that runs on the default branch, so it can never be green there"]
+
+
+def test_sweep_reads_the_on_block_past_a_comment_through_a_flow_list_and_a_quoted_key(tmp_path):
+    files = {
+        1: (".github/workflows/commented.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on: # push and schedule come later\n  workflow_dispatch:\n"),
+        2: (".github/workflows/flow.yml", "active", [_api_run(20, "failure")], FAILED_JOBS, None, "on: [schedule, workflow_dispatch]\n"),
+        3: ('.github/workflows/quoted.yml', "active", [_api_run(30, "failure")], FAILED_JOBS, None, '"on":\n  push:\n'),
+        4: (".github/workflows/scalar.yml", "active", [_api_run(40, "failure")], FAILED_JOBS, None, "on: push\n"),
+        5: (".github/workflows/empty.yml", "active", [_api_run(50, "failure")], FAILED_JOBS, None, "on:\n"),
+    }
+    r, log = _sweep(tmp_path, files, [])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [l.split("--title Main is red: ")[1].split(" --body")[0] for l in log] == ["flow.yml", "quoted.yml", "scalar.yml"]
+
+
+def test_sweep_closes_an_issue_for_a_workflow_that_has_no_finished_run_at_all(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [], FAILED_JOBS, None, "on:\n  workflow_dispatch:\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == ["issue close 5 -R o/r -r completed -c hand.yml has no trigger that runs on the default branch, so it can never be green there"]
+
+
+def test_sweep_closes_an_issue_for_a_workflow_whose_on_block_is_not_yaml(tmp_path):
+    files = {1: (".github/workflows/hand.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None, "on: [push,\n")}
+    r, log = _sweep(tmp_path, files, [issue(5, file="hand.yml")])
+    assert r.returncode != 0
+    assert "hand.yml: on: block unreadable, skipped" in r.stdout
+    assert log == []
+
+
 def test_red_main_job_is_gated_and_needs_no_new_token():
     cond = " ".join(_y(".jobs.red-main.if").split())
     assert cond.startswith("vars.FLEET_DISPATCH_PAUSED != 'true' && ")
@@ -356,4 +431,4 @@ def test_red_main_job_is_gated_and_needs_no_new_token():
     assert "vars.RED_MAIN != 'off'" in cond
     assert "TinyStudio" not in cond
     assert _y(".jobs.red-main.steps[0].env.GH_TOKEN").strip() == "${{ github.token }}"
-    assert dict(l.split(": ") for l in _y(".jobs.red-main.permissions").strip().splitlines()) == {"issues": "write", "actions": "read"}
+    assert dict(l.split(": ") for l in _y(".jobs.red-main.permissions").strip().splitlines()) == {"issues": "write", "actions": "read", "contents": "read"}
