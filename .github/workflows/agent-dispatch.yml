@@ -697,20 +697,22 @@ jobs:
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
+      # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
+      # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - 21600
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
-              | {number, tried: ($l | index("orchestrator-tried") != null), runs: [.comments[]
+              | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + [.[] | select(.act == "requeue")][:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
@@ -739,8 +741,8 @@ jobs:
     strategy:
       fail-fast: false
       # 12, not 4: the bound is the 22 online [self-hosted, agent] runners, and a job over
-      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots,
-      # Devin's 4) is gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
+      # that count waits rather than fails. The old 4 (fleet-ops#8553's 7 router slots) is
+      # gone; worker-capable now sums 65 seats, so 12 leaves 10 runners free.
       max-parallel: ${{ fromJSON(vars.AGENT_MAX_PARALLEL || '12') }}
       matrix:
         ref: ${{ fromJSON(needs.list.outputs.refs) }}
@@ -1087,7 +1089,12 @@ jobs:
         # still fires this, and it closed a graded PR (0509 #4972/#5012).
         run: |
           [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json state --jq .state)" = CLOSED ] || exit 0
-          gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name' | grep -qx agent-in-progress && gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress || true
+          # A closed issue is not active work: strip the queue and park labels, and
+          # orchestrator-tried, which marks a dead end that a close ends
+          # (fleet-ops#9278 items 4 and 11). needs-nish-decision stays: it is a
+          # record of a reserved call, not a queue state. An empty list makes the
+          # edit fail and || true swallows it, the same net effect as skipping.
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name | select(IN("agent-ready","agent-in-progress","agent-failed","strong-only","agent-blocked","needs-split","needs-orchestrator","needs-coordinator","orchestrator-tried"))] | join(",")')" || true
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do
             # Re-check: the one race this guards is a merge landing between the
             # list and the close, which must skip, not fail.
@@ -1404,7 +1411,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Raw values: the defaults live in bash, so a literal 0 survives.
           DAILY_MAX: ${{ vars.ORCHESTRATE_DAILY_MAX }}
-          MODEL_VAR: ${{ vars.ORCHESTRATE_MODEL }}
           RUNNER_VAR: ${{ vars.ORCHESTRATE_RUNNER }}
         run: |
           set -euo pipefail
@@ -1419,10 +1425,11 @@ jobs:
           case $labels in *,needs-orchestrator,*) ;; *) echo "orchestrate: #$ISSUE no longer has needs-orchestrator; skip"; exit 0 ;; esac
           case $labels in *,orchestrator-tried,*) echo "orchestrate: #$ISSUE already has orchestrator-tried; skip"; exit 0 ;; esac
           branch="orch/issue-$ISSUE"
-          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: skip. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
+          # A branch on origin with an open PR in this repo is a blocked review sent back (fleet-ops#10435), and one with no PR at all is a hand-off whose run died before opening it: continue either. The job's per-issue concurrency group means no other run for #N is live. A closed or merged PR ended the branch: park it on agent-blocked, because a session cannot push to an ended branch (fleet-ops#10211: three sessions of about 50 minutes each, and its one PR had already merged) and because a bare skip leaves it parked on needs-orchestrator with no PR, so the queue-stuck rule counts it as stuck and it never leaves the queue (fleet-ops#10843). The label swap also ends this path, since the check above leaves the issue alone once needs-orchestrator is gone. A fork PR of that name is not one, and a PR list that cannot be read skips, because an empty $(...) is not a 0.
           if gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
-            ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then 0 else length end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
-            if [ "$ended" != 0 ]; then echo "orchestrate: $branch has only closed or merged PRs; skip"; exit 0; fi
+            ended=$(gh api "repos/$REPO/pulls?head=${REPO%%/*}:$branch&state=all" --jq 'if any(.[]; .state == "open") then "open" elif length == 0 then "none" else "newest #\([.[].number] | max // "unknown")" end') || { echo "orchestrate: the PR list for $branch failed; skip"; exit 0; }
+            # The two writes below need issues: write, and this job holds issues: read (its own token reads the issue and the PR list above). They go as the runner user's own gh login, the credential every other write in this job uses (the mark-tried step below, and the session's push), so `env -u` is what hands gh that login, not a way to strip its only credential.
+            if [ "$ended" != open ] && [ "$ended" != none ]; then env -u GH_TOKEN -u GITHUB_TOKEN gh issue edit "$ISSUE" -R "$REPO" --add-label agent-blocked --remove-label needs-orchestrator; env -u GH_TOKEN -u GITHUB_TOKEN gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator: $branch has only closed or merged pull requests ($ended), so no hand-off can continue it. Parked agent-blocked for the open-or-close decision; a fresh branch needs a new claim."; echo "orchestrate: $branch has only closed or merged PRs; parked #$ISSUE agent-blocked"; exit 0; fi
           fi
           # Daily cap (fleet-ops#9351): a 2026-10-06 day of 26 Opus hand-offs
           # used ~31% of Nish's weekly Claude limit. It counts today's (IST)
@@ -1452,17 +1459,12 @@ jobs:
           else
             echo "orchestrate: daily cap off (ORCHESTRATE_DAILY_MAX=0)"
           fi
-          # Sonnet unless the issue asks for Opus or ORCHESTRATE_MODEL is off.
-          # An empty model leaves the session default (Opus) in place.
-          MODEL_VAR=${MODEL_VAR:-claude-sonnet-5-5}
-          if [[ $labels == *,needs-opus,* || $MODEL_VAR == off ]]; then
-            { echo "model="; echo "turns=80"; } >> "$GITHUB_OUTPUT"
-          else
-            { echo "model=$MODEL_VAR"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
-          fi
-          # Pi on a LiteLLM seat unless the issue asks for Opus or
-          # ORCHESTRATE_RUNNER is claude (fleet-ops#9407: Claude burn).
-          if [[ $labels == *,needs-opus,* || $MODEL_VAR == off || ${RUNNER_VAR:-pi} == claude ]]; then
+          # Sonnet for every hand-off: Opus, Fable and Qwen are reviewer and judge
+          # models only, and a bare `claude -p` would run the Opus default (#10750).
+          { echo "model=claude-sonnet-5-5"; echo "turns=40"; } >> "$GITHUB_OUTPUT"
+          # Pi on a LiteLLM seat unless ORCHESTRATE_RUNNER is claude
+          # (fleet-ops#9407: Claude burn).
+          if [ "${RUNNER_VAR:-pi}" = claude ]; then
             echo "runner=claude" >> "$GITHUB_OUTPUT"
           else
             echo "runner=pi" >> "$GITHUB_OUTPUT"
@@ -1571,23 +1573,23 @@ jobs:
             prompt="$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/orchestrator-handoff.md"
           fi
           { cat "$prompt"; printf '\n\nTarget: %s#%s\nBranch: orch/issue-%s. It is checked out already; run git log --oneline origin/main..HEAD before you build, because an earlier hand-off may have left commits here.\n' "$REPO_NAME" "$ISSUE_N" "$ISSUE_N"; } > "$RUNNER_TEMP/orchestrator-prompt.md"
-          # Sonnet by default; the session default (Opus) only for a needs-opus issue, where MODEL
-          # is empty (fleet-ops#9351). --output-format json puts modelUsage in the log, the proof
-          # of which model ran. GH_TOKEN and GITHUB_TOKEN are unset so the session authenticates
-          # as the runner user, whose gh login can push .github/workflows/**. The prompt goes on
-          # stdin: it opens with `---` front matter, which as an argument the CLI parses as an option.
+          # Sonnet for every hand-off; there is no empty-model path, which would
+          # run the session default (Opus, fleet-ops#9351, #10750). --output-format
+          # json puts modelUsage in the log, the proof of which model ran. GH_TOKEN
+          # and GITHUB_TOKEN are unset so the session authenticates as the runner
+          # user, whose gh login can push .github/workflows/**. The prompt goes on
+          # stdin: it opens with `---` front matter, which as an argument the CLI
+          # parses as an option.
           if [ "$ORCH_RUNNER" = pi ]; then
             # Pi on a LiteLLM seat: no Claude spend, no turn cap; the step's timeout-minutes is the wall
             # (fleet-ops#10349). The litellm provider reads FLEET_TASK_ID and exits 1 without it.
-            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude, or a needs-opus label.
+            # Seat: ORCHESTRATE_SEAT (default worker-capable). Claude: ORCHESTRATE_RUNNER=claude.
             env -u GH_TOKEN -u GITHUB_TOKEN FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
               "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
               < "$RUNNER_TEMP/orchestrator-prompt.md"
             exit 0
           fi
-          model_args=()
-          [ -z "$MODEL" ] || model_args=(--model "$MODEL")
           # The repo's hooks are for interactive and worker sessions; here they
           # only spend turns. ORCHESTRATE_HOOKS=on keeps them.
           hook_args=(--settings '{"disableAllHooks":true}')
@@ -1598,7 +1600,7 @@ jobs:
           # Managed settings still apply (model-lanes gate, secret-read denies). Off switch:
           # delete the three flags below.
           env -u GH_TOKEN -u GITHUB_TOKEN "$HOME/.local/bin/claude" -p \
-            "${model_args[@]}" \
+            --model "$MODEL" \
             "${hook_args[@]}" \
             --strict-mcp-config \
             --disable-slash-commands \
@@ -1663,10 +1665,7 @@ jobs:
           # Nothing was built: the session step was skipped or the issue check
           # bailed. No PR exists and none is coming, but this run never started
           # work, so it does not park the issue.
-          [ "$GO" = true ] || {
-            echo "orchestrate: nothing was built on this run; no park mark"
-            exit 0
-          }
+          [ "$GO" = true ] || { echo "orchestrate: nothing was built on this run; no park mark"; exit 0; }
           [ -n "$ISSUE" ] || exit 0
           # No PR for this head: mark it, so the label loop stops. The next
           # orchestrate event (a re-label, or a replay dispatch) sees
@@ -1675,6 +1674,14 @@ jobs:
             echo "orchestrate: #$ISSUE has a PR on orch/issue-$ISSUE; nothing to mark"
             exit 0
           fi
+          # A PR on any other branch (gate/*, claim/*) that closes the issue is
+          # GitHub's own link, so the issue is not a dead end (fleet-ops#9278 item 4:
+          # #9224 was marked while PR #9225 was open on gate/paid-plans-9224).
+          # Open and merged PRs count (default includeClosedPrs=false); a closed
+          # unmerged one does not. Fail closed: a read that fails or prints no
+          # count marks nothing.
+          # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
+          [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host

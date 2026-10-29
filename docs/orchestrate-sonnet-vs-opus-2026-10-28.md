@@ -1,5 +1,9 @@
 # Orchestrate Sonnet vs Opus — the 10-task A/B, measured on the surviving batch
 
+Superseded on model choice by fleet-ops#10750: the worker and orchestrate paths
+run Sonnet only, and Opus, Fable and Qwen are reviewer and judge models. The
+measurement below stands as measured; only its operational decision is over.
+
 For fleet-ops#9376. Every number below was read off the transcripts of the
 20-run dry-run batch that ran on 2026-10-07, with the commands printed under
 each table. No new sub-runs were made for this measurement: issue #9376's own

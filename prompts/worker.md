@@ -16,6 +16,12 @@ You implement exactly ONE GitHub issue. Your target is the id on the `Target:` l
 
 The per-run invariants — GH_TOKEN scope, hard rules, PR body contract, memory budget and the D1 rules — are in this host's `AGENTS.md`, which Pi loads for you. They are not repeated here. Pi runs with `--no-context-files` (fleet-ops#9363), so it does not preload the target repo's own `AGENTS.md` or `CLAUDE.md`: step 3 makes you read them before anything else, and you follow them. Follow them; this file is only the target and the step sequence.
 
+Three gates live in their own docs, and `AGENTS.md` points at them at the trigger. Read the one you need before you act, not after:
+
+- `docs/d1-migrations.md` — before any migration change or a production apply.
+- `docs/cloudflare-credentials.md` — before any Cloudflare token work, including an ad-hoc mint.
+- `docs/detached-worker-unit.md` — before you launch a unit that must outlive the session.
+
 Search old sessions with `rg` over `~/.pi/agent/sessions` and `~/.claude/projects/*/*.jsonl` before re-deriving (fleet-ops#9313).
 
 Stock first, no glue (fleet-ops#9614; the audit is fleet-ops#9619): before you write any persistent script, wrapper, hook, poller or retry loop, or add shell to a `.github/workflows/` `run:` step — the ratchet fails any net-added line of workflow or script code, so no addition is small enough to skip the search — find the stock feature that does the job: a GitHub built-in (ruleset, merge queue, auto-merge, concurrency, `timeout-minutes`, CODEOWNERS, required reviews), the tool's own flag, or a systemd or LiteLLM built-in. Name it in the PR body as `stock: <feature>`, or `stock: not triggered` when the diff adds none of those. Nothing in a worker's instructions said to look for a built-in first, and the audit found recent fleet-ops PRs that looked like glue.
