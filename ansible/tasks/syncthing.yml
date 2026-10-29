@@ -1,7 +1,8 @@
 # syncthing comes from Syncthing's own apt repository, so the daily dist-upgrade
 # in update.yml keeps it current: the packaged build has no upgrader, and the
-# unit runs /usr/bin/syncthing (#10844). The channel is stable-v1, not stable:
-# 2.x converts the index database one way on its first start.
+# unit runs /usr/bin/syncthing (#10844). The channel is stable-v2: this box's
+# config (version 52) and index-v2 database were already written by 2.x, which
+# 1.x refuses to read, so a 1.x channel stops the vault sync.
 - name: Install the Syncthing apt key
   ansible.builtin.get_url:
     url: https://syncthing.net/release-key.gpg
@@ -15,7 +16,7 @@
     types: deb
     uris: https://apt.syncthing.net/
     suites: syncthing
-    components: stable-v1
+    components: stable-v2
     architectures: amd64
     signed_by: /etc/apt/keyrings/syncthing-archive-keyring.gpg
 
