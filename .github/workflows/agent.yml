@@ -176,7 +176,7 @@ jobs:
             # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
             # rows. One lane per seat is a lower bound on the group's concurrency and sits
             # above the 22 measured runners, so this stays a safety valve, not a throttle.
-            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+            slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
           # Claude does the judgment work, the free workers do the mechanical work,
@@ -741,7 +741,7 @@ jobs:
           # since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29 rows. One
           # lane per seat is a lower bound on the group's concurrency and sits above the 22
           # measured runners, so this stays a safety valve, not a throttle.
-          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/.config/fleet-ops/litellm-proxy.yaml")
+          slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
           strong_free=false; regular_free=false
           # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
           # falls through to pi in the Worker.
