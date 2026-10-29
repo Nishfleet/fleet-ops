@@ -3,8 +3,8 @@
 The review step's judge call ran under `set -e`, so a curl exit 7 (the router was
 down on #9798) ended the step after the first review and posted nothing. Here the
 real judge lines of the review step run against a stub curl: a failed call must
-post the could-not-be-judge comment and exit 0, and a healthy answer must still
-reach the verdict.
+post the could-not-be-judged comment, naming the curl exit, and exit 0, and a
+healthy answer must still reach the verdict.
 """
 import pathlib
 import subprocess
@@ -25,7 +25,7 @@ def judge_lines():
     jobs = yaml.safe_load(AGENT.read_text())["jobs"]
     run = next(s["run"] for j in jobs.values() for s in j.get("steps", []) if s.get("id") == "review")
     lines = run.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith(("jev_rc=0", "resp=$(curl")))
+    start = next(i for i, line in enumerate(lines) if line.startswith("resp=$(curl"))
     end = next(i for i, line in enumerate(lines) if line.startswith("choice=$(jq"))
     assert start < end, "the judge call must come before the verdict read"
     return "\n".join(lines[start:end + 1])
