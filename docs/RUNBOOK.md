@@ -546,8 +546,8 @@ names gets its own file per need (`claude-token.env`, `exa.env`, ...), never
 the shared one.
 
 Readers of the shared file in this repo: none (re-audited for every unit,
-drop-in, quadlet, workflow, prompt and recipe that starts `claude`, `pi`,
-`devin`, `opencode`, `cursor-agent` or a fleet worker). One unit reads a
+drop-in, quadlet, workflow, prompt and recipe that starts `claude`,
+`pi` or a fleet worker). One unit reads a
 single-name file of its own instead (fleet-ops#10222):
 
 - `claude-remote-control.service` is a system unit. A system manager never saw
@@ -562,8 +562,7 @@ single-name file of its own instead (fleet-ops#10222):
   tracked, never printed; check it with `test -s` and `stat -c %a`.
 - `agent.yml` jobs run in the `actions.runner.Nishfleet.netcup-agent-N`
   system units (`runs-on: [self-hosted, agent]`), so they did not inherit the
-  user manager either. The worker engines read their own credentials: devin and
-  opencode their own logins, cursor `seats/cursor.env`, pi the `litellm`
+  user manager either. The pi worker reads its own credentials: the `litellm`
   provider with per-group keys plus `seats/mobbin-mcp.env`.
 - `fleet-litellm-proxy.container` took the whole manager environment through
   `--env-host` until #9020; it now passes the named `PodmanArgs=--env=` list.

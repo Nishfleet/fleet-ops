@@ -140,7 +140,7 @@ jobs:
         if: always()
         run: |
           for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
-          for b in beacon cursor-agent leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
+          for b in beacon leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
         # Root-owned units live in rootfs/etc/systemd/system/; the globs cover every root
@@ -463,7 +463,7 @@ jobs:
             case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
             printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
           done || rc=1
-          # The packet strings (cursor, devin, opencode, pi miss lane) put $id after the marker.
+          # The packet strings (worker and miss-review packets) put $id after the marker.
           # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
           if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
             echo "FAIL \$id before the marker in a packet string"; rc=1
@@ -1314,9 +1314,7 @@ jobs:
           prior-blocked-with-real-blocker-skips|1|approve|0.95|clean|clean_ok|PRIOR=blocked-none-and-real|no|0|
           prior-near-approval-text-is-reviewed|1|approve|0.95|clean|clean_ok|PRIOR=near-approval|yes|0|claude-opus-5-5 claude-fable-5-1
           built-by-pi-judge-is-opus||approve|0.95|clean|none|BUILT=pi|yes|0|claude-opus-5-5
-          built-by-devin-and-cursor-judge-is-opus||approve|0.95|clean|none|BUILT=cursor,devin|yes|0|claude-opus-5-5
           built-by-claude-first-review-is-opus||approve|0.95|clean|none|BUILT=claude|yes|0|claude-opus-5-5
-          built-by-claude-then-cursor-first-review-is-opus||approve|0.95|clean|none|BUILT=claude,cursor|yes|0|claude-opus-5-5
           built-by-nobody-recorded-first-review-is-opus||approve|0.95|clean|none||yes|0|claude-opus-5-5
           built-record-from-a-person-is-ignored||approve|0.95|clean|none|BUILT_BY_PERSON=pi|yes|0|claude-opus-5-5
           built-record-from-another-bot-is-ignored||approve|0.95|clean|none|BUILT_BY_OTHER_BOT=pi|yes|0|claude-opus-5-5
@@ -1507,11 +1505,12 @@ jobs:
             [ "$got" = "$want" ] || { echo "case $name: live=$got (want $want)"; bad=1; }
           done < <(jq -c '.cases[]' config/sweep-liveness-events.json)
           test "$bad" -eq 0
-      - name: Router wall treats a Cursor stall as infra (fake gh)
+      - name: Router wall treats a 429 stall as infra (fake gh)
         # Runs the Router wall step's own run block, read out of agent.yml, against a fake gh and a
-        # worker.err (the Cursor line is the real one, fleet-ops#9275). A stall with the claim branch 0 ahead
-        # of main is infra: infra-failed comment, agent-ready, wall=true. With a commit pushed, on another
-        # engine, or after 3 infra requeues, it is not a wall and the strike step handles it.
+        # worker.err (a litellm RateLimitError line is the real one, fleet-ops#8543). A 429 with the
+        # claim branch 0 ahead of main is infra: infra-failed comment, agent-ready, wall=true. With
+        # a commit pushed, another error text, or after 3 infra requeues, it is not a wall and the
+        # strike step handles it.
         if: always()
         run: |
           set -euo pipefail
@@ -1531,15 +1530,14 @@ jobs:
           MOCK
           chmod +x "$t/bin/gh"
           export GITHUB_RUN_ID=4242424242 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops REF=claim/issue-9275 GITHUB_SERVER_URL=https://github.com
-          cursor_stall=$'Connection lost, reconnecting to https://agentn.global.api5.cursor.sh (attempt 1)...\nRetry attempt 1...\nRetriableError: Connection stalled repeatedly'
           bad=0
           # name|engine|worker.err|ahead|want wall (yes/no)
           while IFS='|' read -r name engine err ahead want; do
             export STATE=$t/$name AHEAD=$ahead ENGINE=$engine GITHUB_OUTPUT=$t/$name/out PRIOR_INFRA=0
-            [ "$name" != cursor-stall-capped ] || PRIOR_INFRA=3
+            [ "$name" != pi-429-capped ] || PRIOR_INFRA=3
             rm -rf "$STATE"; mkdir -p "$STATE"; : > "$GITHUB_OUTPUT"
             export RUNNER_TEMP=$STATE
-            printf '%b\n' "${err//@CURSOR@/$cursor_stall}" > "$RUNNER_TEMP/worker.err"
+            printf '%b\n' "$err" > "$RUNNER_TEMP/worker.err"
             rc=0
             PATH="$t/bin:$PATH" bash "$t/wall.sh" > "$STATE/log" 2>&1 || rc=$?
             got=no
@@ -1548,15 +1546,11 @@ jobs:
             if [ "$want" = no ] && { [ -s "$STATE/commented" ] || [ -s "$STATE/edited" ]; }; then got=partial; fi
             if [ "$got" != "$want" ] || [ "$rc" != 0 ]; then echo "case $name: wall=$got (want $want) exit=$rc"; cat "$STATE/log"; bad=1; fi
           done <<'CASES'
-          cursor-stall-unpushed|cursor|@CURSOR@|0|yes
-          cursor-stall-pushed|cursor|@CURSOR@|1|no
-          cursor-stall-capped|cursor|@CURSOR@|0|no
-          pi-with-cursor-text|pi|@CURSOR@|0|no
-          cursor-other-failure|cursor|error: tool call failed|0|no
-          cursor-stall-then-429-pushed|cursor|@CURSOR@\nHTTP 429|1|no
-          router-429-unpushed|pi|litellm RateLimitError: no deployments available|0|yes
-          router-429-pushed|pi|litellm RateLimitError: no deployments available|1|no
-          devin-capacity-pushed|devin|capacity issues|1|yes
+          pi-429-unpushed|pi|litellm RateLimitError: no deployments available|0|yes
+          pi-429-pushed|pi|litellm RateLimitError: no deployments available|1|no
+          pi-429-capped|pi|litellm RateLimitError: no deployments available|0|no
+          pi-other-failure|pi|error: tool call failed|0|no
+          claude-429-unpushed|claude|litellm RateLimitError: no deployments available|0|yes
           CASES
           test "$bad" -eq 0
 

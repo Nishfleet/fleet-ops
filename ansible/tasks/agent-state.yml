@@ -7,7 +7,7 @@
 # so owner-only modes keep the runners working; no other user or group
 # reads these files. SQLite gives a new -wal/-shm the
 # mode of the main database, so fixing the main file covers them.
-# opencode.db (with -wal/-shm) and the Grafana database are covered too. The
+# The Grafana database is covered too. The
 # Grafana container runs UserNS=keep-id, so its process is nish (uid 1000) on
 # the host and needs no group access; its data directory is already 0700.
 - name: Look for the agent state directories
@@ -16,8 +16,6 @@
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
-    - "{{ agent_share }}/devin"
-    - "{{ agent_share }}/devin/cli"
     # Pi worker session logs live under here (directory mode only; the
     # files inside are nish's and stay as the tool writes them).
     - "{{ nish_home }}/.pi"
@@ -25,7 +23,6 @@
     # mode is what keeps a SQLite -journal/-wal/-shm file private, since the
     # scan skips those files (fleet-ops#10390).
     - "{{ agent_share }}/leviathan"
-    - "{{ agent_share }}/opencode"
     - "{{ agent_share }}/fleet-grafana"
   register: agent_state_dirs
 
@@ -46,14 +43,11 @@
   become_user: nish
   ansible.builtin.find:
     paths:
-      - "{{ agent_share }}/devin/cli"
-      - "{{ agent_share }}/opencode"
       - "{{ agent_share }}/fleet-grafana"
     patterns:
       - sessions.db*
       - pi.db*
       - claude.db*
-      - opencode.db*
       - grafana.db*
     # SQLite creates and removes its own -journal, -wal and -shm files while
     # it writes, so a listing can catch one and the chmod below then fail

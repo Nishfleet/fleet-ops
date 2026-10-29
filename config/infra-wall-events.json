@@ -43,7 +43,7 @@
         "LOAD1": "6.18",
         "CORES": "8",
         "SWAP_USED_KB": "2097152",
-        "ENGINE": "opencode"
+        "ENGINE": "claude"
       },
       "prior_failed_comment": 0,
       "started_comment": true,
