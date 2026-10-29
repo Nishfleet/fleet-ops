@@ -59,6 +59,7 @@ def test_every_provider_pi_offers_has_a_live_router_row():
     dead = sorted(p for p in pi["providers"] if p not in _router_providers() and p not in NO_ROW)
     assert not dead, (
         f"config/pi-models.json lists providers that no row in config/litellm-proxy.yaml serves: {dead}. "
-        "Delete the provider, or add it to NO_ROW above with the reason it needs no row."
+        "Delete the provider, add it to NO_ROW above with the reason it needs no row, or make a row's key "
+        "derive this name (PARETO_API_KEY derives pareto)."
     )
     assert set(NO_ROW) <= set(pi["providers"]), sorted(set(NO_ROW) - set(pi["providers"]))
