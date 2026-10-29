@@ -777,6 +777,12 @@ jobs:
       rework: ${{ steps.find.outputs.rework }}
       file: ${{ steps.find.outputs.file }}
     steps:
+      # PR rot, stock actions/stale and nothing custom: a PR idle 6 days gets the Stale
+      # label, 7 idle days closes it, and the branch is kept. Issues are never touched.
+      # Closing a claim PR is the re-file path: the list job requeues its issue (no live
+      # run, no open claim PR) and miss-review-pr reviews the closed attempt.
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9.1.0
+        with: {days-before-issue-stale: -1, days-before-issue-close: -1, days-before-pr-stale: 6, days-before-pr-close: 1, delete-branch: false, close-pr-message: 'Closed after 7 days with no activity. The branch is kept: push to it and reopen this PR, or open a new PR from it.'}
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
@@ -919,9 +925,7 @@ jobs:
           done < <(jq -c '.[]' <<<"$cands")
           echo "waiting over 15 minutes: $seen, unreadable: $errs"
           echo "arm: $arm"; echo "review: $review"; echo "rework: $rework"; echo "file: $file"
-          {
-            echo "review=$review"; echo "arm=$arm"; echo "rework=$rework"; echo "file=$file"
-          } >> "$GITHUB_OUTPUT"
+          printf 'review=%s\narm=%s\nrework=%s\nfile=%s\n' "$review" "$arm" "$rework" "$file" >> "$GITHUB_OUTPUT"
           [ "$errs" = 0 ] || { echo "::error::$errs of $seen waiting PRs errored and were skipped"; exit 1; }
   # These jobs run inside the sweep's concurrency group: 4 reviews, 3 at a time (the
   # paid judge row's max_parallel_requests, also its rpm), 20 min each, is 27 min.
