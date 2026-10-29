@@ -78,9 +78,9 @@
           },
           "queryType": "Pull_Requests",
           "owner": "Nishfleet",
-          "repository": "fleet-ops",
+          "repository": "0509",
           "options": {
-            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/tether repo:Nishfleet/TinyStudio.io-public",
+            "query": "is:merged repo:Nishfleet/0509",
             "timeField": 2
           },
           "hide": true
@@ -88,11 +88,86 @@
         {
           "refId": "C",
           "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "aiconverter-app",
+          "options": {
+            "query": "is:merged repo:Nishfleet/aiconverter-app",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "rera-report-card",
+          "options": {
+            "query": "is:merged repo:Nishfleet/rera-report-card",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "siterep-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/siterep-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "tether",
+          "options": {
+            "query": "is:merged repo:Nishfleet/tether",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "TinyStudio.io-public",
+          "options": {
+            "query": "is:merged repo:Nishfleet/TinyStudio.io-public",
+            "timeField": 2
+          },
+          "hide": true
+        },
+        {
+          "refId": "H",
+          "datasource": {
             "type": "__expr__",
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B) AS merged\nGROUP BY d ORDER BY d"
+          "expression": "SELECT d AS day, SUM(CASE WHEN plane = 'products' THEN 1 ELSE 0 END) AS products, SUM(CASE WHEN plane = 'fleet-ops' THEN 1 ELSE 0 END) AS fleet_ops\nFROM (SELECT SUBSTRING(closed_at, 1, 10) AS d, 'fleet-ops' AS plane FROM A UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM B UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM C UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM D UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM E UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM F UNION ALL SELECT SUBSTRING(closed_at, 1, 10), 'products' FROM G) AS merged\nGROUP BY d ORDER BY d"
         }
       ],
       "options": {
