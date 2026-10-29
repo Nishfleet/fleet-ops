@@ -1,15 +1,19 @@
 """A unit file with an unknown directive must fail CI: systemd skips it with a warning and exit 0 (fleet-ops#9967)."""
 
 import fnmatch
+import ipaddress
+import functools
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLED = ROOT / "rootfs/etc/systemd/system"
@@ -26,6 +30,7 @@ def unit_files() -> list[Path]:
     found += sorted(INSTALLED.glob("fleet-update.*"))
     found += sorted(INSTALLED.glob("tether-*"))
     found += sorted(INSTALLED.glob("tincan-listen-*"))
+    found += sorted(INSTALLED.glob("claude-remote-control*"))
     return [path for path in found if path.is_file()]
 
 
@@ -69,6 +74,8 @@ def test_fleet_deploy_verdict_line_names_the_request_the_run_started_with(tmp_pa
 
 
 TETHER = INSTALLED / "tether-agent.service"
+GRAFANA_PROVISIONING = ROOT / "systemd/fleet-grafana-provisioning.service"
+GRAFANA_TOKEN = ROOT / "systemd/fleet-grafana-github-token.service"
 
 
 def _tether_keys() -> dict[str, list[str]]:
@@ -205,14 +212,18 @@ HERMES_READABLE = (
 )
 
 
-def _unit_keys(path: Path) -> dict[str, list[str]]:
+def _unit_keys_text(text: str) -> dict[str, list[str]]:
     keys: dict[str, list[str]] = {}
-    for line in path.read_text().replace("\\\n", " ").splitlines():
+    for line in text.replace("\\\n", " ").splitlines():
         line = line.strip()
         if "=" in line and not line.startswith(("#", ";", "[")):
             key, value = line.split("=", 1)
             keys.setdefault(key.strip(), []).append(value.strip())
     return keys
+
+
+def _unit_keys(path: Path) -> dict[str, list[str]]:
+    return _unit_keys_text(path.read_text())
 
 
 def _shipped_dropins() -> dict[str, list[Path]]:
@@ -242,6 +253,16 @@ def _effective(unit: str) -> dict[str, list[str]]:
 
 def _last(keys: dict[str, list[str]], key: str) -> str:
     return keys[key][-1].lower()
+
+
+def effective_directives(unit: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for source in [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]:
+        if not source.is_file():
+            continue
+        for key, values in _unit_keys(source).items():
+            keys.setdefault(key, []).extend(values)
+    return keys
 
 
 def test_the_hermes_checks_read_every_dropin_the_repo_ships() -> None:
@@ -295,7 +316,7 @@ def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
         assert len(vault) == 1, f"{unit}: the vault drop is missing: {writable}"
         assert {home / ".hermes", home / ".local/state/hermes"} <= writable, (unit, writable)
         rest = writable - {home / ".hermes", home / ".local/state/hermes"} - vault
-        assert rest <= {home / ".config/gh"}, f"{unit}: an unmeasured grant: {rest}"
+        assert not rest, f"{unit}: an unmeasured grant (gh config stays read-only, fleet-ops#10184): {rest}"
         assert all(entry.startswith("-") for entry in raw if "nish-vault" in entry), f"{unit}: the vault drop may not exist yet, so it needs the - prefix"
         for key in ("NoNewPrivileges", "PrivateTmp", "PrivateDevices", "RestrictRealtime", "RestrictSUIDSGID", "LockPersonality", "ProtectKernelTunables", "ProtectKernelModules", "ProtectKernelLogs", "ProtectControlGroups", "ProtectClock"):
             assert _last(keys, key) in {"yes", "true", "1"}, (unit, key)
@@ -426,6 +447,34 @@ def test_every_hermes_need_outside_its_own_state_carries_a_reason() -> None:
             assert path in notes, f"{unit}: {path} stays readable with no reason recorded in the table's notes"
 
 
+def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
+    unit = INSTALLED / "hermes-serve.service"
+    assert unit.is_file(), "the base hermes-serve unit must stay in rootfs/, or the shared sandbox drop-in covers no unit"
+    keys = _unit_keys(unit)
+    assert shlex.split(keys["ExecStart"][0]) == [
+        "/home/nish/.hermes/hermes-agent/.hermes/bin/hermes",
+        "serve",
+        "--host",
+        "100.108.184.97",
+        "--port",
+        "9119",
+    ], "the pinned program path and the tailnet bind address are the bytes that ran before"
+    assert _last(keys, "Restart") == "on-failure", "a clean exit must stay exited, not loop"
+    assert _last(keys, "RestartSec") == "10"
+    assert _last(keys, "RestartPreventExitStatus") == "78", "the config-error exit must not restart"
+    unit_section = unit.read_text().split("[Service]", 1)[0]
+    assert "StartLimitIntervalSec=" in unit_section and "StartLimitBurst=" in unit_section, (
+        "the StartLimit* keys are [Unit] settings; in any other section systemd ignores them and the budget silently disappears"
+    )
+    interval = _last(keys, "StartLimitIntervalSec")
+    assert interval.endswith("min"), "a zero or unbounded interval disables the start limit, so a bind-failure loop never reaches failed"
+    minutes = int(interval.removesuffix("min"))
+    assert minutes > 0
+    burst = int(_last(keys, "StartLimitBurst"))
+    assert burst > 0
+    assert burst * int(_last(keys, "RestartSec")) < minutes * 60, "the start limit must be reachable inside its interval, or the bind-failure loop never reaches failed (fleet-ops#10584)"
+
+
 def test_hermes_key_parser_only_finds_keys_that_are_written(tmp_path: Path) -> None:
     sample = tmp_path / "sample.conf"
     sample.write_text("[Service]\n# RestrictNamespaces=user\n; SystemCallFilter=@system-service\n  ProtectSystem=strict\n  RestrictAddressFamilies=AF_INET \\\n    AF_UNIX\nProtectControlGroups=yes\r\n")
@@ -527,11 +576,19 @@ TETHER_NEVER_RUN = {
 }
 
 
-def _play_tasks() -> list[dict]:
+def _play() -> dict:
     if shutil.which("yq") is None:
         pytest.skip("yq is not installed")
-    out = subprocess.run(["yq", "-o=json", ".", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
-    return json.loads(out)[0]["tasks"]
+    out = subprocess.run(["yq", "-o=json", "."], input=ansible_host.text(), capture_output=True, text=True, check=True).stdout
+    return json.loads(out)[0]
+
+
+def _play_tasks() -> list[dict]:
+    return _play()["tasks"]
+
+
+def _play_handlers() -> list[dict]:
+    return _play().get("handlers") or []
 
 
 def _tether_task_names() -> list[str]:
@@ -540,6 +597,18 @@ def _tether_task_names() -> list[str]:
         if "tether" in (task.get("tags") or []):
             names += [task["name"]] + [inner["name"] for key in ("block", "rescue") for inner in task.get(key, [])]
     return names
+
+
+def test_agent_session_database_scan_skips_sqlite_transient_files() -> None:
+    """A find that catches a -journal/-wal/-shm file fails the chmod loop when SQLite removes it (fleet-ops#10390)."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    scan = tasks["Find the agent session databases"]["ansible.builtin.find"]
+    assert not scan.get("use_regex")
+    assert scan["excludes"] == ["*-journal", "*-wal", "*-shm"]
+    assert {"sessions.db*", "pi.db*", "claude.db*", "grafana.db*"} <= set(scan["patterns"])
+    assert "failed_when" not in tasks["Keep the agent session databases private"]
+    kept_private = tasks["Look for the agent state directories"]["loop"]
+    assert set(scan["paths"]) <= set(kept_private), "every scanned directory is kept 0700, so a skipped transient file stays private"
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is not installed")
@@ -578,8 +647,15 @@ def test_tether_off_marker_survives_the_host_run(tmp_path: Path) -> None:
 HOST_YML = ROOT / "ansible/host.yml"
 
 
+@pytest.mark.skipif(shutil.which("yq") is None, reason="yq is not installed")
+def retired_paths() -> list[str]:
+    """The one reader of host.yml's retired: list, parsed by yq so every check sees the same paths."""
+    out = subprocess.run(["yq", "-o=json", ".[0].vars.retired", str(HOST_YML)], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
 def _tether_blocks() -> list[str]:
-    blocks = re.split(r"\n    - name: ", HOST_YML.read_text())
+    blocks = re.split(r"\n    - name: ", ansible_host.text())
     return [block for block in blocks if "tags: [tether" in block]
 
 
@@ -588,7 +664,7 @@ def _tether_module_blocks(module: str) -> list[str]:
 
 
 def _host_var(name: str) -> str:
-    match = re.search(rf"^    {name}: \"?([^\"\n]+)\"?$", HOST_YML.read_text(), re.MULTILINE)
+    match = re.search(rf"^    {name}: \"?([^\"\n]+)\"?$", ansible_host.text(), re.MULTILINE)
     assert match, name
     return match.group(1)
 
@@ -599,7 +675,7 @@ def _node_dir() -> str:
 
 def test_tether_has_no_apt_nodejs_pin() -> None:
     assert not [block for block in _tether_module_blocks("apt") if "nodejs" in block]
-    assert "nodejs=" not in HOST_YML.read_text()
+    assert "nodejs=" not in ansible_host.text()
 
 
 def test_tether_node_download_is_pinned_by_sha256() -> None:
@@ -635,7 +711,7 @@ def _release_tasks() -> dict[str, dict]:
 def test_tether_release_is_pinned_once_and_keyed_by_version_and_hash() -> None:
     assert re.fullmatch(r"\d+\.\d+\.\d+", _host_var("tether_version"))
     assert re.fullmatch(r"[0-9a-f]{64}", _host_var("tether_sha256"))
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     assert text.count("tether_sha256:") == 1 and text.count("tether_version:") == 1, "pin the release in one place"
     assert _host_var("tether_sha256") not in text.replace(f"tether_sha256: {_host_var('tether_sha256')}", "")
     assert _host_var("tether_release_key") == "{{ tether_version }}-{{ tether_sha256[:12] }}"
@@ -708,7 +784,7 @@ def test_tether_release_is_verified_staged_and_renamed_into_place() -> None:
 
 
 def test_tether_release_modes_are_checked_with_the_find_module_and_a_bad_dir_goes_last() -> None:
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     assert "/usr/bin/find" not in text, "use ansible.builtin.find, not a command"
     tasks = _release_tasks()
     for name in ("Scan this tether release for writable or non-root files", "Scan the staged tether release for writable or non-root files"):
@@ -746,7 +822,7 @@ def test_tether_release_download_runs_as_nish_after_a_login_check() -> None:
     assert names.index(check["name"]) < names.index(gate["name"]) < names.index(download["name"])
     text = json.dumps(_release_block())
     assert "/" + "home" + "/" not in text, "no literal home path"
-    assert not re.search(r"GH_TOKEN|GITHUB_TOKEN|Authorization|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", HOST_YML.read_text())
+    assert not re.search(r"GH_TOKEN|GITHUB_TOKEN|Authorization|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", ansible_host.text())
 
 
 def test_tether_release_prunes_to_the_new_and_the_previous_release() -> None:
@@ -813,7 +889,7 @@ def test_tether_calendar_env_task_waits_for_the_file(tmp_path: Path) -> None:
 
 
 def test_host_run_never_enables_or_starts_tether() -> None:
-    blocks = re.split(r"\n    - name: ", (ROOT / "ansible/host.yml").read_text())
+    blocks = re.split(r"\n    - name: ", ansible_host.text())
     tether = [block for block in blocks if "name: tether-agent.service" in block]
     assert tether, "the marker task is gone"
     restart = [block for block in tether if "state: restarted" in block]
@@ -827,7 +903,7 @@ def test_host_run_never_enables_or_starts_tether() -> None:
 
 
 def test_tether_release_change_restarts_an_enabled_agent() -> None:
-    text = HOST_YML.read_text()
+    text = ansible_host.text()
     link = [block for block in re.split(r"\n        - name: ", text) if block.startswith("Point tether current at the verified release")]
     assert len(link) == 1
     assert "notify: Restart tether-agent after its release changed" in link[0]
@@ -978,7 +1054,7 @@ CUA_DROPIN_DIR = "etc/systemd/user/cua-desk-daemon.service.d"
 
 def test_cua_fixed_port_route_is_retired_and_nothing_restarts_the_daemon_for_config() -> None:
     assert not (ROOT / "rootfs" / CUA_DROPIN_DIR).exists(), "the fixed-port drop-in is gone from the repo"
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     update = (ROOT / "ansible/update.yml").read_text()
     assert f"- /{CUA_DROPIN_DIR}\n" in host.split("    retired:\n", 1)[1].split("    # Files kept off GitHub", 1)[0], "host.yml deletes it on the host"
     assert "cua_daemon_port" not in host + update + (ROOT / "ansible/templates/tether.nft.j2").read_text()
@@ -995,7 +1071,7 @@ SEOFIXKIT_UNITS = (
 
 
 def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     for path in SEOFIXKIT_UNITS:
@@ -1010,7 +1086,53 @@ def test_seofixkit_d1_backup_unit_is_retired_from_the_host() -> None:
     assert host.index(stop) < host.index(disable) < host.index("- name: Remove retired host files"), (
         "the timer stops and disables before its files go"
     )
-    assert "ops/seofixkit-d1-backup.service" in (ROOT / "docs/mac-scheduled-tasks.md").read_text()
+
+
+LEVIATHAN_EXECUTOR_LIVE_PATHS = (
+    "{{ nish_home }}/.config/systemd/user/executor.service",
+    "{{ nish_home }}/.config/systemd/user/default.target.wants/executor.service",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.service",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.timer",
+    "{{ nish_home }}/.config/systemd/user/leviathan-index@.service.d/20-umask.conf",
+    "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@claude.timer",
+    "{{ nish_home }}/.config/systemd/user/timers.target.wants/leviathan-index@pi.timer",
+    "{{ nish_home }}/.local/bin/leviathan",
+    "{{ nish_home }}/.local/share/leviathan",
+    "{{ nish_home }}/.config/user-tmpfiles.d/leviathan.conf",
+)
+
+
+def test_leviathan_index_and_executor_hub_are_retired_from_the_host() -> None:
+    """Their repo units are gone, so a stopped and disabled unit's live links,
+    copied files and 5 GB index have to go too: the links point into
+    ~/.local/share/leviathan, and a link left behind fails LINK-GUARD."""
+    entries = retired_paths()
+    missing = [path for path in LEVIATHAN_EXECUTOR_LIVE_PATHS if path not in entries]
+    assert not missing, f"host.yml does not delete these live paths: {missing}"
+    host = ansible_host.text()
+    tasks = {task["name"]: task for task in _play_tasks()}
+    stop = tasks["Stop the retired Leviathan index timers and the Executor hub before their files go"]
+    disable = tasks["Disable the retired Leviathan index timers and the Executor hub before their files go"]
+    for unit in ("leviathan-index@claude.timer", "leviathan-index@pi.timer", "executor.service"):
+        assert unit in json.dumps(stop)
+        assert unit in json.dumps(disable)
+    assert host.index("Stop the retired Leviathan index timers") < host.index(
+        "Disable the retired Leviathan index timers"
+    ) < host.index("- name: Remove retired host files"), "the units stop and disable before their files go"
+    assert "Reload nish's user manager" in (stop.get("notify") or []), "the reload drops the stopped units"
+    assert [path.name for path in unit_files() if "leviathan" in path.name or "executor" in path.name] == [], (
+        "fleet-ops ships no copy of the units"
+    )
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    guard = sync.index("9. LINK-GUARD")
+    removal = sync.index("%h/.config/systemd/user/executor.service")
+    assert removal < guard, (
+        "fleet-sync drops the executor link before LINK-GUARD sees a dangling one"
+    )
+    assert "default.target.wants/executor.service" in sync[:guard], "the wants link goes too"
+    executor_line = next(line for line in sync.splitlines() if "executor.service" in line and line.startswith("ExecStart"))
+    assert "/bin/sh -c" not in executor_line, "each rm is its own ExecStart, not inline shell"
+    assert executor_line.startswith("ExecStart=-/bin/rm"), "a clean host does not fail the step"
 
 
 GLUE_AUDIT_HOST_LEFTOVERS = (
@@ -1023,7 +1145,7 @@ GLUE_AUDIT_HOST_LEFTOVERS = (
 
 
 def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() -> None:
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
     assert retired, "host.yml still lists retired paths"
     for path in GLUE_AUDIT_HOST_LEFTOVERS:
@@ -1051,19 +1173,205 @@ def test_glue_audit_host_leftovers_are_retired_and_the_chat_id_seed_is_gone() ->
     )
 
 
+NODE_INSTALL_LAYOUT = (
+    ".local/bin/bin",
+    ".local/bin/include",
+    ".local/bin/lib",
+    ".local/bin/node",
+    ".local/bin/README.md",
+    ".local/bin/CHANGELOG.md",
+    ".local/bin/LICENSE",
+    ".local/bin/share",
+)
+
+NODE_LAYOUT_SPELLINGS = ("{{{{ nish_home }}}}/{path}", "/home/nish/{path}", "~nish/{path}", "~/{path}", "%h/{path}")  # gitleaks:allow
+NODE_SCANNED = ("ansible", "systemd", "rootfs", "config", "prompts", "template")
+NODE_LIVE_PATHS = (".local/bin/npm", ".local/bin/npx")
+
+
+def test_glue_sweep_node_layout_is_retired_and_nothing_in_the_repo_reads_it() -> None:
+    host = HOST_YML.read_text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    for path in NODE_INSTALL_LAYOUT:
+        assert f'- "{{{{ nish_home }}}}/{path}"\n' in retired.group(1), (
+            f"host.yml deletes {path} from the host"
+        )
+    for live in NODE_LIVE_PATHS:
+        assert f'- "{{{{ nish_home }}}}/{live}"\n' not in retired.group(1), (
+            f"the live {live} launcher is not retired"
+        )
+    assert '"{{ nish_home }}/.local/lib/node_modules"' not in retired.group(1)
+    assert not (ROOT / "rootfs/home").exists(), "fleet-ops ships no copy of the layout"
+    needles = [s.format(path=path) for path in NODE_INSTALL_LAYOUT for s in NODE_LAYOUT_SPELLINGS]
+    for name in NODE_SCANNED:
+        assert (ROOT / name).is_dir(), f"{name} is gone, so the scan below reads nothing"
+    readers = []
+    for name in NODE_SCANNED:
+        for path in (ROOT / name).rglob("*"):
+            if not path.is_file() or path == HOST_YML:
+                continue
+            text = path.read_text(errors="ignore")
+            readers += [f"{path.relative_to(ROOT)}: {needle}" for needle in needles if needle in text]
+    assert readers == [], f"an install task or unit still reads the retired layout: {readers}"
+
+
+GLUE_SWEEP_USER_CONFIG_DEBRIS = (
+    "{{ nish_home }}/.config/systemd/user/nish-root.service",
+    "{{ nish_home }}/.config/systemd/user/nish-root.exec",
+    "{{ nish_home }}/.config/systemd/user/nish-root.service.d",
+    "{{ nish_home }}/.config/systemd/user/nnp-probe.service",
+    "{{ nish_home }}/.config/systemd/user/nnp-probe.service.d",
+    "/tmp/nish-root",
+    "{{ nish_home }}/.config/systemd/user/tincan-listen-cursor-vps.service.bak-20261024",
+    "{{ nish_home }}/.pi/agent/settings.json.bak-20261004-ysk",
+    "{{ nish_home }}/.pi/agent/settings.json.bak-20261005",
+    "{{ nish_home }}/.pi/agent/mcp-adapter.json.bak-executor",
+    "{{ nish_home }}/.hermes/config.yaml.bak-8766-20260925T200306Z",
+    "{{ nish_home }}/.hermes/config.yaml.bak-autoskills-20261009",
+    "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20260929",
+    "{{ nish_home }}/.hermes/config.yaml.bak-tincan-20261008",
+    "{{ nish_home }}/.hermes/sandbox.conf.bak-8766",
+    "{{ nish_home }}/.hermes/SOUL.md.bak-2026-10-23",
+)
+
+GLUE_SWEEP_HIDE_PREFIXES = ("InaccessiblePaths=", "TemporaryFileSystem=")
+
+
+def glue_sweep_needle(path: str) -> str:
+    """The shortest name that is still unique inside the repo: a dotted basename,
+    or the whole path for a directory such as /tmp/nish-root."""
+    basename = path.rsplit("/", 1)[-1]
+    return basename if "." in basename else path
+
+
+@functools.cache
+def shipped_repo_texts() -> tuple[tuple[str, str], ...]:
+    """Every path git tracks in this checkout, read once. Untracked and ignored
+    files are left out on purpose: they are not shipped, so a reference in one
+    cannot break a deploy. host.yml and this file name the debris on purpose --
+    the first deletes it, the second checks it -- so neither is evidence."""
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    excluded = {str(HOST_YML.relative_to(ROOT)), str(Path(__file__).resolve().relative_to(ROOT))}
+    found = []
+    for name in listed.split("\0"):
+        if not name or name in excluded:
+            continue
+        path = ROOT / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        found.append((name, path.read_text(encoding="utf-8", errors="replace")))
+    assert found, "the scan found no files, so it proves nothing"
+    return tuple(found)
+
+
+def test_glue_sweep_user_config_debris_is_retired() -> None:
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_USER_CONFIG_DEBRIS if path not in entries]
+    assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
+
+
+GLUE_SWEEP_CHECKOUT_CACHES = (
+    "{{ nish_home }}/workspaces/tooling/last30days-skill/.pytest_cache",
+)
+
+
+def test_glue_sweep_checkout_caches_are_retired() -> None:
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
+    assert not missing, f"host.yml does not delete these checkout caches: {missing}"
+
+
+def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
+    """A user unit deleted while the user manager holds it stays listed by
+    list-unit-files until that manager reloads, which is half of #10544's check."""
+    tasks = {task["name"]: task for task in _play_tasks()}
+    removal = tasks["Remove retired host files"]
+    handlers = removal.get("notify") or []
+    assert "Reload nish's user manager" in handlers, handlers
+
+
+def test_no_shipped_file_uses_a_deleted_glue_sweep_path() -> None:
+    """A shipped file that still names a deleted path is a live reference to a
+    file that no longer exists, so the sweep would break it on the next run.
+    A hide rule is the one allowed exception: a runner jail may still hide a path
+    this sweep deletes, the hide rule is harmless once the file is gone, and
+    dropping it would weaken the jail on the day the file comes back."""
+    for relative, text in shipped_repo_texts():
+        for path in GLUE_SWEEP_USER_CONFIG_DEBRIS:
+            needle = glue_sweep_needle(path)
+            if needle not in text:
+                continue
+            offenders = [
+                line
+                for line in text.splitlines()
+                if needle in line and not line.startswith(GLUE_SWEEP_HIDE_PREFIXES)
+            ]
+            assert not offenders, f"{relative} names the deleted {needle}, and only a hide rule may: {offenders[0]}"
+
+
 def test_alertmanager_reads_the_repo_installed_config() -> None:
     options = (ROOT / "rootfs/etc/default/prometheus-alertmanager").read_text()
     assert "--config.file=/etc/alertmanager/alertmanager.yml" in options, (
         "the service loads the config the repo installs, not the retired copy"
     )
     assert "/etc/prometheus/alertmanager.yml" not in options
-    host = HOST_YML.read_text()
+    host = ansible_host.text()
     assert 'src: "{{ rootfs }}/etc/default/prometheus-alertmanager"' in host
     assert "dest: /etc/default/prometheus-alertmanager" in host
 
 
+def test_prometheus_config_installs_world_readable() -> None:
+    host = ansible_host.text()
+    task = re.split(r"^ *- name: ", host.split("- name: Install prometheus and blackbox exporter config", 1)[1], maxsplit=1, flags=re.M)[0]
+    assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
+    assert re.search(r'^ +mode: "0644"$', task, re.M)
+    assert "mode: preserve" not in task
+
+
+def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
+    cfg = (ROOT / "rootfs/etc/alertmanager/alertmanager.yml").read_text()
+    assert "\n  routes:\n" in cfg, "the root route has no child routes"
+    routes = cfg.split("\n  routes:\n", 1)[1].split("\nreceivers:", 1)[0]
+    nish = []
+    for route in re.split(r"(?m)^    - ", routes)[1:]:
+        matchers = re.findall(r"(?m)^        - (\S+)$", route)
+        wait = re.search(r"(?m)^      group_wait: (\S+)$", route)
+        if 'severity="nish"' in matchers:
+            nish.append((matchers, wait.group(1) if wait else None))
+    assert len(nish) == 3, (
+        f"want exactly three severity=nish routes, got {len(nish)}: {[m for m, _ in nish]}"
+    )
+    fixable = [r for r in nish if 'alertname=~"BackupStale|BackupFailed|SiteDown"' in r[0]]
+    assert len(fixable) == 1, (
+        f"want one severity=nish route for BackupStale, BackupFailed and SiteDown, got {len(fixable)}"
+    )
+    loop = [r for r in nish if 'alertname=~"GrafanaDown|GrafanaNotificationsFailing"' in r[0]]
+    assert len(loop) == 1 and loop[0][1] == "0s", (
+        f"want one severity=nish route for GrafanaDown and GrafanaNotificationsFailing with "
+        f"group_wait 0s (fleet-ops#10306), got {loop}"
+    )
+    rest = [r for r in nish if r is not fixable[0] and r is not loop[0]]
+    assert nish.index(loop[0]) < len(nish) - 1 and nish.index(fixable[0]) < len(nish) - 1, (
+        "the loop-health and worker-fixable routes must come before the catch-all"
+    )
+    assert nish[0] is loop[0] and nish[1] is fixable[0], (
+        "the worker-fixable route must come before the catch-all: Alertmanager takes the first "
+        "route that matches and stops there, so a catch-all above it pages the three at once"
+    )
+    assert fixable[0][1] == "2h", (
+        f"BackupStale, BackupFailed and SiteDown wait {fixable[0][1]!r} before they text Nish, "
+        "want 2h, because the fleet's own issue needs two hours to land a fix"
+    )
+    assert rest[0][1] == "30s", (
+        f"the other severity=nish alerts wait {rest[0][1]!r} before they page Nish, want 30s, "
+        "because they stop the fleet from fixing anything"
+    )
+
+
 def test_cua_leftovers_are_removed_by_name_and_the_nish_tasks_stay_off_the_tether_tag() -> None:
-    blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", HOST_YML.read_text())}
+    blocks = {b.split("\n", 1)[0]: b for b in re.split(r"\n    - name: ", ansible_host.text())}
     by_path = {
         "/etc/fleet-ops/cua-daemon-token": "Remove the retired Cua daemon token file",
         '{{ nish_config }}/fleet-ops/cua/daemon.env': "Remove the retired Cua daemon env file",
@@ -1145,7 +1453,7 @@ def test_stage_one_is_the_canary_only() -> None:
 
 
 def test_host_yml_installs_the_rules_with_a_check_validate() -> None:
-    text = (ROOT / "ansible/host.yml").read_text()
+    text = ansible_host.text()
     block = text[text.index("- name: Install the runner egress rule"):]
     block = block[: block.index("\n    - name:", 10)]
     assert "dest: /etc/nftables.d/runners.nft" in block
@@ -1304,24 +1612,206 @@ def test_run_path_check_cannot_pass_vacuously(tmp_path: Path, mask: str) -> None
         unguarded_run_paths(dirs, tmpdir, RUN_PATH_ALLOWLIST)
 
 
-# Units whose output files hold agent session text. The user manager default is
-# UMask=0002, so each one needs a drop-in that makes new files owner-only.
-PRIVATE_FILE_WRITER_DROPINS = ("systemd/leviathan-index@.service.d", "systemd/tincan-listen-devin-vps.service.d")
+GPG_AGENT_UNIT = ROOT / "rootfs/etc/systemd/user/gpg-agent.service"
+GPG_AGENT_OOM_DROPIN = "rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf"
+GPG_AGENT_HOST_COPY = '"{{ nish_home }}/.config/systemd/user/gpg-agent.service.d/20-oom-omit.conf"'
+BOX_ONLY_DROPINS = ("smbd.service.d/tailscale.conf",)
+SSH_SOCKET_DROPIN = ROOT / "rootfs/etc/systemd/system/ssh.socket.d/override.conf"
+TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
-@pytest.mark.parametrize("dropin_dir", PRIVATE_FILE_WRITER_DROPINS)
-def test_index_writer_dropin_sets_owner_only_umask(dropin_dir: str) -> None:
-    dropin = ROOT / dropin_dir / "20-umask.conf"
-    assert dropin.is_file(), f"{dropin_dir}/20-umask.conf is missing"
-    lines = [line.strip() for line in dropin.read_text().splitlines()]
-    assert "[Service]" in lines
-    assert [line for line in lines if line.startswith("UMask=")] == ["UMask=0077"]
-    unit = ROOT / dropin_dir.removesuffix(".d")
-    # The Devin listener unit is hand-placed on the host (no repo copy), so only its drop-in is here.
-    if unit.is_file():
-        assert not [line for line in unit.read_text().splitlines() if line.startswith("UMask=")], (
-            f"{unit.name} sets UMask itself; keep it in the drop-in only"
-        )
+def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired() -> None:
+    assert (ROOT / GPG_AGENT_OOM_DROPIN).is_file(), f"{GPG_AGENT_OOM_DROPIN} is not in the repo, so a git pull carries no edit to it"
+    assert not GPG_AGENT_UNIT.exists(), "gpg-agent.service is a distro unit; the drop-in is the only repo copy"
+    keys = effective_directives(GPG_AGENT_UNIT)
+    assert _last(keys, "ManagedOOMPreference") == "omit", "systemd-oomd would select the credential cache"
+    assert _last(keys, "MemoryMax") == "512m", "the ceiling the senior auditor set is gone"
+    host = ansible_host.text()
+    retired = re.search(r"\n    retired:\n((?:      .*\n|\n)+)", host)
+    assert retired, "host.yml still lists retired paths"
+    assert f"- {GPG_AGENT_HOST_COPY}\n" in retired.group(1), (
+        "the hand-placed copy shadows /etc/systemd/user, so the repo copy is inert"
+    )
+
+
+TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
+TINCAN_RELAY_DIST_DROPIN = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
+TINCAN_RELAY_DIST_DROPIN_DIR = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"
+
+
+def test_tincan_relay_ships_dist_and_the_temporary_dropin_is_retired() -> None:
+    exec_start = [line for line in TINCAN_RELAY_UNIT.read_text().splitlines() if line.startswith("ExecStart=")]
+    assert len(exec_start) == 1, "tincan-relay.service must have exactly one ExecStart"
+    assert "--dist %S/tincan-relay/dist" in exec_start[0], "relay-upgrade --from-github 404s without --dist"
+    assert "--release-url https://github.com/mvanhorn/agent-tincan/releases/download" in exec_start[0], (
+        "relay-upgrade --from-github needs the release URL"
+    )
+    retired = retired_paths()
+    assert TINCAN_RELAY_DIST_DROPIN in retired, "the hand-placed --dist drop-in restates the shipped unit and must be deleted"
+    assert TINCAN_RELAY_DIST_DROPIN_DIR not in retired, "retire the file, not the directory: a later drop-in there must survive"
+    for base in (ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"):
+        assert not (base / "tincan-relay.service.d/dist-temp.conf").exists(), f"{base} must not ship the temporary drop-in"
+
+
+def test_the_file_sharing_access_path_dropin_stays_out_of_the_repo() -> None:
+    for rel in BOX_ONLY_DROPINS:
+        for base in (ROOT / "rootfs/etc/systemd/system", ROOT / "rootfs/etc/systemd/user", ROOT / "systemd"):
+            assert not (base / rel).exists(), f"{base.name}/{rel} would publish an access path the box keeps off this repo"
+
+
+def ssh_bind_offenders(text: str) -> list[str]:
+    """ListenStream lines that are not a Tailscale listen address, the leading reset line aside."""
+    values = _unit_keys_text(text).get("ListenStream", [])
+    offenders: list[str] = []
+    for index, value in enumerate(values):
+        if not value:
+            if index != 0:
+                offenders.append("ListenStream= (a reset after the binds clears every listener)")
+            continue
+        if value.startswith("["):
+            end = value.find("]")
+            address = value[1:end] if end > 0 else value
+        elif value.count(":") > 1:
+            offenders.append(value)
+            continue
+        else:
+            address = value.rsplit(":", 1)[0]
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            offenders.append(value)
+            continue
+        if parsed not in (TAILNET_V4 if parsed.version == 4 else TAILNET_V6):
+            offenders.append(value)
+    return offenders
+
+
+def test_ssh_socket_dropin_is_in_the_repo_and_binds_only_the_tailnet() -> None:
+    assert SSH_SOCKET_DROPIN.is_file(), (
+        f"{SSH_SOCKET_DROPIN.relative_to(ROOT)} is not in the repo: a rootfs restore or a rebuild then puts "
+        "ssh.socket back on the distro's 0.0.0.0:22 and [::]:22, on a machine that reaches SSH only over the tailnet"
+    )
+    text = SSH_SOCKET_DROPIN.read_text()
+    assert "[Socket]" in text, "the drop-in has no [Socket] section, so systemd ignores every bind in it"
+    values = _unit_keys(SSH_SOCKET_DROPIN).get("ListenStream", [])
+    assert values[:1] == [""], (
+        "the first ListenStream line must be the empty reset: without it the distro's wildcard binds stay in the list"
+    )
+    assert ssh_bind_offenders(text) == [], "ssh.socket would listen on a non-tailnet address"
+    families = {
+        ipaddress.ip_address(value[1:value.index("]")] if value.startswith("[") else value.rsplit(":", 1)[0]).version
+        for value in values
+        if value
+    }
+    assert families == {4, 6}, "keep one Tailscale bind per address family, IPv4 and IPv6"
+
+
+@pytest.mark.parametrize(
+    "listen",
+    (
+        "ListenStream=0.0.0.0:22",
+        "ListenStream=[::]:22",
+        "ListenStream=:22",
+        "ListenStream=22",
+        "ListenStream=*:22",
+        "ListenStream=localhost:22",
+        "ListenStream=203.0.113.7:22",
+        "ListenStream=[2001:db8::1]:22",
+        "ListenStream=0.0.0.0",
+        "ListenStream=fd7a:115c:a1e0::d23a:b862",
+        "ListenStream=[::1]",
+    ),
+    ids=(
+        "all-v4",
+        "all-v6",
+        "no-address",
+        "bare-port",
+        "star",
+        "hostname",
+        "public-v4",
+        "public-v6",
+        "all-v4-no-port",
+        "bare-v6",
+        "loopback-v6",
+    ),
+)
+def test_ssh_bind_check_fails_when_a_wildcard_is_reintroduced(listen: str) -> None:
+    text = "[Socket]\nListenStream=\n" + listen + "\n"
+    assert ssh_bind_offenders(text) != [], f"the check accepted {listen}"
+
+
+def test_ssh_bind_check_fails_on_a_reset_after_the_binds() -> None:
+    text = SSH_SOCKET_DROPIN.read_text().rstrip("\n") + "\nListenStream=\n"
+    assert ssh_bind_offenders(text) != [], "a trailing reset clears the tailnet binds and leaves the distro's own"
+
+
+def test_ssh_bind_check_accepts_the_tailnet_binds() -> None:
+    assert ssh_bind_offenders(SSH_SOCKET_DROPIN.read_text()) == []
+
+
+def test_host_playbook_installs_the_ssh_socket_dropin() -> None:
+    tasks = _play_tasks()
+    tree = [
+        task["ansible.builtin.copy"]
+        for task in tasks
+        if task.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/"
+    ]
+    assert tree, "no host.yml task installs /etc/systemd/system"
+    assert tree[0]["src"] == "{{ rootfs }}/etc/systemd/system/", (
+        "the copy must ship the whole tree (trailing slash), so rootfs/etc/systemd/system/ssh.socket.d/override.conf "
+        "reaches /etc/systemd/system/ssh.socket.d/override.conf"
+    )
+    dedicated = [
+        task
+        for task in tasks
+        if task.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/ssh.socket.d/override.conf"
+    ]
+    assert dedicated, "no host.yml task installs the ssh.socket drop-in on its own, so its change signal is lost"
+    copy = dedicated[0]["ansible.builtin.copy"]
+    assert copy["src"] == "{{ rootfs }}/etc/systemd/system/ssh.socket.d/override.conf"
+    assert tasks.index(dedicated[0]) < tasks.index(
+        next(t for t in tasks if t.get("ansible.builtin.copy", {}).get("dest") == "/etc/systemd/system/")
+    ), "the dedicated copy must run before the tree copy, or the tree copy changes the file and this task reports ok"
+    notify = dedicated[0].get("notify") or []
+    notified = [notify] if isinstance(notify, str) else notify
+    assert "Restart ssh.socket" in notified, (
+        "a socket picks up new ListenStream addresses only on restart, so a rebuild that installs this drop-in "
+        "at the boot timer would leave SSH on the distro's wildcard binds"
+    )
+
+
+def test_host_playbook_restarts_ssh_socket_when_its_dropin_changes() -> None:
+    handlers = [handler for handler in _play_handlers() if handler.get("name") == "Restart ssh.socket"]
+    assert len(handlers) == 1, "no host.yml handler restarts ssh.socket, so the installed bind waits for a reboot"
+    service = handlers[0].get("ansible.builtin.systemd_service")
+    assert service == {"name": "ssh.socket", "state": "restarted"}, service
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_systemd_analyze_accepts_the_ssh_socket_dropin(tmp_path: Path) -> None:
+    (tmp_path / "ssh.socket.d").mkdir()
+    shutil.copy(SSH_SOCKET_DROPIN, tmp_path / "ssh.socket.d/override.conf")
+    (tmp_path / "ssh.socket").write_text("[Unit]\nDescription=SSH socket\n\n[Socket]\nListenStream=22\n")
+    proc = subprocess.run(
+        ["systemd-analyze", "verify", "--man=no", "./ssh.socket"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0 and "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_systemd_analyze_accepts_the_gpg_agent_oom_dropin(tmp_path: Path) -> None:
+    (tmp_path / "gpg-agent.service.d").mkdir()
+    shutil.copy(ROOT / GPG_AGENT_OOM_DROPIN, tmp_path / "gpg-agent.service.d/20-oom-omit.conf")
+    (tmp_path / "gpg-agent.service").write_text("[Unit]\nDescription=GnuPG agent\n\n[Service]\nExecStart=/bin/true\n")
+    proc = subprocess.run(["systemd-analyze", "verify", "--man=no", "./gpg-agent.service"], cwd=tmp_path, capture_output=True, text=True, check=False)
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0 and "Unknown key" not in out and "Unknown section" not in out and "Failed to parse" not in out, out
 
 
 CF_TOKENS_UNIT = ROOT / "systemd/cloudflare-tokens-apply.service"
@@ -1335,10 +1825,459 @@ def test_cloudflare_tokens_unit_loads_the_state_key_file_optionally_and_never_in
     assert "TF_ENCRYPTION" not in text and "passphrase" not in text.lower(), "the key and method belong in the private file only"
 
 
+def test_cloudflare_tokens_unit_writes_secrets_as_the_secrets_app_not_a_personal_login() -> None:
+    text = CF_TOKENS_UNIT.read_text()
+    assert "gh auth token" not in text and "GITHUB_TOKEN" not in text, "a personal login must not write repo secrets (fleet-ops#10601)"
+    assert "TF_VAR_github_app_pem=" in text
+    # The App key can write every installed repo's secrets: it lives in the directory the worker jails hide.
+    assert "%h/.config/cloudflare/nishfleet-secrets.private-key.pem" in text
+    assert "pem_file        = var.github_app_pem" in (ROOT / "infra/cloudflare-tokens/versions.tf").read_text()
+
+
 def test_cloudflare_tokens_state_key_example_is_a_template_with_no_real_passphrase() -> None:
     lines = [line for line in CF_TOKENS_ENCRYPTION_EXAMPLE.read_text().splitlines() if line and not line.startswith("#")]
     assert len(lines) == 1 and lines[0].startswith("TF_ENCRYPTION={")
     assert "PASTE_THE_GENERATED_PASSPHRASE_HERE" in lines[0]
+
+
+PR_SWEEP = ROOT / "systemd/fleet-pr-sweep@.service"
+LATER_SWEEP = ROOT / "systemd/later-sweep.service"
+REMOTE_CONTROL = INSTALLED / "claude-remote-control.service"
+ROOT_TINCAN = INSTALLED / "tincan-listen-claude-vps.service"
+HOME = "/home/nish"  # gitleaks:allow
+BIN_CLAUDE = f"{HOME}/.local/bin/claude"
+TINCAN_MCP_CONFIG = f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json"
+
+
+def unit_directives(path: Path) -> dict[str, list[str]]:
+    keys: dict[str, list[str]] = {}
+    for line in path.read_text().splitlines():
+        if line.startswith(("#", "[")) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        keys.setdefault(key, []).append(value)
+    return keys
+
+
+def specifier_expanded(text: str, home: Path) -> str:
+    """One pass, so a %% never turns into a %h and a $$ never into a lone $. %t is run/ under home."""
+    table = {"%%": "%", "%h": str(home), "%t": str(home / "run"), "$$": "$"}
+    return re.sub(r"%%|%h|%t|\$\$", lambda m: table[m.group()], text)
+
+
+def sh_script(unit: Path, home: Path) -> str:
+    """The script systemd hands /bin/sh for an `ExecStart=/bin/sh -c '...'` line."""
+    argv = shlex.split(specifier_expanded(unit_directives(unit)["ExecStart"][0], home), comments=False)
+    assert argv[:2] == ["/bin/sh", "-c"], argv[:2]
+    return argv[2]
+
+
+FAKE_GH = """#!/bin/sh
+prog=""
+sub=""
+repo=""
+number=""
+status=${FAKE_GH_EDIT_STATUS:-0}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        list|edit|workflow) sub=$1 ;;
+        -R) repo=$2; shift ;;
+        --jq) prog=$2; shift ;;
+        --add-label) shift ;;
+        --state|--limit|--json|-L|-w|-s) shift ;;
+        *) number=$1 ;;
+    esac
+    shift
+done
+case $sub in
+    list) printf '%s' "$FAKE_GH_PAYLOAD" | jq -r "$prog" ;;
+    workflow) [ -z "$FAKE_GH_DISPATCH" ] || { echo "$FAKE_GH_DISPATCH" >&2; exit 1; } ;;
+    edit) if [ "$status" -eq 0 ]; then printf '%s#%s\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"
+          else printf '%s#%s FAILED\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"; fi
+          exit "$status" ;;
+esac
+"""
+
+
+def fake_gh_dir(tmp_path: Path) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    gh = bindir / "gh"
+    gh.write_text(FAKE_GH)
+    gh.chmod(0o755)
+    return bindir
+
+
+def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
+    keys = effective_directives(PR_SWEEP)
+    starts = keys["ExecStart"]
+    assert len(starts) == 1, (
+        "one line, because a skipped dispatch must not run the failure check either, and systemd skips the rest of a multi-command ExecStart only on failure; deleting it is the documented off switch"
+    )
+    assert "gh workflow run agent-dispatch.yml -R Nishfleet/%i" in starts[0]
+    assert "gh run list" in starts[0] and "-w agent-dispatch.yml" in starts[0]
+    assert "-s completed -L 1" in starts[0], "the newest completed run only, so the previous cycle's startup_failure is caught"
+    assert "conclusion,url" in starts[0]
+    assert keys["Type"] == ["oneshot"]
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
+    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["TimeoutStartSec"] == ["120"]
+    assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
+        "the Actions-write App token is minted per repo and loaded from its own env file (fleet-ops#10651)"
+    )
+    stop = keys["ExecStopPost"]
+    assert len(stop) == 1, "one stop command: systemd reloads the EnvironmentFile for every command it spawns"
+    assert "gh api -X DELETE installation/token" in stop[0], "the token is revoked as soon as the two calls end"
+    assert "rm -f %t/fleet-worker-github-token/actions:%i.env" in stop[0], "its env file is deleted with it"
+    values = " ".join(value for values in effective_directives(PR_SWEEP).values() for value in values)
+    assert not re.search(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_", values), (
+        "a token literal in the unit file or in argv; the minted token reaches gh through its env file only"
+    )
+    for command in [*starts, *keys.get("ExecStartPre", []), *stop]:
+        assert not re.search(r"(?<!\$)\$GH_TOKEN", command), (
+            "systemd would expand a bare $GH_TOKEN into argv, where ps can read it (fleet-ops#8403)"
+        )
+
+
+def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
+    command = sh_script(PR_SWEEP, tmp_path).replace("%i", "fleet-ops")
+    env = {**os.environ, "PATH": f"{fake_gh_dir(tmp_path)}{os.pathsep}{os.environ['PATH']}"}
+    url = "https://github.com/Nishfleet/fleet-ops/actions/runs/1"
+
+    def check(payload: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["/bin/sh", "-c", command],
+            env={**env, "FAKE_GH_PAYLOAD": payload},
+            capture_output=True,
+            text=True,
+        )
+
+    failed = check(json.dumps([{"conclusion": "startup_failure", "url": url}]))
+    assert failed.returncode != 0, "a startup_failure has no job, so only this line can report it (fleet-ops#9668)"
+    assert url in failed.stderr, "the run URL is what the operator opens"
+    assert "startup_failure" in failed.stderr
+    for conclusion in ("success", "failure", "cancelled", "skipped", "action_required", "stale", "timed_out"):
+        assert check(json.dumps([{"conclusion": conclusion, "url": url}])).returncode == 0, conclusion
+    assert check("[]").returncode == 0, "a repo with no completed run yet passes"
+    assert check("null").returncode == 0
+
+
+DISABLED_WORKFLOW = (
+    "could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow "
+    "(https://api.github.com/repos/Nishfleet/drive/actions/workflows/1/dispatches)"
+)
+
+
+def sweep_dispatch(tmp_path: Path, failure: str) -> subprocess.CompletedProcess:
+    """The unit's one ExecStart, with a fake gh that fails the dispatch when asked."""
+    bindir = fake_gh_dir(tmp_path)
+    return subprocess.run(
+        ["/bin/sh", "-c", sh_script(PR_SWEEP, tmp_path).replace("%i", "drive")],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_DISPATCH": failure,
+            "FAKE_GH_PAYLOAD": json.dumps(
+                [{"conclusion": "startup_failure", "url": "https://github.com/Nishfleet/drive/actions/runs/1"}]
+            ),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_fleet_pr_sweep_skips_a_repo_whose_agent_dispatch_is_disabled(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, DISABLED_WORKFLOW)
+    assert proc.returncode == 0, (
+        "a disabled workflow never fixes itself, so the hourly timer would page for ever (fleet-ops#9631); "
+        "the fake's newest run is a startup_failure, so a pass also proves the failure check was skipped"
+    )
+    assert proc.stdout.splitlines() == [
+        "skip: Nishfleet/drive disabled agent-dispatch (HTTP 422), so there is no sweep to start"
+    ]
+    assert proc.stderr == "", "one journal line, not the 422 text"
+
+
+def test_fleet_pr_sweep_keeps_every_other_dispatch_failure_loud(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, "could not create workflow dispatch event: HTTP 500: Internal Server Error")
+    assert proc.returncode != 0, "only the disabled-workflow answer is a permanent state; anything else retries and pages"
+    assert "HTTP 500: Internal Server Error" in proc.stdout
+
+
+def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status: int = 0) -> tuple[int, list[str], list[str]]:
+    home = tmp_path / "home"
+    cfg = home / ".config/fleet-ops/intake-repos.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"repos": [{"name": name} for name in repos]}))
+    bindir = fake_gh_dir(tmp_path)
+    systemctl = bindir / "systemctl"  # the unit starts one App token mint per repo
+    systemctl.write_text("#!/bin/sh\nexit 0\n")
+    systemctl.chmod(0o755)
+    for name in repos:
+        token = home / "run/fleet-worker-github-token" / f"{name}.env"
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text("GH_TOKEN=fake-app-token\n")
+    log = tmp_path / "edits.log"
+    log.write_text("")
+    done = subprocess.run(
+        ["/bin/sh", "-c", sh_script(LATER_SWEEP, home)],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_PAYLOAD": payload,
+            "FAKE_GH_LOG": str(log),
+            "FAKE_GH_EDIT_STATUS": str(edit_status),
+        },
+        capture_output=True,
+        text=True,
+    )
+    return done.returncode, done.stdout.splitlines(), [line for line in log.read_text().splitlines() if line]
+
+
+LATER_SWEEP_ISSUES = [
+    {"number": 11, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nmake it so"},
+    {"number": 12, "author": {"login": "octocat"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nstranger"},
+    {"number": 13, "author": {"login": "nish3451"}, "labels": [{"name": "needs-orchestrator"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 14, "author": {"login": "app/nishfleet-worker"}, "labels": [], "body": "due: 2020-01-01 09:15 IST\nworker filed"},
+    {"number": 15, "author": {"login": "nish3451"}, "labels": [{"name": "agent-ready"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 16, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2099-01-01 09:15 IST\nnot yet due"},
+    {"number": 17, "author": {"login": "nish3451"}, "labels": [], "body": "no due line at all"},
+    {"number": 18, "author": {"login": "nish3451"}, "labels": [{"name": "agent-blocked"}], "body": "due: 2020-01-01 09:15 IST"},
+    {"number": 19, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 ist\nmixed case in the IST word"},
+]
+
+
+def test_later_sweep_promotes_only_overdue_trusted_issues_with_no_park_label(tmp_path: Path) -> None:
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops"], json.dumps(LATER_SWEEP_ISSUES))
+    assert code == 0
+    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19"], edits
+    assert [line for line in lines if line.startswith("later-sweep: promoted")] == [
+        "later-sweep: promoted Nishfleet/fleet-ops#11",
+        "later-sweep: promoted Nishfleet/fleet-ops#14",
+        "later-sweep: promoted Nishfleet/fleet-ops#19",
+    ]
+    assert "later-sweep: verdict promoted=3 failed=0" in lines
+    assert not [line for line in lines if "WARN" in line]
+
+
+def test_later_sweep_caps_at_five_promotions_across_repos(tmp_path: Path) -> None:
+    overdue = [{"number": n, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 IST"} for n in range(20, 30)]
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops", "0509"], json.dumps(overdue))
+    assert code == 0
+    assert edits == [f"fleet-ops#{n}" for n in range(20, 25)], edits
+    assert "later-sweep: verdict promoted=5 failed=0" in lines
+    assert "0509" not in " ".join(edits), "the cap stops the sweep before the second repo is touched"
+
+
+def test_later_sweep_skips_a_repo_it_cannot_label_and_never_pages_for_it(tmp_path: Path) -> None:
+    code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops", "0509"], json.dumps(LATER_SWEEP_ISSUES), edit_status=1)
+    assert code == 0, "a repo missing the label is a skip, not a page"
+    assert edits == ["fleet-ops#11 FAILED", "0509#11 FAILED"], "one attempt per repo, then on to the next repo"
+    assert len([line for line in lines if "WARN" in line]) == 2
+    assert "later-sweep: verdict promoted=0 failed=0" in lines
+
+
+def test_later_sweep_fails_loudly_when_the_repo_list_is_unreadable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    bindir = fake_gh_dir(tmp_path)
+    env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_PAYLOAD": "[]", "FAKE_GH_LOG": str(tmp_path / "e.log")}
+    done = subprocess.run(["/bin/sh", "-c", sh_script(LATER_SWEEP, home)], env=env, capture_output=True, text=True)
+    assert done.returncode != 0
+    assert "verdict FAIL repo list" in done.stdout
+    assert "unreadable" in done.stdout
+    (home / ".config/fleet-ops").mkdir(parents=True, exist_ok=True)
+    (home / ".config/fleet-ops/intake-repos.json").write_text(json.dumps({"repos": []}))
+    empty = subprocess.run(["/bin/sh", "-c", sh_script(LATER_SWEEP, home)], env=env, capture_output=True, text=True)
+    assert empty.returncode != 0, "an empty repo list is an unconfigured box, not a quiet no-op"
+    assert "verdict FAIL repo list" in empty.stdout
+
+
+def test_later_sweep_unit_pins_its_own_limits() -> None:
+    keys = unit_directives(LATER_SWEEP)
+    assert keys["Type"] == ["oneshot"]
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
+    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["8"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["TimeoutStartSec"] == ["300"]
+
+
+def test_remote_control_runs_the_bridge_without_a_prompt_and_pages_on_every_drop() -> None:
+    keys = effective_directives(REMOTE_CONTROL)
+    flags = shlex.split(keys["ExecStart"][0])
+    assert flags[:2] == [BIN_CLAUDE, "remote-control"]
+    assert flags[flags.index("--capacity") + 1] == "1", "same-dir mode runs one session at a time (fleet-ops#9438)"
+    assert flags[flags.index("--name") + 1] == "vps-rc"
+    assert "--spawn=same-dir" in flags
+    assert flags[flags.index("--permission-mode") + 1] == "dontAsk", "the rollback is restoring bypassPermissions (fleet-ops#9502)"
+    assert "bypassPermissions" not in flags
+    assert "--no-create-session-in-dir" in flags, "same-dir without it forks a second session per wake (fleet-ops#9425)"
+    assert "--settings" not in flags, "the CLI refuses --settings, so the allow list ships in rootfs/etc/claude-code/roles/"
+    assert (ROOT / "rootfs/etc/claude-code/roles/remote-control.json").is_file(), "the allow list the flag needs ships in the repo"
+    assert keys["Restart"] == ["always"], "selfheal.conf waits out the relay's folder claim"
+    assert _last(keys, "RestartSec") == "300", "the selfheal drop-in is read last and overrides the unit's 10"
+    assert keys["StartLimitIntervalSec"] == ["0"], "0 disables the start limit, so the give-up restart is not rate-limited"
+    assert keys["OOMPolicy"] == ["continue"], "Restart=always has no effect once systemd-oomd kills the unit"
+    assert keys["UnsetEnvironment"] == ["CLAUDE_CONFIG_DIR"], "the default Team-seat login needs ~/.claude"
+    assert keys["StandardOutput"] == ["null"], "the TUI writes ~2k journal lines an hour"
+    assert keys["OOMScoreAdjust"] == ["-500"]
+    assert keys["Slice"] == ["claude.slice"]
+    assert keys["User"] == ["nish"] and keys["WantedBy"] == ["multi-user.target"]
+    assert keys["After"] == ["network-online.target user@1000.service"]
+    stop = keys["ExecStopPost"][0]
+    assert stop == "-+/usr/bin/systemctl start --no-block fleet-unit-failed@%N.service"
+    assert stop.startswith("-+"), "ignore the failure and run as root, whatever stopped it"
+    assert "--no-block" in stop
+    assert "OnFailure" not in keys, "OnFailure never fires on a clean stop, which is how this one usually ends"
+    environment = " ".join(keys["Environment"])
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in environment, "PATH is set in-unit so ~/.config/environment.d does not apply"
+    assert f"PATH={HOME}/.local/bin" in environment
+    assert "claude.ai" not in environment and "api.anthropic.com" not in environment
+
+
+def test_remote_control_sessions_keep_what_a_session_needs_inside_the_sandbox() -> None:
+    keys = effective_directives(REMOTE_CONTROL)
+    assert keys["ProtectHome"] == ["read-only"]
+    assert keys["ReadWritePaths"] == [f"{HOME} /run/user/1000"]
+    assert keys["ProtectClock"] == ["yes"] and keys["ProtectHostname"] == ["yes"] and keys["ProtectKernelLogs"] == ["yes"]
+    assert keys["ProtectKernelModules"] == ["yes"] and keys["ProtectKernelTunables"] == ["yes"] and keys["ProtectControlGroups"] == ["yes"]
+    assert keys["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6 AF_NETLINK"]
+    assert keys["SystemCallArchitectures"] == ["native"] and keys["LockPersonality"] == ["yes"] and keys["RestrictSUIDSGID"] == ["yes"]
+    assert keys["RestrictRealtime"] == ["yes"]
+    assert keys["SystemCallFilter"] == ["~@clock @cpu-emulation @module @obsolete @raw-io @reboot @swap"]
+    assert keys["CapabilityBoundingSet"] == ["~CAP_SYS_TIME CAP_SYS_PACCT CAP_WAKE_ALARM CAP_BPF CAP_LINUX_IMMUTABLE CAP_IPC_LOCK CAP_SYS_MODULE CAP_SYS_TTY_CONFIG CAP_SYS_BOOT CAP_SYS_CHROOT CAP_BLOCK_SUSPEND CAP_LEASE CAP_MKNOD CAP_MAC_ADMIN CAP_MAC_OVERRIDE CAP_SYS_RAWIO CAP_NET_BIND_SERVICE CAP_NET_BROADCAST CAP_NET_RAW CAP_SYS_NICE CAP_SYS_RESOURCE"]
+    assert keys["ProtectProc"] == ["invisible"] and keys["PrivateDevices"] == ["yes"] and keys["PrivateMounts"] == ["yes"]
+    for absent in ("NoNewPrivileges", "PrivateTmp", "ProtectSystem", "RestrictNamespaces", "ProcSubset", "RemoveIPC", "MemoryDenyWriteExecute", "UMask", "IPAddressDeny", "InaccessiblePaths"):
+        assert absent not in keys, f"{absent} costs a session something; 80-hardening.conf lists why it stays unset"
+
+
+def test_root_tincan_listener_keeps_its_trim_flags_and_its_role_allow_list() -> None:
+    keys = effective_directives(ROOT_TINCAN)
+    exec_argv = shlex.split(keys["ExecStart"][0])
+    claude = shlex.split(exec_argv[exec_argv.index("--exec") + 1])
+    assert claude[:3] == [BIN_CLAUDE, "-p", "--model"]
+    assert claude[claude.index("--model") + 1] == "claude-sonnet-5-5"
+    assert claude[claude.index("--permission-mode") + 1] == "dontAsk"
+    assert claude[claude.index("--settings") + 1] == "/etc/claude-code/roles/tincan-listener.json"
+    assert (ROOT / "rootfs/etc/claude-code/roles/tincan-listener.json").is_file(), "the allow list the flag points at ships in the repo"
+    mcp = claude.index("--mcp-config")
+    assert claude[mcp + 1] == TINCAN_MCP_CONFIG
+    assert claude[mcp + 2] == "--strict-mcp-config", "the trim flags are a set: --strict-mcp-config must follow --mcp-config"
+    assert "--disable-slash-commands" in claude
+    assert claude[claude.index("--setting-sources") + 1] == "project,local"
+    assert claude[claude.index("--max-turns") + 1] == "30"
+    assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["30"]
+    assert keys["StartLimitIntervalSec"] == ["10min"] and keys["StartLimitBurst"] == ["5"]
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
+    assert keys["SupplementaryGroups"] == [""], "empty drops every supplementary group, so the seat keys stay out of reach"
+    assert keys["NoNewPrivileges"] == ["yes"] and keys["ProtectHome"] == ["tmpfs"]
+    seats = [path for path in keys["BindReadOnlyPaths"][0].split() if "/seats/" in path]
+    assert len(seats) == 1, "the listener reads exactly one seat key, the Jev one, and nothing else"
+    assert seats[0].endswith(".env")
+
+
+WAKE_UNITS = (
+    "systemd/tincan-listen-fleet-worker.service",
+    "systemd/tincan-listen-pi.service",
+    "rootfs/etc/systemd/user/cua-desk-daemon.service",
+)
+# Decision (fleet-ops#10263): the permissive flags stay. These listeners run headless with nobody to answer a prompt, and the
+# fleet rule gives every VPS agent full write/exec autonomy; a narrower mode only makes the vendor CLI deny and stall the wake.
+# claude-vps is the one narrowed unit because it had permissions.ask rules to honour (#9502). Revisit per vendor, units and pins together.
+WAKE_AGENT = {
+    "tincan-listen-fleet-worker": ("pi --print --provider litellm --model worker-cheap", None),
+    "tincan-listen-pi": ("pi --print --provider litellm --model worker-cheap", None),
+}
+DESK_UNIT = "rootfs/etc/systemd/user/cua-desk-daemon.service"
+
+
+def effective_directives(unit: Path) -> dict[str, list[str]]:
+    """A unit the way systemd reads it: the unit file, then its drop-ins in name order."""
+    keys: dict[str, list[str]] = {}
+    for source in [unit, *sorted(unit.parent.glob(f"{unit.name}.d/*.conf"))]:
+        if not source.is_file():
+            continue
+        for key, values in _unit_keys(source).items():
+            keys.setdefault(key, []).extend(values)
+    return keys
+
+
+@pytest.mark.parametrize("relative", WAKE_UNITS, ids=lambda path: path)
+def test_wake_unit_is_in_the_repo_and_carries_the_page_hook(relative: str) -> None:
+    unit = ROOT / relative
+    assert unit.is_file(), f"{relative} is not in the repo, so a git pull carries no edit to it"
+    keys = effective_directives(unit)
+    assert _last(keys, "Restart") == "always"
+    if relative != DESK_UNIT:
+        assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"
+    assert _last(keys, "WantedBy") == "default.target"
+    if relative != DESK_UNIT:
+        assert keys["ExecStart"][0].startswith("/home/nish/.local/bin/tincan listen --exec ")
+
+
+def test_each_wake_unit_is_pinned_on_its_agent_flags_and_task_id() -> None:
+    for name, (binary, flags) in WAKE_AGENT.items():
+        keys = effective_directives(ROOT / "systemd" / f"{name}.service")
+        exec_start = keys["ExecStart"][0]
+        assert binary in exec_start, f"{name}: ExecStart no longer runs {binary}"
+        if flags:
+            assert flags in exec_start, f"{name}: ExecStart lost the {flags} flags"
+        agent = name.removeprefix("tincan-listen-")
+        assert keys["Environment"][0] in {
+            f"TINCAN_CONFIG=/home/nish/.config/tincan/{agent}.json",
+            f"TINCAN_CONFIG=%h/.config/tincan/{agent}.json",
+        }, f"{name}: TINCAN_CONFIG does not point at its own config"
+        assert keys["Environment"][1] == f"FLEET_TASK_ID=tincan-{agent}"
+
+
+def test_the_desk_daemon_loads_its_own_seat_file() -> None:
+    desk = effective_directives(ROOT / DESK_UNIT)
+    assert "%h/.config/fleet-ops/seats/claude-seat-b.env" in desk["EnvironmentFile"]
+    assert _last(desk, "Environment") == "CUA_MESH=prefer".lower()
+    assert _last(desk, "RestartSec") == "2" and _last(desk, "KillMode") == "mixed"
+
+
+def test_no_unit_loads_the_litellm_master_key() -> None:
+    units = {
+        path
+        for pattern in ("systemd/*.service", "rootfs/etc/systemd/system/*.service", "rootfs/etc/systemd/user/*.service")
+        for path in ROOT.glob(pattern)
+    }
+    offenders = [
+        str(unit.relative_to(ROOT))
+        for unit in sorted(units)
+        if any("litellm-master-key.env" in value for value in effective_directives(unit).get("EnvironmentFile", []))
+    ]
+    assert offenders == [], (
+        f"these units put the router's admin credential in their own environment: {offenders}. "
+        "Point the unit at a per-lane virtual key in seats/ (fleet-ops#10221); the proxy's own "
+        "quadlet container is the one place that may load it."
+    )
+
+
+def test_the_desk_daemon_wants_link_is_repointed_before_the_hand_copy_goes() -> None:
+    sync = (ROOT / "systemd/fleet-sync.service").read_text()
+    line = next(
+        (line for line in sync.splitlines() if "default.target.wants/cua-desk-daemon.service" in line),
+        "",
+    )
+    assert line.startswith("ExecStart=-/bin/sh -c '"), "an unguarded step fails every deploy until /etc has the file"
+    assert 'test "$$(readlink $$w)" = %h/.config/systemd/user/cua-desk-daemon.service' in line, (
+        "the repoint must be conditional, so a hand disable (no wants link) stays off"
+    )
+    repoint = line.index("ln -sfn /etc/systemd/user/cua-desk-daemon.service $$w")
+    remove = line.index("rm -f %h/.config/systemd/user/cua-desk-daemon.service;")
+    assert repoint < remove, "removing the file first leaves the wants link dangling and LINK-GUARD fails the unit"
+
+
+def test_the_root_copy_installs_the_desk_daemon() -> None:
+    host = ansible_host.text()
+    assert 'src: "{{ rootfs }}/etc/systemd/user/"' in host and "dest: /etc/systemd/user/" in host, (
+        "step 2k is inert unless the root copy installs the whole rootfs/etc/systemd/user/ tree, "
+        "and an enumerated file list would miss the next file added there"
+    )
+    assert (ROOT / DESK_UNIT).is_file(), f"{DESK_UNIT} is not in the repo, so the copy installs nothing"
 
 
 SPACE_TOKEN = "Tk3-" + "x" * 28
@@ -1697,3 +2636,188 @@ def test_host_config_runs_once_after_every_boot() -> None:
     enable = _host_task("Enable the host config run after boot")["ansible.builtin.systemd_service"]
     assert enable["name"] == "fleet-host-config-boot.timer" and enable["enabled"] is True
     assert "state" not in enable, "starting the timer after boot would fire it at once"
+
+
+def test_daily_host_config_timer_is_retired() -> None:
+    """fleet-ops#10457: only a merge or a boot runs the host playbook; no daily timer."""
+    assert not (INSTALLED / "fleet-host-config.timer").exists()
+    retired = retired_paths()
+    assert "/etc/systemd/system/fleet-host-config.timer" in retired
+    stop = _host_task("Stop and disable the retired daily host config timer")["ansible.builtin.systemd_service"]
+    assert stop["name"] == "fleet-host-config.timer" and stop["enabled"] is False and stop["state"] == "stopped"
+    assert (INSTALLED / "fleet-host-config-boot.timer").exists(), "the boot run stays"
+
+
+def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
+    """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
+    keys = _unit_keys(GRAFANA_PROVISIONING)
+    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
+    assert keys["RestartMode"] == ["direct"], "systemd 254+ restarts without the failed state, so the token unit's start waits the retries out instead of failing with them, and OnFailure= fires once"
+    assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"], "a real outage must still page"
+    assert "fleet-grafana.service" not in keys.get("After", []), "fleet-grafana.service has After= on the token unit that starts this one, so an ordering edge back would hold a Grafana start until its timeout"
+    interval = int(keys["StartLimitIntervalSec"][0])
+    burst = int(keys["StartLimitBurst"][0])
+    restart = int(keys["RestartSec"][0])
+    attempt = int(keys["TimeoutStartSec"][0])
+    assert interval > 0 and burst > 0, "a zero interval disables the start limit"
+    assert burst >= 3, "one retry does not outlast a Grafana start"
+    assert burst * restart < interval, "the limit must be reachable inside its interval"
+    assert (burst - 1) * restart >= 60, "the 2026-10-23 Grafana restart held the reload out for 30 s"
+    token = _unit_keys(GRAFANA_TOKEN)
+    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
+    assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+
+
+RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}
+
+DESIGNED_FLAPPERS = {
+    "rootfs/etc/systemd/system/tailscaled.service": (
+        "SSH is tailnet-only, so the lifeline keeps coming back",
+        None,
+    ),
+    "rootfs/etc/systemd/system/claude-remote-control.service": (
+        "50-alert-on-stop.conf pages on every exit through ExecStopPost=",
+        (
+            "rootfs/etc/systemd/system/claude-remote-control.service.d/50-alert-on-stop.conf",
+            "fleet-unit-failed@%N.service",
+        ),
+    ),
+    "rootfs/etc/systemd/system/hermes-gateway.service": (
+        "HermesGatewayDown pages a 5-minute window with no active state",
+        ("rootfs/etc/prometheus/fleet_rules.yml", "alert: HermesGatewayDown"),
+    ),
+}
+
+# systemd's own defaults for an unset key (systemd.unit):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=
+DEFAULT_START_INTERVAL_SEC = 10.0
+DEFAULT_START_BURST = 5
+DEFAULT_RESTART_SEC = 0.1
+
+SPAN_SECONDS = {"": 1.0, "s": 1.0, "min": 60.0, "h": 3600.0}
+
+
+def _seconds(key: str, value: str) -> float:
+    """A span in seconds, read with the time units this repo's units use."""
+    if value.strip() == "infinity":
+        return float("inf")
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([a-z]*)", value.strip())
+    assert match, f"{key}={value} is not a number with a time unit"
+    number, unit = match.groups()
+    assert unit in SPAN_SECONDS, f"{key}={value}: this gate reads only the units {sorted(SPAN_SECONDS)}; add {unit!r} to SPAN_SECONDS"
+    return float(number) * SPAN_SECONDS[unit]
+
+
+def unit_sources() -> dict[str, list[Path]]:
+    """Unit path to every file that layers onto it, in systemd's apply order.
+
+    The key is the path, because the same unit name ships twice here: a linked
+    user unit in systemd/ and a root-owned one in rootfs/etc/systemd are
+    different units with different failure readers. A drop-in directory names a
+    unit even when its base is not in this repo: the self-hosted runners and
+    tailscaled ship their base from the vendor, and that drop-in carries the
+    whole restart policy. A quadlet is a source too: podman generates the unit
+    from it and passes its [Unit] keys through.
+    """
+    sources: dict[str, list[Path]] = {}
+    for pattern in (
+        "systemd/*.service",
+        "rootfs/etc/systemd/system/*.service",
+        "rootfs/etc/systemd/user/*.service",
+        "containers/quadlet/*.container",
+    ):
+        for path in sorted(ROOT.glob(pattern)):
+            key = f"{path.parent.relative_to(ROOT)}/{path.name}"
+            sources[key] = [path, *sorted(path.parent.glob(f"{path.name}.d/*.conf"))]
+    for dropin_dir in sorted(
+        [*ROOT.glob("systemd/*.d"), *ROOT.glob("rootfs/etc/systemd/system/*.d"), *ROOT.glob("rootfs/etc/systemd/user/*.d")]
+    ):
+        key = f"{dropin_dir.parent.relative_to(ROOT)}/{dropin_dir.name[: -len('.d')]}"
+        sources.setdefault(key, sorted(dropin_dir.glob("*.conf")))
+    return sources
+
+
+def effective_values(name: str) -> dict[str, list[str]]:
+    """Every value each key takes across the unit's layers, the last one effective."""
+    values: dict[str, list[str]] = {}
+    for layer in unit_sources()[name]:
+        for key, layer_values in _unit_keys(layer).items():
+            values.setdefault(key, []).extend(layer_values)
+    return values
+
+
+def restarting_units() -> list[str]:
+    return sorted(
+        name
+        for name in unit_sources()
+        if (effective_values(name).get("Restart", [None])[-1] or "").lower() in RESTART_POLICIES
+    )
+
+
+def test_every_restart_surface_is_covered() -> None:
+    units = restarting_units()
+    assert units, "no unit with a Restart= policy was found"
+    surfaces = ("systemd", "rootfs/etc/systemd/system", "rootfs/etc/systemd/user", "containers/quadlet")
+    missing = [surface for surface in surfaces if not any(name.startswith(f"{surface}/") for name in units)]
+    assert not missing, f"no restarting unit found under {missing}, so the start-limit gate would pass vacuously"
+
+
+def test_designed_flappers_are_restarting_units() -> None:
+    stale = sorted(set(DESIGNED_FLAPPERS) - set(restarting_units()))
+    assert not stale, f"DESIGNED_FLAPPERS lists units that ship no restart policy: {stale}"
+
+
+def test_every_designed_flapper_cites_the_page_that_replaces_the_failed_state() -> None:
+    """The exemption is only sound while the page its reason names is shipped."""
+    unpageable = sorted(name for name, (_, pager) in DESIGNED_FLAPPERS.items() if pager is None)
+    assert unpageable == ["rootfs/etc/systemd/system/tailscaled.service"], (
+        f"only the tailnet lifeline may sit outside the gate with no page behind it: {unpageable}"
+    )
+    for name, (reason, pager) in DESIGNED_FLAPPERS.items():
+        if pager is None:
+            continue
+        path, needle = pager
+        assert needle in (ROOT / path).read_text(), (
+            f"{name} is exempt from the start-limit gate because {reason}, but {path} no longer carries {needle!r}, "
+            f"so a crash loop there would be silent and paged to nobody"
+        )
+
+
+@pytest.mark.parametrize("name", restarting_units())
+def test_a_crash_loop_reaches_failed_before_its_start_limit_hides_it(name: str) -> None:
+    """A restart loop must reach `failed`, the state its failure reader polls.
+
+    systemd's default budget is 5 starts in 10 s. A unit that restarts slower
+    than that never spends it, so nothing fires and the loop runs unseen
+    (fleet-ops#10253). The reader per unit, and the whole reason, are in
+    docs/ARCHITECTURE.md and the fleet map.
+    """
+    values = effective_values(name)
+    interval_text = values["StartLimitIntervalSec"][-1].strip() if "StartLimitIntervalSec" in values else ""
+    if name in DESIGNED_FLAPPERS:
+        assert interval_text and _seconds("StartLimitIntervalSec", interval_text) == 0, (
+            f"{name} no longer disables the start limit; drop it from DESIGNED_FLAPPERS"
+        )
+        return
+    restart_text = values["RestartSec"][-1].strip() if "RestartSec" in values else ""
+    restart = _seconds("RestartSec", restart_text) if restart_text else DEFAULT_RESTART_SEC
+    assert restart != float("inf"), (
+        f"{name}: RestartSec=infinity schedules no restart after an exit, so a crashed unit never comes back; set a finite RestartSec"
+    )
+    assert interval_text != "infinity", (
+        f"{name}: StartLimitIntervalSec=infinity never lets the budget expire, so the first crash loop benches the unit for good; set 10min"
+    )
+    interval = _seconds("StartLimitIntervalSec", interval_text) if interval_text else DEFAULT_START_INTERVAL_SEC
+    burst_text = values["StartLimitBurst"][-1].strip() if "StartLimitBurst" in values else str(DEFAULT_START_BURST)
+    assert burst_text.isdigit() and int(burst_text) >= 1, (
+        f"{name}: StartLimitBurst={burst_text} must be a whole number of starts and at least 1, because 0 disables the limit"
+    )
+    burst = int(burst_text)
+    spent = burst * restart
+    assert spent < interval, (
+        f"{name}: Restart={values['Restart'][-1]} RestartSec={restart:g}s spends its start budget at "
+        f"{burst:g} x {restart:g}s = {spent:g}s, which never fills inside StartLimitIntervalSec={interval:g}s, "
+        f"so a crash loop restarts for ever and never reaches `failed`, the state its failure reader polls "
+        f"(fleet-ops#10253). Raise StartLimitIntervalSec above that spend, or list the unit in "
+        f"DESIGNED_FLAPPERS with the page that replaces the failed state."
+    )

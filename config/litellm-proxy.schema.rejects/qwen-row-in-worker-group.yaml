@@ -1,0 +1,130 @@
+# fleet-ops#10608 (Nish 2026-10-28): Qwen is a judge or reviewer only, so a Qwen row in a worker group is refused.
+# Built from the live config's judge rows, the former senior Synthetic row and its router_settings, which pass the schema alone, so this file breaks only the rule named above.
+model_list:
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek-v4.1-flash
+    api_base: https://opencode.ai/zen/go/v1
+    api_key: os.environ/OPENCODE_API_KEY
+    reasoning_effort: max
+    extra_headers:
+      x-opencode-session: fleet-judge
+    tags:
+    - prepaid
+    - opencode-go
+    order: 2
+    max_parallel_requests: 2
+    cooldown_time: 21600
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Same gateway and model as the removed key-2 rows (88.4% cache-read 7d, #9357 scoreboard); this row is the monthly-quota-walled Go endpoint (#9122) with little traffic of its own.'
+    id: opencodego-ds41flash-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
+- model_name: judge
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 900
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only,
+      order unchanged.'
+    id: alibaba-qwen38max-judge
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    weight: 1
+    max_parallel_requests: 1
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: '2026-10-07 #9357 scoreboard: 89.5% cache-read 7d on real router traffic.'
+    id: synthetic-glm53flashe-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/qwen3.8-max
+    api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key: os.environ/ALIBABA_CODING_API_KEY
+    tags:
+    - prepaid
+    - alibaba
+    rpm: 3
+    order: 1
+    max_parallel_requests: 3
+    cooldown_time: 900
+    extra_body:
+      enable_thinking: true
+      thinking_budget: 2048
+    additional_drop_params:
+    - reasoning_effort
+    weight: 1
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: 'Caches: direct probe 2026-10-07 on compatible-mode, call 2 cached_tokens 7168 of 7967 (90%); the endpoint reports prompt_tokens_details.cached_tokens. Judge group: one-shot calls only,
+      order unchanged.'
+    id: alibaba-qwen38max-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+router_settings:
+  routing_strategy: simple-shuffle
+  optional_pre_call_checks:
+  - prompt_caching
+  - session_affinity
+  redis_host: 127.0.0.1
+  redis_port: 6379
+  redis_password: os.environ/REDIS_PASSWORD
+  deployment_affinity_ttl_seconds: 600
+  fallbacks:
+  - worker-cheap:
+    - worker-capable
+  - worker-public:
+    - worker-capable
+  - assistant:
+    - worker-capable
+  cooldown_time: 60
+  allowed_fails: 1
+  num_retries: 0
+  timeout: 1800
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 0
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 1
+    BadRequestErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    NotFoundErrorRetries: 1
+    DefaultRetries: 1
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
+    NotFoundErrorAllowedFails: 0

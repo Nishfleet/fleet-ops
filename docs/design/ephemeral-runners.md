@@ -23,7 +23,7 @@ poller, no wrapper.
 
   | Pool | Units | Registered to | Labels (as listed by the API) |
   |---|---|---|---|
-  | agent | `netcup-agent-1..22` | org runner group `agent` (id 3) | `self-hosted`, `agent`. Ten of the 22 also carry `linux`, `x64`. |
+  | agent | `netcup-agent-1..10` | org runner group `agent` (id 3) | `self-hosted`, `agent` |
   | fleet-ci | `netcup-fleet-ci-1..3` | org, `fleet-ci-3` in the restricted group `drive-eval` | `self-hosted`, `linux`, `x64`, `fleet-ci` |
   | vault | `netcup-vault-1` | one repository outside the org | not covered here |
 
@@ -164,7 +164,7 @@ it.
   also checks for a newer version when it starts, which can add time on the
   first start after a release.
 - Throughput during the gap: a runner is not available between one job ending
-  and its replacement registering. With 22 agent runners the effect is small,
+  and its replacement registering. With 10 agent runners the effect is small,
   and the Step 3 check measures it.
 - Cache loss: checkouts, tool downloads and anything else in the work
   directory are fetched again every job. The expected cost is the clone time
@@ -179,10 +179,16 @@ it.
     one day.
     https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/removing-self-hosted-runners
   - The token call fails (the credential expired, GitHub is unreachable). The
-    pre-start step fails, `Restart=always` retries after `RestartSec`, and the
-    runner is absent until it succeeds. A failing unit is visible in
-    `systemctl` and through the existing `fleet-unit-failed@` hook. Set
-    `StartLimitIntervalSec=0` so a long outage does not leave the unit stuck.
+    pre-start step fails, `Restart=on-failure` retries after the drop-in's
+    `RestartSec=30s`, and the runner is absent until it succeeds. The drop-in
+    (`10-*.conf` above) also sets `StartLimitIntervalSec=10min` and
+    `StartLimitBurst=5`, so five failed starts inside ten minutes stop the
+    retries and leave the unit `failed`, which `systemctl --failed` and the
+    `node_systemd_unit_state` gauge report. `StartLimitIntervalSec=0` was the
+    earlier choice and it hid the failure (fleet-ops#10253): with no start
+    limit a restart loop never reaches `failed`, so nothing alerted while the
+    runner was absent. Recovery after a benched unit is `systemctl reset-failed`
+    and a start.
   - The runner dies mid-job. The job fails, the record is removed by GitHub
     or replaced by `--replace`, and the unit restarts.
   - Orphan records of the same name. `--replace` covers the same-name case,

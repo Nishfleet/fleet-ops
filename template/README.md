@@ -8,5 +8,3 @@ Source files for the fleet host, linked or copied by hand (README.md,
   - `reviewer.md` — "Code review specialist for quality and security analysis" (invoked by `prompts/worker.md` step 7).
   - `scout.md` — "Fast codebase recon that returns compressed context for handoff to other agents" (not invoked by `prompts/worker.md`).
   - `worker.md` — "General-purpose subagent with full capabilities, isolated context" (not invoked by `prompts/worker.md`).
-- `cursor-rules/shared-memory.mdc` — the always-on Cursor rule; `~/.cursor/rules/` links to it.
-- `devin-config.json` — applied by hand with the `jq` command in README.md, section "Devin workspace-trust key".
