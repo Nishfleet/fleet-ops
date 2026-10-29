@@ -483,6 +483,8 @@ jobs:
     permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
+      parked: ${{ steps.requeue.outputs.parked }}
+      released: ${{ steps.list.outputs.released }}
     steps:
       - id: list
         env:
@@ -677,9 +679,12 @@ jobs:
               *) exit 1 ;;
             esac
             pages="$pages$i"$'\n'
-            # A closed blocker releases a parked hand-off: re-label it on the runner login so the label event starts it (fleet-ops#10489).
+            # A closed blocker releases a parked hand-off: collect its number, and the parked job
+            # re-labels it on the worker App token so the label event starts it (fleet-ops#10489).
+            # This job runs hosted, where no login exists, so it cannot write it itself
+            # (fleet-ops#10963).
             if [ -n "$CLOSED" ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
-              for op in remove add; do env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
+              released=$(jq -nc --argjson r "${released:-[]}" --arg n "$n" '$r + [$n]')
             fi
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
@@ -688,11 +693,22 @@ jobs:
               | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
-          echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
+          # A closed blocker takes the path the requeue step never runs on (that step is schedule-only),
+          # so the released selection holds the whole batch alone. Cap it at the same 5 the requeue
+          # filter slices to: a closed epic that released dozens of hand-offs made two API calls for
+          # every one of them, one after another, inside the write job's 10-minute timeout
+          # (fleet-ops#11010).
+          {
+            echo "refs=${refs:-[]}"
+            echo "released=$(jq -nc --argjson r "${released:-[]}" '$r[:5]')"
+          } >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
       # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # Selection only: this job runs hosted, where the sweep token fires no label event and no
+      # fleet credential exists, so the parked job below holds the writes (fleet-ops#10963).
+      - id: requeue
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -703,9 +719,9 @@ jobs:
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
-                  or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
+                  or ((.author.login | IN("nishfleet-worker", "nishfleet-worker[bot]", "github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
           fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
@@ -715,19 +731,111 @@ jobs:
             queued=$((queued + c))
           done
           prs=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json headRefName --jq 'map(.headRefName)') || { fail "PR list"; prs=[]; }
-          gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
-            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE" | while IFS= read -r r; do
-              n=$(jq -r .number <<<"$r")
-              if [ "$(jq -r .act <<<"$r")" = escalate ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label needs-nish-decision || echo "::warning::#$n: escalation refused"
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || echo "::warning::#$n: escalation comment refused"
-              elif [ "$(jq -r .tried <<<"$r")" = true ]; then
-                env -u GH_TOKEN gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label orchestrator-tried --add-label needs-orchestrator || echo "::warning::#$n: re-queue refused"
-              else
-                gh workflow run "$wf" -R "$GITHUB_REPOSITORY" -f task=orchestrate -f issue="$n" || echo "::error::#$n: re-fire refused; does $wf declare the task and issue inputs?"
-                gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
-              fi
-            done
+          rows=$(gh issue list -R "$GITHUB_REPOSITORY" -S "label:orchestrator-tried,needs-orchestrator" -L 300 --json number,labels,updatedAt,comments |
+            jq -c --argjson now "$(date +%s)" --argjson queued "$queued" --argjson prs "$prs" "$REQUEUE") || { fail "issue list"; exit 1; }
+          echo "parked=${rows:-[]}" >> "$GITHUB_OUTPUT"
+  # The parked hand-offs the list job selected. This job, not the list job, holds
+  # the writes, because the list job runs on a GitHub-hosted runner: there the
+  # sweep token fires no issues event, so a label write there re-queues nothing,
+  # and no fleet credential exists, so both writes were refused on every run and
+  # 51 hand-offs sat on handoff-ended (fleet-ops#10963).
+  #
+  # The writes go on the worker App token, the same two steps admit uses. Writing
+  # needs-orchestrator fires the labeled event the orchestrate job waits for, and
+  # the App sender is on that job's allowlist, so the re-fire is a label write and
+  # not a dispatch: a called workflow cannot escalate past its caller's grant,
+  # every caller stub holds this file at actions: read, and gh workflow run needs
+  # actions: write, so the dispatch was refused with HTTP 403 every time
+  # (fleet-ops#10638, #10657).
+  #
+  # A refused write fails this job and posts no marker, because the marker is the sweep's
+  # strike: three of them park a hand-off as three dead ones, and nothing needs this job, so the
+  # sweep and its dispatch jobs stay green. The released case below needs no event gate: the list
+  # job's own if reaches only the sweep triggers and an issues:closed, and a skipped list job
+  # skips this one.
+  parked:
+    needs: list
+    if: >-
+      vars.FLEET_DISPATCH_PAUSED != 'true' &&
+      ((needs.list.outputs.released != '' && needs.list.outputs.released != '[]') ||
+       (needs.list.outputs.parked != '' && needs.list.outputs.parked != '[]'))
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}
+    timeout-minutes: 10
+    # The App token does every write; the job's own token is not used.
+    permissions: {}
+    steps:
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
+      # The same two steps as admit's and agent.yml's (App key read and App token),
+      # unchanged in behaviour: the key stays on the runner, is masked, and goes
+      # only to create-github-app-token. No new secret and no new key location.
+      - name: Read App private key
+        id: app-key
+        run: |
+          keyfile="${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-worker}/nishfleet-worker.private-key.pem"
+          [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done < "$keyfile"
+          delim=APP_PRIVATE_KEY_END
+          {
+            printf 'pem<<%s\n' "$delim"
+            cat "$keyfile"
+            printf '%s\n' "$delim"
+          } >> "$GITHUB_OUTPUT"
+      # No owner and no repositories: scoped to the calling repo, as in admit.
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-issues: write
+          skip-token-revoke: "false"
+      - name: Write the parked hand-offs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PARKED: ${{ needs.list.outputs.parked || '[]' }}
+          RELEASED: ${{ needs.list.outputs.released || '[]' }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=0
+          while IFS= read -r r; do
+            n=$(jq -r .number <<<"$r")
+            if [ "$(jq -r .act <<<"$r")" = escalate ]; then
+              gh issue edit "$n" -R "$REPO" --add-label needs-nish-decision || { echo "::error::#$n: escalation refused"; failed=1; continue; }
+              gh issue comment "$n" -R "$REPO" --body "orchestrator: needs Nish. Three hand-offs ended without a PR or went idle again: $(jq -r '.runs | map(sub("^[^:]*: "; "")) | join(", ")' <<<"$r")" || { echo "::error::#$n: escalation comment refused"; failed=1; }
+            elif [ "$(jq -r .tried <<<"$r")" = true ]; then
+              gh issue edit "$n" -R "$REPO" --remove-label orchestrator-tried --add-label needs-orchestrator || { echo "::error::#$n: re-queue refused; the App token lost issues: write on $REPO"; failed=1; }
+            else
+              gh issue edit "$n" -R "$REPO" --remove-label needs-orchestrator || { echo "::error::#$n: re-fire refused; the App token lost issues: write on $REPO"; failed=1; continue; }
+              gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator || {
+                # The churn took the label off before it failed, so put it back: an
+                # issue this sweep's label search cannot find is a hand-off nobody sees.
+                gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator ||
+                  echo "::error::#$n: needs-orchestrator is off and the re-add failed too"
+                echo "::error::#$n: re-fire refused; the App token lost issues: write on $REPO"
+                failed=1; continue
+              }
+              gh issue comment "$n" -R "$REPO" --body "orchestrator re-fired by the sweep: $RUN_URL" || { echo "::warning::#$n: re-fire marker refused"; failed=1; }
+            fi
+          done < <(jq -c '.[]' <<<"$PARKED")
+          # A closed blocker releases a parked hand-off (fleet-ops#10489): the same two writes as a
+          # re-fire, and no marker, because a release is not a re-fire that died.
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            gh issue edit "$n" -R "$REPO" --remove-label needs-orchestrator ||
+              { echo "::error::#$n: released hand-off re-fire refused; the App token lost issues: write on $REPO"; failed=1; continue; }
+            gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator || {
+              # The churn took the label off before it failed, so put it back: an issue this
+              # sweep's label search cannot find is a hand-off nobody sees.
+              gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator ||
+                echo "::error::#$n: needs-orchestrator is off and the re-add failed too"
+              echo "::error::#$n: released hand-off re-fire refused; the App token lost issues: write on $REPO"
+              failed=1
+            }
+          done < <(jq -r '.[]' <<<"$RELEASED")
+          [ "$failed" = 0 ] || exit 1
   unblocked:
     needs: list
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'
