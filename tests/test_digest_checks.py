@@ -99,7 +99,8 @@ def test_host_yml_applies_the_prompts_to_the_live_jobs():
 
 
 def test_ci_runs_this_file():
-    assert "tests/test_digest_checks.py" in CI.read_text()
+    # ci.yml finds every test under tests/ (fleet-ops#10721), so this file runs without being named there.
+    assert re.search(r"pytest\b[^\n]*\stests(\s|$)", CI.read_text()), "ci.yml has no step that runs pytest on the whole tests/ directory"
 
 
 FAKE_GH = """#!/usr/bin/env python3

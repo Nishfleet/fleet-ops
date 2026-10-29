@@ -16,7 +16,7 @@ code and config.
 
 The work loop: `.github/workflows/agent-dispatch.yml` queues `agent-ready` issues as `agent.yml` jobs on the VPS self-hosted runners, workers open PRs on `claim/issue-<N>`, and the GitHub merge queue lands them.
 Dispatch pauses through the repo variable `FLEET_DISPATCH_PAUSED`, never by disabling the workflow: with it `true`, every job that starts a worker skips and logs one summary line, while `hold-risky` and `close-claim` keep running (a disabled workflow drops every trigger, guards included; 2026-10-05). Unset or any other value is not paused. The weekly `ansible/update.yml` sets it per repo and clears it in its `always:` block, then sweeps; it lists the repos it paused in `/var/lib/fleet-ops/dispatch-paused-by-update`, so a run killed before `always:` is undone at the start of the next, and a flag set by hand is left alone; ci.yml fails if a guard job gains the condition or a dispatch job loses it.
-No scheduled fleet job opens PRs. Two scheduled jobs open issues: the weekly retro, at most three a run, each passing a public-text check (`systemd/retro-weekly.service`, fleet-ops#9314; its report is private, in the vault), and the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The only scheduled job that calls a model itself is the weekly retro (the provider watch's issues start a hand-off run, above); the org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip). The weekly retro (`retro-weekly.timer`, Mondays) calls Claude on the Anthropic API directly, pinned in the unit, from a bwrap jail with no gh login.
+No scheduled fleet job opens PRs. One scheduled job opens issues: the daily provider watch, at most one per provider whose model list changed, built from fixed text only, with no model id and no other network text (`systemd/fleet-provider-watch.service`); the ids themselves stay in a host state directory, never in git. The watch makes no model call itself, but its issues carry `needs-orchestrator`, so each starts one orchestrator hand-off run (a paid model session): a vault standing-rule exception to fleet-ops#8304 (Nish 2026-10-15, nish3451/nish-vault#23). The caps are 3 issues per run, one provider per issue, no refile for 7 days, and `ORCHESTRATE_DAILY_MAX` in agent-dispatch.yml. Otherwise issues come from people, red-main issues and dependabot, which runs weekly. The org `CI_RUNNER` variable is set by hand (fleet-ops#9670 retired the hourly auto-flip).
 
 ## Model plane
 
@@ -88,10 +88,10 @@ The rules still in force:
   claiming a review it did not get: the `in-run review: unavailable -
 <reason>` line.
 - **Worker lanes and Claude seats.** `agent.yml` Gate: ordinary issues go to
-  pi, then opencode, then Devin. `strong-only` (senior) issues go to Claude
+  pi. `strong-only` (senior) issues go to Claude
   Code first (`claude-sonnet-5-5`; `claude-opus-5-5` after two failed runs or
   with `needs-opus`). The seat is set by the issue number's parity
-  (the same input the Cursor lane keys on, fleet-ops#9696): in the claude lane
+  (fleet-ops#9696): in the claude lane
   step, before claude runs, an even issue unsets `CLAUDE_CONFIG_DIR` and runs the
   default login (seat b), an odd issue keeps it (seat a), and a non-numeric id
   keeps seat a. The seat follows the issue, not the runner, so a retry of the
@@ -102,7 +102,7 @@ The rules still in force:
   token alone and a fresh empty `CLAUDE_CONFIG_DIR` in the job's temp dir
   (`auth=token`); the lane deletes that dir when it ends. The line is parsed, never
   run as shell, and the token is masked and given to the claude command alone, so
-  a fallthrough to pi or Cursor does not inherit it. If claude fails with an auth
+  a fallthrough to pi does not inherit it. If claude fails with an auth
   error on that token, the lane retries once with the other seat's token (logged as
   `retry=after-auth-failure`), before any fallthrough. The token does not rotate,
   so a backup copy restores it. With no such file the seat's login is used
@@ -112,8 +112,7 @@ The rules still in force:
   included, so the token reaches claude through the environment only. Jobs split across both seats with no clock, and a job stays on one seat
   from the Gate to the last call, which keeps the prompt cache. To switch it
   off, delete that block (every runner then runs seat a). When claude exits on a rate limit or a usage
-  limit, the same packet falls through: Cursor (cap 1) for `strong-only`, pi for
-  any other job. Nothing polls usage.
+  limit, the same packet falls through to pi. Nothing polls usage.
   Routing by judgment, in plain words: Claude does the judgment work, free
   workers do the mechanical work, and Jev decides which is which. For an issue
   that is not `strong-only`, the Gate asks Jev one typed question from the issue
@@ -121,9 +120,9 @@ The rules still in force:
   choice, ambiguity, multi-file reasoning, debugging), as opposed to a
   mechanical, fully specified change? Only the extremes count. At 0.9 or more
   the issue goes to the claude lane (Sonnet, or Opus with `needs-opus`); at 0.1
-  or less it goes to the free lanes (pi, then opencode, then Devin). Anything
+  or less it goes to the free pi lane. Anything
   between, or a Jev call that fails (a warning is logged), goes to the free
-  lanes; `strong-only` always goes to claude. The decision is written as
+  pi lane; `strong-only` always goes to claude. The decision is written as
   `judgment: p=<x> -> claude|free (<reason>)` to the log and the job summary.
   Eval numbers: `tests/evals/results/needs_judgment.json`. There is no cap on
   live claude workers: nothing stock gives N slots, and each worker sits under

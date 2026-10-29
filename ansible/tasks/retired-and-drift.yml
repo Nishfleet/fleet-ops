@@ -98,6 +98,45 @@
     and 'not loaded' not in retired_index_executor_disable.stderr | lower
     and 'does not exist' not in retired_index_executor_disable.stderr | lower
 
+# The four CLI listener lanes (#44 item 9): their unit files leave the repo in
+# this release, and Restart=always would keep `cursor-agent --yolo`, `devin
+# --permission-mode dangerous` and the rest reading the inbox until something
+# stopped them. The root-scope units take systemd_service, the user-scope copies
+# step 2j of fleet-sync.service linked take nish's user manager. A unit that is
+# already gone is the state this leaves behind.
+- name: Stop and disable the retired CLI listener units
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_off
+  failed_when:
+    - retired_cli_listener_off.failed | default(false)
+    - "'Could not find' not in (retired_cli_listener_off.msg | default(''))"
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Stop and disable the retired CLI listeners in nish's user manager
+  ansible.builtin.command:
+    argv: [systemctl, --user, --machine=nish@.host, disable, --now, "{{ item }}"]
+  loop:
+    - tincan-listen-command-code.service
+    - tincan-listen-cursor-vps.service
+    - tincan-listen-devin-vps.service
+    - tincan-listen-opencode.service
+  register: retired_cli_listener_user_off
+  changed_when: retired_cli_listener_user_off.rc == 0
+  failed_when: >-
+    retired_cli_listener_user_off.rc != 0
+    and 'not loaded' not in retired_cli_listener_user_off.stderr | lower
+    and 'does not exist' not in retired_cli_listener_user_off.stderr | lower
+  notify:
+    - Reload nish's user manager
+
 # Files the repo used to leave live and now removes, and files a session
 # hand-installed that the repo or a product repo now owns. Each path is named,
 # so a deletion is always a reviewed line in this file. system.control
@@ -105,6 +144,66 @@
 # to rootfs/.../netcup-fleet-ci-.service.d/10-fleet-ci.conf, the github-*
 # slices no longer exist on this box (no unit loaded 2026-10-03), and the
 # user-1000 `CPUQuota=` is empty, the same as unset.
+#
+# A retired path that is a git working tree of its own gets the alertmanager
+# treatment: read at delete time, not once when the list was written, and
+# refused while it holds work that exists nowhere else (fleet-ops#10540). The
+# checkout, then its uncommitted edits, its stash, and whether origin/main
+# carries its HEAD. A path that is already gone is the state the delete leaves
+# behind, so it passes. Reads are check_mode-proof, so a --check run refuses
+# the same delete.
+- name: Stat the retired git checkouts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ retired_git_checkouts }}"
+  register: retired_checkout_paths
+
+- name: Note which retired git checkouts are still on the box
+  ansible.builtin.set_fact:
+    retired_checkouts_present: >-
+      {{ retired_checkout_paths.results
+         | selectattr('stat.isdir', 'defined') | selectattr('stat.isdir')
+         | map(attribute='item') | list }}
+
+- name: Read the uncommitted work of each retired git checkout
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", status, --porcelain]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_dirty
+  changed_when: false
+  check_mode: false
+
+- name: Read the stash of each retired git checkout
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", stash, list]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_stash
+  changed_when: false
+  check_mode: false
+
+- name: Read whether origin/main carries each retired git checkout's HEAD
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", merge-base, --is-ancestor, HEAD, origin/main]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_merged
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Refuse to delete a retired git checkout that holds work nothing else has
+  ansible.builtin.assert:
+    that:
+      - retired_checkout_dirty.results | selectattr('stdout') | list | length == 0
+      - retired_checkout_stash.results | selectattr('stdout') | list | length == 0
+      - retired_checkout_merged.results | selectattr('rc', 'ne', 0) | list | length == 0
+    fail_msg: >-
+      Refusing to delete retired checkouts that hold work origin/main does not
+      carry: {{ ((retired_checkout_dirty.results | selectattr('stdout') | map(attribute='item') | list)
+                + (retired_checkout_stash.results | selectattr('stdout') | map(attribute='item') | list)
+                + (retired_checkout_merged.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list))
+               | unique | join(', ') }}. Push, commit or discard that work, or
+      fetch the clone and rerun; the paths stay in place until then.
+
 - name: Remove retired host files
   ansible.builtin.file:
     path: "{{ item }}"
