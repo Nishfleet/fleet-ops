@@ -1,4 +1,4 @@
-"""Every quadlet has a restart policy, a memory cap, a digest-pinned image and no registry auto-update on that pin."""
+"""Every quadlet has a restart policy, a memory cap and a digest-pinned image; only a floating tag auto-updates."""
 
 import re
 from pathlib import Path
@@ -77,7 +77,7 @@ def image_tag(image: str) -> str | None:
 
 
 def is_pinned(image: str) -> bool:
-    """A digest, or a tag other than latest, changes only when a PR changes it."""
+    """A digest or a tag other than latest changes only when a PR changes it; latest@sha256: is pinned by the digest."""
     return bool(DIGEST.search(image)) or image_tag(image) not in {None, "latest"}
 
 
@@ -103,6 +103,7 @@ def autoupdate_violation(image: str, autoupdate: list[str]) -> str | None:
 
 @pytest.mark.parametrize("path", quadlets(), ids=lambda path: path.name)
 def test_autoupdate_matches_the_image_pin(path: Path) -> None:
+    """test_image_is_pinned_by_digest holds every quadlet to a digest, so the floating half lives in the classifier."""
     sections = parse(path)
     images = values(sections, "Container", "Image")
     assert len(images) == 1, f"{path.name}: expected one [Container] Image= line"
