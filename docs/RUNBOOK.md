@@ -285,8 +285,9 @@ paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They pag
 page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
 rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
-router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
-new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
+because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
+still-firing alert files a new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
@@ -299,6 +300,17 @@ on the first burst again, set `for: 0s` and drop the 10-minute factor; to silenc
 `isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
 promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
 deployed rule drift apart.
+
+Router dead key (fleet-ops#11063, split out in fleet-ops#11081). A second rule in the same file,
+`router-dead-key` on `signal=router-dead-key`, fires when one row parked on a 401 more than
+2 times in 6 hours and is still parking: at least one park in the last 30 minutes, held for 15
+minutes. A 401 row parks on its first failure, so a park is one cooldown, and a row cannot park
+again until that cooldown ends (15 minutes on the worker rows), which is why its bar is 2 and
+not the row rule's 5. No worker can renew a key, so this rule's issue is filed
+`needs-nish-decision`: a worker run and a hand-off on it are wasted until Nish renews the key or
+approves taking its rows out of the router. `config/grafana/tests/router-dead-key.test.yml`
+holds its bar under promtool, and `tests/alert_routes_check.py` fails when the rule, its
+threshold or its issue label drift.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -474,11 +486,10 @@ on the .path, both from the deploy clone (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
-miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
-not that key; the cap takes effect when the key is minted and that seat file
-holds it. LiteLLM v1.98 has no declarative key list, so minting is one
-admin-API call, not a config edit.
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
+`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
+takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
 into `agent-state/backups/litellm.dump` before every run, and that dump is the
@@ -495,8 +506,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service

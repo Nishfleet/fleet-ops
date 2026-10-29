@@ -156,7 +156,7 @@
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
-  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  the agent-dispatch sweep in `Nishfleet/<instance>` every 15 minutes with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
   times a day (measured 2026-10-11). It runs on an Actions-only nishfleet-worker
   App token minted per start and revoked on stop, never the owner's personal
@@ -248,7 +248,8 @@
   `BackupStale` (the nightly off-site backup timer has not fired for
   30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
-  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
+  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours, on the rows that
+  carry a dollar budget, so the flat-plan MiniMax rows are left out) and
   `AISpendMetricMissing` (that spend metric absent for a day). Every one but
   the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends

@@ -1804,7 +1804,9 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
     assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
-    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["StartLimitIntervalSec"] == ["15min"] and keys["StartLimitBurst"] == ["3"], (
+        "one timer period: each 15-minute timer start counts against the budget, so 1h with burst 3 failed every fourth sweep"
+    )
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
     assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
@@ -1929,19 +1931,21 @@ LATER_SWEEP_ISSUES = [
     {"number": 17, "author": {"login": "nish3451"}, "labels": [], "body": "no due line at all"},
     {"number": 18, "author": {"login": "nish3451"}, "labels": [{"name": "agent-blocked"}], "body": "due: 2020-01-01 09:15 IST"},
     {"number": 19, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 ist\nmixed case in the IST word"},
+    {"number": 21, "author": {"login": "nish3451"}, "labels": [{"name": "on-hold"}], "body": "due: 2020-01-01 09:15 IST\nthe label a future-dated hand-off parks on (fleet-ops#11014)"},
 ]
 
 
 def test_later_sweep_promotes_only_overdue_trusted_issues_with_no_park_label(tmp_path: Path) -> None:
     code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops"], json.dumps(LATER_SWEEP_ISSUES))
     assert code == 0
-    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19"], edits
+    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19", "fleet-ops#21"], edits
     assert [line for line in lines if line.startswith("later-sweep: promoted")] == [
         "later-sweep: promoted Nishfleet/fleet-ops#11",
         "later-sweep: promoted Nishfleet/fleet-ops#14",
         "later-sweep: promoted Nishfleet/fleet-ops#19",
+        "later-sweep: promoted Nishfleet/fleet-ops#21",
     ]
-    assert "later-sweep: verdict promoted=3 failed=0" in lines
+    assert "later-sweep: verdict promoted=4 failed=0" in lines
     assert not [line for line in lines if "WARN" in line]
 
 

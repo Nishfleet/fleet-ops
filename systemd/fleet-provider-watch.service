@@ -81,12 +81,9 @@ Environment=YQ=%h/.local/bin/yq
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
 EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
-EnvironmentFile=-%E/fleet-ops/seats/pareto.env
 EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%E/fleet-ops/seats/zai.env
-EnvironmentFile=-%E/fleet-ops/seats/cline.env
 EnvironmentFile=-%E/fleet-ops/seats/minimax.env
-EnvironmentFile=-%E/fleet-ops/seats/ollama.env
 EnvironmentFile=-%E/fleet-ops/seats/stepfun.env
 EnvironmentFile=-%E/fleet-ops/seats/alibaba-coding.env
 # Straitly (fleet-ops#9788): its key lives in %h/.config/straitly/straitly.env, not a seat file, and config/provider-watch.json marks it listing none, so the watch skips it before it looks for a key. The line keeps tests/test_provider_watch.py::test_every_router_key_has_an_environment_file_in_the_unit true.
