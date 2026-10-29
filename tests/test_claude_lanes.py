@@ -143,7 +143,8 @@ def _comments(failed=0, login="nishfleet-worker", assoc="CONTRIBUTOR"):
 def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, comments=None):
     """Runs the Gate's engine routing; the issue is titled t with body b."""
     script = _step("work", "Gate")
-    livefn = next(ln for ln in script.splitlines() if ln.strip().startswith("live() {"))
+    livefn = next((ln for ln in script.splitlines() if ln.strip().startswith("live() {")), None)
+    assert livefn, "the Gate defines no live()"
     start = script.rindex("pi_free() {", 0, script.index("jev_env="))
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = livefn + "\n" + script[start:end]
@@ -439,13 +440,6 @@ def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, i
     assert "fallthrough: pi (claude login missing)" in r.stdout
     assert claude == "" and "claude -p" not in bwrap
     assert ran == ["pi"]
-
-
-def test_both_logins_missing_sends_non_senior_work_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", login_a=None, login_b=None)
-    assert r.returncode == 0, r.stderr
-    assert "fallthrough: pi (claude login missing)" in r.stdout
-    assert claude == "" and ran == ["pi"]
 
 
 def test_claude_worker_runs_with_hooks_disabled(tmp_path):

@@ -162,7 +162,7 @@ jobs:
             skip workflow-files
           fi
 
-          # Cap: 3 runs per issue since the newest park:; an infra-failed run does not count.
+          # Cap: 3 runs per issue since the newest park: label; an infra-failed run does not count.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
@@ -242,7 +242,7 @@ jobs:
       - name: Worker
         id: worker
         if: steps.gate.outputs.go == 'true'
-        timeout-minutes: 55
+        timeout-minutes: 55 # Under the 60-minute job wall, so a cap death still reaches the strike step (run 35900449636).
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           MISS: ${{ steps.gate.outputs.miss }}
@@ -255,6 +255,7 @@ jobs:
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
           [ "$MISS" = true ] && id=$id-miss
           # Every engine but claude hides both seat logins; claude sees only its own seat.
+          # ci.yml runs these jail lines verbatim and fails if a hidden path is readable (fleet-ops#9274).
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
@@ -411,6 +412,7 @@ jobs:
         id: wall
         if: failure() && steps.gate.outputs.go == 'true'
         env:
+          # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133).
           GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
@@ -525,6 +527,7 @@ jobs:
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.strike-token.outputs.token }}
+          # Same reason as Router wall: its label fires no workflow, so the issue waits for the next sweep.
           GITHUB_TOKEN: ${{ github.token }}
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           STARTED: ${{ steps.clock.outputs.started }}
