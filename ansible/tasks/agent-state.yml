@@ -109,34 +109,3 @@
     label: "{{ item.path }}"
   # A file nish does not own is skipped: nish cannot chmod it.
   when: item.pw_name == 'nish'
-
-# The Devin CLI writes its run logs, plugin index, rotated logs and session
-# locks with the umask it inherits, and a launcher that de-elevates to nish
-# through PAM gets pam_umask's 0002 instead of the units' UMask=0077 (audit
-# W1a, nish-vault#30; pam_umask(8)), so those files came out group-readable.
-# This repairs what any other launcher wrote, to the 0600/0700 umask 077
-# gives. -xdev stays inside one filesystem, a symlink is skipped because it
-# always shows mode 777, and a file the running user does not own is skipped
-# because that user cannot chmod it. id -un resolves the owner, so the task
-# runs unchanged where the agent user has another name.
-- name: Look for the Devin CLI state directory
-  become: true
-  become_user: nish
-  ansible.builtin.stat:
-    path: "{{ agent_share }}/devin"
-    follow: true
-  register: devin_state_dir
-
-- name: Keep the Devin CLI state files owner-only
-  become: true
-  become_user: nish
-  ansible.builtin.command:
-    argv:
-      - bash
-      - -c
-      - 'find "$1" -xdev -user "$(id -un)" -not -type l \( -perm -g+w -o -perm -o+w \) -exec chmod go-rwx {} +'
-      - bash
-      - "{{ agent_share }}/devin"
-  register: devin_state_mode
-  changed_when: false
-  when: devin_state_dir.stat.exists and devin_state_dir.stat.isdir

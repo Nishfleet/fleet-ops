@@ -79,7 +79,7 @@
   become_user: nish
   environment: "{{ nish_env }}"
   ansible.builtin.command:
-    argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item }}", mcp, get, chrome-devtools]
+    argv: ["{{ item }}", mcp, get, chrome-devtools]
   loop: "{{ [nish_home ~ '/.local/bin/devin', nish_home ~ '/.local/bin/cmd'] | select('file') | list }}"
   register: mcp_entry
   changed_when: false
@@ -92,7 +92,7 @@
   become_user: nish
   environment: "{{ nish_env }}"
   ansible.builtin.command:
-    argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
+    argv: ["{{ item.item }}", mcp, remove, chrome-devtools, --scope, user]
   loop: "{{ mcp_entry.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -104,7 +104,7 @@
   become_user: nish
   environment: "{{ nish_env }}"
   ansible.builtin.command:
-    argv: "{{ ['bash', '-c', 'umask 077; exec \"$@\"', 'bash', item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
+    argv: "{{ [item.item, 'mcp', 'add', '--scope', 'user', 'chrome-devtools', '--'] + chrome_devtools_mcp_words }}"
   loop: "{{ mcp_entry.results }}"
   loop_control:
     label: "{{ item.item }}"

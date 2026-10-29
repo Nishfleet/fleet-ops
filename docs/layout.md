@@ -239,16 +239,19 @@
   `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
   Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
   so the drop-in now applies on every deploy. Applies at the next restart.
-  That drop-in covers only the listener. A launcher that de-elevates to nish
-  through PAM gets `pam_umask`'s 0002 instead, so the Devin CLI's run logs,
-  plugin lock and rotated logs came out group-writable. The playbook's own
-  Devin CLI calls (`host.yml`'s chrome-devtools MCP reads and writes,
-  `update.yml`'s version check and installer) start it under `umask 077`
-  themselves, and `host.yml` clears the group and other write bits under
-  `~/.local/share/devin` on every run, so another launcher's file is repaired
-  on the next merge or daily run. `find ~/.local/share/devin -not -type l
-  \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink always
-  shows mode 777, so it is excluded).
+  That drop-in covers the listener only. The Devin CLI runs in two more places,
+  and both started it group-writable: under the `netcup-agent` runners at the
+  units' 0022, which made a new log group-readable, and in nish's login shells
+  at `pam_umask`'s 0002, which made it group-writable (audit W1a,
+  `nish-vault#30`).
+  `rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-umask.conf`
+  sets `UMask=0077` for every `netcup-agent` runner — a prefix drop-in, because
+  their unit files come from the runner's own `svc.sh` — and
+  `rootfs/etc/zsh/zprofile` sets `umask 077` for nish's login shells, which is
+  how sshd and tmux start one. Both apply at the next runner restart and the
+  next login. The check after a fresh CLI run: `find ~/.local/share/devin
+  -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
+  always shows mode 777, so it is excluded).
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)

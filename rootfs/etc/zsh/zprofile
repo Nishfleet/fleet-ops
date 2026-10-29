@@ -1,0 +1,12 @@
+# Owner-only files for nish's login shells, which is how the Devin CLI and tmux
+# start on this box. pam_umask sets a session to 0002 (UMASK 022 in
+# /etc/login.defs with USERGROUPS_ENAB yes), so the CLI's run logs under
+# ~/.local/share/devin came out group-writable (audit W1a,
+# Nishfleet/nish-vault#30). systemd-started launchers carry their own
+# UMask=0077; this file covers the shell ones. zsh reads it for login shells
+# only: sshd starts nish's shell as a login shell, and a tmux server started
+# from it hands the umask to its panes. nish is the only zsh user (root runs
+# bash). sudo takes the union of the invoking umask with 0022, so a root
+# command run from such a shell also writes 0600 files: anything a service must
+# read needs its mode set, which the playbook does for every file it installs.
+umask 077

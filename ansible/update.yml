@@ -108,7 +108,7 @@
         stdin: ""
       - argv: [cursor-agent, update]
         stdin: ""
-      - argv: [bash, -o, pipefail, -c, "umask 077; curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
+      - argv: [bash, -o, pipefail, -c, "curl -fsSL --retry 3 https://cli.devin.ai/install.sh | bash"]
         stdin: ""
       - argv: [uv, self, update]
         stdin: ""
@@ -296,15 +296,12 @@
               timeout: 3600
               changed_when: true
 
-        # umask 077 because the Devin CLI writes a run log under its data dir on
-        # every start, and a become-time PAM session pins the child umask to 0002
-        # (audit W1a, nish-vault#30; pam_umask(8)). A version check writes nothing else.
         - name: Record tool versions before the update
           become: true
           become_user: nish
           environment: "{{ nish_env }}"
           ansible.builtin.command:
-            argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item }}", --version]
+            argv: ["{{ item }}", --version]
           loop: "{{ version_checks }}"
           register: versions_before
           changed_when: false
@@ -934,7 +931,7 @@
           become_user: nish
           environment: "{{ nish_env }}"
           ansible.builtin.command:
-            argv: [bash, -c, 'umask 077; exec "$@"', bash, "{{ item }}", --version]
+            argv: ["{{ item }}", --version]
           loop: "{{ version_checks }}"
           register: versions_after
           changed_when: false
