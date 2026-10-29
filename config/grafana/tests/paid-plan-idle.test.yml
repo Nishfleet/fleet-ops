@@ -14,8 +14,8 @@
 #
 # Each plan keeps its own window: the worker rows read 24h, MiniMax 72h
 # (fleet-ops#10431) and Alibaba 7d (fleet-ops#9865). The MiniMax cases below
-# pin that 72h window, and tests/test_paid_plans.py pins all six deployed
-# windows and api_base regexes against this fixture's behaviour.
+# pin that 72h window. tests/test_paid_plans.py pins all six deployed rules'
+# windows, api_base regexes and the number each alert message names.
 #
 # Structure follows prompt-cache-hit.test.yml: alert_rule_test answers "does
 # Grafana's threshold call it Alerting", promql_expr_test pins the values the

@@ -1,10 +1,12 @@
 # The deployed ppi-alibaba, ppi-commandcode and ppi-minimax A expressions,
 # inlined from paid-plan-idle.yaml, each wrapped in `(...) > 0`.
 #
-# These three carry the behaviour cases below. Every plan's window (24h for the
-# worker rows, 72h for MiniMax, 7d for Alibaba) is pinned against the deployed
-# file by tests/test_paid_plans.py, so a rule with no case here is still locked
-# against a narrowed window or a mistyped api_base regex.
+# These three carry the behaviour cases below. tests/test_grafana_fixture_drift.py
+# holds each expr here to that rule's deployed A expression, and
+# tests/test_paid_plans.py pins every plan's window (24h for the worker rows,
+# 72h for MiniMax, 7d for Alibaba) and the number its alert message names, so a
+# rule with no case here is still locked against a narrowed window or a mistyped
+# api_base regex.
 #
 # The wrapper reproduces Grafana's C threshold the way
 # prompt-cache-hit.test.rules.yml does: the closing paren sits directly after
