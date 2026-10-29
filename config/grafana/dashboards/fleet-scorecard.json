@@ -290,7 +290,7 @@
       "type": "table",
       "id": 4,
       "title": "Idle agent-runner minutes while ready work waits, per day, last 14 days",
-      "description": "Target: 0. Runner-minutes on the agent pool with no agent run in flight, on days when an open agent-ready issue was waiting that is not blocked, parked or waiting on a decision. The runner count is the day's mean over online runners. A run's minutes are its own span, booked on the day it started and counted to now while it still runs. Days are UTC. The issue search reads 30 days of issues updated in that window and reads today's labels, so a long-silent wait falls outside it. An empty table means the runner metric is missing.",
+      "description": "Target: 0. Runner-minutes on the agent pool with no agent run in flight, on days when an open agent-ready issue was waiting that is not blocked, parked or waiting on a decision. A run's minutes are its own span from agent.yml and agent-dispatch.yml, booked on the day it started and counted to now while it still runs. The runner count is the day's mean over online runners. Days are UTC. The issue search reads 30 days of issues updated in that window and reads today's labels, so a long-silent wait falls outside it. It leaves archived repositories out, and the fleet's own grafana alert issues out. An empty table means the runner metric is missing.",
       "gridPos": {
         "x": 0,
         "y": 24,
@@ -346,7 +346,7 @@
           "owner": "Nishfleet",
           "repository": "",
           "options": {
-            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision",
+            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
             "timeField": 2
           },
           "hide": true

@@ -13,7 +13,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
 TITLE = "Idle agent-runner minutes"
 ISSUES_QUERY = (
-    "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision"
+    "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision "
+    'NOT "grafana alert:" in:title archived:false'
 )
 ALLOWED = {
     "UNIX_TIMESTAMP",

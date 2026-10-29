@@ -10,6 +10,11 @@
 # fleet-ops, idle runner-minutes (fleet-prometheus plus the runs and the ready issues), and
 # the two review clocks (merged pull requests and their reviews). Claude limit per merged PR
 # has no exporter, so no rule can read it.
+#
+# The idle rule's ready-issue search carries archived:false and NOT "grafana alert:" in:title,
+# as every queue-stuck search does: an archived repository rejects every merge, so work in one is
+# not waiting on the pool, and the alert route files its own issues with agent-ready, so without
+# the title filter the rule would count its own filings as waiting work.
 # Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
 apiVersion: 1
 
@@ -241,7 +246,7 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: ''
-              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision", timeField: 2}
+              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
               refId: B
           - refId: P
             relativeTimeRange: {from: 259200, to: 0}
