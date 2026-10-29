@@ -1,8 +1,4 @@
-# deploy-box: push-triggered. Starts the fleet-sync.service user oneshot (the
-# user-scope deploy steps), then the fleet-host-config.service system oneshot
-# (Ansible applies rootfs/ as root); each exit code is a verdict. polkit lets
-# this runner's user start that one system unit, so no step uses sudo.
-# The unit's own guards still gate every step. fleet-ops#8519
+# Runs two systemd oneshots on the fleet runner; each exit code is a verdict. Reasons: docs/workflow-notes.md.
 name: deploy-box
 
 on:

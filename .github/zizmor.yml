@@ -18,6 +18,13 @@ rules:
         # runs one definition and parallel PRs edit disjoint files (fleet-ops#10723).
         Nishfleet/fleet-ops/.github/actions/stuck: ref-pin
         "*": hash-pin
+  self-repository:
+    ignore:
+      # The scan steps live in a local action, and it is new in the same PR that first calls it:
+      # `@main` would resolve against main, where the action does not exist yet, so the required
+      # Gitleaks context would fail on its own introducing PR. The suggested `$/` is not GitHub
+      # syntax (actionlint 1.7.12 rejects it as a ref-less action).
+      - secret-scan.yml
   dangerous-triggers:
     ignore:
       # pull_request_target carries dequeued (the ejected job, which runs on
