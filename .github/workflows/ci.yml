@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: apt binaries systemd-analyze verify needs (promtool, bwrap, redis-server, ansible-pull)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server ansible-core
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends prometheus prometheus-alertmanager bubblewrap redis-server nftables ansible-core
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
@@ -139,20 +139,20 @@ jobs:
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
-          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
+          for b in /home/nish/.local/bin/pi /home/nish/.local/bin/tincan /home/nish/.local/bin/syncthing /home/nish/.local/bin/claude /home/nish/.local/venvs/litellm/bin/litellm /home/nish/.nvm/versions/node/v24.21.0/bin/executor /usr/bin/tigervncserver /usr/bin/rootlesskit /home/nish/.hermes/hermes-agent/.hermes/bin/hermes /opt/node-v22.23.3/bin/node; do sudo install -D -m0755 /bin/true "$b"; done # gitleaks:allow
           for b in beacon cursor-agent leviathan tofu; do install -D -m0755 /bin/true "$HOME/.local/bin/$b"; done
       - name: systemd-analyze verify over unit files
         # nullglob: an unmatched glob reaches systemd-analyze as a literal filename -> rc 1.
-        # Root-owned units live in rootfs/etc/systemd/system/; this covers the slices (no
-        # Exec line, so no stub), the host-config and update units and the Remote Control
-        # server. rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
-        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so awk
-        # fails the step on any verify line that names the unit. A [Install] target naming
-        # no target prints nothing, so it stays unseen.
+        # Root-owned units live in rootfs/etc/systemd/system/; the globs cover every root
+        # service, timer and path unit (the slices have no Exec line, so they need no
+        # stub). rc alone does not cover it (fleet-ops#9436): systemd 255 logs an unknown
+        # key or unparseable value as a warning and still exits 0 on ubuntu-24.04, so the
+        # step fails on any output line from any unit (fleet-ops#10286). A [Install]
+        # target naming no target prints nothing, so it stays unseen.
         if: always()
         run: |
           shopt -s nullglob; set -o pipefail
-          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/fleet-deploy.service rootfs/etc/systemd/system/fleet-deploy.path rootfs/etc/systemd/system/fleet-host-config.service rootfs/etc/systemd/system/fleet-host-config-boot.timer rootfs/etc/systemd/system/fleet-update.service rootfs/etc/systemd/system/fleet-update.timer rootfs/etc/systemd/system/claude-remote-control.service 2>&1 | awk 'BEGIN { bad = 0 } /claude-remote-control[.]service:/ { bad = 1 } { print } END { exit bad }'
+          systemd-analyze verify --man=no systemd/*.service systemd/*.timer systemd/*.path systemd/*.slice rootfs/etc/systemd/system/*.slice rootfs/etc/systemd/system/*.service rootfs/etc/systemd/system/*.timer rootfs/etc/systemd/system/*.path 2>&1 | awk 'BEGIN { bad = 0 } { bad = 1; print } END { exit bad }'
       - name: GitHub App token units mint and refresh (fleet-ops#9445, #9738)
         # Runs the unit's real ExecStart under systemd (system scope here, user
         # scope on the host: same parser) against tests/github_app_stub.py, which
@@ -1158,14 +1158,14 @@ jobs:
             "pr comment "*) while [ $# -gt 0 ]; do if [ "$1" = --body ]; then printf '%s\n----\n' "$2" >> "$STATE/comments"; break; fi; shift; done ;;
             *"-X POST"*"pulls/7/reviews"*) echo "$*" > "$STATE/approved" ;;
             "pr merge "*) if [ -n "$GH_TOKEN" ]; then k=set; else k=unset; fi; echo "$* token=$k" >> "$STATE/merge" ;;
-            *"issues/7/comments"*) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
-              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;;
+            *"issues/7/"*) case "$*" in *labels*) echo "$*" >> "$STATE/labels" ;; *) q=; while [ $# -gt 0 ]; do if [ "$1" = --jq ]; then q=$2; break; fi; shift; done
+              if [ -n "$q" ]; then jq -r "$q" <<<"${COMMENTS:-[]}"; else jq -c . <<<"${COMMENTS:-[]}"; fi ;; esac ;;
             *"pulls/7/files"*) case "${GUARD:-}" in fail) exit 1 ;; rename) printf 'app/routes/home.tsx\n.github/workflows/old.yml\n' ;; "") echo app/routes/home.tsx ;; 1) echo .github/workflows/new.yml ;; *) echo "mock gh: unknown GUARD ${GUARD}" >&2; exit 2 ;; esac ;;
             "issue "*) case "$*" in *create*) echo "$*" >> "$STATE/issues"; echo https://github.com/Nishfleet/fleet-ops/issues/99 ;; esac ;;
             *"vnd.github.diff"*) echo "mock gh: the review step reads the diff through the diff API, which refuses a big diff" >&2; exit 1 ;;
             *"--jq .head.sha"*) echo "${HEAD_AFTER:-$SHA}" ;;
             *"pulls/7") a=null d=false st=open; [ -z "${ARMED:-}" ] || a='{"merge_method":"squash"}'; [ -z "${DRAFT:-}" ] || d=true; [ -z "${CLOSED:-}" ] || st=closed
-              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
+              echo "{\"state\":\"$st\",\"draft\":$d,\"auto_merge\":$a,\"labels\":[{\"name\":\"needs-split\"}],\"head\":{\"sha\":\"${HEAD_NOW:-$SHA}\"},\"base\":{\"sha\":\"b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7\"}}" ;;
             *) echo "mock gh: unexpected call: $args" >&2; exit 1 ;;
           esac
           MOCK
@@ -1289,7 +1289,7 @@ jobs:
             [ -n "${WANT_ISSUE:-}" ] || [ ! -s "$STATE/issues" ] || problem="$problem an issue was filed on a review that finished"
             [ -z "${DIFF_MID:-}" ] || [ "$(cat "$STATE/third-req-size" 2>/dev/null || echo 0)" -gt 131072 ] || problem="$problem the big diff did not reach the third reviewer in a file"
             [ -z "${JUDGE_SLEEPS:-}" ] || [ -s "$RUNNER_TEMP/third-body.json" ] || problem="$problem the third reviewer was not waited for"; [ ! -s "$STATE/sessions" ] || { [ -z "$(sort -u "$STATE/sessions" | cut -d" " -f2- | sort | uniq -d)" ] && ! grep -v -- "-pr7-" "$STATE/sessions" | grep -q .; } || problem="$problem two extra-reviewer seats shared a router session, or one did not name the PR: $(sort -u "$STATE/sessions" | tr "\n" ";")"
-            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || grep -q "blocked-on: needs-split" "$STATE/comments" || problem="$problem no blocked-on: needs-split comment"; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
+            ! grep -qiwE 'person|tap review|nish|nish3451' "$STATE/comments" || problem="$problem comment asks a person"; [ -z "${DIFF_BIG:-}" ] || { grep -q "blocked-on: needs-split" "$STATE/comments" && grep -qF 'labels[]=needs-split' "$STATE/labels" || problem="$problem no blocked-on: needs-split comment or label"; }; [ -z "${GIT_FAILS:-}" ] || grep -q "did not finish: the git fetch of" "$STATE/comments" || problem="$problem the fetch failure was not said on the PR"
             if [ -n "$problem" ]; then echo "case $name:$problem"; cat "$STATE/out" "$STATE/comments"; bad=1; fi
           done < <(cat <<'CASES'
           normal-approved||approve|0.95|clean|none||yes|0|claude-opus-5-5

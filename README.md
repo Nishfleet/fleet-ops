@@ -21,6 +21,7 @@ operational prose to the topic's own file, not here.
 - [Beacon OTLP drop-in](docs/beacon-otlp-drop-in.md)
 - [Claude plugin drop-ins](docs/claude-plugin-drop-ins.md)
 - [Browser tool: Chrome DevTools MCP](docs/browser-tool.md)
+- [Drive filesystem server](docs/drive-filesystem-server.md)
 - [CI](docs/ci.md)
 - [Allowlist](docs/allowlist.md)
 - [Intake enrolment](docs/intake-enrolment.md)
