@@ -1,0 +1,23 @@
+# The Mac's daily CLI updater. The copy in this repo is the source; it is installed at
+# ~/.config/topgrade.toml for mac/com.nish.topgrade.plist to read.
+# Homebrew formulae/casks are owned by `brew autoupdate` (DomT4/autoupdate); do not enable them here.
+[misc]
+assume_yes = true
+no_retry = true
+notify_end = "never"
+no_self_update = true
+disable = [
+  "brew_formula", "brew_cask", "mas", "system", "gem", "ruby_gems",
+  "hermes_agent",          # the .hermes git install carries a local commit: never update
+  "self_update", "remotes", "restarts",
+  "cursor_agent",          # `cursor-agent update` fails unauthenticated on this Mac
+  "node",                  # PATH npm is .hermes' own node; explicit prefixes below instead
+  "skills", "github_cli_skills", "claude_code_plugins",
+]
+
+# One vendor command each. Custom commands run through the shell.
+[commands]
+"npm local (~/.local: pi, rea-agents)" = "/opt/homebrew/bin/npm update -g --prefix ~/.local"
+"npm brew (/opt/homebrew globals)" = "/opt/homebrew/bin/npm update -g --prefix /opt/homebrew"
+"grok" = "~/.local/bin/grok update"
+"herdr" = "~/.local/bin/herdr update"

@@ -1,7 +1,7 @@
 [Unit]
 Description=Agent Tincan wake for claude-vps, locked: no keys except Jev (Nish 2026-10-22)
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target user@1000.service
+After=network-online.target user@1000.service
 OnFailure=fleet-unit-failed@%N.service
 StartLimitIntervalSec=10min
 StartLimitBurst=5
@@ -17,7 +17,8 @@ Environment=FLEET_TASK_ID=tincan-claude-vps
 Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps
 WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps
 ExecStart=/home/nish/.local/bin/tincan listen --exec '/home/nish/.local/bin/claude -p --model claude-sonnet-5-5 --permission-mode dontAsk --settings /etc/claude-code/roles/tincan-listener.json --mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config --disable-slash-commands --setting-sources project,local --max-turns 30 "You are claude-vps on the Agent Tincan team, woken because requests or replies are waiting. Call check_inbox once. Replies to earlier requests belong to the session that sent them, which reads them itself, so do not act on, summarise or report replies. If check_inbox returned no requests, stop now with no further tool calls. Handle each request as you would one from Nish and answer it with reply, then call check_inbox again until it returns no requests, then stop."'
-Restart=always
+# Only a failed exit restarts it; the start limit above stops a crash loop and pages (fleet-ops#9974).
+Restart=on-failure
 RestartSec=30
 NoNewPrivileges=yes
 PrivateTmp=yes
@@ -38,7 +39,16 @@ ProtectHostname=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-InaccessiblePaths=/run/docker.sock /var/run/docker.sock /run/user
+InaccessiblePaths=/run/docker.sock /var/run/docker.sock -/run/user -/srv/aiostreams
+# Nothing outside the bind list is writable (the files its user owns under /var/lib and /srv are read-only).
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Egress: the public internet stays open (model API, GitHub, web fetch; their address ranges are not a
+# short stable list, so IPAddressDeny=any is not possible). Private ranges, link-local and the IPv6
+# unique-local block are closed; loopback (router, resolver) stays open. The tailnet range stays open
+# for the Tincan relay; capping it is left for a follow-up.
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 fc00::/7 fe80::/10
+IPAddressAllow=localhost
 
 [Install]
 WantedBy=multi-user.target

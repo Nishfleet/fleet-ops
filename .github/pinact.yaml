@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/suzuki-shunsuke/pinact/main/json-schema/pinact.json
+# pinact config: `pinact run` pins every other `uses:` to a commit SHA.
+version: 3
+ignore_actions:
+  # Called at @main on purpose. The runner group that serves agent jobs allows only
+  # these workflows at refs/heads/main, so a SHA pin would leave every job queued.
+  # The same goes for the ratchet and the runner probe (see .github/zizmor.yml).
+  - name: Nishfleet/fleet-ops/.*
+    ref: main
+  # docker:// refs are digest-pinned already and are not GitHub refs.
+  - name: docker://.*
+    ref: .*

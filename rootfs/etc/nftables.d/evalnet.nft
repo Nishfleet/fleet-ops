@@ -1,0 +1,44 @@
+# Egress limit for the drive eval's Docker engine (dockerd-eval.service,
+# fleet-ops#9983). slirp4netns opens every host-side socket of the eval's
+# containers from inside dockerd-eval.service's cgroup, so a match on that cgroup
+# sees all of the engine's traffic to the host. The engine may reach the one
+# loopback port the eval's stand-in listens on (DRIVE_EVAL_STANDIN_PORT in the
+# fleet-ci-3 30-eval.conf) and the resolver stub; every other host-local and
+# private destination is dropped, and the internet stays open (image pulls, pip).
+#
+# The set is filled by systemd: dockerd-eval.service has
+# NFTSet=cgroup:inet:evalnet:engine_cgroups, so its cgroup id is added when the
+# unit starts and removed when it stops. systemd only adds elements, so the table
+# and the set are declared here.
+#
+# Reload: nftables.conf destroys and redeclares its own tables on every load
+# (`destroy table` + `table`) and never runs `flush ruleset` (fleet-ops#8258), and
+# it pulls this file in through its include. This file uses the idempotent `add`
+# form, so every load of nftables.conf leaves the table and the set standing with
+# systemd's element still in it, and re-adds the two chains' rules without
+# duplicating them. If the set is empty anyway, because someone deleted the
+# table, the unit's own IPAddressDeny= layer still holds the private and
+# host-local ranges closed and only its one loopback port limit is lost until the
+# engine restarts.
+add table inet evalnet
+add set inet evalnet engine_cgroups { type cgroupsv2; }
+add chain inet evalnet output { type filter hook output priority filter; policy accept; }
+add chain inet evalnet engine_egress
+flush chain inet evalnet output
+flush chain inet evalnet engine_egress
+
+# /system.slice/dockerd-eval.service is cgroup level 2.
+add rule inet evalnet output socket cgroupv2 level 2 @engine_cgroups jump engine_egress
+
+add rule inet evalnet engine_egress ct state established,related return
+add rule inet evalnet engine_egress ip daddr 127.0.0.1 tcp dport 18931 return
+add rule inet evalnet engine_egress ip daddr 127.0.0.53 meta l4proto { tcp, udp } th dport 53 return
+add rule inet evalnet engine_egress ip daddr 127.0.0.0/8 drop
+add rule inet evalnet engine_egress ip6 daddr ::1 drop
+add rule inet evalnet engine_egress ip daddr { 10.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } drop
+# CGNAT 100.64/10, the tailnet block, as a mask test (the address, written out, is private detail).
+add rule inet evalnet engine_egress ip daddr & 0xffc00000 == 0x64400000 drop
+add rule inet evalnet engine_egress ip6 daddr fd7a:115c:a1e0::/48 drop
+add rule inet evalnet engine_egress ip6 daddr { fc00::/7, fe80::/10 } drop
+add rule inet evalnet engine_egress fib daddr type local drop
+add rule inet evalnet engine_egress return

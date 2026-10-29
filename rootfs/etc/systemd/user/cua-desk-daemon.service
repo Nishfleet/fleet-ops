@@ -1,0 +1,26 @@
+[Unit]
+Description=Cua daemon for the desk persistent agent (Cua Spaces bundled cua)
+Documentation=https://cua.ai/docs/cua-sdk/reference/spaces/persistent-agents
+After=network-online.target cua-spacesd-host.service
+Wants=network-online.target
+# A crash loop must reach `failed`, which only the user-manager failed list
+# (`systemctl --user list-units --state=failed`) reads: no OnFailure= hook, and
+# the node_systemd_unit_state gauge reads system units only. At RestartSec=2
+# the default 5-in-10s budget is spent only at its edge, so the budget is
+# stated here instead of inherited (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart="/opt/Cua Spaces/resources/native/cua" daemon start --foreground --loopback 127.0.0.1:0
+EnvironmentFile=%h/.config/fleet-ops/seats/claude-seat-b.env
+Environment=CUA_MESH=prefer
+WorkingDirectory=%h
+Restart=always
+RestartSec=2
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

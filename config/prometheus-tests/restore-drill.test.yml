@@ -1,0 +1,64 @@
+# promtool test rules config/prometheus-tests/*.test.yml (CI runs the glob).
+# The rule file is the one the host installs.
+#
+# RestoreDrillStale has its own file because promtool evaluates the rules at
+# this file's evaluation_interval, and a case's own interval only spaces its
+# input samples: the 36-day window below is 36d/interval evaluations of every
+# rule in the file. At the 30s the fleet file uses that is 103,680 evaluations
+# and about nine minutes for two cases, which pushed the required ci check over
+# its timeout; at 10m it is 5,184 and about ten seconds. 10m divides every
+# eval_time below, and a 15m `for:` still fires, because the condition is true
+# at the first step and holds.
+# https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+rule_files:
+  - ../../rootfs/etc/prometheus/fleet_rules.yml
+
+evaluation_interval: 10m
+
+tests:
+  # RestoreDrillStale. promtool's clock starts at 0, so a real trigger time is
+  # modeled as a positive constant: 3600 = "triggered one hour into the run".
+  # The rule's > 0 gate keeps a timer that has never triggered quiet, because
+  # a fresh install exports 0 for up to a month and that is not a stale drill:
+  # the staleness check arms on the first real trigger. A timer that triggered
+  # once, 34 days before eval, is fine; past 35 days and still short 15 minutes
+  # later, it fires. A missing timer series fires too.
+  - interval: 12h
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-drill.timer"}'
+        values: '0x200'
+    alert_rule_test:
+      - eval_time: 36d
+        alertname: RestoreDrillStale
+        exp_alerts: []
+  - interval: 12h
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="restic-r2-restore-drill.timer"}'
+        values: '3600+0x200'
+    alert_rule_test:
+      - eval_time: 34d
+        alertname: RestoreDrillStale
+        exp_alerts: []
+      - eval_time: 36d
+        alertname: RestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: restic-r2-restore-drill.timer
+            exp_annotations:
+              summary: "monthly restore drill has not run for over 35 days"
+              description: "restic-r2-restore-drill.timer last triggered more than 35 days ago, or its series is missing."
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_timer_last_trigger_seconds{name="other.timer"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RestoreDrillStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: restic-r2-restore-drill.timer
+            exp_annotations:
+              summary: "monthly restore drill has not run for over 35 days"
+              description: "restic-r2-restore-drill.timer last triggered more than 35 days ago, or its series is missing."

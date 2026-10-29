@@ -25,14 +25,19 @@ Description=Agent Tincan relay (tincan relay, own tailnet node)
 Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service
 OnFailure=fleet-unit-failed@%N.service
+# A crash loop must reach `failed` for the hook above to run: the default
+# 5 starts in 10 s is never spent at RestartSec=10 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
 
 [Service]
 Environment=FLEET_TASK_ID=tincan-relay
 StateDirectory=tincan-relay
 StateDirectoryMode=0700
-ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
+ExecStart=/home/nish/.local/bin/tincan relay --hostname tincan-relay-vps --state-dir %S/tincan-relay --no-auto-rebind --dist %S/tincan-relay/dist --release-url https://github.com/mvanhorn/agent-tincan/releases/download --upgrade-exit
 Restart=always
 RestartSec=10
+# --dist is where `tincan relay-upgrade --from-github` stages releases (it 404s without it).
 # --upgrade-exit leaves with status 75 for the supervisor to restart the relay.
 SuccessExitStatus=75
 

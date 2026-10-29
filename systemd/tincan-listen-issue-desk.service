@@ -1,0 +1,60 @@
+# Wake issue-desk when an Agent Tincan teammate (muse, instinct, tether, hermes)
+# asks it for work. Stock only, no glue: `tincan listen --exec` is the vendor's
+# own wake for agents without channels, and the three tools live in a Pi
+# extension (pi-extensions/issue-desk), not in a wrapper.
+#
+# tincan runs the --exec command through `sh -c` (tincan listen --help), so the
+# wake below is plain sh: it exits at once while TINCAN_WAITING (requests plus
+# unseen replies) is zero - a relay upgrade nudge fires with zero waiting, and
+# waking the model then buys a paid worker-cheap call for nothing - and
+# otherwise execs coreutils timeout around pi, so one stuck model call cannot
+# run past 600 s. systemd expands $$ to a literal $, so the shell receives
+# ${TINCAN_WAITING:-0}.
+#
+# The model gets no shell, no file tools, no MCP and no skills: --no-builtin-tools
+# leaves only the tools the extension registers (tincan_inbox, file_issue,
+# tincan_reply), so the worst a fooled model can do is file a bad product issue.
+# ci.yml pins these flags and runs the extension's tests.
+#
+# file_issue writes through `gh`, which on this host is Nish's own login: the
+# unit is not jailed. The model cannot run `gh` itself, only the fixed argv the
+# extension builds, and the repo allowlist (config/intake-repos.json, product
+# repos only, fleet-ops never) is re-read on every call.
+#
+# file_issue adds needs-triage and nothing else, so the admit job in
+# agent-dispatch.yml decides what happens next: it bands money, privacy,
+# security, legal and customer-data work to needs-orchestrator and asks Jev
+# about the rest. A request from another agent never starts a worker by itself.
+#
+# Install (after merge, from the deploy clone):
+#   systemctl --user link   /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/tincan-listen-issue-desk.service
+#   systemctl --user enable --now tincan-listen-issue-desk.service
+# Switch off: systemctl --user disable --now tincan-listen-issue-desk.service
+#   (requests to issue-desk then queue again until someone checks its inbox).
+# Delete: switch off, `systemctl --user unlink tincan-listen-issue-desk.service`,
+#   then delete this file, pi-extensions/issue-desk/ and prompts/issue-desk.md in a PR.
+[Unit]
+Description=Agent Tincan wake for issue-desk (tincan listen -> headless pi files one issue per request)
+Wants=network-online.target
+After=network-online.target
+OnFailure=fleet-unit-failed@%N.service
+# A crash loop must reach `failed` for the hook above to run: the default
+# 5 starts in 10 s is never spent at RestartSec=30 (fleet-ops#10253).
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Environment=TINCAN_CONFIG=/home/nish/.config/tincan/issue-desk.json
+Environment=FLEET_TASK_ID=tincan-issue-desk
+Environment=ISSUE_DESK_REPO_ROOT=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
+# Rolling 24 hour cap on filed issues, counted in the state dir below. Raise it
+# in a PR, not by hand on the host.
+Environment=ISSUE_DESK_MAX_PER_DAY=10
+StateDirectory=tincan-listen-issue-desk
+WorkingDirectory=%S/tincan-listen-issue-desk
+ExecStart=/home/nish/.local/bin/tincan listen --exec 'test "$${TINCAN_WAITING:-0}" -gt 0 || exit 0 ; exec timeout 600 /home/nish/.local/bin/pi --print --no-session --no-builtin-tools --no-extensions --no-mcp --no-skills --no-context-files --no-prompt-templates -e /home/nish/workspaces/tooling/fleet-ops-deploy-clone/pi-extensions/issue-desk/index.ts --provider litellm --model worker-cheap < /home/nish/workspaces/tooling/fleet-ops-deploy-clone/prompts/issue-desk.md'
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
