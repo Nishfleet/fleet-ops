@@ -1022,7 +1022,8 @@ jobs:
       # posted by GITHUB_TOKEN fires no workflow event (agent-dispatch.yml, the workflow_dispatch input note), so the
       # orchestrator is never dispatched. No step here reads a login file, so the step runs on the review runners, whose
       # user has none (fleet-ops#10950). A PR from a fork never reaches here at all.
-      - id: rework-key
+      - name: Read App private key for the rework label
+        id: rework-key
         uses: Nishfleet/fleet-ops/.github/actions/app-key@main
       - name: App token for the rework label
         id: rework-token
@@ -1069,9 +1070,17 @@ jobs:
       - name: Arm token
         id: arm-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with: {app-id: "4728578", private-key: "${{ steps.app-key.outputs.pem }}", permission-contents: write, permission-pull-requests: write, permission-workflows: write}
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          permission-contents: write
+          permission-pull-requests: write
+          # A PR that edits .github/workflows/** can only be armed by a token that may write them (fleet-ops#10949).
+          permission-workflows: write
       - name: Arm the approved head
-        env: {GH_TOKEN: "${{ github.token }}", ARM_TOKEN: "${{ steps.arm-token.outputs.token }}"}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARM_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
           set -euo pipefail
           pr=$(gh api "repos/$REPO/pulls/$PR")
@@ -1143,7 +1152,12 @@ jobs:
         if: steps.live.outputs.done != 'true'
         id: read-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with: {app-id: "4728578", private-key: "${{ steps.app-key.outputs.pem }}", owner: Nishfleet, repositories: inish-site, permission-contents: read}
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: inish-site
+          permission-contents: read
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.live.outputs.done != 'true'
         with:
@@ -1236,7 +1250,13 @@ jobs:
         if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
         id: write-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with: {app-id: "4728578", private-key: "${{ steps.app-key.outputs.pem }}", owner: Nishfleet, repositories: inish-site, permission-contents: write, permission-pull-requests: write}
+        with:
+          app-id: "4728578"
+          private-key: ${{ steps.app-key.outputs.pem }}
+          owner: Nishfleet
+          repositories: inish-site
+          permission-contents: write
+          permission-pull-requests: write
       - name: Publish today's edition
         if: steps.live.outputs.done != 'true' && steps.compile.outputs.today != ''
         working-directory: ${{ runner.temp }}/publish
