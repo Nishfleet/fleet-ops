@@ -143,6 +143,15 @@ def test_the_failure_share_expression_windows_match_the_ranges_its_targets_read(
     assert {int(n) for n in re.findall(r"age [<>]=? (\d+)", sql)} | {0} == {d["relativeTimeRange"][edge] for d in reads for edge in ("from", "to")}
 
 
+def test_every_prometheus_range_query_stays_under_the_11000_points_prometheus_allows():
+    queries = [(r["uid"], d) for r in _rules().values() for d in r["data"] if d["model"].get("range")]
+    assert queries
+    for uid, d in queries:
+        span = d["relativeTimeRange"]["from"] - d["relativeTimeRange"]["to"]
+        step = max(d["model"]["intervalMs"] / 1000, span / d["model"]["maxDataPoints"])
+        assert span / step <= 11000, uid
+
+
 def test_the_container_gives_alert_reads_more_than_grafana_default_and_less_than_the_shortest_group_interval():
     line = next(l for l in CONTAINER.read_text().splitlines() if l.startswith("Environment=GF_UNIFIED_ALERTING_EVALUATION_TIMEOUT="))
     scale = {"s": 1, "m": 60, "h": 3600}

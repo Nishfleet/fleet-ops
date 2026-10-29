@@ -283,8 +283,8 @@ groups:
               editorMode: code
               expr: count(node_systemd_unit_state{name=~"actions.runner.Nishfleet.netcup-agent-.*",state="active"} == 1)
               instant: false
-              intervalMs: 1000
-              maxDataPoints: 43200
+              intervalMs: 60000
+              maxDataPoints: 4320
               range: true
               refId: P
           - refId: C
