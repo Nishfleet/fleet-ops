@@ -1,55 +1,60 @@
-## Browser tool: Chrome DevTools MCP
+## Browser tool
 
-One free browser tool for every agent CLI on the box: the Chrome DevTools MCP
-server driving the system `/usr/bin/google-chrome` headless (DISPLAY is unset),
-in a throwaway profile (`--isolated`, deleted on exit), with usage statistics
-and CrUX lookups off. Chrome starts on the first browser tool call and exits
-when the client disconnects; an idle server is one Node process (about 170 MB).
-A page load peaked at about 1.1 GB across the Node process and Chrome. This is
-the default browser (vault `global-standing-rules.md`); browser-use cloud stays
-for narrow fan-out only and its entries are not touched.
+Owner: none (fleet-ops#10208). No agent CLI on this box is served a browser
+tool. The decision is recorded here and nowhere else.
 
-`config/chrome-devtools-mcp/package.json` and `package-lock.json` own the pin
-(one exact version plus the lockfile's integrity hashes, bumped by a PR; no
-`npx` and no `@latest` at runtime); `ansible/host.yml` owns the argument list.
-The play copies both files under `~/.local/share/chrome-devtools-mcp`, runs
-`npm ci --ignore-scripts` there when they changed or `node_modules` is missing
-(not `npm -g`: the daily `npm update --global` would move a global install
-past the pin) and links `~/.local/bin/chrome-devtools-mcp` to it.
+The `chrome-devtools` mod that used to launch one was deleted from
+Nishfleet/claude-mods (issue Nishfleet/claude-mods#10, PR
+Nishfleet/claude-mods#13) after the 2026-10-23 glue audit found it was glue:
+the mod only started the vendor `chrome-devtools-mcp` binary with hand-picked
+flags. The stock replacement there is the official `playwright` plugin from the
+`claude-plugins-official` marketplace, enabled in `~/.claude/settings.json` for
+interactive sessions only, and `85-no-playwright.json` switches it off in every
+session on this host (fleet-ops#10529). The DevTools-only uses (performance
+traces, Core Web Vitals through `--no-performance-crux`) are dropped with it.
 
-Every task that touches nish's home runs `become_user: nish`, never as root:
-nish controls those paths, and a root task would follow a planted symlink
-(`~/.config/mcp` to `/etc`, `mcp.json` to a root-only file). The tasks sit
-after `flush_handlers` and before the credential assert, so a missing
-credential file does not hold them back.
+For the worker lanes and the non-Claude CLIs the audit named one choice, not
+seven: the version pin, the argument list and the per-agent config writes were
+the same glue the mod was. So the pin, the install tree and every server write
+are gone, and no CLI gets a replacement.
 
-| Agent | How it gets the tool |
-|---|---|
-| Claude Code | no plugin: the `chrome-devtools` mod left the nish-mods marketplace, and the drop-in that enabled it is retired. Playwright is off in every session (server chats included) by `85-no-playwright.json`. Worker lanes run `--strict-mcp-config`, which hides plugins, so `agent.yml` passes `--mcp-config` with `config/worker-mcp.json` (bare `chrome-devtools-mcp` from `~/.local/bin`). |
-| Pi | the play merges the entry into `~/.config/mcp/mcp.json`, the shared MCP file pi-mcp-adapter reads (lazy lifecycle; other servers in it are kept). `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf` ages out profile dirs a killed server leaves in `/tmp`. |
-| Hermes | one `chrome-devtools` line under `mcp_servers:` in `~/.hermes/config.yaml`, added when absent and `mcp_servers:` is a bare key (`mcp_servers: {}` or no key is left alone). Its built-in `browser` toolset needs the `agent-browser` CLI and its own Chromium, which this box does not have. |
-| Codex | not installed; the play drops the dead `camofox-browser` table from `~/.codex/config.toml`. |
+What this repo no longer ships:
 
-- No browser plugin, only the MCP server: `rootfs/etc/claude-code/managed-settings.d/85-no-playwright.json`
-  sets `playwright@claude-plugins-official` to `false`, and managed settings
-  beat the user's `enabledPlugins`, so no Claude Code session (server chats
-  included) loads the Playwright tools (fleet-ops#10529). The drive filesystem
-  server stays: it is an MCP entry in `config/drive-mcp.json`, not a plugin
-  ([Drive filesystem server](drive-filesystem-server.md)). Switch Playwright
-  back on: delete the drop-in and add
-  `/etc/claude-code/managed-settings.d/85-no-playwright.json` to `retired` in
-  `ansible/host.yml`, because `copy` never deletes.
-- Pi workers pass no flag that hides these configs (no `--config`, `--no-mcp` or `--no-extensions`), so they get the tool as well; the jail binds `/` read-write, so Chrome and the link are visible in it. The Devin, Cursor, OpenCode and command-code lanes are retired (nish-vault#44 item 9), so their entries and tasks are gone.
-- Verify: `chrome-devtools-mcp --version` prints the pin; `hermes mcp list` shows the Hermes entry.
-- Switch off for one agent: remove its task (Claude Code has no plugin left to
-  disable, so a worker lane that must lose the tool drops its `--mcp-config`
-  line).
-- Delete it all: remove the tasks from "Create the Chrome
-  DevTools MCP install directory" through "Add the chrome-devtools entry under
-  Hermes' mcp_servers" in `ansible/tasks/mcp-and-agent-clis.yml`,
-  `config/chrome-devtools-mcp/` and `tests/test_chrome_devtools_mcp.py` with its
-  `ci.yml` step.
-- The check is the `ci` step "Chrome DevTools MCP is pinned once and wired into
-  every agent": the args match in every fragment, and the Codex and Hermes
-  tasks run twice against temp copies (the second run changes nothing).
+- `config/chrome-devtools-mcp/package.json` and `package-lock.json`, the pin.
+- `config/worker-mcp.json`, the worker lane's server list.
+- `rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json`, which
+  enabled the deleted mod. An `enabledPlugins` entry for a plugin no
+  marketplace provides is ignored silently, so it was dead wiring, not a break.
+- `rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf`, which aged out the
+  Chrome profile dirs a killed server left in `/tmp`.
+- The play's install tasks, its write of `~/.config/mcp/mcp.json` (the shared
+  file pi-mcp-adapter reads) and its `chrome-devtools` line under Hermes'
+  `mcp_servers:` in `~/.hermes/config.yaml`.
+- `mcp__chrome-devtools` in the Claude worker lane's `--allowedTools` and the
+  lane's `--mcp-config` line: `--strict-mcp-config` still runs, so the lane
+  serves no MCP server at all.
 
+`copy` never deletes, so the next `fleet-host-config.service` run takes the
+host files the play can reach: `~/.local/bin/chrome-devtools-mcp`,
+`~/.local/share/chrome-devtools-mcp` and
+`/etc/tmpfiles.d/chrome-devtools-profiles.conf` are in `retired` in
+`ansible/host.yml`, with the link listed before the directory it points into so
+it does not dangle.
+
+What no play run can reach, so it is removed by hand after the merge:
+
+- `~/.config/mcp/mcp.json`, `~/.cursor/mcp.json` and `~/.hermes/config.yaml`
+  each still carry the entry.
+- `devin mcp remove chrome-devtools` and `cmd mcp remove chrome-devtools`.
+- The two Chrome Desktop `ccd-cli` sessions that were running a server read an
+  MCP source this audit could not identify, so quit and restart those sessions.
+
+Verify after the merge and a play run: `rg -i chrome.devtools` finds only this
+file and the tests that hold the removal in place, and
+`pgrep -af chrome-devtools-mcp` shows no process.
+
+The check is the `ci` step "Every test under tests/, found by pytest, not
+listed here (fleet-ops#10721)", which runs `tests/test_mcp_and_agent_clis.py`.
+That file asserts the deleted files stay deleted, that no task writes a browser
+server into any agent config, that `ansible/host.yml` names the wiring only in
+its retired list, and that the Claude worker lane passes no `--mcp-config`.

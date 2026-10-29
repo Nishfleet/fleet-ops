@@ -85,7 +85,7 @@ def test_every_drop_in_is_a_json_object(path):
 def test_the_playwright_plugin_is_switched_off():
     off = _switched_off()
     assert "playwright@claude-plugins-official" in off, (
-        "no drop-in sets playwright@claude-plugins-official to false (fleet-ops#10529: Chrome DevTools is the one browser tool)"
+        "no drop-in sets playwright@claude-plugins-official to false (fleet-ops#10529: no browser tool is left on the box)"
     )
     assert off["playwright@claude-plugins-official"] == ["85-no-playwright.json"], off
     assert "playwright@claude-plugins-official" not in _enabled()

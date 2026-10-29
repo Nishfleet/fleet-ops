@@ -1,10 +1,17 @@
-"""Chrome DevTools MCP is pinned once and wired the same way into every agent.
+"""The play's MCP and agent-CLI tasks, and the guard that the browser wiring stays out.
 
-The version and the argument list live in ansible/host.yml vars. Every static
-config fragment must carry the same argument list, nothing may run the package
-through npx or @latest, and the real Ansible tasks that edit user files run
-twice against temp copies: the second run changes nothing, and other entries
-and keys survive.
+The drive entry, the Codex cleanup and the Hermes cron store are edited in
+nish's home, so every static assertion here is about the shape of those tasks
+and the real tasks run twice against temp copies: the second run changes
+nothing, and other entries and keys survive.
+
+The browser tool has no owner (fleet-ops#10208): the chrome-devtools mod left
+the nish-mods marketplace, so the pin, the seven per-agent server writes and
+the Claude worker lane's allowed-tool entry were the same glue the audit
+removed. The second half of this file is the detector for that removal: the
+files stay deleted, no task writes a browser server into any agent config, the
+play retires what the host still holds, and no file outside ALLOWED_TO_NAME
+names the removed wiring again.
 """
 import json
 import pathlib
@@ -21,9 +28,40 @@ if not shutil.which("yq"):
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOST = ROOT / "ansible/host.yml"
-PIN_DIR = ROOT / "config/chrome-devtools-mcp"
 DRIVE_PIN = ROOT / "config/drive-mcp.json"
-REQUIRED = ["--headless", "--isolated", "--executablePath", "/usr/bin/google-chrome", "--no-usage-statistics", "--no-performance-crux"]
+
+REMOVED_FILES = (
+    "config/chrome-devtools-mcp/package.json",
+    "config/chrome-devtools-mcp/package-lock.json",
+    "config/worker-mcp.json",
+    "rootfs/etc/claude-code/managed-settings.d/60-chrome-devtools.json",
+    "rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf",
+)
+REMOVED_HOST_PATHS = (
+    "{{ nish_home }}/.local/bin/chrome-devtools-mcp",
+    "{{ nish_home }}/.local/share/chrome-devtools-mcp",
+    "/etc/tmpfiles.d/chrome-devtools-profiles.conf",
+)
+WIRING_TOKENS = (
+    "chrome_devtools_mcp",
+    "chrome-devtools-mcp",
+    "chrome-devtools@nish-mods",
+    "mcp__chrome-devtools",
+    "puppeteer_dev_chrome_profile",
+)
+ALLOWED_TO_NAME = (
+    "tests/test_mcp_and_agent_clis.py",
+    "tests/test_claude_lanes.py",
+    "docs/browser-tool.md",
+    ".github/gitleaks-private-detail.toml",
+    "ansible/host.yml",
+)
+
+
+def shutil_which(name):
+    import shutil
+
+    return shutil.which(name)
 
 
 def _play():
@@ -33,40 +71,7 @@ def _play():
 
 PLAY = _play()
 VARS = PLAY["vars"]
-ARGS = VARS["chrome_devtools_mcp_args"]
 TASKS = {t["name"]: t for t in PLAY["tasks"]}
-
-
-def test_version_is_one_exact_pin_with_a_lockfile():
-    manifest = json.loads((PIN_DIR / "package.json").read_text())
-    version = manifest["dependencies"]["chrome-devtools-mcp"]
-    assert list(manifest["dependencies"]) == ["chrome-devtools-mcp"]
-    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
-    lock = json.loads((PIN_DIR / "package-lock.json").read_text())
-    assert lock["lockfileVersion"] == 3
-    assert lock["packages"][""]["dependencies"] == {"chrome-devtools-mcp": version}
-    assert lock["packages"]["node_modules/chrome-devtools-mcp"]["version"] == version
-    for path, entry in lock["packages"].items():
-        if path:
-            assert entry["integrity"].startswith("sha512-") and entry["resolved"].startswith("https://registry.npmjs.org/"), path
-    assert "chrome_devtools_mcp_version" not in VARS
-    pins = [
-        p for p in ROOT.rglob("*")
-        if p.is_file() and ".git" not in p.parts and "__pycache__" not in p.parts and PIN_DIR not in p.parents and p != pathlib.Path(__file__)
-        and re.search(r"chrome-devtools-mcp(@|\s+version)", p.read_text(errors="ignore"))
-    ]
-    assert pins == [], f"the version string belongs in config/chrome-devtools-mcp only: {pins}"
-
-
-def test_install_is_an_ansible_core_module_from_the_lockfile():
-    for task in PLAY["tasks"]:
-        modules = [k for k in task if "." in k]
-        assert all(k.startswith("ansible.builtin.") for k in modules), (task["name"], modules)
-    install = TASKS["Install the pinned Chrome DevTools MCP server from the lockfile"]
-    argv = install["ansible.builtin.command"]["argv"]
-    assert argv[1:3] == ["ci", "--ignore-scripts"] and argv[0].endswith("/.local/bin/npm")
-    assert install["ansible.builtin.command"]["chdir"] == "{{ chrome_devtools_mcp_dir }}"
-    assert "chrome_devtools_pins.changed" in install["when"] and "chrome_devtools_installed" in install["when"]
 
 
 def test_no_runtime_fetch():
@@ -74,41 +79,42 @@ def test_no_runtime_fetch():
     assert "@latest" not in text and "npx" not in text
 
 
-def test_args_run_headless_in_a_throwaway_profile_on_system_chrome():
-    assert ARGS[: len(REQUIRED)] == REQUIRED
-    assert VARS["chrome_devtools_mcp_bin"].endswith("/.local/bin/chrome-devtools-mcp")
+def test_every_task_is_an_ansible_core_module():
+    for task in PLAY["tasks"]:
+        modules = [k for k in task if "." in k]
+        assert all(k.startswith("ansible.builtin.") for k in modules), (task["name"], modules)
 
 
-def test_every_install_step_is_in_the_play():
+def test_every_task_the_play_still_runs_is_listed():
     for name in (
-        "Install the pinned Chrome DevTools MCP server from the lockfile",
-        "Read the shared MCP config",
-        "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
         "Read Claude Code's drive entry",
         "Drop a stale drive entry",
         "Pin the Drive filesystem server in Claude Code's user config",
         "Drop Codex's dead camofox entry and its subtables",
-        "Add the chrome-devtools entry under Hermes' mcp_servers",
+        "Create Codex's rules directory",
+        "Install the Codex execpolicy floor",
+        "Read Hermes' config",
+        "Install the Bot Desktop packages Hermes computer_use needs on a headless host",
+        "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
+        "Read Hermes' scheduled jobs",
+        "Delete the retired jobs from Hermes' cron store",
+        "Apply config/hermes/digest-*.md to the live digest jobs",
+        "Read Hermes' scheduled jobs again",
+        "Link the packaged gh into nish's ~/.local/bin",
     ):
         assert name in TASKS, name
 
 
 USER_FILE_TASKS = [
-    "Create the Chrome DevTools MCP install directory",
-    "Copy the Chrome DevTools MCP package.json and package-lock.json",
-    "Look for the installed Chrome DevTools MCP server",
-    "Install the pinned Chrome DevTools MCP server from the lockfile",
-    "Link the Chrome DevTools MCP server into nish's ~/.local/bin",
-    "Create the shared MCP config directory",
-    "Read the shared MCP config",
-    "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
     "Read Claude Code's drive entry",
     "Drop a stale drive entry",
     "Pin the Drive filesystem server in Claude Code's user config",
     "Look for Codex's config",
     "Drop Codex's dead camofox entry and its subtables",
+    "Create Codex's rules directory",
+    "Install the Codex execpolicy floor",
     "Read Hermes' config",
-    "Add the chrome-devtools entry under Hermes' mcp_servers",
+    "Let Hermes start its own headless Bot Desktop when computer_use needs a display",
     "Read Hermes' scheduled jobs",
     "Delete the retired jobs from Hermes' cron store",
     "Apply config/hermes/digest-*.md to the live digest jobs",
@@ -151,7 +157,7 @@ def test_every_task_that_touches_nishs_home_runs_as_nish_not_root():
                 assert "owner" not in module and "group" not in module, name
 
 
-def test_chrome_tasks_run_after_the_handler_flush_and_before_the_credential_assert():
+def test_mcp_tasks_run_after_the_handler_flush_and_before_the_credential_assert():
     names = [t["name"] for t in PLAY["tasks"]]
     flush = names.index("Apply pending handlers before the credential check")
     assert_at = names.index("Fail when an alertmanager credential file is missing")
@@ -203,28 +209,6 @@ def _run_tasks(tmp_path, names, subs=None):
     return result.stdout
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_generated_configs_carry_the_pinned_command(tmp_path):
-    names = [
-        "Create the shared MCP config directory",
-        "Read the shared MCP config",
-        "Install the shared MCP config (Pi reads it through pi-mcp-adapter)",
-    ]
-    (tmp_path / ".config/mcp").mkdir(parents=True)
-    (tmp_path / ".config/mcp/mcp.json").write_text(json.dumps({"mcpServers": {"kept": {"url": "https://example.invalid/mcp"}}, "settings": {"x": 1}}))
-    _run_tasks(tmp_path, names)
-    bin_path = f"{tmp_path}/.local/bin/chrome-devtools-mcp"
-    whole = json.loads((tmp_path / ".config/mcp/mcp.json").read_text())
-    assert whole["mcpServers"]["chrome-devtools"] == {"command": bin_path, "args": ARGS, "lifecycle": "lazy", "idleTimeout": 5}
-    assert whole["mcpServers"]["kept"] == {"url": "https://example.invalid/mcp"} and whole["settings"] == {"x": 1}
-    assert "changed=0" in _run_tasks(tmp_path, names)
-
-
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def pinned_spec():
-    return json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]["args"][1]
-
-
 def test_the_drive_entry_is_one_exact_pin_and_nothing_else():
     entry = json.loads(DRIVE_PIN.read_text())["mcpServers"]["drive"]
     assert entry["type"] == "stdio" and entry["command"] == "npx" and entry["env"] == {}
@@ -250,7 +234,7 @@ def test_the_play_writes_the_drive_entry_with_claudes_own_mcp_command():
         assert task["timeout"] <= 120, task["name"]
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+@pytest.mark.skipif(not shutil_which("ansible-playbook") or not shutil_which("yq"), reason="ansible or yq missing")
 def test_codex_drops_only_the_camofox_table(tmp_path):
     cfg = tmp_path / ".codex/config.toml"
     cfg.parent.mkdir()
@@ -268,7 +252,7 @@ def test_codex_drops_only_the_camofox_table(tmp_path):
     assert "changed=0" in _run_tasks(tmp_path, names)
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible missing")
+@pytest.mark.skipif(not shutil_which("ansible-playbook"), reason="ansible missing")
 def test_codex_drops_the_camofox_subtables_too(tmp_path):
     cfg = tmp_path / ".codex/config.toml"
     cfg.parent.mkdir()
@@ -280,36 +264,10 @@ def test_codex_drops_the_camofox_subtables_too(tmp_path):
     assert tomllib.loads(cfg.read_text())["mcp_servers"] == {"camofox-browser-keep": {"command": "keep"}, "other": {"env": {"C": "d"}}}
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible missing")
+@pytest.mark.skipif(not shutil_which("ansible-playbook"), reason="ansible missing")
 def test_codex_without_a_config_is_not_an_error(tmp_path):
     _run_tasks(tmp_path, ["Look for Codex's config", "Drop Codex's dead camofox entry and its subtables"])
     assert not (tmp_path / ".codex").exists()
-
-
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_hermes_line_lands_under_mcp_servers_once(tmp_path):
-    cfg = tmp_path / ".hermes/config.yaml"
-    cfg.parent.mkdir()
-    cfg.write_text("browser:\n  inactivity_timeout: 120\nmcp_servers:\n  agent-tincan:\n    command: /x/tincan\n    enabled: true\ncron:\n  model: m\n")
-    names = ["Read Hermes' config", "Add the chrome-devtools entry under Hermes' mcp_servers"]
-    _run_tasks(tmp_path, names)
-    text = cfg.read_text()
-    assert text.count("chrome-devtools:") == 1
-    assert text.index("mcp_servers:") < text.index("chrome-devtools:") < text.index("cron:")
-    assert "agent-tincan:" in text
-    _run_tasks(tmp_path, names)
-    assert cfg.read_text() == text
-    if shutil.which("yq"):
-        servers = json.loads(subprocess.run(["yq", "-o=json", ".mcp_servers", str(cfg)], capture_output=True, text=True, check=True).stdout)
-        assert servers["chrome-devtools"] == {"command": f"{tmp_path}/.local/bin/chrome-devtools-mcp", "args": ARGS, "enabled": True}
-
-
-def test_claude_worker_lane_loads_the_browser_server_and_nothing_else():
-    shipped = json.loads((ROOT / "config/worker-mcp.json").read_text())
-    assert shipped == {"mcpServers": {"chrome-devtools": {"type": "stdio", "command": pathlib.Path(VARS["chrome_devtools_mcp_bin"]).name, "args": ARGS}}}
-    lane = re.search(r"claude -p --continue.*?try\.out", (ROOT / ".github/workflows/agent.yml").read_text(), re.S).group(0)
-    flat = " ".join(lane.replace("\\\n", " ").split())
-    assert '--mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" --strict-mcp-config' in flat
 
 
 def test_pi_lane_passes_no_flag_that_hides_the_shared_configs():
@@ -318,64 +276,7 @@ def test_pi_lane_passes_no_flag_that_hides_the_shared_configs():
         assert not re.search(r"--(config|no-mcp|no-extensions)\b|\s-ne\b", line), line
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
-def test_hermes_without_an_mcp_servers_key_is_left_alone(tmp_path):
-    cfg = tmp_path / ".hermes/config.yaml"
-    cfg.parent.mkdir()
-    cfg.write_text("browser:\n  inactivity_timeout: 120\n")
-    names = ["Read Hermes' config", "Add the chrome-devtools entry under Hermes' mcp_servers"]
-    _run_tasks(tmp_path, names)
-    assert cfg.read_text() == "browser:\n  inactivity_timeout: 120\n"
-    cfg.write_text("mcp_servers: {}\ncron:\n  model: m\n")
-    _run_tasks(tmp_path, names)
-    assert cfg.read_text() == "mcp_servers: {}\ncron:\n  model: m\n"
-    cfg.unlink()
-    _run_tasks(tmp_path, names)
-    assert not cfg.exists()
-
-
-def test_orphaned_chrome_profiles_age_out():
-    conf = (ROOT / "rootfs/etc/tmpfiles.d/chrome-devtools-profiles.conf").read_text().split()
-    assert conf[:2] == ["e", "/tmp/puppeteer_dev_chrome_profile-*"] and conf[-1].endswith("d")
-
-
-NEED_ANSIBLE = pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible missing")
-INSTALL = [
-    "Create the Chrome DevTools MCP install directory",
-    "Copy the Chrome DevTools MCP package.json and package-lock.json",
-    "Look for the installed Chrome DevTools MCP server",
-    "Install the pinned Chrome DevTools MCP server from the lockfile",
-    "Link the Chrome DevTools MCP server into nish's ~/.local/bin",
-]
-
-
-def _stub(path, body):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n" + body)
-    path.chmod(0o755)
-
-
-@NEED_ANSIBLE
-def test_lockfile_install_runs_npm_ci_once_and_again_only_when_the_lock_changes(tmp_path):
-    log = tmp_path / "npm.log"
-    _stub(tmp_path / ".local/bin/npm", f'echo "$PWD $*" >> {log}\nmkdir -p node_modules/.bin\nprintf "#!/bin/sh\\n" > node_modules/.bin/chrome-devtools-mcp\nchmod +x node_modules/.bin/chrome-devtools-mcp\n')
-    subs = {"{{ playbook_dir }}/../config": str(ROOT / "config")}
-    _run_tasks(tmp_path, INSTALL, subs)
-    install_dir = tmp_path / ".local/share/chrome-devtools-mcp"
-    assert log.read_text().splitlines() == [f"{install_dir} ci --ignore-scripts --no-audit --no-fund"]
-    assert (install_dir / "package-lock.json").read_text() == (PIN_DIR / "package-lock.json").read_text()
-    assert (tmp_path / ".local/bin/chrome-devtools-mcp").resolve() == (install_dir / "node_modules/.bin/chrome-devtools-mcp").resolve()
-    assert "changed=0" in _run_tasks(tmp_path, INSTALL, subs)
-    assert len(log.read_text().splitlines()) == 1
-    (install_dir / "package-lock.json").write_text("{}")
-    _run_tasks(tmp_path, INSTALL, subs)
-    assert len(log.read_text().splitlines()) == 2
-    shutil.rmtree(install_dir / "node_modules")
-    _run_tasks(tmp_path, INSTALL, subs)
-    assert len(log.read_text().splitlines()) == 3
-
-
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+@pytest.mark.skipif(not shutil_which("ansible-playbook") or not shutil_which("yq"), reason="ansible or yq missing")
 def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_copy(tmp_path):
     src = tmp_path / ".local/share/agent-runner/1"
     (src / "bin.2.338.0").mkdir(parents=True)
@@ -399,7 +300,7 @@ def test_pilot_runner_copy_fills_an_empty_destination_and_never_clobbers_a_live_
     assert (dest / "runsvc.sh").read_text() == "live state"
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook") or not shutil.which("yq"), reason="ansible or yq missing")
+@pytest.mark.skipif(not shutil_which("ansible-playbook") or not shutil_which("yq"), reason="ansible or yq missing")
 def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
     dest = tmp_path / "var/lib/fleet-runner/1"
     dest.mkdir(parents=True)
@@ -410,3 +311,62 @@ def test_pilot_runner_env_gets_its_own_home_and_loses_nish_paths(tmp_path):
     _run_tasks(tmp_path, names, subs)
     assert env.read_text() == f"HOME={tmp_path}/var/lib/fleet-runner\nLANG=C.UTF-8\n"
     assert "changed=0" in _run_tasks(tmp_path, names, subs)
+
+
+def test_the_removed_wiring_files_stay_deleted():
+    for rel in REMOVED_FILES:
+        assert not (ROOT / rel).exists(), rel
+    assert not (ROOT / "config/chrome-devtools-mcp").exists()
+
+
+def test_no_task_writes_a_browser_server_into_any_agent_config():
+    tasks = json.dumps(PLAY["tasks"])
+    for token in WIRING_TOKENS:
+        assert token not in tasks, token
+
+
+def test_the_play_names_the_browser_wiring_only_in_its_retired_list():
+    hits = [line for line in HOST.read_text().splitlines() if "chrome-devtools" in line]
+    assert hits
+    assert all(line.lstrip().startswith(("-", "#")) for line in hits), hits
+
+
+def test_the_play_retires_the_binary_the_install_tree_and_the_tmpfiles_lines():
+    retired = VARS["retired"]
+    for path in REMOVED_HOST_PATHS:
+        assert path in retired, path
+    names = [path for path in retired if "chrome-devtools" in path]
+    assert names.index("{{ nish_home }}/.local/bin/chrome-devtools-mcp") < names.index("{{ nish_home }}/.local/share/chrome-devtools-mcp")
+
+
+def test_the_claude_worker_lane_serves_no_browser_server():
+    lane = re.search(r"claude -p --continue.*?try\.out", (ROOT / ".github/workflows/agent.yml").read_text(), re.S).group(0)
+    flat = " ".join(lane.replace("\\\n", " ").split())
+    assert "--mcp-config" not in flat
+    assert "--strict-mcp-config --disable-slash-commands --setting-sources project,local" in flat
+    assert "mcp__" not in flat
+
+
+def test_the_decision_is_written_down_in_one_place():
+    doc = (ROOT / "docs/browser-tool.md").read_text()
+    assert "#10208" in doc
+    assert "owner: none" in doc.lower()
+    assert (ROOT / "README.md").read_text().count("docs/browser-tool.md") == 1
+
+
+def test_no_file_outside_the_allowlist_names_the_removed_wiring():
+    found = {}
+    for path in sorted(ROOT.rglob("*")):
+        if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts or ".pytest_cache" in path.parts:
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        if rel in ALLOWED_TO_NAME:
+            continue
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        hits = [token for token in WIRING_TOKENS if token in text]
+        if hits:
+            found[rel] = hits
+    assert found == {}, found

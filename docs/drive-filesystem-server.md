@@ -14,12 +14,12 @@ never run has no entry to add for, so nothing is created.
 
 `npx` still asks the registry for the package metadata on every start. It then
 runs the pinned copy it already has in `~/.npm/_npx`, so no new version is ever
-installed. A session with no network needs that metadata request to answer, so a
-fully offline start is the local-install route Chrome DevTools MCP uses, not
-this entry.
+installed. A session with no network needs that metadata request to answer, so
+a fully offline start is the route a locally installed server takes, not this
+entry.
 
 - Bump it: edit `config/drive-mcp.json` and run
-  `tests/test_chrome_devtools_mcp.py`; the play holds no copy of the version.
-- Check it: the `ci` step "Chrome DevTools wiring, hand-off cleanup and Claude
-  lanes" pins the fragment's shape and runs the Cursor swap twice against a temp
-  copy, asserting the pinned words and that the second run changes nothing.
+  `tests/test_mcp_and_agent_clis.py`; the play holds no copy of the version.
+- Check it: the `ci` step "Every test under tests/, found by pytest, not listed
+  here (fleet-ops#10721)" runs the whole suite, so the drive entry's shape and
+  the Codex cleanup are pinned there.

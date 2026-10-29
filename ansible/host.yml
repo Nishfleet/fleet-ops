@@ -201,6 +201,16 @@
       - "{{ nish_home }}/workspaces/products/.githooks"
       - "{{ nish_home }}/workspaces/tooling/nish-vault/.git/hooks"
       - "{{ nish_home }}/.cache/tincan-relink-once.sh"
+      # The chrome-devtools MCP wiring is gone (fleet-ops#10208): the mod that
+      # launched it left the nish-mods marketplace, no agent CLI is served a
+      # browser tool, and the repo stopped shipping the pin. The link is listed
+      # before the directory it points into, so the link does not dangle while
+      # the install tree is still there.
+      - "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
+      - "{{ nish_home }}/.local/share/chrome-devtools-mcp"
+      # The tmpfiles lines that aged out the Chrome profiles a killed server left
+      # in /tmp: with no server there is no profile dir to age out.
+      - /etc/tmpfiles.d/chrome-devtools-profiles.conf
       # The alert-stack cut deleted the executor, its config and the tmpfiles
       # lines that created this directory and link. tmpfiles is applied with
       # --create only, so the link outlived the file it pointed at.
@@ -360,15 +370,6 @@
       - bdc37cb70a4a
       - fc1c6a815b80
       - 7eda90c8dd97
-    chrome_devtools_mcp_dir: "{{ nish_home }}/.local/share/chrome-devtools-mcp"
-    chrome_devtools_mcp_bin: "{{ nish_home }}/.local/bin/chrome-devtools-mcp"
-    chrome_devtools_mcp_args:
-      - --headless
-      - --isolated
-      - --executablePath
-      - /usr/bin/google-chrome
-      - --no-usage-statistics
-      - --no-performance-crux
     drive_mcp_entry: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../config/drive-mcp.json') | from_json).mcpServers.drive }}"
     drive_mcp_words: "{{ [drive_mcp_entry.command] + (drive_mcp_entry.args | map('replace', '~', nish_home) | list) }}"
     nish_config: "{{ nish_home }}/.config"

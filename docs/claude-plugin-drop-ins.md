@@ -37,9 +37,9 @@ cannot delete a later line from it.
   `v0.2.14`) and enables `inbox`. Bump the `ref` by PR to take a new release.
 - `85-no-playwright.json` switches `playwright@claude-plugins-official` off, so no
   Claude Code session loads the Playwright browser tools (fleet-ops#10529: the box
-  has one browser tool, the Chrome DevTools MCP). Managed settings win over the
-  user's `enabledPlugins`, which still lists the plugin as `true`, so leaving the
-  user file alone is safe. Switch it back on: delete the file and add
+  runs no browser tool, see [Browser tool](browser-tool.md)). Managed settings win
+  over the user's `enabledPlugins`, which still lists the plugin as `true`, so
+  leaving the user file alone is safe. Switch it back on: delete the file and add
   `/etc/claude-code/managed-settings.d/85-no-playwright.json` to `retired` in
   `ansible/host.yml`, because `copy` never deletes.
 
