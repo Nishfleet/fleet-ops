@@ -27,6 +27,11 @@ def seats(model):
     )
 
 
+def lanes(model):
+    cfg = yaml_json(ROUTER)
+    return sum(1 for row in cfg["model_list"] if row.get("model_name") == model)
+
+
 def max_parallel(job):
     return str(yaml_json(DISPATCH)["jobs"][job]["strategy"]["max-parallel"])
 
@@ -63,7 +68,7 @@ def test_sweep_fanout_stays_inside_its_governors():
     assert fanout <= AGENT_RUNNERS_MEASURED_2026_10_23, (
         f"fan-out {fanout} exceeds the {AGENT_RUNNERS_MEASURED_2026_10_23} online agent runners"
     )
-    assert fanout <= seats("worker-capable"), f"fan-out {fanout} exceeds the {seats('worker-capable')} worker-capable seats"
+    assert fanout <= lanes("worker-capable"), f"fan-out {fanout} exceeds the {lanes('worker-capable')} worker-capable rows"
 
 
 def test_review_concurrency_stays_inside_the_judge_seats():
@@ -128,3 +133,37 @@ def test_every_agent_caller_grants_every_scope_agent_yml_jobs_request():
         "GitHub kills the whole run at startup when a caller job grants less than the called workflow's jobs request: "
         + "; ".join(shortfalls)
     )
+
+
+def test_hand_summons_reaches_the_review_job():
+    cfg = yaml_json(AGENT)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("review_pr", "review_sha"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent.yml cannot be dispatched with {name}"
+        assert name in cfg["on"]["workflow_call"]["inputs"], f"{name} is not on the workflow_call surface"
+    review = cfg["jobs"]["review"]
+    assert "inputs.review_pr" in review["if"] and "inputs.review_sha" in review["if"], (
+        "the review job's if: does not read the dispatch inputs, so a hand summons reaches nothing"
+    )
+    main_only = "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+    for job in ("review", "arm"):
+        cond = cfg["jobs"][job]["if"].replace("${{", "").replace("}}", "").strip()
+        assert f"&& {main_only}" in cond, (
+            f"the {job} job can be dispatched from any branch: a pushed branch with an edited {job} job "
+            "would approve or arm under the bot identity the merge gate trusts"
+        )
+    assert review["env"]["PR"] == "${{ inputs.review_pr }}"
+    assert review["env"]["SHA"] == "${{ inputs.review_sha }}"
+    assert "!inputs.review_pr" in cfg["jobs"]["inish-daily"]["if"], (
+        "inish-daily's if: does not exclude review_pr, so a review summons would also publish an edition"
+    )
+
+
+def test_hand_summons_reaches_the_orchestrate_job():
+    cfg = yaml_json(DISPATCH)
+    dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
+    for name in ("task", "issue"):
+        assert dispatch.get(name, {}).get("type") == "string", f"agent-dispatch cannot be dispatched with {name}"
+    orchestrate = cfg["jobs"]["orchestrate"]["if"]
+    assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
+    assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"

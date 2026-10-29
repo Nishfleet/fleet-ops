@@ -14,11 +14,8 @@ Status: applied for the 10 repos that were in the list on 2026-10-09 with the
 minter token (`~/.config/cloudflare/token-minter.env`); the plan resolved every
 permission group name against the live API. Which jobs have run on the new
 tokens is in the PR body. A weekly timer renews them (see "Renewal").
-`inish-mail-filter` was added by #9919 and is not applied yet: the first `tofu
-apply` after that merge creates its token and writes its secret, so the state
-holds it before any run has used it. `fleet_console` (fleet-console-worker) was
-applied by hand on 2026-10-20 and is now in `main.tf`, so the weekly apply no
-longer destroys it; `seo-fix-kit` is new and is created by the next apply.
+`fleet_console` (fleet-console-worker) was applied by hand on 2026-10-20 and is
+now in `main.tf`, so the weekly apply no longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 
 ## What it creates
 
@@ -28,19 +25,22 @@ longer destroys it; `seo-fix-kit` is new and is created by the next apply.
 | `0509-deploy` | 0509 | `CLOUDFLARE_API_TOKEN` (environment `production`) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `0509-reports` | 0509 | `CLOUDFLARE_API_TOKEN` (repo) | D1 Read, Workers Scripts Read, Account Analytics Read | none | GitHub-hosted (`e2e-scheduled.yml` backup-proof, jev-failures, soak-report; `evals.yml`) | none |
 | `0509-settings` | 0509 | `CLOUDFLARE_SETTINGS_TOKEN` (repo) | Workers R2 Storage Write | Zone Read, Email Routing Rules Write | GitHub-hosted (`cloudflare-settings.yml`) | none |
-| `0509-support-inbox` | 0509-support-inbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
+| `0509-support-inbox` | mailbox | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
 | `siterep-public` | siterep-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `TinyStudio.io-public` | TinyStudio.io-public | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Workers R2 Storage Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 | `inish-site` | inish-site | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`ci.yml` deploy job) | none |
 | `aiconverter-app` | aiconverter-app | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy.yml`) | none |
-| `tinystudio-in` | tinystudio-in | `CLOUDFLARE_API_TOKEN` (repo) | Pages Write, Account Settings Read | none | GitHub-hosted (`deploy-public-site.yml`) | none |
-| `inish-mail-filter` | inish-mail-filter | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, Account Settings Read | none | GitHub-hosted (`deploy-production.yml`) | none |
 | `seo-fix-kit` | seo-fix-kit | `CLOUDFLARE_API_TOKEN` (repo) | Workers Scripts Write, D1 Write, Queues Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`: D1 migrations apply, `wrangler deploy` with custom domains and a queue consumer) | none |
 | `fleet_console` | fleet-console-worker | `CLOUDFLARE_API_TOKEN` (repo), plus a repo `CLOUDFLARE_ACCOUNT_ID` | Workers Scripts Write, Account Settings Read | Zone Read, Workers Routes Write | GitHub-hosted (`deploy-production.yml`) | none |
 
-The `mailbox` repo is the former `0509-support-inbox` repo (same repo id): the
-`0509-support-inbox` entry above writes its secret through the GitHub rename
-redirect, so it needs no entry of its own.
+The `0509-support-inbox` entry writes to `mailbox`, the same repo under its new
+name. The key keeps its old name so the Cloudflare token is not replaced; the
+repo secret is deleted and written again once, because the repo name changed.
+
+`tinystudio-in` is archived, so no workflow runs there and nothing reads its
+secret. Its entry is gone: the next apply revokes its Cloudflare token. Its repo
+secret was dropped from the state first (`tofu state rm`), because an archived
+repo is read-only and the App is not installed on it, so a delete would fail.
 
 **No token is IP-locked.** Every job that reads a Cloudflare secret runs on
 `ubuntu-latest`, and GitHub-hosted runners have no fixed address (an IP-locked
@@ -139,14 +139,14 @@ sha256 checked) into `~/.local/bin/tofu`.
 
     cd infra/cloudflare-tokens
     set -a; . ~/.config/cloudflare/token-minter.env; set +a
-    GITHUB_TOKEN=$(gh auth token) tofu init
-    GITHUB_TOKEN=$(gh auth token) tofu plan
-    GITHUB_TOKEN=$(gh auth token) tofu apply
+    TF_VAR_github_app_pem="$(cat ~/.config/cloudflare/nishfleet-secrets.private-key.pem)" sh -c 'tofu init && tofu plan && tofu apply'
+
+The key is set for that one command only, so it does not stay in the shell.
 
 Run it from an interactive session of the admin login, not from a jailed worker:
-the worker jail hides both `~/.config/cloudflare` and `~/.config/gh` on purpose
-(AGENTS.md, "Cloudflare credentials on this host"). The GitHub login needs admin
-on each repo to write its secrets.
+the worker jails hide `~/.config/cloudflare`, which holds the minter token and
+the App key, on purpose (AGENTS.md, "Cloudflare credentials on this host"). The
+GitHub secrets are written by the App, not by the `gh` login.
 
 `~/.config/cloudflare/token-minter.env` holds `CLOUDFLARE_API_TOKEN=<minter>`: a
 user token with `API Tokens Write` plus every permission group listed above
@@ -202,9 +202,11 @@ right trigger (not an event).
 Weekly, because tokens rotate at 30 days and expire at 45: the apply does nothing
 for three weeks, then replaces them, and two missed weeks still leave slack.
 
-- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env`. No env
-  file holds a GitHub token on this host, so the unit takes `GITHUB_TOKEN` from
-  `gh auth token` (the `~/.config/gh/hosts.yml` login). That login needs admin on each repo.
+- Credentials: `EnvironmentFile=%h/.config/cloudflare/token-minter.env` for Cloudflare. GitHub
+  secrets are written by the `nishfleet-secrets` GitHub App (Secrets and Environments write only,
+  installed on the repos in `main.tf`); its key is `~/.config/cloudflare/nishfleet-secrets.private-key.pem`, mode 0600,
+  in the directory every worker jail hides.
+  When a repo is added to `main.tf`, add it to the App's installation too.
 - State: the unit sets no state path. It uses the `backend "local"` path in
   `versions.tf` (`~/.local/state/fleet-ops/cloudflare-tokens/terraform.tfstate`),
   the same file as a hand apply. The provider cache goes to

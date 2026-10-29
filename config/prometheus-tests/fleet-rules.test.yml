@@ -388,91 +388,6 @@ tests:
               summary: "AI spend metric has been missing for over a day"
               description: "No litellm_spend_metric_total series for 24 hours, so AISpendHigh cannot fire."
 
-  # RouterSeniorFailing (fleet-ops#9054): the senior tier is one row with no fallback and
-  # sparse traffic (about one call an hour), so unlike the strong group's 15-minute / 5%
-  # gate it fires when every call in 6 hours went unanswered and at least 2 failed.
-  # The series run on 1m steps because the offline lookback window is 5 minutes.
-  - interval: 1m
-    input_series:
-      # calls fail at 3m and 4m: the counter crosses 2 at 4m, then the 5m hold
-      # ends and it fires; 8m is still inside the hold.
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 0 0 1 2 2 2 2 2 2 2 2 2 2'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 0 0 1 2 2 2 2 2 2 2 2 2 2'
-      - series: 'up{job="litellm"}'
-        values: '1x14'
-    alert_rule_test:
-      - eval_time: 8m
-        alertname: RouterSeniorFailing
-        exp_alerts: []
-      - eval_time: 10m
-        alertname: RouterSeniorFailing
-        exp_alerts:
-          - exp_labels:
-              severity: nish
-              group: senior
-            exp_annotations:
-              summary: "senior has no row that answers"
-              description: "Every senior call in the last 6 hours failed (2 or more calls) for 5 minutes. The senior group has one row and no fallback, so every call dies on it: fix or remove the dead row in config/litellm-proxy.yaml."
-
-  # RouterSeniorFailing: calls answered, so the failure counter stays level and it stays silent.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0x14'
-      - series: 'up{job="litellm"}'
-        values: '1x14'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: RouterSeniorFailing
-        exp_alerts: []
-
-  # RouterSeniorFailing: a mixed window (one call answered between the failures) is not
-  # a dead row, so failed < total over the window and it stays silent.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 0 1 2 2 2 3 3 3 3 3 3 3 3'
-      - series: 'up{job="litellm"}'
-        values: '1x14'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: RouterSeniorFailing
-        exp_alerts: []
-
-  # RouterSeniorFailing: one transient failure (a single parked 5xx) never crosses the 2.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 0 0 1 1 1 1 1 1 1 1 1 1 1'
-      - series: 'up{job="litellm"}'
-        values: '1x14'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: RouterSeniorFailing
-        exp_alerts: []
-
-  # RouterSeniorFailing: a failing pattern while the scrape is down is unobserved, not paged.
-  - interval: 1m
-    input_series:
-      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
-      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior",route="/v1/chat/completions"}'
-        values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13'
-      - series: 'up{job="litellm"}'
-        values: '0x14'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: RouterSeniorFailing
-        exp_alerts: []
-
   - interval: 5m
     input_series:
       - series: 'node_filesystem_avail_bytes{mountpoint="/",device="/dev/sda1",fstype="ext4"}'
@@ -605,3 +520,94 @@ tests:
       - eval_time: 30m
         alertname: GrafanaNotificationsFailing
         exp_alerts: []
+
+  # Free swap 25% (never fires), 21% (never fires), then 12.5%: fires once the
+  # 15 minute hold has passed, not at 14 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'node_memory_SwapTotal_bytes'
+        values: '8000x60'
+      - series: 'node_memory_SwapFree_bytes'
+        values: '2000x20 1680x20 1000x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 39m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 56m
+        alertname: SwapLow
+        exp_alerts: []
+      - eval_time: 58m
+        alertname: SwapLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Swap is over 80% used"
+              description: "Free swap has stayed under 20% for 15 minutes: idle sessions or a leaking service hold memory."
+
+  # RouterGroupJammed (fleet-ops#10694): senior fails every call, so it fires once the 10 minute hold ends;
+  # worker-capable fails half its calls and stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="senior"}'
+        values: '0+1x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="senior"}'
+        values: '0+1x30'
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="worker-capable"}'
+        values: '0+2x30'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="worker-capable"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts:
+          - exp_labels:
+              severity: nish
+              requested_model: senior
+            exp_annotations:
+              summary: "Router group senior fails nearly every call"
+              description: "90% or more of the calls to senior failed for 10 minutes. Read the router journal: 'all max_parallel_requests slots in use' means leaked slots (docs/litellm-router-notes.md note 12); a provider message means the plan is walled."
+
+  # requested_model="other" (fleet-ops#10788): RouterGroupJammed ignores it; RouterOtherBucketFailing warns only once the
+  # failures last 30 minutes. A 10 minute burst, as the /jev 401s were, never warns.
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
+        values: '0+5x10 50+0x50'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
+        values: '0+5x10 50+0x50'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: RouterOtherBucketFailing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'litellm_proxy_total_requests_metric_total{requested_model="other"}'
+        values: '0+5x60'
+      - series: 'litellm_proxy_failed_requests_metric_total{requested_model="other"}'
+        values: '0+5x60'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: RouterGroupJammed
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: RouterOtherBucketFailing
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: RouterOtherBucketFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Router calls outside any model group keep failing"
+              description: "90% or more of the router calls filed under requested_model=other (for example /jev with a bad key) failed for 30 minutes. Group the failures by route and exception_status in litellm_proxy_failed_requests_metric_total and fix the caller."
