@@ -52,6 +52,20 @@ ExecStart=/bin/sh -c 'cd %h/workspaces/tooling/fleet-ops-deploy-clone || { echo 
 # 2. Link the OnFailure handler, then re-read unit files. Link first so
 #    daemon-reload loads fleet-unit-failed@.service (fleet-ops#9033).
 ExecStart=/usr/bin/systemctl --user link /home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-unit-failed@.service
+# 2.1 The retired weekly retro and the stale user copy of the tincan claude
+#     listener (fleet-ops#10125) left live links to deleted deploy-clone files.
+#     Stop the units first, while the links still resolve, so a Monday slot
+#     cannot start a deleted service; then rm the unit links and every enable
+#     link. The *.wants glob covers whichever target the [Install] section
+#     named, so no dangling link survives in a directory this list did not
+#     guess. rm -f is a no-op once they are gone, and without it LINK-GUARD
+#     fails on the dangling links. Both rm lines carry the - prefix: a link
+#     that cannot be removed is the next run's problem, not a reason to stop
+#     this deploy. The root tincan-listen-claude-vps.service is a system unit
+#     and is not touched here. Off switch: delete this step.
+ExecStart=-/usr/bin/systemctl --user stop retro-weekly.timer retro-weekly.service retro-weekly-api.socket tincan-listen-claude-vps.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/retro-weekly.service %h/.config/systemd/user/retro-weekly.timer %h/.config/systemd/user/retro-weekly-api.service %h/.config/systemd/user/retro-weekly-api.socket %h/.config/systemd/user/*.wants/retro-weekly.timer %h/.config/systemd/user/*.wants/retro-weekly-api.socket %h/.config/systemd/user/tincan-listen-claude-vps.service %h/.config/systemd/user/tincan-listen-claude-vps.service.d/10-nish-seat.conf %h/.config/systemd/user/*.wants/tincan-listen-claude-vps.service
+ExecStart=-/bin/rmdir --ignore-fail-on-non-empty %h/.config/systemd/user/tincan-listen-claude-vps.service.d
 # 2a. The hourly PR sweep (fleet-pr-sweep@.timer, #9602): link the template
 #     pair here so every deploy carries edits to it, and enable one instance per
 #     repo with an agent-dispatch stub after the daemon-reload below. Off switch:
@@ -86,20 +100,11 @@ ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
-# 2e. The weekly retro (fleet-ops#9314, #9641): link the unit pair so every
-#     deploy carries edits to it. The first run replaces the hand-made real
-#     files of the same name (a regular file, or a link to anywhere else,
-#     blocks `link`; a link to the deploy clone is left alone), which is the delete step of fleet-ops#9641. The timer is NOT
-#     enabled here: README "Weekly retro" enables it once, so a hand disable
-#     stays disabled. Off switch: delete this step, then `systemctl --user
-#     unlink` the four retro-weekly units.
-ExecStart=/bin/sh -c 'for f in retro-weekly.service retro-weekly.timer retro-weekly-api.socket retro-weekly-api.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly.timer %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.socket %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/retro-weekly-api.service
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
 #     the timer runs every 15 minutes and must not read its list out of the
-#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2e,
+#     deploy clone. The timer is enabled on every deploy like 2a, unlike 2g,
 #     because a timer that is silently off is the failure this ships to fix
 #     (fleet-ops#9376: a one-shot transient `later-*` timer died with the manager
 #     restart, and the issue sat unpromoted). Off switch: delete this step and
@@ -108,7 +113,7 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json %h/.config/fleet-ops/intake-repos.json
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/later-sweep.timer
 # 2g. The daily provider watch: link the unit pair so every deploy carries edits to it,
-#     the same way as step 2e. The timer is NOT enabled here: README "Provider watch"
+#     the same way as step 2f. The timer is NOT enabled here: README "Provider watch"
 #     enables it once, so a hand disable stays disabled. Off switch: delete this step,
 #     then `rm` the two links in ~/.config/systemd/user and `systemctl --user daemon-reload`.
 ExecStart=/bin/sh -c 'for f in fleet-provider-watch.service fleet-provider-watch.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'

@@ -652,14 +652,14 @@ jobs:
           rm -rf "$t"
           test "$bad" -eq 0
       - name: Tincan listener keeps its start-up trim flags
-        # The headless claude in systemd/tincan-listen-claude-vps.service loads only
-        # agent-tincan, no skills and no user settings. Delete a flag, or the MCP
+        # The headless claude in rootfs/etc/systemd/system/tincan-listen-claude-vps.service
+        # loads only agent-tincan, no skills and no user settings. Delete a flag, or the MCP
         # file it names, and this fails. --mcp-config must come before
         # --strict-mcp-config: its value list is variadic and would eat the prompt.
         if: always()
         run: |
           set -euo pipefail
-          u=systemd/tincan-listen-claude-vps.service
+          u=rootfs/etc/systemd/system/tincan-listen-claude-vps.service
           exec_line=$(grep '^ExecStart=' "$u")
           for n in '--strict-mcp-config' '--disable-slash-commands' '--setting-sources project,local' '--mcp-config /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/tincan-listener-mcp.json --strict-mcp-config'; do
             grep -qF -- "$n" <<<"$exec_line" || { echo "$u: ExecStart is missing: $n"; exit 1; }
@@ -668,9 +668,9 @@ jobs:
           # cwd must be a dedicated dir: with WorkingDirectory=/home/nish, the project
           # settings source is ~/.claude/settings.json (the user file) and
           # --setting-sources project,local still loads the user Stop hook and plugins.
-          grep -qx 'StateDirectory=tincan-listen-claude-vps' "$u" || { echo "$u: StateDirectory is not tincan-listen-claude-vps"; exit 1; }
-          grep -qx 'WorkingDirectory=%S/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; }
+          grep -qx 'WorkingDirectory=/home/nish/.local/state/tincan-listen-claude-vps' "$u" || { echo "$u: WorkingDirectory is not the dedicated state dir"; exit 1; } # gitleaks:allow
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
+          grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
         # Runs the list job's own RED_REWORK program, read out of the workflow
         # with the CHECK_DEFS it shares with the missing-checks case, against

@@ -89,13 +89,6 @@
   again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
   deploy. Off switch: remove that step and its enable line, then
   `systemctl --user disable --now beacon-hermes-poll.service`.
-- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
-  /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
-  Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
-  no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
-  is the job; `config/retro-public-deny.txt` is the check every follow-up issue
-  must pass before it is filed; `config/retro-weekly-claude.json` is the tool
-  list. [weekly-retro.md](weekly-retro.md) has the run, off and delete steps.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
@@ -107,23 +100,34 @@
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.
   [provider-watch.md](provider-watch.md) has the run, off and delete steps.
-- `systemd/syncthing.service`, `tigervnc.service` and the drop-in
-  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
-  binaries (Syncthing, TigerVNC) run under systemd, and the
-  env line that picks the Tincan listener's own Claude login. They were hand-placed on the
+- `systemd/syncthing.service` and `tigervnc.service` — stock vendor
+  binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
   nothing. The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
-  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
-  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`
   and `enable --now`. The files match what ran before, so adopting them
   restarted nothing: a unit edit applies at the unit's next restart (never restart
   `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the three units; the drop-in is not a unit file,
-  so only its parent unit is verified. Switch one off with
+  `systemd-analyze verify` on the three units. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
+- `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` — the live Agent Tincan
+  wake for claude-vps, a **root** unit (fleet-ops#9974): it runs as `nish` under
+  `ProtectSystem=strict` with an explicit bind list, and it sets its own
+  `Environment=CLAUDE_CONFIG_DIR=` line, so it needs no drop-in. The user-level
+  copy and its `10-nish-seat.conf` drop-in were deleted in fleet-ops#10125
+  because nothing linked or ran them.
+  - Run it now: `sudo systemctl start tincan-listen-claude-vps.service`, then
+    `sudo journalctl -u tincan-listen-claude-vps.service -f`.
+  - Switch it on: `sudo systemctl enable --now tincan-listen-claude-vps.service`.
+  - Switch it off: `sudo systemctl disable --now tincan-listen-claude-vps.service`
+    (requests to claude-vps then queue until a session checks its inbox).
+  - Delete it: switch it off, delete the file here, add
+    `/etc/systemd/system/tincan-listen-claude-vps.service` to the `retired`
+    list in `ansible/host.yml` (that task, not the file deletion, removes the
+    installed copy on the next config run), then `sudo systemctl daemon-reload`.
 - `systemd/tincan-listen-command-code.service`,
   `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
   `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,

@@ -6,9 +6,7 @@ drop-in that carries only Beacon's OpenTelemetry `env` keys (telemetry on, OTLP 
 worker lanes run `--setting-sources project,local` and so never read `~/.claude/settings.json`
 where those keys live; managed settings are read whatever `--setting-sources` says, and the
 `env` block merges key by key with `/etc/claude-code/managed-settings.json`. It carries no
-hooks: workers keep `disableAllHooks`. Scope: every Claude Code process on the box, including
-`retro-weekly`, which runs without a network namespace to the host, so its exports fail
-locally and harmlessly. Nothing leaves the box: the endpoint is loopback and Beacon's
+hooks: workers keep `disableAllHooks`. Nothing leaves the box: the endpoint is loopback and Beacon's
 collector only writes `~/.beacon/endpoint/logs/runtime.jsonl` (mode 0600).
 
 - Verify: a worker-style run (`claude -p --setting-sources project,local --settings
