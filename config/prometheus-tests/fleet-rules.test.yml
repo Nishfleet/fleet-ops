@@ -354,7 +354,7 @@ tests:
         exp_alerts: []
   - interval: 15m
     input_series:
-      - series: 'litellm_spend_metric_total{model="a"}'
+      - series: 'litellm_spend_metric_total{model="a",model_id="commandcode-glm53flash-worker-capable"}'
         values: '0+0.75x120'
     alert_rule_test:
       - eval_time: 10h
@@ -367,7 +367,20 @@ tests:
               severity: nish
             exp_annotations:
               summary: "AI spend is over 40 USD in the last 24 hours"
-              description: "sum(increase(litellm_spend_metric_total[24h])) is 60.00 USD, above the 40 USD daily line."
+              description: "sum(increase(litellm_spend_metric_total{model_id!~\"minimax-m31.*\"}[24h])) is 60.00 USD, above the 40 USD daily line."
+
+  # The MiniMax rows bill a flat yearly plan, so their list price is not money
+  # and the same 3 USD an hour on them alone stays quiet (fleet-ops#10938).
+  - interval: 15m
+    input_series:
+      - series: 'litellm_spend_metric_total{model="a",model_id="minimax-m31-worker-capable"}'
+        values: '0+0.75x120'
+      - series: 'litellm_spend_metric_total{model="a",model_id="minimax-m31b-worker-cheap"}'
+        values: '0+0.75x120'
+    alert_rule_test:
+      - eval_time: 20h
+        alertname: AISpendHigh
+        exp_alerts: []
 
   # AISpendMetricMissing: a counter that stops for a few hours is silent; a
   # whole day with no series pages.

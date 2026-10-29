@@ -256,14 +256,25 @@ groups:
       # past 40 USD. The per-seat caps stop each seat on its own and tell
       # nobody; this is the same-day signal for a runaway loop. 14 days to
       # 2026-10-15: highest day 31.04 USD, median 5.21 USD.
+      #
+      # The four MiniMax rows are left out because their cap is the flat MiniMax
+      # Yearly Plus plan's quota, not a dollar budget, so their price fields are a
+      # list-price estimate of a bill nobody pays: they carry no max_budget and no
+      # spend alert by design (config/litellm-proxy.yaml above those rows,
+      # docs/litellm-router-notes.md, Nish 2026-10-09). At 2026-10-29 16:45Z they
+      # carried 34.60 of the 36.07 USD this sum read, so the line paged on 1.47 USD
+      # of billed money (fleet-ops#10938). The rows excluded are
+      # minimax-m31-worker-capable, minimax-m31b-worker-capable,
+      # minimax-m31-worker-cheap and minimax-m31b-worker-cheap.
       - alert: AISpendHigh
-        expr: sum(increase(litellm_spend_metric_total[24h])) > 40
+        expr: |
+          sum(increase(litellm_spend_metric_total{model_id!~"minimax-m31.*"}[24h])) > 40
         for: 15m
         labels:
           severity: nish
         annotations:
           summary: "AI spend is over 40 USD in the last 24 hours"
-          description: "sum(increase(litellm_spend_metric_total[24h])) is {{ $value | printf \"%.2f\" }} USD, above the 40 USD daily line."
+          description: "sum(increase(litellm_spend_metric_total{model_id!~\"minimax-m31.*\"}[24h])) is {{ $value | printf \"%.2f\" }} USD, above the 40 USD daily line."
 
       # The spend line above cannot fire if the router stops exporting the
       # counter, so a day with no series at all pages too. The fleet calls
