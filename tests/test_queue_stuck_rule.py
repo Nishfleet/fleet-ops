@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/queue-stuck.yaml"
 YQ = shutil.which("yq")
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+BASE = {"severity": "warning", "signal": "queue-stuck"}
 AGE = {
     "queue-stuck-pr-unmerged": 2,
     "queue-stuck-pr-blocked": 2,
@@ -80,10 +81,26 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
         "the ask rule must read the nish-ask board and leave the trackers out"
     )
     for r in rules.values():
-        assert r["labels"] == {"severity": "warning", "signal": "queue-stuck"}
         assert (r["for"], r["execErrState"], r["noDataState"]) == ("0s", "Error", "OK")
         assert "cannot read GitHub" in r["annotations"]["summary"]
         assert "notification_settings" not in r
+    assert {r["labels"]["signal"] for r in rules.values()} == {"queue-stuck"}
+    assert {r["labels"]["severity"] for r in rules.values()} == {"warning"}
+    assert {uid: r["labels"] for uid, r in rules.items() if set(r["labels"]) != set(BASE)} == {
+        "queue-stuck-ask-noslip": {"severity": "warning", "signal": "queue-stuck", "audience": "nish"},
+    }
+
+
+def test_ask_rule_reads_the_private_board_and_names_the_token_that_cannot():
+    ask = _rules()["queue-stuck-ask-noslip"]
+    (search,) = (d for d in ask["data"] if d["refId"] == "A")
+    assert search["model"]["repository"] == "nish-vault"
+    assert search["model"]["queryType"] == "Issues"
+    body = ask["annotations"]["description"]
+    assert "fleet-worker-github-token@.service" in body, (
+        "the ask rule reads the one board no worker token can reach, so its text must name who can act on an ask")
+    assert "linked:pr" in body, "an ask's PR link lives in its own repository, so a fleet-ops PR never clears it"
+    assert "Find why the ask has no PR" not in body, "that instruction sends a worker to a board it gets 404 on"
 
 
 def test_needs_split_rule_reads_open_prs_with_that_label():

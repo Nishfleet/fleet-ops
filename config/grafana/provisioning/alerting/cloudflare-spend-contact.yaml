@@ -71,6 +71,26 @@ contactPoints:
               {{- end -}}
 
   - orgId: 1
+    name: nish-ask-dispatch
+    receivers:
+      - uid: nish-ask-gh-issues
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: https://api.github.com/repos/Nishfleet/fleet-ops/issues
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $__file{/run/secrets/github-token/token}
+          maxAlerts: 1
+          payload:
+            template: |-
+              {{- with index .Alerts 0 -}}
+              {{- coll.Dict "title" (printf "grafana alert: %s" .Labels.alertname)
+                     "body" (printf "%s\n\n%s\n\nRule `%s`, started firing %s UTC. Labels: %s. Source: a Grafana rule in config/grafana/provisioning/alerting, filed for Nish by the audience route in cloudflare-spend-contact.yaml.\n\nWhy this reaches Nish and not a worker: the rule reads a board no worker token can read. systemd/fleet-worker-github-token@.service mints every worker token with a body that names one repository, so a worker running a fleet-ops issue gets 404 on the private board, and a worker lane can never work an ask on it. GitHub also links an issue to a pull request only inside one repository, so an ask delivered by a fleet-ops pull request never reads as linked:pr. The only seats that can move the board are a person and the org-wide App installation this data source uses. Answer the asks, or give the board read to the fleet so a lane can work one." .Annotations.summary .Annotations.description .Labels.alertname (.StartsAt.Format "2006-01-02 15:04:05") (data.ToJSON (.Labels.Remove (stringSlice "alertname" "grafana_folder"))))
+                     "labels" (coll.Slice "needs-nish-decision") | data.ToJSON -}}
+              {{- end -}}
+
+  - orgId: 1
     name: prometheus-alert-dispatch
     receivers:
       - uid: prometheus-alert-gh-issues
@@ -168,6 +188,25 @@ policies:
         group_wait: 0s
         group_interval: 5m
         repeat_interval: 7d
+      # A rule only a seat that can read a private board can act on must not reach the
+      # worker queue. fleet-ops#10881: the ask rule reads the private Nishfleet/nish-vault
+      # board, and every worker token is minted with a body naming one repository
+      # (systemd/fleet-worker-github-token@.service), so a worker running a fleet-ops
+      # issue gets 404 there. The alert counted 40 open asks forever, and each firing
+      # filed an agent-ready issue that dispatched a worker which parked
+      # blocked-on: orchestrator: one worker run and one orchestrator run per day, with
+      # no ask reachable. Its issue goes to Nish instead, who can read the board.
+      # DatasourceError and DatasourceNoData are excluded, so a read error on the ask
+      # rule still reaches the catch-all below and the fleet fixes the data source.
+      # This route is terminal, so an ask alert stops here.
+      - receiver: nish-ask-dispatch
+        object_matchers:
+          - [audience, "=", nish]
+          - [alertname, "!~", "DatasourceError|DatasourceNoData"]
+        group_by: ['...']
+        group_wait: 0s
+        group_interval: 5m
+        repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]

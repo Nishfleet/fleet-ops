@@ -1693,7 +1693,7 @@ jobs:
             exit 1
           fi
           echo "grafana-boot: $n provisioning dirs watched, reload answered 2xx"
-      - name: A provisioning reload re-reads the token file the contact points name (fleet-ops#9445)
+      - name: A provisioning reload re-reads the token file, and an audience rule files for its own seat (fleet-ops#9445, #10881)
         # The refresh design rests on one Grafana behaviour: $__file{} is
         # expanded again on every provisioning load, so the 20 min re-mint reaches
         # the webhook through the stock admin reload without a restart. Proven
@@ -1701,6 +1701,15 @@ jobs:
         # its URL and timers rewritten): a firing rule routed to the dead-row
         # webhook delivers the first token, the file is replaced by rename, the
         # reload API is called, and the next delivery must carry the second.
+        #
+        # fleet-ops#10881: the ask rule reads the private Nishfleet/nish-vault
+        # board, which no worker token can reach (systemd/fleet-worker-github-token@.service
+        # mints each one with a body naming one repository), so its issue must be
+        # filed for a seat that can read it. The drill-audience rule carries the
+        # same audience label, so the real audience route and the real
+        # nish-ask-dispatch payload template must render a needs-nish-decision
+        # issue here, not an agent-ready one: that is the whole fix, and a template
+        # that fails to render files nothing at all.
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euo pipefail
@@ -1761,6 +1770,21 @@ jobs:
                   execErrState: Error
                   annotations: {summary: drill, value: "1", threshold: "0", description: drill}
                   labels: {signal: drill-generic}
+                - uid: drill-audience
+                  title: drill audience
+                  condition: B
+                  data:
+                    - refId: A
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: math, expression: "1", refId: A}
+                    - refId: B
+                      datasourceUid: __expr__
+                      model: {datasource: {type: __expr__, uid: __expr__}, type: threshold, expression: A, refId: B, conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [B]}, reducer: {params: [], type: last}, type: query}]}
+                  for: 0s
+                  noDataState: OK
+                  execErrState: Error
+                  annotations: {summary: drill, value: "1", threshold: "0", description: drill}
+                  labels: {severity: warning, signal: queue-stuck, audience: nish}
           YAML
           echo drill-admin-pw > "$d/admin-pw"
           : > "$d/sink.log"
@@ -1802,7 +1826,14 @@ jobs:
           [ -n "$g" ] || { echo "::error::a rule with no route of its own did not reach fleet-alert-dispatch"; cat "$d/sink.log"; exit 1; }
           jq -e '.labels == ["agent-ready"] and (.body | contains("drill generic")) and (.body | contains("drill-generic"))' <<<"${g#BODY * }" >/dev/null \
             || { echo "::error::fleet-alert-dispatch rendered an unexpected issue"; echo "$g"; exit 1; }
-          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue"
+          # The audience route is terminal and files for a seat, so the ask board's
+          # alert must never render as an issue a worker lane dispatches.
+          for _ in $(seq 1 30); do grep -q '"title":"grafana alert: drill audience"' "$d/sink.log" && break; sleep 3; done
+          a=$(grep '"title":"grafana alert: drill audience"' "$d/sink.log" | head -n 1 || true)
+          [ -n "$a" ] || { echo "::error::the audience rule did not reach nish-ask-dispatch"; cat "$d/sink.log"; exit 1; }
+          jq -e '.labels == ["needs-nish-decision"] and (.body | contains("drill audience")) and (.body | contains("fleet-worker-github-token@.service"))' <<<"${a#BODY * }" >/dev/null \
+            || { echo "::error::nish-ask-dispatch rendered an unexpected issue"; echo "$a"; exit 1; }
+          echo "reload drill: webhook sent tokenA, then tokenB after the admin reload, no restart; a root-routed rule filed a fleet issue, an audience rule filed a needs-nish-decision issue"
       - name: deploy-failed rules, SQL logic in SQLite and on the pinned Grafana's SQL engine; the promtool fixtures carry the deployed A expression (fleet-ops#9866)
         if: steps.gate.outputs.run == 'true'
         timeout-minutes: 20

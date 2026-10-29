@@ -13,7 +13,10 @@ means adding it to URGENT here, with its reason, and labelling it critical.
 It also fails when a rule or a dashboard panel reads a data source this repo does
 not provision, or an owner this repo's GitHub App has no installation for: that
 read is blind, and a rule that reads nothing turns into a DatasourceError alert
-nobody can act on (fleet-ops#9803). It also fails when an annotation interpolates
+nobody can act on (fleet-ops#9803). It also fails when a rule reads a repository
+no worker token can reach and still files an issue the worker queue dispatches:
+that worker gets 404 on the board it is told to fix and parks (fleet-ops#10881).
+It also fails when an annotation interpolates
 $values.X, $labels.Y or the .Value of a struct a $values guard bound outside the
 with/if that scopes it: a DatasourceError alert carries no values, so the bare
 form renders %!f(<nil>) and [no value] instead of a number (fleet-ops#9810, #9822).
@@ -64,8 +67,11 @@ URGENT = {
 PAGE = "hermes-urgent"
 SEVERITIES = ("critical", "warning")
 CRITICAL_REPEAT = 3600
-ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch"}
+ISSUE_SINKS = {"fleet-alert-dispatch", "cloudflare-spend-dispatch", "router-dead-row-dispatch", "prometheus-alert-dispatch", "nish-ask-dispatch"}
 GENERIC_SINK = "fleet-alert-dispatch"
+ISSUE_URL = "https://api.github.com/repos/Nishfleet/fleet-ops/issues"
+TOKEN_FILE = "$__file{/run/secrets/github-token/token}"
+AUDIENCE_SINKS = {"nish": "nish-ask-dispatch"}
 # A paid plan out of credit keeps its rule firing until Nish acts, and the
 # remedy is his, so its issue is filed weekly instead of daily: fleet-ops#9845,
 # #9857, #9876 and #9897 are one Pareto credit wall across four issues. Paging is
@@ -438,6 +444,48 @@ def check_datasource_refs(root, provisioning):
     return bad
 
 
+def sink_shape(points, bad):
+    """Every issue sink reaches the GitHub issues API with the minted token and POSTs, or
+    its alert files nothing at all: fleet-ops#10881 added nish-ask-dispatch for the ask
+    board's alert, and a sink that cannot deliver is the same as no fix."""
+    for name in sorted(ISSUE_SINKS):
+        for rcv in points.get(name, {}).get("receivers") or []:
+            s = rcv.get("settings") or {}
+            for key, want in (("url", ISSUE_URL), ("httpMethod", "POST"), ("authorization_scheme", "Bearer"),
+                              ("authorization_credentials", TOKEN_FILE)):
+                if s.get(key) != want:
+                    bad.append(f"{name}: {key} is {s.get(key)!r}, want {want!r}, so its alert files nothing")
+            if not rcv.get("disableResolveMessage"):
+                bad.append(f"{name}: a resolve message re-files the issue as a comment on every resolve")
+
+
+def audience_check(rules, policy, points, bad):
+    """Every audience label reaches its own sink, and that sink files an issue the worker
+    queue does not dispatch: fleet-ops#10881 filed the ask board's alert as a dispatchable
+    issue, and the worker it dispatched got 404 on the private board it named."""
+    for r in rules:
+        title, labels = r["title"], r.get("labels") or {}
+        audience = labels.get("audience")
+        if not audience:
+            continue
+        want = AUDIENCE_SINKS.get(audience)
+        if not want:
+            bad.append(f"{title}: audience {audience} names no sink, so its issue reaches the worker queue")
+            continue
+        got = {rc.removesuffix("#muted") for rc, _ in route(policy, {**labels, "alertname": title})}
+        if got != {want}:
+            bad.append(f"{title}: audience {audience} must reach only {want}, got {sorted(got)}")
+        err = {rc.removesuffix("#muted") for rc, _ in route(policy, {**labels, "alertname": "DatasourceError"})}
+        if GENERIC_SINK not in err:
+            bad.append(f"{title}: a read error on it must still reach {GENERIC_SINK}, which fixes the data source")
+        tpl = next(iter((r.get("settings") or {}).get("payload", {}).get("template", "")
+                          for r in points.get(want, {}).get("receivers", [])), "")
+        if 'coll.Slice "needs-nish-decision"' not in tpl:
+            bad.append(f"{want}: must label its issue needs-nish-decision, which no lane dispatches")
+        if 'coll.Slice "agent-ready"' in tpl:
+            bad.append(f"{want}: labels its issue for the worker queue, so a worker that cannot read the board runs on it")
+
+
 def main(root):
     selftest()
     rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
@@ -494,6 +542,11 @@ def main(root):
             bad.append(f"{title}: {GENERIC_SINK} must file its issue every {want}s "
                        f"({'a paid plan' if 'plan' in labels else 'any other rule'}), got {got}")
     dead_row_shape(rules, points, bad)
+    sink_shape(points, bad)
+    audience_check(rules, policy, points, bad)
+    aud = sorted(r["title"] for r in rules if (r.get("labels") or {}).get("audience"))
+    if aud:
+        print(f"audience: {len(aud)} rule(s) file for a seat instead of the worker queue -> {aud}")
     annotation_guards(rules, bad)
     bad += alertmanager_auth(Path(__file__).resolve().parents[1])
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
