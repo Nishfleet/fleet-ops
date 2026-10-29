@@ -37,7 +37,7 @@ verdict. Verdicts are `stock` (GitHub does it, we already lean on it), `cut`
 line says why).
 
 Two names repeat below. "The dispatcher" is the two workflow files. "The sweep"
-is the scheduled run of `agent-dispatch.yml` (`cron: 17 * * * *`), whose two
+is the scheduled run of `agent-dispatch.yml` (`cron: */10 * * * *`), whose two
 readers are `list` (the issue queue) and `stuck-prs` (the open PRs).
 
 | Home-made mechanism | Stock feature | Verdict |

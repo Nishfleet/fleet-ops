@@ -40,9 +40,10 @@ on:
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
-  # The sweep below catches both; hourly stays well under the 24h expiry.
+  # The sweep below catches both, and fills free runners: every 10 minutes, so idle runners
+  # never wait an hour for queued work (fleet-ops#10935).
   schedule:
-    - cron: '17 * * * *'
+    - cron: '*/10 * * * *'
 permissions: {}
 # One sweep running and one waiting per repo (15 queued behind busy runners on 2026-09-28);
 # every per-issue event gets its own group.
@@ -471,7 +472,8 @@ jobs:
       (inputs.agent_mode || vars.AGENT_MODE) == 'live' &&
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
-    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
+    # fleet-ops' own sweep runs on its runners: the re-queue writes need the worker App key there (fleet-ops#10949).
+    runs-on: ${{ fromJSON(inputs.runner || (github.repository == 'Nishfleet/fleet-ops' && '["self-hosted","fleet-ops"]' || '"ubuntu-latest"')) }}
     # contents: read is required because `statusCheckRollup` on a private repository
     # needs it as well as checks: read; without it GitHub answers "Resource not
     # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"
@@ -704,10 +706,10 @@ jobs:
                 | select(((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator hand-off ended without a PR: ")))
                   or ((.author.login | IN("github-actions", "github-actions[bot]")) and (.body | startswith("orchestrator re-fired by the sweep: ")))) | .body]}
               | .act = (if (.runs | length) >= 3 then "escalate" else "requeue" end)]
-            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([5 - $queued, 0] | max)] | .[]
+            | [.[] | select(.act == "escalate")] + ([.[] | select(.act == "requeue")] | sort_by(if .prio then 0 else 1 end))[:([12 - $queued, 0] | max)] | .[]
         run: |
           wf=${WORKFLOW_REF#*/.github/workflows/}; wf=${wf%@*}
-          fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=5; }
+          fail() { echo "::error::$1 failed, no re-queues this sweep (escalations still run)"; queued=12; }
           queued=0; ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id') || fail "run list"
           for id in $ids; do # live orchestrate jobs: a job name is set on any caller
             c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length') || { fail "job read"; break; }
