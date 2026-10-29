@@ -562,10 +562,23 @@ jobs:
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-              [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
+              if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                # A failed read is not proof the run died: skip, never requeue a live worker.
+                rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+                live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")
+              else
+                # No run announced itself, and agent.yml's Gate posts that comment one line after
+                # it labels the issue, so a live worker has it within seconds. The label is then
+                # the leftover of a run that died between the two (fleet-ops#10899: 0509#7070
+                # held it 24 days with no branch, no PR and no comment), and its own age is the
+                # proof, read at the 15-minute idle cutoff stuck-prs uses.
+                labelled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events?per_page=100" \
+                  --jq '[.[] | select(.event == "labeled" and .label.name == "agent-in-progress") | .created_at] | last // ""')
+                [ -n "$labelled" ] || { echo "::warning::#$n: no agent-in-progress label event, skip"; continue; }
+                live=true
+                if [ "$(date -u -d "$labelled" +%s)" -lt "$(( $(date +%s) - 900 ))" ]; then live=false; fi
+              fi
+              if [ "$live" = false ]; then
                 gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
                 echo "requeued #$n: claimed with no live run and no claim PR"
                 stalled_refs=$(jq -nc --argjson s "$stalled_refs" --arg r "claim/issue-$n-miss-review" '$s + [$r]')
