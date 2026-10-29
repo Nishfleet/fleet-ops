@@ -131,19 +131,20 @@ def test_the_verdict_step_runs_only_after_a_failed_audit_and_reads_the_urls_thro
     assert "${{" not in _y(f"{VERDICT} | .run")
 
 
-def _run_verdict(files, urls, npx_rc=0):
+def _run_verdict(files, urls, npx_rc=0, assert_rc=None):
     script = _y(f"{VERDICT} | .run")
     with tempfile.TemporaryDirectory() as tmp:
         stub = pathlib.Path(tmp) / "npx"
         stub.write_text(
             '#!/bin/sh\n'
             'printf \'%s\\n\' "$*" >> "$NPX_LOG"\n'
-            'if [ "$NPX_RC" = 0 ] && [ "$3" = collect ]; then\n'
+            'rc=$NPX_RC; [ "$3" = assert ] && rc=$NPX_ASSERT_RC\n'
+            'if [ "$rc" = 0 ] && [ "$3" = collect ]; then\n'
             '  for a in "$@"; do case $a in --numberOfRuns=*) k=${a#--numberOfRuns=};; --url=*) u=${a#--url=};; esac; done\n'
             '  n=$(ls .lighthouseci/lhr-*.json 2>/dev/null | wc -l)\n'
             '  i=1; while [ "$i" -le "$k" ]; do printf \'{"requestedUrl": "%s"}\\n\' "$u" > ".lighthouseci/lhr-$((n+i)).json"; i=$((i+1)); done\n'
             'fi\n'
-            'exit "$NPX_RC"\n'
+            'exit "$rc"\n'
         )
         stub.chmod(0o755)
         lhci = pathlib.Path(tmp) / ".lighthouseci"
@@ -158,6 +159,7 @@ def _run_verdict(files, urls, npx_rc=0):
                 URLS=urls,
                 NPX_LOG=str(pathlib.Path(tmp) / "npx.log"),
                 NPX_RC=str(npx_rc),
+                NPX_ASSERT_RC=str(npx_rc if assert_rc is None else assert_rc),
                 PATH=f"{tmp}{os.pathsep}{os.environ['PATH']}",
             ),
             capture_output=True,
@@ -173,7 +175,9 @@ def _lhrs(url, count, first=1):
 
 
 def test_the_verdict_expects_the_number_of_runs_the_audit_asks_for():
-    assert f"want={_y(f'{AUDIT} | .with.runs')}" in _y(f"{VERDICT} | .run")
+    run = _y(f"{VERDICT} | .run")
+    assert f"want={_y(f'{AUDIT} | .with.runs')};" in run
+    assert '[ "$have" -ge "$want" ]' in run
 
 
 def test_a_reached_verdict_fails_the_run_and_points_at_the_step_that_says_why():
@@ -255,6 +259,16 @@ def test_a_page_that_still_falls_short_has_no_verdict():
     code, logged, _calls = _run_verdict(_lhrs("http://s/a", 4), "http://s/a\n", npx_rc=1)
     assert code != 0
     assert "::error::http://s/a recorded 4 of 5 runs in two audits, so there is no verdict for it" in logged
+
+
+def test_a_breach_the_re_collect_reaches_still_fails_the_run():
+    code, logged, calls = _run_verdict(_lhrs("http://s/a", 4), "http://s/a\n", assert_rc=1)
+    assert code != 0
+    assert "http://s/a recorded 4 of 5 runs, so the missing ones are collected once more" in logged
+    assert calls.splitlines() == [
+        "-y @lhci/cli@0.15.1 collect --additive --numberOfRuns=1 --url=http://s/a --config=./config/lighthouserc.json",
+        ASSERT,
+    ]
 
 
 def test_a_page_is_matched_regardless_of_a_trailing_slash():
