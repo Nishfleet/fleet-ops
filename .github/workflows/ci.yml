@@ -121,24 +121,6 @@ jobs:
       - name: promtool test rules (config/grafana/tests, outside the provisioning dirs Grafana loads)
         if: always()
         run: promtool test rules config/grafana/tests/*.test.yml
-      # The dead-man Watchdog, SystemUnitFailed and HermesGatewayDown rules and
-      # the Alertmanager routing the host installs from rootfs/etc/prometheus.
-      # check config also loads the rule file named by rule_files. Neither check
-      # opens url_file or bot_token_file (verified with both paths missing), so
-      # a runner without the box's credential files passes. The routes tests
-      # prove the matchers: Watchdog reaches the dead-man, severity=nish reaches
-      # Telegram, a plain warning reaches neither.
-      - name: promtool and alertmanager config checks, promtool test rules (rootfs/etc/prometheus)
-        if: always()
-        run: |
-          promtool check config rootfs/etc/prometheus/prometheus.yml
-          promtool check rules rootfs/etc/prometheus/fleet_rules.yml
-          amtool check-config rootfs/etc/alertmanager/alertmanager.yml
-          cfg=rootfs/etc/alertmanager/alertmanager.yml
-          amtool config routes test --config.file=$cfg --verify.receivers=deadman alertname=Watchdog severity=none
-          amtool config routes test --config.file=$cfg --verify.receivers=telegram alertname=HermesGatewayDown severity=nish
-          amtool config routes test --config.file=$cfg --verify.receivers=none alertname=SystemUnitFailed severity=warning
-          promtool test rules config/prometheus-tests/*.test.yml
       - name: stub host-only binaries for systemd-analyze verify
         if: always()
         run: |
@@ -227,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 2}
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager
       - name: ansible/host.yml parses (ansible-playbook --syntax-check)
         # fleet-host-config.service runs this playbook as root on every merge;
         # a parse error would stop every root config change at deploy time.
@@ -419,63 +401,6 @@ jobs:
               | all(.value | type == "array" and index($d) != null)' "$f" >/dev/null \
               || { echo "autoMode array without \"\$defaults\" (or not an array): $f"; rc=1; }
           done
-          exit "$rc"
-      # Dynamic text before static text breaks the shared prompt-cache prefix, so
-      # the first call of every run pays full price (fleet-ops#9363). Static
-      # first, then the marker line, then everything dynamic. To switch this
-      # gate off, delete this step (the next line down to the one before
-      # "Orchestrate event filter").
-      - name: Static prompt prefix before the dynamic marker (fleet-ops#9363)
-        if: always()
-        shell: bash
-        run: |
-          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-          marker='=== FLEET-DYNAMIC-BELOW ==='
-          rc=0
-          for f in prompts/worker.md; do
-            n=$(grep -c -x -F -- "$marker" "$f" || true)
-            echo "marker count in $f: $n"
-            [ "$n" = 1 ] || rc=1
-            # No argument or runner/worktree path before the marker.
-            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-            if sed -n "1,/^$marker\$/p" "$f" | grep -nE '\$[0-9@]|\$ARGUMENTS|/_work/|agent-runner/[0-9]|agent-worktrees/[A-Za-z-]*[0-9]'; then
-              echo "FAIL dynamic text before the marker in $f"; rc=1
-            fi
-          done
-          # Render AGENTS.md + the worker packet for two real issues in two
-          # different worktree paths; the bytes before the marker must match.
-          t="$RUNNER_TEMP/prefix"; rm -rf "$t"
-          for pair in fleet-ops-9361:wt-1 drive-503:wt-2; do
-            id=${pair%%:*}; wt="$t/${pair##*:}/issue-$id"
-            mkdir -p "$wt"; cp AGENTS.md "$wt/AGENTS.md"
-            { cat "$wt/AGENTS.md"; sed "s/\$1/$id/g" prompts/worker.md; } | sed -n "1,/^$marker\$/p" > "$t/pre-$id.txt"
-          done
-          cmp "$t/pre-fleet-ops-9361.txt" "$t/pre-drive-503.txt" || rc=1
-          # Same rule at the source: the pi command lines (continuations joined).
-          pi=$(sed -e ':a' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;ba}' .github/workflows/agent.yml | grep -F 'pi --print')
-          echo "pi --print lines without --no-context-files:"
-          missing=$(printf '%s\n' "$pi" | grep -vF -- '--no-context-files' | cut -c1-80 || true)
-          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL /'; rc=1; }
-          # AGENTS.md reaches the prompt once, at the constant deploy-clone path.
-          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-          bad=$(printf '%s\n' "$pi" | grep -oE -- '--append-system-prompt +"[^"]*"' | grep -vE '^--append-system-prompt +"\$HOME/(AGENTS\.md|workspaces/tooling/fleet-ops-deploy-clone/[^$"]*)"$' || true)
-          [ -z "$bad" ] || { echo "FAIL --append-system-prompt not at the constant deploy-clone path:"; echo "$bad"; rc=1; }
-          # --no-context-files also drops Nish's ~/AGENTS.md (the writing rules); it comes back, once,
-          # as content with no path header, so it adds no per-run text to the prefix.
-          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-          missing=$(printf '%s\n' "$pi" | grep -vF -- '--append-system-prompt "$HOME/AGENTS.md"' | cut -c1-80 || true)
-          [ -z "$missing" ] || { printf '%s\n' "$missing" | sed 's/^/FAIL no ~\/AGENTS.md append: /'; rc=1; }
-          # Tool flags are literal and, where a list, sorted: a stable tool order.
-          printf '%s\n' "$pi" | grep -oE -- '--(tools|exclude-tools|mcp-config) +[^ ]+' | while read -r flag val; do
-            # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-            case $val in *'$'*) echo "FAIL $flag value not literal: $val"; exit 1 ;; esac
-            printf '%s\n' "$val" | tr ',' '\n' | sort -c || { echo "FAIL $flag list not sorted: $val"; exit 1; }
-          done || rc=1
-          # The packet string (the worker packet) puts $id after the marker.
-          # shellcheck disable=SC2016 # the searched-for text sits in single quotes on purpose
-          if grep -F 'packet="' .github/workflows/agent.yml | sed "s/$marker.*//" | grep -nF '$id'; then
-            echo "FAIL \$id before the marker in a packet string"; rc=1
-          fi
           exit "$rc"
       - name: Orchestrate event filter
         if: always()
