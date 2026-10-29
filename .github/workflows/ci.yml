@@ -259,8 +259,8 @@ jobs:
         if: always()
         run: pipx run --spec uv==0.13.6 uvx --with litellm==1.105.0 --with pytest==8.3.5 --with jsonschema --with httpx python -m pytest -q -p no:cacheprovider tests/test_router_*.py
       - name: Enrolled dispatch stubs forward every pull_request_target type the dispatcher lists (fleet-ops#9730)
-        # Runs the enrolment precondition (README "Intake enrolment" 3) live:
-        # config/intake-repos.json repos[] against each repo's
+        # Runs the enrolment precondition (docs/intake-enrolment.md, precondition
+        # 3) live: config/intake-repos.json repos[] against each repo's
         # .github/workflows/agent-dispatch.yml on its default branch, with the
         # required list read from fleet-ops's own stub at the base ref, so a PR
         # cannot loosen the list that judges it. The job token reads the public
@@ -272,7 +272,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           sudo apt-get install -y -q python3-yaml >/dev/null
-          python3 tests/intake_stub_check.py)
+          python3 tests/intake_stub_check.py
       - name: rootfs/etc/nftables.conf loads on a fresh boot (nft -c)
         # nft refuses the whole file when a rule names a cgroup path that does
         # not exist yet, as at boot before user@1000 starts: the 2026-09-22

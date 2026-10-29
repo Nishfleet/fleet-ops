@@ -1,121 +1,206 @@
-"""Every enrolled repo's dispatch stub forwards every pull_request_target type
-the fleet-ops dispatcher itself lists (README "Intake enrolment" precondition 3,
-fleet-ops#9730).
+"""Every enrolled repo's agent-dispatch stub must forward every
+pull_request_target type fleet-ops's own stub lists.
 
-Reads the enrolled set from config/intake-repos.json, the required list from
-fleet-ops's own .github/workflows/agent-dispatch.yml in this checkout, and each
-enrolled repo's stub from its default branch over the GitHub API. Fails when a
-readable repo's stub omits a required type, or has no pull_request_target
-trigger, or is not parseable YAML. A repo the CI token cannot read (a private
-repo, or a deleted one) is named as not verified and skipped: with no credential
-this job may read (new credentials are Nish's call), it can be neither verified
-nor failed, and failing would red main forever. An unknown API state fails
-closed.
+The enrolment precondition (docs/intake-enrolment.md, precondition 3) says a
+stub whose on.pull_request_target.types is short leaves that repo with no
+review and no coordinator gate on risky PRs, because hold-risky is the only
+door into review-risky and a pull_request_target trigger fires only for the
+types its own repo's stub lists. Nothing checked the precondition: drive and
+siterep-public both shipped eight of the nine types (fleet-ops#9730).
 
-usage: intake_stub_check.py [intake-repos.json] [fleet-ops agent-dispatch.yml]
+The required list and the enrolled set are both read from the run's base ref
+when one is given, so a PR cannot loosen the rules that judge it, the way
+hold-risky reads its path list from the base branch. Each enrolled repo's stub
+is read from that repo's own default branch, because a ref that exists in
+fleet-ops does not exist anywhere else.
+
+A repo the CI token cannot read is named as not verified and skipped, never
+counted as a pass. Any other state fails closed naming the repo: a readable
+repo with no stub, a stub that will not parse, a trigger with no types, an API
+call that fails, and a run that read no enrolled repo's stub at all.
 """
 import base64
 import json
+import os
 import pathlib
 import subprocess
 import sys
-import tempfile
 
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "config/intake-repos.json"
+DISPATCHER = ROOT / ".github/workflows/agent-dispatch.yml"
+CONFIG_PATH = "config/intake-repos.json"
+DISPATCHER_PATH = ".github/workflows/agent-dispatch.yml"
 ORG = "Nishfleet"
-STUB_PATH = ".github/workflows/agent-dispatch.yml"
-
-
-def _triggers(cfg):
-    on = cfg.get(True, cfg.get("on")) if isinstance(cfg, dict) else None
-    if not isinstance(on, dict):
-        return None
-    prt = on.get("pull_request_target")
-    if not isinstance(prt, dict):
-        return None
-    types = prt.get("types")
-    if not isinstance(types, list) or not all(isinstance(t, str) for t in types):
-        return None
-    return types
-
-
-def _required(dispatch_path):
-    try:
-        types = _triggers(yaml.safe_load(dispatch_path.read_text()))
-    except yaml.YAMLError:
-        types = None
-    if types is None:
-        sys.exit(f"fleet-ops's own {STUB_PATH} has no pull_request_target.types to require")
-    return types
+SELF = "fleet-ops"
+NO_TYPES = "a pull_request_target trigger with no types list, so only the opened, synchronize and reopened defaults fire"
+NOT_VERIFIED = "not verified: the CI token cannot read this repo (private or gone); skipped"
 
 
 def _gh(path):
-    r = subprocess.run(["gh", "api", f"repos/{ORG}/{path}"], capture_output=True, text=True)
-    if r.returncode != 0:
-        return None
-    return json.loads(r.stdout)
-
-
-def _curl(path):
-    url = f"https://api.github.com/repos/{ORG}/{path}"
-    with tempfile.TemporaryDirectory() as tmp:
-        body = pathlib.Path(tmp) / "body"
-        r = subprocess.run(["curl", "-sS", "-o", str(body), "-w", "%{http_code}", url],
-                           capture_output=True, text=True)
-        if r.returncode != 0 or not (r.stdout or "").strip().isdigit():
-            return None
-        return r.stdout.strip(), body.read_text() if body.exists() else ""
-
-
-def _stub_types(name):
-    data = _gh(f"{name}/contents/{STUB_PATH}")
-    if data is None:
-        code, body = _curl(f"{name}/contents/{STUB_PATH}")
-        if code == "200":
-            data = json.loads(body)
-        else:
-            repo_code, _ = _curl(name)
-            if repo_code == "404":
-                return None, "not verified: the CI token cannot read this repo (private or gone); skipped"
-            sys.exit(f"Nishfleet/{name}: GitHub API answered {code or 'an error'} on the stub and {repo_code or 'an error'} on the repo; failing closed")
-    raw = data.get("content", "")
-    if data.get("encoding") != "base64" or not raw:
-        sys.exit(f"Nishfleet/{name}: stub exists but the contents API sent no base64 body")
+    """`gh api <path>` as (parsed json, None) or (None, one-line notice)."""
     try:
-        types = _triggers(yaml.safe_load(base64.b64decode(raw)))
-    except yaml.YAMLError:
-        types = None
+        done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, "gh is not on PATH, so no stub can be read"
+    if done.returncode != 0:
+        why = " ".join((done.stderr or done.stdout or f"exit {done.returncode}").split())
+        return None, f"gh api failed: {why}"
+    try:
+        return json.loads(done.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"the reply is not JSON ({exc.msg})"
+
+
+def _text_of(data):
+    """The decoded file body of a contents reply, or a one-line notice."""
+    if "content" not in data:
+        return None, "the reply carries no content"
+    try:
+        return base64.b64decode("".join(data["content"].split()), validate=True).decode(), None
+    except (ValueError, UnicodeDecodeError):
+        return None, "the content is not base64"
+
+
+def _types_of(text):
+    """A stub's pull_request_target types as (list, None) or (None, reason)."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return None, "is not parseable YAML (%s)" % " ".join(str(exc).split())
+    if not isinstance(data, dict):
+        return None, "is not a mapping"
+    on = data.get("on", data.get(True))
+    if isinstance(on, list):
+        if "pull_request_target" not in on:
+            return None, "has no pull_request_target trigger"
+        return None, NO_TYPES
+    if not isinstance(on, dict):
+        return None, "has no on: block"
+    if "pull_request_target" not in on:
+        return None, "has no pull_request_target trigger"
+    trigger = on["pull_request_target"]
+    if trigger is None:
+        return None, NO_TYPES
+    if not isinstance(trigger, dict):
+        return None, "a pull_request_target trigger that is not a mapping of keys"
+    types = trigger.get("types")
     if types is None:
-        sys.exit(f"Nishfleet/{name}: {STUB_PATH} has no pull_request_target.types list")
+        return None, NO_TYPES
+    if not isinstance(types, list) or not all(isinstance(t, str) for t in types):
+        return None, "a pull_request_target.types that is not a list of event names"
     return types, None
 
 
-def main():
-    cfg_path = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "config/intake-repos.json"
-    dispatch_path = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / STUB_PATH
-    repos = [r["name"] for r in json.loads(cfg_path.read_text())["repos"]]
+def _stub(name, ref=None):
+    """A repo's dispatcher stub as (types, None) or (None, one-line reason)."""
+    path = f"repos/{ORG}/{name}/contents/{DISPATCHER_PATH}"
+    if ref:
+        path += f"?ref={ref}"
+    data, notice = _gh(path)
+    if data is None:
+        return None, notice
+    text, notice = _text_of(data)
+    if text is None:
+        return None, notice
+    return _types_of(text)
+
+
+def _api_answering():
+    """Fail closed when gh cannot reach the API at all, so a transport or auth
+    failure is never reported as one unreadable repo after another."""
+    data, notice = _gh(f"repos/{ORG}/{SELF}")
+    if data is None:
+        sys.exit(f"::error::the GitHub API is not answering through gh ({notice}); failing closed")
+
+
+def _repo_readable(name):
+    """None when the token can read the repo, else a one-line notice."""
+    data, notice = _gh(f"repos/{ORG}/{name}")
+    if data is None:
+        return notice
+    if not isinstance(data, dict) or "full_name" not in data:
+        return "the reply is not a repo"
+    return None
+
+
+def _enrolled(ref):
+    """The enrolled repo names, from the base ref when one is given."""
+    if ref:
+        path = f"repos/{ORG}/{SELF}/contents/{CONFIG_PATH}?ref={ref}"
+        data, notice = _gh(path)
+        if data is None:
+            sys.exit(f"::error::{CONFIG_PATH}: {notice} at the base ref; failing closed")
+        text, notice = _text_of(data)
+        if text is None:
+            sys.exit(f"::error::{CONFIG_PATH}: {notice} at the base ref; failing closed")
+        try:
+            config = json.loads(text)
+        except json.JSONDecodeError as exc:
+            sys.exit(f"::error::{CONFIG_PATH} at the base ref is not JSON ({exc.msg}); failing closed")
+    else:
+        try:
+            config = json.loads(CONFIG.read_text())
+        except (OSError, ValueError) as exc:
+            sys.exit(f"::error::{CONFIG_PATH} could not be read ({exc}); failing closed")
+    repos = [r["name"] for r in config.get("repos", []) if isinstance(r, dict) and "name" in r]
     if not repos:
-        sys.exit(f"{cfg_path} names no enrolled repos")
-    required = _required(dispatch_path)
-    print(f"required types (from {ORG}/fleet-ops's own stub): {', '.join(required)}")
+        sys.exit(f"::error::{CONFIG_PATH} names no enrolled repos")
+    return repos
+
+
+def _required(ref):
+    """The required type list as (list, None) or (None, one-line reason)."""
+    if ref:
+        return _stub(SELF, ref)
+    try:
+        text = DISPATCHER.read_text()
+    except OSError as exc:
+        return None, f"could not be read ({exc.strerror})"
+    return _types_of(text)
+
+
+def main():
+    if not os.environ.get("GH_TOKEN"):
+        sys.exit("GH_TOKEN is empty; this check reads other repos' stubs with the job token")
+    ref = os.environ.get("BASE_REF", "")
+    _api_answering()
+    repos = _enrolled(ref)
+    required, notice = _required(ref)
+    if required is None:
+        sys.exit(f"::error::{SELF}'s own {DISPATCHER_PATH} {notice}; failing closed")
+    if not required:
+        sys.exit(f"::error::{SELF}'s own {DISPATCHER_PATH} has an empty pull_request_target.types, "
+                 "so this check would enforce nothing; failing closed")
+    where = f"at {ref}" if ref else "in this checkout"
+    print(f"required types (from {ORG}/{SELF}'s own {DISPATCHER_PATH} {where}): {', '.join(required)}")
+    verified = 0
     failures = 0
     for name in repos:
-        types, notice = _stub_types(name)
-        if notice is not None:
-            print(f"::warning::{notice}")
-            print(f"{ORG}/{name}: {notice}")
+        unreadable = _repo_readable(name)
+        if unreadable is not None:
+            print(f"::warning::Nishfleet/{name}: {NOT_VERIFIED} ({unreadable})")
+            continue
+        types, why = _stub(name)
+        if types is None:
+            print(f"::error::Nishfleet/{name}: {DISPATCHER_PATH} {why}")
+            failures += 1
             continue
         missing = [t for t in required if t not in types]
         if missing:
+            print(f"::error::Nishfleet/{name}: stub omits {', '.join(missing)} from pull_request_target.types")
+            print(f"Nishfleet/{name}: missing {', '.join(missing)}")
             failures += 1
-            print(f"::error::{ORG}/{name}: stub omits {', '.join(missing)} from pull_request_target.types")
-            print(f"{ORG}/{name}: missing {', '.join(missing)}")
-        else:
-            print(f"{ORG}/{name}: ok ({len(types)} types)")
+            continue
+        print(f"Nishfleet/{name}: ok ({len(types)} types)")
+        verified += 1
+    if not verified:
+        sys.exit("::error::no enrolled repo's stub could be read, so nothing was verified")
     if failures:
-        sys.exit(f"{failures} enrolled stub(s) short of the required types")
+        sys.exit(f"::error::{failures} enrolled repo(s) have a stub this check cannot pass")
+    print(f"{len(repos)} enrolled repo(s) checked, {verified} stub(s) read")
 
 
 if __name__ == "__main__":

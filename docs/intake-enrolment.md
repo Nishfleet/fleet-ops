@@ -35,9 +35,11 @@ https://github.com/Nishfleet/<name>.git <dest>` (fleet-ops#1213).
    `ci.yml` reads each enrolled repo's stub from its default branch
    (`tests/intake_stub_check.py`) and fails when a readable repo's list is
    short, or when no enrolled repo's stub could be read at all — a run that
-   verified nothing must not report success. The required list comes from
-   fleet-ops's own stub at the run's base ref, so a PR cannot loosen the list
-   that judges it. A repo the CI token cannot read (a private repo, or a
+   verified nothing must not report success. The required list and the
+   enrolled set both come from fleet-ops's own stub and
+   `config/intake-repos.json` at the run's base ref, so a PR cannot loosen
+   the rules that judge it, the way `hold-risky` reads its path list from the
+   base branch. A repo the CI token cannot read (a private repo, or a
    deleted one) is named as not verified in the run and stays on the enrolment
    review; any other API state, and a transport failure, fails closed.
 
