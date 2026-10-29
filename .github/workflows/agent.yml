@@ -1066,18 +1066,11 @@ jobs:
           while IFS= read -r line || [ -n "$line" ]; do
             [ -n "$line" ] && echo "::add-mask::$line"
           done < "$keyfile"
-          {
-            printf 'pem<<APP_PRIVATE_KEY_END\n'
-            cat "$keyfile"
-            printf 'APP_PRIVATE_KEY_END\n'
-          } >> "$GITHUB_OUTPUT"
+          { printf 'pem<<APP_PRIVATE_KEY_END\n'; cat "$keyfile"; printf 'APP_PRIVATE_KEY_END\n'; } >> "$GITHUB_OUTPUT"
       - name: App token for the rework label
         id: rework-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ steps.rework-key.outputs.pem }}
-          permission-issues: write
+        with: {app-id: "4728578", private-key: "${{ steps.rework-key.outputs.pem }}", permission-issues: write}
       - name: Send a blocked orch PR back to the orchestrator
         env: {GH_TOKEN: "${{ github.token }}", ISSUE_TOKEN: "${{ steps.rework-token.outputs.token }}"}
         run: |
