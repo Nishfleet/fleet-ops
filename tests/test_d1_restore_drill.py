@@ -61,12 +61,16 @@ def _stub_dir(tmp_path: pathlib.Path, run: str = "40838700865", artifacts: str =
     dump.write_text(DUMP)
     (bindir / "gh").write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = run ] && [ "$2" = list ]; then test -n "$STUB_RUN_ID" && echo "$STUB_RUN_ID"; exit 0; fi\n'
+        'if [ "$1" = run ] && [ "$2" = list ]; then for i in $STUB_RUN_IDS; do echo "$i"; done; exit 0; fi\n'
         'if [ "$1" = run ] && [ "$2" = download ]; then\n'
-        '  name=; dir=\n'
-        "  while [ $# -gt 0 ]; do case \"$1\" in -n) name=$2; shift 2 ;; -D) dir=$2; shift 2 ;; *) shift ;; esac; done\n"
-        '  stem=${name#d1-backup-}\n'
-        '  mkdir -p "$dir"; cp "$STUB_DUMP" "$dir/$stem.sql.age"\n'
+        "  dir=\n"
+        '  while [ $# -gt 0 ]; do case "$1" in -D) dir=$2; shift 2 ;; *) shift ;; esac; done\n'
+        '  test -n "$STUB_ARTIFACTS" || { echo "no valid artifacts found to download" >&2; exit 1; }\n'
+        '  for name in $STUB_ARTIFACTS; do\n'
+        '    stem=${name#d1-backup-}\n'
+        '    test "$stem" != "$name" || continue\n'
+        '    mkdir -p "$dir/$name"; cp "$STUB_DUMP" "$dir/$name/$stem.sql.age"\n'
+        "  done\n"
         "  exit 0\n"
         "fi\n"
         'case "$*" in *DELETE*) echo "revoked" >> "$STUB_LOG" ;; *) for a in $STUB_ARTIFACTS; do echo "$a"; done ;; esac\n'
@@ -81,9 +85,10 @@ def _stub_dir(tmp_path: pathlib.Path, run: str = "40838700865", artifacts: str =
     (bindir / "sqlite3").write_text(
         "#!/usr/bin/env python3\n"
         "import sqlite3, sys\n"
-        "con = sqlite3.connect(sys.argv[1])\n"
-        "if len(sys.argv) > 2:\n"
-        "    for row in con.execute(sys.argv[2]): print(row[0])\n"
+        "args = [a for a in sys.argv[1:] if not a.startswith('-')]\n"
+        "con = sqlite3.connect(args[0])\n"
+        "if len(args) > 1:\n"
+        "    for row in con.execute(args[1]): print(row[0])\n"
         "else:\n"
         "    con.executescript(sys.stdin.read())\n"
     )
@@ -101,7 +106,7 @@ def _run(tmp_path: pathlib.Path, bindir: pathlib.Path, steps: list[list[str]] | 
     state.mkdir()
     env = {
         "PATH": f"{bindir}:/usr/bin:/bin",
-        "STUB_RUN_ID": "40838700865",
+        "STUB_RUN_IDS": "40838700865",
         "STUB_ARTIFACTS": "d1-backup-alpha d1-backup-beta",
         "STUB_DUMP": str(tmp_path / "dump.sql"),
         "STUB_BROKEN": "",
@@ -120,8 +125,12 @@ def _run(tmp_path: pathlib.Path, bindir: pathlib.Path, steps: list[list[str]] | 
     return done
 
 
-def _stop_post(index: int, specifiers=_SPECIFIERS) -> list[str]:
-    return _exec(UNIT, "ExecStopPost", specifiers)[index]
+def _date(tmp_path: pathlib.Path) -> str:
+    return (tmp_path / "run" / "date").read_text().strip()
+
+
+def _exec_stop_post(specifiers=_SPECIFIERS) -> list[list[str]]:
+    return _exec(UNIT, "ExecStopPost", specifiers)
 
 
 def test_unit_env_defaults_match_the_test():
@@ -161,14 +170,22 @@ def test_the_drill_never_calls_the_cloudflare_api():
             assert banned not in body
 
 
+def test_every_sqlite3_call_runs_in_safe_mode_and_the_load_bails():
+    """A d1-backup-* artifact can be written by anyone who can run that workflow, and safe mode is what stops .shell and .system."""
+    body = " ".join(" ".join(argv) for key in ("ExecStartPre", "ExecStart", "ExecStopPost") for argv in _exec(UNIT, key))
+    assert body.count("sqlite3 ") == body.count("sqlite3 -safe ")
+    assert "sqlite3 -safe -bail " in body
+
+
 def test_a_restore_produces_a_report_with_counts(tmp_path):
     bindir = _stub_dir(tmp_path)
     done = _run(tmp_path, bindir)
     assert done.returncode == 0, done.stdout + done.stderr
-    report = tmp_path / "state" / "report-2026-10-29.md"
+    date = _date(tmp_path)
+    report = tmp_path / "state" / f"report-{date}.md"
     assert report.is_file()
     text = report.read_text()
-    assert "# D1 restore drill, 2026-10-29 (Asia/Kolkata)" in text
+    assert f"# D1 restore drill, {date} (Asia/Kolkata)" in text
     assert "Backup run: https://github.com/Nishfleet/drive/actions/runs/40838700865" in text
     assert "| alpha | d1-backup-alpha |" in text
     assert "| beta | d1-backup-beta |" in text
@@ -179,18 +196,26 @@ def test_a_restore_produces_a_report_with_counts(tmp_path):
     assert "No Cloudflare database was created" in text
 
 
+def test_the_newest_completed_run_with_a_dump_is_the_one_restored(tmp_path):
+    bindir = _stub_dir(tmp_path)
+    done = _run(tmp_path, bindir, extra={"STUB_RUN_IDS": "111 222", "STUB_ARTIFACTS": "d1-backup-alpha"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "run" / "run").read_text().strip() == "111"
+    assert "111" in (tmp_path / "state" / f"report-{_date(tmp_path)}.md").read_text()
+
+
 def test_no_completed_backup_run_fails_the_unit(tmp_path):
     bindir = _stub_dir(tmp_path)
-    done = _run(tmp_path, bindir, extra={"STUB_RUN_ID": ""})
+    done = _run(tmp_path, bindir, extra={"STUB_RUN_IDS": ""})
     assert done.returncode != 0
-    assert "no completed d1-export.yml run" in done.stderr
+    assert "none of the newest completed d1-export.yml runs" in done.stderr
 
 
 def test_a_run_that_left_no_backup_artifact_fails_the_unit(tmp_path):
     bindir = _stub_dir(tmp_path)
     done = _run(tmp_path, bindir, extra={"STUB_ARTIFACTS": "other-artifact"})
     assert done.returncode != 0
-    assert "left no d1-backup-* artifact" in done.stderr
+    assert "left a d1-backup-* artifact" in done.stderr
 
 
 def test_a_dump_that_does_not_decrypt_fails_the_unit(tmp_path):
@@ -198,7 +223,7 @@ def test_a_dump_that_does_not_decrypt_fails_the_unit(tmp_path):
     done = _run(tmp_path, bindir, extra={"STUB_BROKEN": "beta"})
     assert done.returncode != 0
     assert "age: no identity matched" in done.stderr
-    assert not (tmp_path / "state" / "report-2026-10-29.md").exists()
+    assert not list((tmp_path / "state").glob("report-*.md"))
 
 
 def test_a_dump_that_does_not_load_fails_the_unit(tmp_path):
@@ -208,6 +233,7 @@ def test_a_dump_that_does_not_load_fails_the_unit(tmp_path):
     done = _run(tmp_path, bindir)
     assert done.returncode != 0
     assert "did not restore" in done.stderr or "syntax error" in done.stderr
+    assert not list((tmp_path / "state").glob("report-*.md"))
 
 
 def test_an_integrity_check_that_is_not_ok_fails_the_unit(tmp_path):
@@ -215,9 +241,10 @@ def test_an_integrity_check_that_is_not_ok_fails_the_unit(tmp_path):
     (tmp_path / "bin" / "sqlite3").write_text(
         "#!/usr/bin/env python3\n"
         "import sqlite3, sys\n"
-        "con = sqlite3.connect(sys.argv[1])\n"
-        "if len(sys.argv) > 2:\n"
-        "    q = sys.argv[2]\n"
+        "args = [a for a in sys.argv[1:] if not a.startswith('-')]\n"
+        "con = sqlite3.connect(args[0])\n"
+        "if len(args) > 1:\n"
+        "    q = args[1]\n"
         "    print('row 1 missing from index' if q.startswith('PRAGMA') else ('0' if q.startswith('select count') else 'alpha'))\n"
         "    print('beta') if not q.startswith(('PRAGMA', 'select count')) else None\n"
         "else:\n"
@@ -245,24 +272,13 @@ def test_an_empty_github_token_fails_the_pre_check(tmp_path):
     assert "no GitHub App token, refusing to run" in done.stderr
 
 
-def test_the_deliverable_check_names_the_step_that_produced_nothing(tmp_path):
-    bindir = _stub_dir(tmp_path)
-    runtime = tmp_path / "run"
-    runtime.mkdir()
-    first = _exec(UNIT)[0]
-    env = {"PATH": f"{bindir}:/usr/bin:/bin", "STUB_RUN_ID": "", **_env_defaults(), "DRILL_KEY": str(tmp_path / "key"), "DRILL_STATE": str(tmp_path), "RUNTIME_DIRECTORY": str(runtime)}
-    done = subprocess.run(first, env=env, capture_output=True, text=True, timeout=60)
-    assert done.returncode != 0
-    assert (runtime / "date").is_file()
-    out = subprocess.run(
-        _stop_post(0),
-        env={"PATH": f"{bindir}:/usr/bin:/bin", "RUNTIME_DIRECTORY": str(runtime), "DRILL_STATE": str(tmp_path)},
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert out.returncode != 0
-    assert "no-deliverable: set-up stopped after the date write" in out.stderr
+def test_the_unit_has_one_stop_post_and_it_revokes_before_it_removes_the_env_file():
+    """systemd stops the ExecStopPost chain at the first failure, so nothing may run before the revoke."""
+    stop = _exec_stop_post()
+    assert len(stop) == 1
+    body = " ".join(stop[0])
+    assert "gh api -X DELETE installation/token" in body
+    assert body.index("installation/token") < body.index("rm -f")
 
 
 def test_the_revoke_step_revokes_the_token_and_removes_its_env_file(tmp_path):
@@ -277,7 +293,7 @@ def test_the_revoke_step_revokes_the_token_and_removes_its_env_file(tmp_path):
         "GH_TOKEN": "ghs_probe",
         "RUNTIME_DIRECTORY": str(tmp_path / "run"),
     }
-    done = subprocess.run(_stop_post(1, specifiers), env=env, capture_output=True, text=True, timeout=30)
+    done = subprocess.run(_exec_stop_post(specifiers)[0], env=env, capture_output=True, text=True, timeout=30)
     assert done.returncode == 0
     assert "revoked" in (tmp_path / "log").read_text()
     assert not (runtime / "fleet-worker-github-token" / "actions:drive.env").exists()

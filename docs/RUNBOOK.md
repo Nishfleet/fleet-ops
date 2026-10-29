@@ -110,14 +110,21 @@ fix).
 
 What the drill does, in four steps and no script:
 
-1. Reads the newest completed `d1-export.yml` run and lists its `d1-backup-*`
-   artifacts. No branch filter, because a run dispatched by hand from a branch
-   exports the same live database as the weekly one.
-2. Downloads each artifact with the one-hour Actions-write App token minted by
-   the token unit's Actions-only instance for drive, which is revoked and
-   whose env file is deleted the moment the run ends.
+1. Walks the newest completed `d1-export.yml` runs and takes the first that
+   left a `d1-backup-*` artifact. No branch filter, because the thing being
+   restored is the newest backup rather than the newest run: drive's own main
+   matrix still fails on purpose (drive#1027) and the product rows sit on a
+   branch until #10829 and #10830 land, so `-b main` would leave the drill with
+   nothing to restore every month. The escape a bad dump could use is not a
+   branch but a dot-command, so step 3 loads it with `sqlite3 -safe`.
+2. Downloads every `d1-backup-*` artifact of that run in one `gh run download`
+   call, with the one-hour Actions-write App token minted by the token unit's
+   Actions-only instance for drive, which is revoked and whose env file is
+   deleted the moment the run ends.
 3. Decrypts each dump with `age`, loads the SQL into a fresh local SQLite file
-   (the export API hands back SQL text, not a database file), runs
+   with `sqlite3 -safe -bail` (the export API hands back SQL text, not a
+   database file, and safe mode is what stops a dump written by anyone who can
+   run that workflow from running a shell command on this host), runs
    `PRAGMA integrity_check`, and counts every table's rows.
 4. Writes one report to `~/workspaces/agent-state/d1-restore-drill/`.
 
@@ -129,7 +136,7 @@ only, never a row, a name or an email address.
 
 Read the last drill:
 
-    cat ~/workspaces/agent-state/d1-restore-drill/report-$(date +%Y-%m).md
+    ls -t ~/workspaces/agent-state/d1-restore-drill/report-*.md | head -1 | xargs cat
     journalctl --user -u fleet-d1-restore-drill.service -b
 
 Run one by hand, on the host:
