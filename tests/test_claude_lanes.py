@@ -587,12 +587,21 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
+    runner_temp = home / "runner-temp"
+    creds = home / "runner-creds"
+    (runner_temp / "_runner_file_commands").mkdir(parents=True)
+    (runner_temp / "_runner_file_commands/pem").write_text("planted")
+    creds.mkdir()
+    (creds / "pem").write_text("planted")
+    opt = '${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}'
 
-    def expand(name):
+    def expand(name, cred_dir=creds):
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
-        return line.split() + ["--"]
+        line = line.replace("$RUNNER_TEMP", str(runner_temp))
+        assert opt in line, name
+        return (line.replace(opt, "") if cred_dir is None else line.replace(opt, f"--tmpfs {cred_dir}")).split() + ["--"]
 
     def read_all(name):
         cmd = expand(name)
@@ -604,6 +613,17 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
             out[key] = "planted" in r.stdout
         return out
 
+    def read_app_key(name, cred_dir):
+        """What the jail shows of the runner's App key (fleet-ops#11051): the minted
+        PEM and the key dir $CREDENTIALS_DIRECTORY names. cred_dir=None is the runner
+        that sets none; rc 0 proves the jail started."""
+        cmd = expand(name, cred_dir)
+        out = {}
+        for key, path in {"pem": runner_temp / "_runner_file_commands/pem", "dir": creds / "pem"}.items():
+            r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
+            out[key] = r.returncode == 0 and "planted" in r.stdout
+        return out
+
     none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
     # Every other engine reads no login at all.
     assert read_all("jail_base") == {"a": False, **none}
@@ -613,6 +633,11 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
     else:
         assert read_all("claude_jail_a") == {"a": True, **none}
+    for jail in ("jail_base", "claude_jail_a", "claude_jail_b"):
+        assert read_app_key(jail, creds) == {"pem": False, "dir": False}, jail
+    assert read_app_key("jail_base", None) == {"pem": False, "dir": True}
+    argv = expand("jail_base", creds)
+    assert argv[argv.index(str(creds)) - 1] == "--tmpfs"
 
 
 TOK = "tok-%s-planted"
