@@ -425,14 +425,15 @@ def test_waiting_discovery_is_loud_when_gh_fails_without_output(prompt, tmp_path
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
 def test_waiting_count_is_the_labelled_backlog_not_the_rows_it_printed(prompt, tmp_path):
-    issues = {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in range(1, 69)}
-    store = {f"wait:alpha#{n}": "open|needs-nish-decision" for n in range(1, 47)}
+    labelled, stored = 68, 46
+    issues = {f"Nishfleet/alpha#{n}": _issue("OPEN", "needs-nish-decision") for n in range(1, labelled + 1)}
+    store = {f"wait:alpha#{n}": "open|needs-nish-decision" for n in range(1, stored + 1)}
     gh = {"repos": ["alpha"], "issues": issues, "runs": {"Nishfleet/alpha": []}}
     lines, saved = _run_2a(prompt, tmp_path, gh, json.dumps(store))
-    assert lines[:2] == ["WAITING_TOTAL 68", "WAITING_MORE 66"], lines[:2]
-    assert len([l for l in lines if " NEW " in l]) == 22
-    assert "UNCHANGED_TOTAL 46" in lines
-    assert len(saved) == 68
+    assert lines[:2] == [f"WAITING_TOTAL {labelled}", f"WAITING_MORE {labelled - 2}"], lines[:2]
+    assert len([l for l in lines if " NEW " in l]) == labelled - stored
+    assert f"UNCHANGED_TOTAL {stored}" in lines
+    assert len(saved) == labelled
 
 
 @pytest.mark.parametrize("prompt", [MORNING, EVENING])
@@ -446,7 +447,7 @@ def test_waiting_count_carries_no_overflow_when_the_whole_backlog_fits(prompt, t
         "runs": {"Nishfleet/alpha": []},
     }
     lines, saved = _run_2a(prompt, tmp_path, gh, "{}")
-    assert "WAITING_TOTAL 2" in lines
+    assert lines[0] == "WAITING_TOTAL 2", lines
     assert not any(l.startswith("WAITING_MORE") for l in lines), lines
     assert len(saved) == 2
 

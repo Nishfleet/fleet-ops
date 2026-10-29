@@ -2,10 +2,11 @@
 
 The morning and evening digests are Hermes jobs whose prompts live in this repo:
 `config/hermes/digest-morning.md` and `config/hermes/digest-evening.md`. The
-deploy applies them, and how that deploy and the live-copy check work is in
-[Mac daily update](mac-scheduled-tasks.md). This page covers the one thing that
-page does not: where the "and N more waiting" number comes from, and how to
-switch the waiting lines off.
+deploy applies them. [The digest prompts' canonical
+home](mac-scheduled-tasks.md#the-digest-prompts-canonical-home-fleet-ops9706)
+covers that deploy, the live-copy diff and the pause commands. This page covers
+the one thing that section does not: where the "and N more waiting" number comes
+from, and how to switch the waiting lines off.
 
 ## One printed number, no arithmetic
 
@@ -30,24 +31,31 @@ the count to itself, while still printing "and N more waiting", is gone: the sam
 run carried both rules, and the model resolved them by writing a number it had no
 source for.
 
-Three runs of that rule, on 2026-10-22 and 2026-10-26 (`execution 150bb7b3` and
-`execution 06829ce1`), named two waiting items and stated a small total while 68
-open issues carried the label. The number was wrong, not the sweep: the sweep
-already stored all 68.
+Two digest runs put a wrong number in that line. Run `150bb7b3` (2026-10-22)
+stated 13 more waiting while 68 open issues carried the label, so 66 were left
+unnamed. Run `06829ce1` (2026-10-26, from the audit of that day's FAKE case)
+stated "and 5 more waiting" in a run that held no new item. The number was wrong,
+not the sweep: the sweep had already stored every labelled issue. Both are Hermes
+execution ids, and the digest job's history on the host lists each one.
 
 ## Switch the waiting lines off
 
-The count line is printed either way, so switching the wording off is one edit to
-one file.
+The count lines are printed either way. Switch the wording off with these edits.
 
-1. Delete the sentence in step 3 that starts `In the reply, waiting items take at
-   most two short lines` in both `config/hermes/digest-morning.md` and
-   `config/hermes/digest-evening.md`.
-2. Land the edit through a PR. The deploy applies it to the live jobs.
-3. Diff the live prompt against the file to confirm the deploy reached it.
+1. Delete the paragraph in step 3 of both `config/hermes/digest-morning.md` and
+   `config/hermes/digest-evening.md` that starts `In the reply, waiting items take
+   at most two short lines` and ends `and writes no overflow line.`
+2. Delete `test_the_reply_copies_the_printed_waiting_count` from
+   `tests/test_digest_checks.py` and the `"and N more waiting"` pin from
+   `tests/test_digest_reply_shape.py`, because both assert the wording you just
+   removed.
+3. Run both test files, then land the three edits in one PR. The deploy applies
+   the new prompt to the live jobs.
 
-To stop the digest itself, pause the job instead: `hermes cron pause <job id>`
-for `3acce3a945cb` (morning) or `682de9846caa` (evening).
+`WAITING_TOTAL` and `WAITING_MORE` stay printed either way, and
+`tests/test_digest_checks.py` keeps checking them. To stop a digest instead of
+changing it, [pause the job](mac-scheduled-tasks.md#the-digest-prompts-canonical-home-fleet-ops9706):
+`3acce3a945cb` is the morning job and `682de9846caa` the evening one.
 
 ## What CI holds
 
