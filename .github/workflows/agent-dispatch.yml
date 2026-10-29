@@ -705,7 +705,7 @@ jobs:
           WORKFLOW_REF: ${{ github.workflow_ref }}
           REQUEUE: |
             [.[] | (.labels | map(.name)) as $l
-              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) then 1800 else 21600 end)
+              | select(($l | index("needs-nish-decision") | not) and (.updatedAt | fromdateiso8601) < $now - (if ($l | index("priority-now")) != null then 1800 else 21600 end)
                 and (($l | index("orchestrator-tried") != null) != ($l | index("needs-orchestrator") != null)))
               | select("orch/issue-\(.number)" | IN($prs[]) | not)
               | {number, tried: ($l | index("orchestrator-tried") != null), prio: (($l | index("priority-now")) != null), runs: [.comments[]
