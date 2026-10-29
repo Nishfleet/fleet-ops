@@ -72,7 +72,7 @@ def _env(tmp_path, **extra):
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "gh.log"
     log.touch()
-    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "GH_LOG": str(log), "REPO": "Nishfleet/fleet-ops", "GITHUB_SERVER_URL": "https://github.com"}
+    env = {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "GH_LOG": str(log), "REPO": "Nishfleet/fleet-ops", "GITHUB_SERVER_URL": "https://github.com", "GH_TOKEN": "the-app-token"}
     env.update(extra)
     return env, log
 
@@ -207,7 +207,7 @@ def test_the_pr_list_asks_the_api_for_pulls_on_this_repo_only(tmp_path):
 
 def test_an_ended_branch_parks_the_issue_on_agent_blocked_and_names_its_pr(tmp_path):
     env, log = _issue_env(tmp_path, True, ["closed", "merged"])
-    env["GH_TOKEN"] = env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
+    env["GITHUB_TOKEN"] = "the-jobs-read-only-token"
     r = _run(_block(*ISSUE_STEP), env)
     assert r.returncode == 0, r.stderr
     calls = log.read_text()
