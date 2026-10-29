@@ -258,3 +258,10 @@ targetRules = ["private-fleet-seats-config"]
 paths = ['''(^|/)\.github/workflows/agent\.yml$''']
 regexes = ['''^\.config/fleet-ops/seats$''']
 condition = "AND"
+
+[[allowlists]]
+description = "An earlier commit of the runner-jail bind cut (fleet-ops#10826) spelled the fleet config dir out as an absolute home path, before the test read it off the drop-in's own bind; a PR scan reads every commit and history cannot be rewritten on an open PR. Only that one directory is allowed, so a new home path in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''^tests/test_runner_jail_start_state\.py$''']
+regexes = ['''^home/nish/\.config/fleet-ops$''']
+condition = "AND"
