@@ -229,21 +229,8 @@ jobs:
     permissions: {contents: read, issues: write, pull-requests: write}
     with:
       ref: ${{ github.event.pull_request.head.ref }}
-  # Approved-head merge guard (0509#7092: a risky PR was armed by the
-  # orchestrator, gained commits after the coordinator approved a different
-  # head, and merged on ci-ok alone; its needs-coordinator label came 8 s after
-  # the arm). Risk is read from the changed paths, not only the label, so an
-  # unlabelled risky PR is caught too. The path list is config/risky-paths.json
-  # on fleet-ops main, read by URL so every caller repo uses the same copy; an
-  # unreadable list holds every PR. A risky PR whose CURRENT head sha has no
-  # approval from an approver loses its arm, leaves the merge queue and gets
-  # the label. Approval is either a PR comment with the line
-  # `coordinator-approval: <full head sha>` (unedited), or a
-  # coordinator-approval=success commit status on that sha. The comment path
-  # exists because cloud sessions get 403 on POST /statuses. Both name one
-  # sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no workflow, so
-  # the hold does not re-trigger itself or the ejected job. ci.yml runs CLASSIFY
-  # and APPROVAL below against every case in config/risky-paths.json.
+  # Approved-head merge guard (0509#7092): a risky PR whose current head carries no
+  # approver's coordinator-approval loses its arm, leaves the queue and gets the label.
   hold-risky:
     if: >-
       github.event_name == 'pull_request_target' &&
@@ -255,11 +242,7 @@ jobs:
     concurrency:
       group: hold-risky-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: false
-    # pull-requests: write labels the PR and disables auto-merge. contents:
-    # write is what GitHub asks of a merge-queue dequeue (it acts on the merge,
-    # like arming does). statuses: read and pull-requests (which covers a PR's
-    # issue comments) read the approval. Nothing here checks out code, so
-    # contents: write never meets PR head code.
+    # contents: write is what a merge-queue dequeue asks for; nothing here checks out code.
     permissions:
       contents: write
       pull-requests: write
@@ -267,19 +250,10 @@ jobs:
     env:
       LABEL: needs-coordinator
       CONTEXT: coordinator-approval
-      # Space-separated logins whose status or comment counts; the context name or line alone is no approval.
-      # github-actions[bot] is the approver (review-risky below): agent.yml's review job approves with a review and a
-      # comment after a judge review (and, for the guard or a workflow, a second family). Nobody is asked.
-      # nish3451 is an optional override: a typed comment.
+      # Logins whose status or comment counts; github-actions[bot] is review-risky's.
       APPROVERS: nish3451 github-actions[bot]
       RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
-      # stdin: {repo, labels, files, patches, changed_files}; $cfg:
-      # risky-paths.json or null. patches is [{file, patch}] with patch null
-      # when the API sent none (large or binary). Risky is a path hit (under
-      # "*", minus the "safe" docs patterns, or under the PR's own repo) or an
-      # added diff line matching a "diff" entry for that file, or a file such
-      # an entry covers with no patch. A list cut at 3000 files, an empty
-      # list or an unreadable path list all count as risky.
+      # stdin: {repo, labels, files, patches, changed_files}; $cfg: risky-paths.json or null.
       CLASSIFY: |
         . as $pr
         | (($cfg // {}).paths // null) as $p
@@ -303,13 +277,7 @@ jobs:
            + ($hits | unique | .[:10] | map("path \(.)"))
            + ($dhits | unique | .[:10])) as $why
         | {risky: ($why | length > 0), why: $why}
-      # stdin: {sha, statuses, comments}. sha is the current head;
-      # statuses are that sha's, newest first (GitHub's order); comments are
-      # the PR's issue comments. Status path: only the newest status for
-      # CONTEXT counts, so a later failure revokes it. Comment path: an
-      # approver's comment, never edited (updated_at == created_at, so an old
-      # comment cannot be edited onto a new sha), with a line exactly
-      # "CONTEXT: <sha>" for the full 40-hex head sha. Either path approves.
+      # stdin: {sha, statuses, comments}; the newest CONTEXT status or an unedited approval comment.
       APPROVAL: |
         . as $in
         | ($who | split(" ") | map(select(length > 0))) as $approvers
@@ -328,12 +296,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-        # Fails closed: a read that fails (the PR, its files, the path list,
-        # its statuses or comments, the merge state) never skips the hold. It
-        # counts as risky or not approved, gets a ::warning:: naming the read,
-        # and the label, disarm and dequeue still run. The job only goes red
-        # when it cannot confirm the PR is disarmed and out of the queue.
-        # ci.yml runs this block against a fake gh with each read failing.
+        # Fails closed: a failed read counts as risky or not approved and still holds. ci.yml
+        # runs this block against a fake gh with each read failing.
         run: |
           set -euo pipefail
           # The live PR, not the event payload: a push after the event moves the head.
@@ -345,10 +309,7 @@ jobs:
             pr=null
             sha=unknown
           fi
-          # Old and new name of a rename both count. Files go through a file,
-          # not argv: 3000 paths can pass the 128 KiB single-argument limit.
-          # A failed read leaves the list empty, which CLASSIFY holds.
-          # patch is null when GitHub sends none (large or binary files).
+          # Both names of a rename count; files go through a file, not argv.
           if ! gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt"; then
             echo "::warning::hold-risky: changed-files read failed for #$PR; holding as risky"
             : > "$RUNNER_TEMP/files.txt"
@@ -365,10 +326,11 @@ jobs:
           # An unread PR has no labels or file count to classify, so it holds.
           [ "$pr" != null ] || verdict=$(jq -c '.risky = true | .why += ["PR read failed"]' <<<"$verdict")
           echo "hold-risky: #$PR at $sha: $verdict"
-          # Not risky: the merge list says these merge on green checks (as before), so the review the ruleset now requires on every PR is given here, for a same-repo head only; a fork PR waits for a person. The API refuses a commit_id that is no longer the head (HTTP 422, checked 2026-10-12), so a push after the read gets no approval. The repo setting "Allow GitHub Actions to create and approve pull requests" is on.
+          # Not risky: approve a same-repo head, so a later push gets no approval (HTTP 422); a
+          # fork PR waits for a person. Needs the repo setting "Allow GitHub Actions to create
+          # and approve pull requests" on.
           jq -e .risky <<<"$verdict" >/dev/null || { [ "$(jq -r .head.repo.full_name <<<"$pr")" != "$GITHUB_REPOSITORY" ] || gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$sha" -f body="hold-risky: not risky, no review needed." --silent || echo "::warning::hold-risky: could not approve #$PR"; exit 0; }
-          # Either approval read failing means not approved, even if the other
-          # read alone would approve.
+          # Either approval read failing means not approved.
           approved=false
           if [ "$sha" = unknown ]; then
             echo "::warning::hold-risky: no head sha for #$PR; not approved"
@@ -386,16 +348,14 @@ jobs:
             echo "hold-risky: #$PR is risky and $sha carries an approver's $CONTEXT; no hold"
             exit 0
           fi
-          # Label first, so a dequeued event raised by the steps below already
-          # sees it. A failed label does not stop the disarm and dequeue.
+          # Label first; a failed label does not stop the disarm and dequeue.
           ok=true
           gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/labels" -f "labels[]=$LABEL" --silent ||
             { echo "::error::hold-risky: could not label #$PR $LABEL"; ok=false; }
           # shellcheck disable=SC2016 # $o $n $p $id are GraphQL variables, not shell
           q='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id isInMergeQueue autoMergeRequest{enabledAt}}}}'
           read_pr() { gh api graphql -f query="$q" -f o="${GITHUB_REPOSITORY%/*}" -f n="${GITHUB_REPOSITORY#*/}" -F p="$PR" --jq .data.repository.pullRequest; }
-          # A failed merge-state read does not skip the hold: both mutations
-          # run blind (with the REST node_id), and the re-read below confirms.
+          # A failed merge-state read still disarms and dequeues blind.
           if live=$(read_pr); then
             id=$(jq -r .id <<<"$live")
             armed=$(jq -r '.autoMergeRequest != null' <<<"$live")
@@ -416,8 +376,8 @@ jobs:
             fi
           fi
           if [ "$queued" != false ]; then
-            # A PR that left the queue between the read and the call ("not
-            # queued") is fine; the re-read below catches one still queued.
+            # A PR that left the queue between the read and the call is fine; the re-read
+            # below catches one still queued.
             # shellcheck disable=SC2016
             if gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}' -f id="$id" --silent; then
               echo "hold-risky: dequeued #$PR"
@@ -442,16 +402,8 @@ jobs:
             echo "review-risky reviews this exact head next and arms it once the review approves. Nothing here needs a person."
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$ok" = true ]
-  # Independent review of a held risky PR (Nish 2026-10-05: reviewed PRs merge
-  # themselves, no pasted approval lines). agent.yml's review job reads the
-  # head's diff through the API, never checks out PR code, asks a model with no
-  # tools for findings and Jev for approve or block, then posts the
-  # coordinator-approval comment as github-actions[bot]; the same run's arm
-  # job then arms the PR.
-  # hold-risky stays the only door: it reads that comment like any other.
-  # A PR that edits the guard itself (risky-paths.json "guard") or a workflow
-  # needs three reviews to approve: the judge and two more reviewers of
-  # other model families. No person is asked. Paused fleets do not review.
+  # Independent review of a held risky PR: agent.yml's review job posts the
+  # coordinator-approval comment as github-actions[bot], then its arm job arms it.
   review-risky:
     needs: hold-risky
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.hold-risky.outputs.review_sha != ''
@@ -461,13 +413,8 @@ jobs:
     with:
       review_pr: ${{ github.event.pull_request.number }}
       review_sha: ${{ needs.hold-risky.outputs.review_sha }}
-  # A closed blocker frees the issues it was blocking; a manual run sweeps
-  # every ready, unblocked issue (cutover backfill and missed-event recovery),
-  # then open claim PRs that are unarmed, conflicting, missing a required-check
-  # report, red with no rework since the failure, or still agent-in-progress
-  # with no live agent run.
-  # Priority-now first, then oldest. The Gate step in agent.yml re-checks each
-  # and its 3-run cap bounds any loop.
+  # The sweep: a closed blocker releases what it blocked; a manual run also picks
+  # unarmed, conflicting, missing-check, dead-run and red claim PRs. Priority-now first.
   list:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' &&
@@ -476,13 +423,8 @@ jobs:
       ((github.event_name == 'issues' && github.event.action == 'closed') ||
        github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-latest"') }}
-    # contents: read is required because `statusCheckRollup` on a private repository
-    # needs it as well as checks: read; without it GitHub answers "Resource not
-    # accessible by integration (repository.pullRequest.statusCheckRollup.nodes.0)"
-    # and the sweep dies on the first claim PR it reads (tether#56). A public repo
-    # never asks for it, so 0509 and drive stayed green. actions: read, not write,
-    # is `gh run view` liveness (fleet-ops#8777); write startup-failed their sweeps
-    # (fleet-ops#10638).
+    # contents: read and checks: read are what statusCheckRollup needs on a private
+    # repo; actions: read is `gh run view` liveness (fleet-ops#8777, #10638).
     permissions: {issues: write, pull-requests: read, contents: read, actions: read, checks: read, statuses: read}
     outputs:
       refs: ${{ steps.list.outputs.refs }}
@@ -497,17 +439,8 @@ jobs:
           CHECK_DEFS: |
             def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
             def failed: (.conclusion | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")) or (.state | IN("FAILURE", "ERROR"));
-          # One red claim PR in, a verdict out: {reason, run}. Input is
-          # {pr: gh pr view, issue: the issue API object, comments: gh issue
-          # view comments}. reason is "go" or the skip reason; run is the
-          # newest counted "agent run started:" body.
-          # The label list and infra-failed rule are agent.yml's Gate, copied; a
-          # start whose run infra-failed never tried, so it does not count.
-          # No cap test: a PR at the cap is dispatched on purpose, so the Gate
-          # parks it with needs-orchestrator and later sweeps skip it on the
-          # label. No rework: note test: rework-note posts even while paused,
-          # so a note would hide the failure the event missed.
-          # config/sweep-rework-cases.json runs this program in CI.
+          # One red claim PR in, a verdict out: {reason, run}. config/sweep-rework-cases.json
+          # runs this program in CI, with CHECK_DEFS.
           RED_REWORK: |
             (.pr.statusCheckRollup // []) as $checks
             | ([$checks[] | select(failed) | (.completedAt // .startedAt // empty) | fromdateiso8601] | max) as $failed_at
@@ -524,11 +457,7 @@ jobs:
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
         run: |
-          # One issue as JSON for the sweep. Returns 0 with the JSON on stdout, 3 for an issue
-          # that is gone (HTTP 404 or 410), 1 for any other failure after printing gh's error.
-          # Measured 2026-10-12 with gh 2.93.0 on deleted issue 9502: exit 1, stdout the body
-          # {"message":"This issue was deleted",...,"status":"410"}, stderr "(HTTP 410)"; either
-          # marks it gone. Any other read fault stays fatal (fleet-ops#9553).
+          # One issue as JSON for the sweep: exit 3 when it is gone (404/410), 1 on any other fault.
           issue_json() {
             local out err rc=0
             err=$(mktemp)
@@ -545,10 +474,8 @@ jobs:
             nums=$ISSUE
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
-            # A split parent never closed on its own, so everything blocked by it waited forever
-            # (0509, 2026-09-24: ~140 issues). Close each open ancestor whose sub-issues are all
-            # closed and release what it blocked (a GITHUB_TOKEN close fires no event). A
-            # critical-path or epic parent carries its own finish line, so it never closes here.
+            # A split parent never closes on its own (0509, 2026-09-24: ~140 issues
+            # waited forever); a critical-path or epic parent has its own finish line.
             c=$CLOSED
             while p=$(gh api "repos/$GITHUB_REPOSITORY/issues/$c/parent" --jq .number 2>/dev/null) &&
               [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)\(if any(.labels[].name; . == "critical-path" or . == "epic") then " own-finish-line" else "" end)"')" = "open 0" ]; do
@@ -572,11 +499,9 @@ jobs:
               fi
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
-            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY
-            # after arming, so it never enters the queue and no event fires (0509#4384).
-            # The bulk list returns mergeable UNKNOWN until GitHub recomputes after a push to main, so each
-            # armed PR is re-read (fleet-ops#8557). A merge-queue PR is dropped by ref below; it can have
-            # autoMergeRequest null (0509#4688), so the CONFLICTING test alone cannot drop it.
+            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after
+            # arming, so it never enters the queue (0509#4384). Each armed PR is
+            # re-read, because the bulk list says UNKNOWN after a push to main (fleet-ops#8557).
             all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
               --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
             if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
@@ -590,12 +515,9 @@ jobs:
                 done
                 jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
               done | jq -sc .)
-              # Armed claim PRs whose required checks never reported (fleet-ops#8777).
-              # BLOCKED with nothing pending and nothing failed means a required
-              # check is absent. A pending check is left: it is running, not
-              # missing. A completed failure is left too: the red PRs case below
-              # owns that. A repo with no required checks is never BLOCKED by
-              # them, so it lists none (Nishfleet/drive, fleet-ops#8981).
+              # Armed claim PRs whose required checks never reported (fleet-ops#8777):
+              # BLOCKED with nothing pending and nothing failed; a completed failure is the
+              # red PRs case below, and a repo with no required checks lists none (#8981).
               missing=$(
                 for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
                   gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
@@ -605,10 +527,8 @@ jobs:
                     | .headRefName
                   ]'
               )
-              # Claim PRs whose issue is still agent-in-progress after the worker
-              # is gone (fleet-ops#8777). Live means the newest "agent run started:"
-              # run is queued or in progress; `gh run view` is that read, judged by its work
-              # job (RUN_LIVE_JQ at the top of this file).
+              # Claim PRs whose issue is still agent-in-progress after the worker is gone
+              # (fleet-ops#8777): live means the newest "agent run started:" run is queued or running.
               inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
               orphans=$(
                 jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
@@ -629,15 +549,8 @@ jobs:
                   [ "$live" = true ] || echo "claim/issue-$n"
                 done | jq -Rsc 'split("\n") | map(select(length > 0))'
               )
-              # Red claim PRs the rework event missed (drive#765: no run fired;
-              # 0509#7182 #7172: rework hit lanes-full and nothing retried; every
-              # failure while FLEET_DISPATCH_PAUSED is true). An "agent run
-              # started:" newer than the failure, or a live newest run, leaves
-              # the PR alone; a rare overlap with the rework event is
-              # serialised by agent.yml's concurrency. The verdict is the
-              # RED_REWORK program above; liveness is `gh run view` on its
-              # newest counted run. A DIRTY PR is the conflicts job's. A PR at
-              # the 3-run cap is sent on so the Gate parks it.
+              # Red claim PRs the rework event missed (drive#765, 0509#7182, #7172). The
+              # verdict is RED_REWORK above; a live newest run or a DIRTY PR is left alone.
               red=$(
                 set -o pipefail
                 for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
@@ -696,9 +609,8 @@ jobs:
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
           echo "stalled_refs=$stalled_refs" >> "$GITHUB_OUTPUT"
-      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
-      # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
-      # for an hour). The sweep runs hourly, so a quiet priority item re-fires within the hour.
+      # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h (priority-now 30 min,
+      # #10716), then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}

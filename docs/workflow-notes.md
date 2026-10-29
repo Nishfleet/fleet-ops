@@ -175,4 +175,56 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 `merge_group` so a merge-queue entry reports the check. This repo already calls it from `ci.yml`,
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
+### agent-dispatch.yml: hold-risky and list
+
+hold-risky (0509#7092: a risky PR was armed, gained commits after the
+coordinator approved a different head, and merged on ci-ok alone). Risk is
+read from the changed paths, not only the label, so an unlabelled risky PR is
+caught too. The path list is config/risky-paths.json on fleet-ops main, read by
+URL so every caller repo uses the same copy; an unreadable list holds every PR.
+Approval is either a PR comment with the line `coordinator-approval: <full head
+sha>` (unedited) or a coordinator-approval=success commit status on that sha.
+The comment path exists because cloud sessions get 403 on POST /statuses. Both
+name one sha, so every push needs a fresh approval. GITHUB_TOKEN writes fire no
+workflow, so the hold does not re-trigger itself or the ejected job. The hold
+fails closed: a read that fails (the PR, its files, the path list, its statuses
+or comments, the merge state) counts as risky or not approved, gets a
+::warning:: naming the read, and the label, disarm and dequeue still run. The
+job only goes red when it cannot confirm the PR is disarmed and out of the
+queue. ci.yml runs CLASSIFY and APPROVAL against every case in
+config/risky-paths.json.
+
+CLASSIFY stdin is {repo, labels, files, patches, changed_files} and $cfg is
+risky-paths.json or null. patches is [{file, patch}] with patch null when the
+API sent none (large or binary). Risky is a path hit (under "*", minus the
+"safe" docs patterns, or under the PR's own repo), or an added diff line
+matching a "diff" entry for that file, or a file such an entry covers with no
+patch. A list cut at 3000 files, an empty list or an unreadable path list all
+count as risky. APPROVAL stdin is {sha, statuses, comments}: only the newest
+status for CONTEXT counts, so a later failure revokes it, and the comment must
+be unedited (updated_at == created_at), so an old one cannot be moved onto a
+new sha.
+
+list is the sweep. A closed blocker frees the issues it was blocking; a manual
+run also sweeps every ready, unblocked issue (cutover backfill and missed-event
+recovery), then open claim PRs that are unarmed, conflicting, missing a
+required-check report, red with no rework since the failure, or still
+agent-in-progress with no live agent run. Priority-now first, then oldest. The
+Gate step in agent.yml re-checks each and its 3-run cap bounds any loop.
+contents: read is required because `statusCheckRollup` on a private repository
+needs it as well as checks: read, or GitHub answers "Resource not accessible by
+integration (repository.pullRequest.statusCheckRollup.nodes.0)" and the sweep dies on
+the first claim PR (tether#56); a public repo never asks for it. actions: read,
+not write, is `gh run view` liveness
+(fleet-ops#8777); write startup-failed their sweeps (fleet-ops#10638).
+
+RED_REWORK's label list and infra-failed rule are agent.yml's Gate, copied; a
+start whose run infra-failed never tried, so it does not count. No cap test: a
+PR at the cap is dispatched on purpose, so the Gate parks it with
+needs-orchestrator and later sweeps skip it on the label. No rework-note test:
+rework-note posts even while paused, so a note would hide the failure the
+event missed. The gone-issue read: measured 2026-10-12 with gh 2.93.0 on
+deleted issue 9502, exit 1, stdout {"message":"This issue was deleted",
+"status":"410"}, stderr "(HTTP 410)"; either marks it gone, any other read
+fault stays fatal (fleet-ops#9553).
 
