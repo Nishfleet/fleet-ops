@@ -184,3 +184,30 @@ commit of this workflow's own first queue entry is main before the move, where t
 sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
 a fake `gh` with each read failing.
 
+### agent.yml: the gh call budget and rate-limited bookkeeping (fleet-ops#11031)
+
+Three token identities pay for the fleet's `gh` calls, and each has its own hourly core budget:
+the runner login (5,000/h, shared with every other session on the two hosts), the repository's
+Actions token (1,000/h per repository, shared by every job in every workflow of that repository)
+and the worker App token (5,000/h per installation). The count per workflow and job, by identity,
+is `python3 -m pytest -q tests/test_gh_call_budget.py -s`; the test also pins the runner-login lane
+per job, so a job that starts drawing more on that shared login fails its run until the pin is
+raised there with a reason. The count is gh call sites, not runtime call volume. As of 2026-10-30,
+per run (runner / job / App): work 9/4/42, review 0/17/4, orchestrate 7/7/0, list 2/33/0,
+stuck-prs 0/16/0, red-main 0/9/0. The 10-minute sweep alone draws ~300 job-token calls an hour
+(list 33 × 6 + stuck-prs 16 × 6), which makes the job lane the one closest to its 1,000/h ceiling;
+the runner lane's steady draw is a handful of calls an hour, so its exhaustion is a burst
+somewhere, not one lane's routine load.
+
+A rate-limited call in the review job's send-back step used to redden the whole run after the
+verdict was already posted: 8 of the 43 failed runs in the 48 h to 2026-10-29T16:00Z. The step now
+reports a rate limit as a warning and exits 0, and any other failure still reddens the run. That
+is safe because the sweep files a blocked orch PR for the orchestrator on its own (stuck-prs →
+stuck → needs-orchestrator), so a missed send-back costs minutes, not the hand-off, and the
+warning keeps the miss visible. A wait-for-reset belongs nowhere: the limit resets on the hour, so
+the sleep can be 60 minutes inside a 150-minute job on a two-runner pool, holding one of two
+review runners to deliver the same hand-off the sweep delivers in minutes. Reading
+X-RateLimit-Reset would need `-i` plumbing on every call, which is more code than the ratchet
+allows. The review step's own reads stay fail-fast on purpose: a rate limit there means no
+verdict, and #10979 already moved those reads onto the job token.
+

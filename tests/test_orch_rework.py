@@ -2,7 +2,8 @@
 
 Runs the real `run:` blocks (read out with yq) against a stub `gh` and a real git mirror:
 the review job's send-back step, the orchestrate job's `issue` step (continue on an open PR, or on a branch with no PR at all,
-instead of skipping) and its worktree step (start from the branch head)."""
+instead of skipping) and its worktree step (start from the branch head). fleet-ops#11031: a rate-limited call in the
+send-back step warns and exits 0 (the sweep redoes the hand-off), and any other failure reddens the run."""
 import json
 import os
 import pathlib
@@ -14,6 +15,8 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_STUB = """#!/bin/bash
 echo "$*" >> "$GH_LOG"
+if [ -n "${GH_RATE_LIMIT:-}" ]; then case "$*" in "$GH_RATE_LIMIT"*) echo "gh: API rate limit exceeded for user ID 257724087. (HTTP 403)" >&2; exit 1 ;; esac; fi
+if [ -n "${GH_WRITE_FAIL:-}" ]; then case "$*" in "issue edit"*) echo "$GH_WRITE_FAIL" >&2; exit 1 ;; esac; fi
 if [ "${GH_ISSUE_VIEW_FAIL:-0}" != 0 ]; then case "$*" in "issue view"*) exit 1 ;; esac; fi
 case "$*" in
   "pr view"*) while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PR_JSON" ;;
@@ -121,7 +124,8 @@ def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_as_the_app
     others = [line for line in lines if "gh " in line and line not in reads]
     assert others
     assert [line for line in reads if "GH_TOKEN=$ISSUE_TOKEN" in line] == []
-    assert [line for line in others if not line.strip().startswith("GH_TOKEN=$ISSUE_TOKEN gh ")] == []
+    assert [line for line in others if "GH_TOKEN=$ISSUE_TOKEN gh " not in line] == []
+    assert [line for line in others if "env -u GH_TOKEN" in line] == []
 
 
 def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):
@@ -130,6 +134,34 @@ def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):
     r = _run(_block(*SEND), env)
     assert r.returncode != 0
     assert "issue edit" not in log.read_text() and "issue comment" not in log.read_text()
+
+
+@pytest.mark.parametrize("call", ["pr view", "api --paginate", "issue view"])
+def test_a_rate_limited_read_warns_and_exits_0_leaving_the_hand_off_to_the_sweep(tmp_path, call):
+    env, log = _review(tmp_path)
+    env["GH_RATE_LIMIT"] = call
+    r = _run(_block(*SEND), env)
+    assert r.returncode == 0, r.stderr
+    assert "::warning::rate limit" in r.stdout and "HTTP 403" in r.stdout
+    assert "issue edit" not in log.read_text() and "issue comment" not in log.read_text()
+
+
+def test_a_rate_limited_write_warns_and_exits_0_instead_of_reddening_the_run(tmp_path):
+    env, log = _review(tmp_path)
+    env["GH_RATE_LIMIT"] = "issue comment"
+    r = _run(_block(*SEND), env)
+    assert r.returncode == 0, r.stderr
+    assert "::warning::rate limit" in r.stdout
+    assert "issue edit 77 -R Nishfleet/fleet-ops --add-label needs-orchestrator" in log.read_text()
+
+
+def test_a_write_failure_that_is_not_a_rate_limit_still_fails_the_step(tmp_path):
+    env, log = _review(tmp_path)
+    env["GH_WRITE_FAIL"] = "gh: Not Found (HTTP 404)"
+    r = _run(_block(*SEND), env)
+    assert r.returncode != 0
+    assert "HTTP 404" in r.stderr
+    assert "issue comment" not in log.read_text()
 
 
 def test_the_fourth_block_goes_to_nish_not_back_to_the_orchestrator(tmp_path):
