@@ -23,8 +23,8 @@ def _iso(ts):
     return subprocess.run(["date", "-u", "-d", f"@{ts}", "+%Y-%m-%dT%H:%M:%SZ"], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def decide(file, run, issues):
-    payload = json.dumps({"file": file, "run": run, "issues": issues})
+def decide(file, run, issues, present=None):
+    payload = json.dumps({"file": file, "run": run, "issues": issues, "present": [file] if present is None else present})
     out = subprocess.run(
         ["jq", "-c", "--argjson", "now", str(NOW), _y(f"{FIND} | .env.RED_MAIN")],
         input=payload, check=True, capture_output=True, text=True,
@@ -97,12 +97,12 @@ def test_duplicates_are_judged_on_the_lowest_number():
 
 def test_green_run_closes_every_open_issue():
     v = decide("deploy.yml", green(), [issue(9), issue(5), issue(7, state="CLOSED", closed_ago=DAY)])
-    assert v == {"action": "close", "issues": [5, 9], "reason": "main is green again"}
+    assert v == {"action": "close", "issues": [5, 9], "reason": "green on the default branch again: https://example.invalid/runs/101"}
 
 
 def test_green_run_leaves_an_issue_a_worker_has_claimed():
     v = decide("deploy.yml", green(), [issue(5, labels=("agent-in-progress",)), issue(9)])
-    assert v == {"action": "close", "issues": [9], "reason": "main is green again"}
+    assert v == {"action": "close", "issues": [9], "reason": "green on the default branch again: https://example.invalid/runs/101"}
 
 
 def test_green_run_with_only_a_claimed_issue_does_nothing():
@@ -138,6 +138,29 @@ def test_no_finished_run_does_nothing():
     assert decide("deploy.yml", None, [])["action"] == "none"
 
 
+def test_workflow_gone_from_the_default_branch_closes_its_open_issues():
+    v = decide("grader-calibration.yml", red(), [issue(5, file="grader-calibration.yml")], present=["deploy.yml"])
+    assert v == {"action": "close", "issues": [5], "reason": "gone from the default branch, so it cannot run there again"}
+
+
+def test_workflow_gone_from_the_default_branch_files_nothing():
+    assert decide("grader-calibration.yml", red(), [], present=["deploy.yml"])["action"] == "none"
+
+
+def test_workflow_gone_from_the_default_branch_leaves_a_claimed_issue():
+    v = decide("grader-calibration.yml", red(), [issue(5, file="grader-calibration.yml", labels=("agent-in-progress",))], present=["deploy.yml"])
+    assert v["action"] == "none"
+
+
+def test_a_green_run_for_a_gone_workflow_still_closes_it():
+    v = decide("grader-calibration.yml", green(), [issue(5, file="grader-calibration.yml")], present=[])
+    assert v["action"] == "close"
+
+
+def test_an_empty_present_list_treats_every_file_as_gone():
+    assert decide("deploy.yml", red(), [], present=[])["action"] == "none"
+
+
 FAKE_GH = r"""#!/usr/bin/env bash
 d=$FAKE_DIR
 args=("$@")
@@ -149,6 +172,7 @@ case "$1" in
     for a in "${args[@]:1}"; do case $a in -*) ;; repos/*) url=$a; break ;; esac; done
     case $url in
       repos/o/r) f=$d/repo.json ;;
+      repos/o/r/git/trees/*) f=$d/tree.json ;;
       repos/o/r/actions/workflows\?*) f=$d/workflows.json ;;
       repos/o/r/actions/workflows/*status=success*) f=$d/green-$(basename "${url%%/runs*}").json ;;
       repos/o/r/actions/workflows/*/runs\?*) f=$d/runs-$(basename "${url%%/runs*}").json ;;
@@ -168,18 +192,22 @@ esac
 """
 
 
-def _setup(tmp_path, files, issues, repo="o/r"):
+def _setup(tmp_path, files, issues, repo="o/r", gone=()):
     fake = tmp_path / "fake"
     fake.mkdir()
     (fake / "repo.json").write_text(json.dumps({"default_branch": "main"}))
     workflows = []
+    tree = []
     for wid, (path, state, runs, jobs, green_sha) in files.items():
         workflows.append({"id": wid, "path": path, "state": state})
+        if path.rsplit("/", 1)[-1] not in gone:
+            tree.append({"path": path})
         (fake / f"runs-{wid}.json").write_text(json.dumps({"workflow_runs": runs}))
         (fake / f"green-{wid}.json").write_text(json.dumps({"workflow_runs": [{"head_sha": green_sha}] if green_sha else []}))
         for r in runs:
             (fake / f"jobs-{r['id']}.json").write_text(json.dumps({"jobs": jobs}))
     (fake / "workflows.json").write_text(json.dumps({"workflows": workflows}))
+    (fake / "tree.json").write_text(json.dumps({"tree": tree}))
     (fake / "issues.json").write_text(json.dumps(issues))
     gh = fake / "gh"
     gh.write_text(FAKE_GH)
@@ -197,8 +225,8 @@ FAILED_JOBS = [{"name": "build", "conclusion": "success", "steps": []},
                    {"name": "Set up job", "conclusion": "success"}, {"name": "Publish to R2", "conclusion": "failure"}]}]
 
 
-def _sweep(tmp_path, files, issues, drop=()):
-    fake = _setup(tmp_path, files, issues)
+def _sweep(tmp_path, files, issues, drop=(), gone=()):
+    fake = _setup(tmp_path, files, issues, gone=gone)
     for name in drop:
         (fake / name).unlink()
     home = tmp_path / "home"
@@ -332,6 +360,20 @@ def test_sweep_comments_once_for_a_new_run_after_a_day(tmp_path):
     ]
 
 
+def test_sweep_closes_the_issue_of_a_workflow_whose_file_is_gone(tmp_path):
+    files = {**deploy("success"), 2: (".github/workflows/grader-calibration.yml", "active", [_api_run(20, "failure")], FAILED_JOBS, None)}
+    r, log = _sweep(tmp_path, files, [issue(5, file="grader-calibration.yml")], gone=("grader-calibration.yml",))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert log == ["issue close 5 -R o/r -r completed -c grader-calibration.yml is gone from the default branch, so it cannot run there again"]
+
+
+def test_sweep_files_nothing_for_a_workflow_whose_file_is_gone(tmp_path):
+    files = {**deploy(), 2: (".github/workflows/grader-calibration.yml", "active", [_api_run(20, "failure")], FAILED_JOBS, None)}
+    r, log = _sweep(tmp_path, files, [], gone=("grader-calibration.yml",))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(log) == 1 and "--title Main is red: deploy.yml " in log[0]
+
+
 def test_sweep_skips_one_unreadable_workflow_and_fails_the_job(tmp_path):
     files = {
         1: (".github/workflows/a.yml", "active", [_api_run(10, "failure")], FAILED_JOBS, None),
@@ -356,4 +398,4 @@ def test_red_main_job_is_gated_and_needs_no_new_token():
     assert "vars.RED_MAIN != 'off'" in cond
     assert "TinyStudio" not in cond
     assert _y(".jobs.red-main.steps[0].env.GH_TOKEN").strip() == "${{ github.token }}"
-    assert dict(l.split(": ") for l in _y(".jobs.red-main.permissions").strip().splitlines()) == {"issues": "write", "actions": "read"}
+    assert _y(".jobs.red-main.permissions").strip() == "{issues: write, contents: read, actions: read}"

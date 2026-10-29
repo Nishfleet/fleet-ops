@@ -329,11 +329,11 @@ def test_the_list_job_runs_where_the_login_is():
     assert "ubuntu-latest" not in expr, expr
 
 
-def test_the_requeue_writes_run_as_the_login_not_the_job_token():
+def test_the_requeue_writes_run_as_the_app_not_the_job_token():
     """The job's own token writes the label but fires no event, so nothing re-queues (fleet-ops#10489).
-    Every label write that must fire one carries `env -u GH_TOKEN`."""
+    Every label write that must fire one runs on the worker App token, never the runner login (fleet-ops#10949)."""
     writes = [l.strip() for l in _y(f"{STEP} | .run").splitlines()
               if "gh issue edit" in l and "needs-orchestrator" in l]
     assert writes, "the sweep no longer re-queues with a label write"
     for w in writes:
-        assert "env -u GH_TOKEN" in w.split("gh issue edit")[0], w
+        assert 'GH_TOKEN="${LABEL_TOKEN:-}"' in w.split("gh issue edit")[0], w
