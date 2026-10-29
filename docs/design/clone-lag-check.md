@@ -52,6 +52,17 @@ pair, so a check that is silently off cannot be the next failure. The page is
 `OnFailure=fleet-unit-failed@%N.service`, and the failed unit also shows in the
 live-state check's `list-units --state=failed`.
 
+## It is not a poller for the deploy
+
+#10046 step 2 rules out a poller for the trigger, and nothing here is one.
+`deploy-box.yml` stays a stock `on: push` to `main` with no path filter, and no
+new thing starts a deploy: this unit reads only and never runs `fleet-sync`, so
+there is still exactly one deploy path, reached only by a merge. Step 3 asks for
+the opposite of a trigger, a check that fails when nothing happens at all, and
+that cannot be push-driven. A `.timer` is the stock clock the fleet already uses
+for host-side checks, and it is the only clock that survives a run which was
+never created or was cancelled by the next push.
+
 ## Oldest, not newest
 
 The failing commit is the oldest one the clone lacks, not the newest commit on
