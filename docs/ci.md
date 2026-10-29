@@ -7,7 +7,8 @@ over `systemd/`. The stock linters are joined by repo-specific gates: a no-glue
 semgrep rule at `.semgrep/no-glue.yml`, a no long-lived personal-access-token
 (PAT) grep, `nft -c` over `rootfs/etc/nftables.conf`, `ansible-playbook --syntax-check` over `ansible/host.yml` and `ansible/update.yml`, a no shell `${...}` or bare
 `%s/%u/%h` check inside systemd Exec lines (fleet-ops#8382), pi seat ids
-resolving to `config/litellm-proxy.yaml` `model_name` (fleet-ops#8332), and
+resolving to `config/litellm-proxy.yaml` `model_name` or a `model_group_alias`
+key (fleet-ops#8332, fleet-ops#9330), and
 Ollama rungs serving only the permitted slug on the native provider
 (fleet-ops#8332, fleet-ops#9253), the Claude Code managed-settings drop-ins
 (each file under `rootfs/etc/claude-code/managed-settings.d/` is a JSON object
