@@ -1183,6 +1183,37 @@ def test_prometheus_config_installs_world_readable() -> None:
     assert "mode: preserve" not in task
 
 
+ROOT_OWNED_COPIES = (
+    "rootfs/etc/prometheus/prometheus.yml",
+    "rootfs/etc/systemd/system/agent.slice",
+)
+
+
+@pytest.mark.parametrize("shipped", ROOT_OWNED_COPIES)
+def test_root_owned_copies_are_shipped_and_installed_as_root(shipped: str) -> None:
+    live = PurePosixPath("/" + shipped.removeprefix("rootfs/"))
+    assert (ROOT / shipped).is_file(), (
+        f"the repo ships no {shipped}, so {live} keeps whatever value it was built with "
+        "and a reviewed change to it never reaches the host (fleet-ops#8862)"
+    )
+    source = "{{ rootfs }}" + str(live.parent) + "/"
+    copy = next(
+        (
+            task["ansible.builtin.copy"]
+            for task in ansible_host.play()["tasks"]
+            if "ansible.builtin.copy" in task
+            and task["ansible.builtin.copy"].get("src") == source
+            and task["ansible.builtin.copy"].get("dest", "").rstrip("/") == str(live.parent)
+        ),
+        None,
+    )
+    assert copy is not None, f"no ansible/host.yml task copies {source} to {live.parent}, so {live} is never installed"
+    assert (copy.get("owner"), copy.get("group")) == ("root", "root"), (
+        f"the task that installs {live} does not declare owner: root and group: root, "
+        "so a copy that runs as root can still leave it owned by the source"
+    )
+
+
 def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
     cfg = (ROOT / "rootfs/etc/alertmanager/alertmanager.yml").read_text()
     assert "\n  routes:\n" in cfg, "the root route has no child routes"
