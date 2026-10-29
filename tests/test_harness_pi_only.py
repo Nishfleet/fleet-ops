@@ -40,7 +40,7 @@ def test_fleet_sync_lists_no_retired_listener():
 def test_no_retired_seat_file_or_router_row():
     quadlet = (ROOT / "containers/quadlet/fleet-litellm-proxy.container").read_text()
     SEATS_REL = ".config/fleet-ops/seats"  # gitleaks:allow
-    seats = re.findall("EnvironmentFile=-%h/" + SEATS_REL + r"/([\\w-]+)\\.env", quadlet, re.M)
+    seats = re.findall("EnvironmentFile=-%h/" + SEATS_REL + r"/([\w-]+)\.env", quadlet, re.M)
     assert not [s for s in seats if LANE_NAME.search(s)], f"retired lane seat files are listed: {seats}"
     live = [
         line

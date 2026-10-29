@@ -10,6 +10,7 @@ disable = [
   "brew_formula", "brew_cask", "mas", "system", "gem", "ruby_gems",
   "hermes_agent",          # the .hermes git install carries a local commit: never update
   "self_update", "remotes", "restarts",
+  "cursor_agent",          # `cursor-agent update` fails unauthenticated on this Mac
   "node",                  # PATH npm is .hermes' own node; explicit prefixes below instead
   "skills", "github_cli_skills", "claude_code_plugins",
 ]
