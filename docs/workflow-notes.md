@@ -107,3 +107,86 @@ organ. The tracking issue #10521 has been closed since the 2026-10-29 pro-dev
 cut ("Reopen if it blocks a product"), so #10515 waits on that decision, not on
 a worker.
 
+### secret-scan.yml: the scan steps live in .github/actions/secret-scan
+
+The workflow file is 48 lines (fleet-ops#10947). Every reason that used to sit as a comment in it:
+
+- The `Gitleaks` job is a required context, so it must be structurally incapable of concluding
+  SKIPPED: GitHub counts a skipped required context as satisfying branch protection. That is why
+  there is no job-level `if:` and no `needs` (a job with `needs` is skipped when its dependency
+  fails, and an `if:` can skip on cancellation or any future condition edit). The authorizer is
+  step 1 of the job itself, so a fork PR or an unapproved dispatch candidate fails the required
+  check with a real failure: a gate that cannot verify must say no, never render green or skipped.
+  Path optimization lives in step-level conditions only (the fork guard on the scan step). The
+  checkout's `ref:` is `github.sha`, the candidate the authorizer just proved: routing that same
+  commit through a step output changes nothing about which commit is checked out, and CodeQL's
+  `untrusted-checkout` query then reports it as a privileged checkout of untrusted code.
+- The authorizer refuses every event shape it was not written for: only `Nishfleet/fleet-ops`, only
+  a 40-hex `GITHUB_SHA`, a `refs/pull/N/merge` PR from this repository, a `refs/heads/main` or
+  `master` push, a `gh-readonly-queue/` merge-group ref, or a first-attempt dispatch from `main`
+  whose `expected_sha` input equals `GITHUB_SHA`.
+- `gitleaks git` walks the commit history the pinned `fetch-depth: 0` checkout provides, so a secret
+  that was committed and later deleted still fails the gate. On `pull_request` and `merge_group`
+  the scan is scoped to the PR's own range (`base_sha..head_sha`; merge_group carries the same
+  pair) so a secret sitting on an unrelated branch cannot poison other PRs or the merge queue.
+  Push and dispatch scan `--full-history HEAD` so an already-merged secret still fails, but never
+  every fetched ref: a bare `gitleaks git` runs `git log --all`, which walked every claim branch,
+  so a fixture on an unrelated branch turned main red and the auto-revert organ merged a revert of
+  an innocent PR (0509#1817 reverted #1787, 2026-09-06).
+- `--redact` keeps the secret value out of the public run log. `--exit-code 2` separates "leaks
+  found" (2) from "gitleaks itself errored" (1), so an infrastructure fault can never be misread
+  as a clean scan.
+- The gitleaks BINARY is MIT-licensed and free for everyone. Only the `gitleaks-action` wrapper
+  demands an organization licence key, and since this repository moved into the Nishfleet
+  organization that wrapper aborted every run with "missing gitleaks license" - i.e. no secret scan
+  actually executed. Installing the release binary restores real scanning at zero cost, and the
+  repository has no `GITLEAKS_LICENSE` secret to give the stock action. The release is pinned by
+  version AND by SHA-256, so the download is as tamper-evident as a SHA-pinned `uses:`. To bump:
+  change `GITLEAKS_VERSION` and `GITLEAKS_SHA256` together from the release's checksums file; the
+  same pair must land in `ci.yml` and `agent.yml`, and
+  `tests/test_review_scan.py::test_every_place_that_installs_gitleaks_pins_the_secret_scan_release`
+  fails until it does.
+- The action is referenced as `./.github/actions/secret-scan`, not `@main`. A `@main` reference
+  resolves against main, where the action does not exist yet, so the required `Gitleaks` context
+  would fail on its own introducing PR. `.github/zizmor.yml` therefore ignores `self-repository`
+  for this file; the `$/` form zizmor suggests is not GitHub syntax (actionlint 1.7.12 rejects it
+  as a ref-less action).
+- `private-detail-scan` looks for private infrastructure detail (personal home paths, Tailscale
+  addresses and names, account ids) in the commits a pull request adds, using
+  `.github/gitleaks-private-detail.toml`. History before the PR is not scanned, so old commits
+  cannot fail it. It is not a required check. The conditions are on the steps, so the job always
+  reports. Switch it off with the repository variable `PRIVATE_DETAIL_SCAN=off` (see README.md).
+
+### deploy-box.yml: what the two oneshots are
+
+Push-triggered. Starts the `fleet-sync.service` user oneshot (the user-scope deploy steps), then
+the `fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as root); each exit code
+is a verdict. polkit lets this runner's user start that one system unit, so no step uses sudo, and
+the unit's own guards still gate every step (fleet-ops#8519). The unit allows
+`TimeoutStartSec=300` for the steps alone, so the job's `timeout-minutes: 10` leaves headroom
+without letting a hung step park a runner.
+
+### ratchet.yml: how the rule reaches every repo
+
+A repo's job `ratchet` calls this `@main` and requires `ratchet / ratchet`. The rule runs from
+main, so a PR that edits that job fails its own check. The org ruleset in
+`config/org-ruleset.json` requires this file in every repo, and a ruleset runs a file only if it
+declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` for the rule, and
+`merge_group` so a merge-queue entry reports the check. This repo already calls it from `ci.yml`,
+so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
+`ratchet / ratchet`.
+
+### coordinator-approval.yml: the merge-queue gate
+
+The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
+`merge_group`, where the job name is the single-segment check `coordinator-approval`; 0509 and
+drive call it and require `coordinator-approval / coordinator-approval`. A caller grants
+`contents: read`, `pull-requests: read` and `statuses: read` and triggers on `merge_group`
+itself: the token is the caller's, and a narrower grant fails every entry with a read error
+rather than an approval. The rules come from fleet-ops main (the base commit on fleet-ops), so a
+PR cannot loosen what judges it, and every failed read fails the check. On `pull_request` it
+passes, so the check reports and a PR can be enqueued; the queue does the rejecting. The base
+commit of this workflow's own first queue entry is main before the move, where the rules still
+sat under the `hold-risky` job, so the rules read either layout. `ci.yml` runs this block against
+a fake `gh` with each read failing.
+

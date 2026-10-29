@@ -30,8 +30,8 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          # Pin: every job except ci and coordinator-approval must be in ci's needs.
-          want=$(yq -r '.jobs | keys | .[] | select(. != "ci" and . != "coordinator-approval")' .github/workflows/ci.yml | sort)
+          # Pin: every job except ci must be in ci's needs.
+          want=$(yq -r '.jobs | keys | .[] | select(. != "ci")' .github/workflows/ci.yml | sort)
           have=$(yq -r '.jobs.ci.needs[]' .github/workflows/ci.yml | sort)
           [ "$want" = "$have" ] || { echo "::error::ci needs ${have//$'\n'/ } but the other jobs are ${want//$'\n'/ }"; exit 1; }
           # Failure and cancelled block; success and skipped pass.
@@ -714,7 +714,7 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           prog=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.STUCK' "$f")
           who=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .env.APPROVERS' "$f")
-          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.jobs.hold-risky.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not hold-risky's"; exit 1; }
+          [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not the coordinator-approval gate"; exit 1; }
           run=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
@@ -953,7 +953,7 @@ jobs:
           yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml > "$t/hold.sh"
           [ -s "$t/hold.sh" ] && ! grep -qx null "$t/hold.sh"
           for v in LABEL CONTEXT APPROVERS RISKY_PATHS_URL CLASSIFY APPROVAL; do
-            val=$(yq ".jobs.hold-risky.env.$v" .github/workflows/agent-dispatch.yml)
+            val=$(yq ".env.$v" .github/workflows/agent-dispatch.yml)
             [ -n "$val" ] && [ "$val" != null ] || { echo "hold-risky env $v missing"; exit 1; }
             export "$v=$val"
           done
@@ -1017,8 +1017,8 @@ jobs:
           CASES
           test "$bad" -eq 0
       - name: coordinator-approval fails closed in the queue (fake gh)
-        # Runs the coordinator-approval job's own run block, read out of this
-        # file, against a fake gh, with the programs and path list read from
+        # Runs the coordinator-approval job's own run block, read out of its
+        # workflow file, against a fake gh, with the programs and path list read from
         # this checkout (BASE_DIR=.). A risky PR with no approval of its exact
         # head fails, whether it is the entry's own PR or one ahead of it in
         # the group; every failed read fails; controls pass (approved, safe).
@@ -1027,8 +1027,10 @@ jobs:
           set -euo pipefail
           t=$RUNNER_TEMP/gate-mock
           mkdir -p "$t/bin"
-          yq '.jobs.coordinator-approval.steps[] | select(.name == "Fail a risky PR in the queue whose head has no coordinator approval") | .run' .github/workflows/ci.yml > "$t/gate.sh"
+          yq '.jobs.coordinator-approval.steps[] | select(.name == "Fail a risky PR in the queue whose head has no coordinator approval") | .run' .github/workflows/coordinator-approval.yml > "$t/gate.sh"
           [ -s "$t/gate.sh" ] && ! grep -qx null "$t/gate.sh"
+          # A job-level permissions block replaces the workflow-level one, so the gate would lose contents: read and fail every entry. Assert the effective map.
+          yq -e '(.jobs."coordinator-approval".permissions // .permissions) | (."contents" == "read" and ."pull-requests" == "read" and ."statuses" == "read")' .github/workflows/coordinator-approval.yml >/dev/null
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
           args="$*"
@@ -1818,111 +1820,3 @@ jobs:
 
   ratchet:
     uses: Nishfleet/fleet-ops/.github/workflows/ratchet.yml@main
-
-  # Coordinator approval as a required status check (fleet-ops#9383).
-  # hold-risky (agent-dispatch.yml) disarms a risky PR on a few PR events, so a
-  # direct enqueue or merge got past it (#9371 merged with no approval). A
-  # required check is the one thing the merge queue cannot skip. On merge_group
-  # this job resolves the PR(s) in the queue entry, classifies each one's
-  # changed files and fails when a risky PR's CURRENT head sha has no
-  # `coordinator-approval: <sha>` comment or success status from an approver.
-  # On pull_request it passes, so a PR can be enqueued and the queue
-  # does the rejecting. The CLASSIFY and APPROVAL programs, APPROVERS and the
-  # path list are read from the BASE commit's agent-dispatch.yml and
-  # config/risky-paths.json, so ci.yml's case tests over them keep covering
-  # what this job runs and a PR cannot loosen the list it is judged by.
-  # Every failed read fails the check. Ruleset bypass actors (repository admin)
-  # can still skip a required check.
-  coordinator-approval:
-    name: coordinator-approval
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
-      statuses: read
-    steps:
-      - name: Pass outside the merge queue
-        if: github.event_name != 'merge_group'
-        run: echo "coordinator-approval is enforced on merge_group; this run is informational."
-      - name: Checkout the base commit (programs and path list)
-        if: github.event_name == 'merge_group'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.merge_group.base_sha }}
-          path: base
-          persist-credentials: false
-          sparse-checkout: |
-            .github/workflows/agent-dispatch.yml
-            config/risky-paths.json
-          sparse-checkout-cone-mode: false
-      - name: Fail a risky PR in the queue whose head has no coordinator approval
-        if: github.event_name == 'merge_group'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
-          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
-          BASE_DIR: base
-        run: |
-          set -euo pipefail
-          # Programs, approvers and path list: the base commit's, not the PR's.
-          for v in LABEL CONTEXT APPROVERS CLASSIFY APPROVAL; do
-            val=$(yq ".jobs.hold-risky.env.$v" "$BASE_DIR/.github/workflows/agent-dispatch.yml")
-            [ -n "$val" ] && [ "$val" != null ] || { echo "::error::coordinator-approval: hold-risky env $v unreadable"; exit 1; }
-            export "$v=$val"
-          done
-          cfg=$(jq -c . "$BASE_DIR/config/risky-paths.json") || { echo "::error::coordinator-approval: risky-path list unreadable"; exit 1; }
-          # The queue branch is gh-readonly-queue/<base>/pr-<N>-<sha>; <N> is
-          # the entry's own PR. Entries ahead of it in the same group are
-          # commits below the tip, each titled "... (#<M>)" by the squash.
-          [[ "$HEAD_REF" =~ gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]{40}$ ]] ||
-            { echo "::error::coordinator-approval: cannot read a PR number from $HEAD_REF"; exit 1; }
-          nums=${BASH_REMATCH[1]}
-          gh api --paginate "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$GROUP_SHA?per_page=100" \
-            --jq '.commits[].commit.message | split("\n")[0]' > "$RUNNER_TEMP/subjects.txt" ||
-            { echo "::error::coordinator-approval: commit list read failed for $BASE_SHA...$GROUP_SHA"; exit 1; }
-          total=$(grep -c '' "$RUNNER_TEMP/subjects.txt" || true)
-          # One commit is the entry's own PR (named by the ref). More than one:
-          # every commit must map to a PR, or the check fails.
-          if [ "$total" -gt 1 ]; then
-            while IFS= read -r subject; do
-              if [[ "$subject" =~ \(#([0-9]+)\)$ ]] || [[ "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]]; then
-                nums="$nums ${BASH_REMATCH[1]}"
-              else
-                echo "::error::coordinator-approval: cannot map commit \"$subject\" to a PR in a group of $total"; exit 1
-              fi
-            done < "$RUNNER_TEMP/subjects.txt"
-          fi
-          bad=0
-          for n in $(tr ' ' '\n' <<<"$nums" | sort -un); do
-            # The live PR: a head moved after approval has no approval.
-            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$n") || { echo "::error::coordinator-approval: PR read failed for #$n"; bad=1; continue; }
-            sha=$(jq -r .head.sha <<<"$pr")
-            gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$n/files?per_page=100" --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/files.txt" ||
-              { echo "::error::coordinator-approval: changed-files read failed for #$n"; bad=1; continue; }
-            jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' < "$RUNNER_TEMP/files.txt" > "$RUNNER_TEMP/files.json"
-            jq -c --arg repo "$GITHUB_REPOSITORY" --slurpfile d "$RUNNER_TEMP/files.json" \
-              '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changed_files // 0)}' <<<"$pr" > "$RUNNER_TEMP/facts.json"
-            verdict=$(jq -c --argjson cfg "$cfg" --arg label "$LABEL" "$CLASSIFY" < "$RUNNER_TEMP/facts.json") ||
-              { echo "::error::coordinator-approval: classifier failed for #$n"; bad=1; continue; }
-            echo "coordinator-approval: #$n at $sha: $verdict"
-            jq -e .risky <<<"$verdict" >/dev/null || continue
-            gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$sha/statuses?per_page=100" --jq '.[]' > "$RUNNER_TEMP/statuses.txt" ||
-              { echo "::error::coordinator-approval: statuses read failed for $sha"; bad=1; continue; }
-            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$n/comments?per_page=100" \
-              --jq '.[] | {user: {login: .user.login}, body, created_at, updated_at}' > "$RUNNER_TEMP/comments.txt" ||
-              { echo "::error::coordinator-approval: comments read failed for #$n"; bad=1; continue; }
-            approved=$(jq -n --arg sha "$sha" --slurpfile s "$RUNNER_TEMP/statuses.txt" --slurpfile m "$RUNNER_TEMP/comments.txt" \
-              '{sha: $sha, statuses: $s, comments: $m}' |
-              jq -r --arg c "$CONTEXT" --arg who "$APPROVERS" "$APPROVAL") || approved=false
-            if [ "$approved" = true ]; then
-              echo "coordinator-approval: #$n is risky and $sha carries an approver's $CONTEXT"
-            else
-              echo "::error::coordinator-approval: #$n is risky and $sha has no $CONTEXT from $APPROVERS"
-              jq -r '.why[] | "- \(.)"' <<<"$verdict" >> "$GITHUB_STEP_SUMMARY"
-              echo "review-risky reviews and approves this head on its own; this check passes once the approval names $sha. Nothing needs a person." >> "$GITHUB_STEP_SUMMARY"
-              bad=1
-            fi
-          done
-          test "$bad" -eq 0

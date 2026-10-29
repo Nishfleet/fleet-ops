@@ -14,6 +14,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_STUB = """#!/bin/bash
 echo "$*" >> "$GH_LOG"
+if [ "${GH_ISSUE_VIEW_FAIL:-0}" != 0 ]; then case "$*" in "issue view"*) exit 1 ;; esac; fi
 case "$*" in
   "pr view"*) while [ $# -gt 0 ] && [ "$1" != --jq ]; do shift; done; jq -r "$2" <<<"$GH_PR_JSON" ;;
   "api --paginate"*) printf '%b' "$GH_REVIEWS" ;;
@@ -43,6 +44,12 @@ def _block(workflow, job, step):
         check=True, capture_output=True, text=True,
     ).stdout
     assert out.strip(), f"step {step!r} not found"
+    return out
+
+
+def _y(expr):
+    out = subprocess.run(["yq", expr, str(ROOT / ".github/workflows/agent.yml")], check=True, capture_output=True, text=True).stdout.strip()
+    assert out and out != "null", expr
     return out
 
 
@@ -98,6 +105,28 @@ def test_the_fork_guard_asks_gh_whether_the_pr_is_cross_repository(tmp_path):
     r = _run(_block(*SEND), env)
     assert r.returncode == 0, r.stderr
     assert "pr view 5 -R Nishfleet/fleet-ops --json headRefName,isCrossRepository" in log.read_text()
+
+
+def test_the_blocked_orch_send_back_reads_on_the_job_token_and_writes_on_the_runner_login():
+    assert _y(f'.jobs.review.steps[] | select(.name == "{SEND[2]}") | .env.GH_TOKEN') == "${{ github.token }}"
+    assert _y('.jobs.review.permissions."issues"') in ("read", "write")
+    assert _y('.jobs.review.permissions."pull-requests"') in ("read", "write")
+    lines = _block(*SEND).splitlines()
+    for read in ("gh pr view", "gh api ", "gh issue view"):
+        assert len([line for line in lines if read in line]) == 1, read
+    reads = [line for line in lines if any(read in line for read in ("gh pr view", "gh api ", "gh issue view"))]
+    others = [line for line in lines if "gh " in line and line not in reads]
+    assert others
+    assert [line for line in reads if "env -u" in line] == []
+    assert [line for line in others if not line.strip().startswith("env -u GH_TOKEN -u GITHUB_TOKEN gh ")] == []
+
+
+def test_a_failed_label_read_fails_the_step_instead_of_relabelling(tmp_path):
+    env, log = _review(tmp_path)
+    env["GH_ISSUE_VIEW_FAIL"] = "1"
+    r = _run(_block(*SEND), env)
+    assert r.returncode != 0
+    assert "issue edit" not in log.read_text() and "issue comment" not in log.read_text()
 
 
 def test_the_fourth_block_goes_to_nish_not_back_to_the_orchestrator(tmp_path):
