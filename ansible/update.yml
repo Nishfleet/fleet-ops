@@ -234,21 +234,52 @@
             label: "{{ item.item }}"
           register: timers_stopped
 
-        - name: Wait until no runner is running a job
+        # Jobs queued before the pause still start as runners come free, so
+        # waiting for "no Runner.Worker anywhere" follows those arrivals: on
+        # 2026-10-29 it held every runner 51 min and ended 6 min after the last
+        # job the pause caught, on a job that started 13 s after it
+        # (fleet-ops#10792). Wait only for the jobs the pause caught; the stop
+        # below ends what starts after it.
+        - name: Note the jobs that were running when the pause went in
           ansible.builtin.command:
-            argv: [pgrep, --count, --exact, Runner.Worker]
-          register: busy
-          until: busy.stdout | int == 0
+            argv: [pgrep, --exact, Runner.Worker]
+          register: pause_jobs
+          changed_when: false
+          failed_when: pause_jobs.rc > 1
+
+        - name: Wait until those jobs finish
+          ansible.builtin.command:
+            argv: [ps, --pid, "{{ pause_jobs.stdout_lines | join(',') }}", -o, "pid=,comm="]
+          register: drain
+          # No rows once they are all gone (ps exits 1 then, and says nothing),
+          # and a pid reused by another process is not a job any more.
+          until: drain.stdout is not regex('Runner\.Worker')
           retries: "{{ drain_polls }}"
           delay: 60
           changed_when: false
-          failed_when: busy.rc > 1
+          failed_when: drain.rc > 1 or drain.stderr | length > 0
+          when: pause_jobs.stdout_lines | length > 0
 
         - name: List the runner services that are up
           ansible.builtin.command:
             argv: [systemctl, list-units, --type=service, --state=active, --no-legend, --plain, actions.runner.*]
           register: runner_units
           changed_when: false
+
+        # The wait above ended with the pause-time set gone, so every worker
+        # running here started after the pause: the stop below ends those, and
+        # naming them is the journal's record of what the pause cost.
+        - name: Note the jobs that started during the pause
+          ansible.builtin.command:
+            argv: [ps, -C, Runner.Worker, -o, cgroup=]
+          register: late_jobs
+          changed_when: false
+          failed_when: late_jobs.rc > 1 or late_jobs.stderr | length > 0
+
+        - name: Name the jobs the stop below ends
+          ansible.builtin.debug:
+            msg: "ended by the stop below: {{ late_jobs.stdout_lines | join(' ') }}"
+          when: late_jobs.stdout_lines | length > 0
 
         - name: Stop the runner services, so no CI job starts mid-update
           ansible.builtin.systemd_service:
