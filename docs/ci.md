@@ -17,7 +17,11 @@ marketplace the box knows), the litellm-proxy
 schema gate: `config/litellm-proxy.yaml` must validate against
 `config/litellm-proxy.schema.json`, and every
 `config/litellm-proxy.schema.rejects/*.yaml` must fail the same check
-(fleet-ops#8653), so a loosened schema goes red.
+(fleet-ops#8653), and each must fail on the rule it names:
+`tests/test_reject_files_fail_on_their_own_rule.py` replays the file's `# undo:`
+header lines and requires the file to pass once they are applied
+(fleet-ops#10417), so a loosened schema goes red and a file that drifted from the
+live config cannot reject for the wrong reason.
 
 ### Ratchet: workflow and script code only shrinks
 
