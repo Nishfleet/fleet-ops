@@ -32,11 +32,11 @@
 # so a quiet fleet leaves it at zero for a day while the probe answers 200,
 # fleet-ops#10431), 7d for the judge-seat Alibaba row (fleet-ops#9865). The
 # absence window is 24h, except MiniMax at 72h because a restart drops its
-# series for as long as the plan stays unpicked. Increase, offset and
-# relativeTimeRange all read that plan's idle window, and each rule's summary
-# names the same numbers, so a window narrowed in one place cannot page a
-# healthy plan. tests/test_paid_plans.py holds the expression and the message
-# to each other.
+# series for as long as the plan stays unpicked. increase and offset read that
+# plan's idle window, and relativeTimeRange spans twice it, so the range holds
+# two whole windows. Each rule's summary names the same numbers, so a window
+# narrowed in one place cannot page a healthy plan. tests/test_paid_plans.py
+# holds the expression and the message to each other.
 apiVersion: 1
 
 contactPoints:

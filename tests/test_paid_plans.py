@@ -105,7 +105,7 @@ def _window_seconds(window):
 
 
 def _named_windows(summary):
-    return [number + ("d" if unit == "day" else "h") for number, unit in re.findall(r"for (\d+) (hour|day)s?", summary)]
+    return sorted(number + ("d" if unit == "day" else "h") for number, unit in re.findall(r"for (\d+) (hour|day)s?", summary))
 
 
 def test_every_paid_plan_idle_rule_reads_the_window_its_message_names():
@@ -124,14 +124,20 @@ def test_every_paid_plan_idle_rule_reads_the_window_its_message_names():
             "absence": sorted(re.findall(r"absent_over_time\([^\[]*\[([^\]]+)\]", expr)),
             "offset": sorted(re.findall(r"\boffset\s+(\w+)", expr)),
             "range": rule["data"][0]["relativeTimeRange"]["from"],
+            "multiplied": len(re.findall(r"== bool 0\)\s*\*\s*\(", expr)),
+            "or vector(0)": expr.count("or vector(0)"),
+            "both sides defaulted": len(re.findall(r"or vector\(0\)\)\s*==\s*bool\s*\(\s*sum\(", expr)),
         }
         wanted = {
             "plan": True,
-            "summary says": [idle] if idle == absent else [idle, absent],
+            "summary says": sorted([idle] if idle == absent else [idle, absent]),
             "increase": [idle],
             "absence": [absent],
             "offset": [idle],
             "range": 2 * _window_seconds(idle),
+            "multiplied": 1,
+            "or vector(0)": 2,
+            "both sides defaulted": 1,
         }
         if shape != wanted:
             wrong[uid] = (shape, wanted)
