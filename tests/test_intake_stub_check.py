@@ -13,7 +13,8 @@ elsewhere, an API state other than 404 fails closed instead of reading as one
 more unreadable repo, a run that read no stub at all fails, an empty required
 list fails, the required list and the enrolled set both come from the run's base
 ref rather than from the checkout, and each repo's own stub is read from that
-repo's default branch.
+repo's default branch, and ci.yml runs the check in one job that always runs with
+the fleet-ops workflow token.
 """
 import base64
 import importlib.util
@@ -352,10 +353,25 @@ def test_empty_enrolled_set_fails(run):
 def test_the_check_runs_in_ci_and_its_tests_are_discovered():
     ci = CI.read_text()
     assert "python3 tests/intake_stub_check.py" in ci
-    assert "fleet-ops#9730" in ci
+    assert "#9730" in ci
     discovering = next(l for l in ci.splitlines() if " tests " in l and "pytest -q -p no:cacheprovider" in l)
     assert "test_router_" in discovering
     assert "test_intake_stub_check" not in discovering
+
+
+def test_the_check_runs_in_one_job_ci_needs_and_always():
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+    hosts = sorted(
+        name for name, job in jobs.items()
+        if any("tests/intake_stub_check.py" in str(s.get("run", "")) for s in job.get("steps", []))
+    )
+    assert hosts == ["systemd-verify"], f"the enrolled-stub check must run in one job, got {hosts}"
+    step = next(s for s in jobs["systemd-verify"]["steps"] if "tests/intake_stub_check.py" in str(s.get("run", "")))
+    assert step["if"] == "always()", "a broken stub must fail the job even when an earlier step failed"
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "github.event.merge_group.base_sha" in step["env"]["BASE_REF"]
+    assert "systemd-verify" in jobs["ci"]["needs"]
+    assert "tests/alert_routes_check.py" in step["run"], "the shared step still runs the alert-route check"
 
 
 def test_real_fleet_ops_config_and_dispatcher_are_accepted_offline():

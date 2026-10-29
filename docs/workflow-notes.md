@@ -170,6 +170,17 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
 
+### ci.yml: the enrolled-stub check shares the python3-yaml step with the alert routes
+
+`ci.yml`'s `systemd-verify` job runs `tests/alert_routes_check.py` and
+`tests/intake_stub_check.py` in one step, because the ratchet above allows no net new
+workflow code line: a step of its own costs four lines (its name, `if: always()`, the
+`env` map and the `run` line), which is exactly the four that step already spent on the
+alert routes. Both checks read a repo file with python3-yaml and hold a contract written
+as prose, so they share the one install. The alert-route check still runs first, so its
+failure is reported before the stub check's, and `if: always()` is what keeps the stub
+check reporting when an earlier step of the job failed.
+
 ### agent-dispatch.yml: hold-risky, review-risky and list
 
 hold-risky (0509#7092: a risky PR was armed, gained commits after the
