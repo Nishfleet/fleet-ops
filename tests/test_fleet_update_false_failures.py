@@ -22,6 +22,17 @@ ALWAYS = {t["name"]: t for t in BLOCK["always"]}
 ALWAYS_NAMES = [t["name"] for t in BLOCK["always"]]
 THAT = " ".join(ASSERT["that"])
 FAIL_MSG = ASSERT["fail_msg"]
+PLUGIN_TASK = INNER["Update every installed Claude Code plugin"]
+PLUGIN_FAIL_WHEN = PLUGIN_TASK.get("failed_when", "")
+PLUGIN_BLOCK = 'Plugin "playwright@claude-plugins-official" is blocked by your organization\'s policy and was not updated'
+PLUGIN_REAL_ERROR = 'Plugin "inbox" update failed: network unreachable'
+PLUGIN_CASES = [
+    ("the real 2026-10-30 run: two org-policy blocks and nothing else", 123, PLUGIN_BLOCK + "\n" + PLUGIN_BLOCK + "\n", False),
+    ("a policy block beside a real error", 123, PLUGIN_BLOCK + "\n" + PLUGIN_REAL_ERROR + "\n", True),
+    ("a real error with no policy block", 123, PLUGIN_REAL_ERROR + "\n", True),
+    ("a silent failure: non-zero rc and no stderr at all", 123, "", True),
+    ("everything updated", 0, "", False),
+]
 NPM_CHECK = INNER["Check that no npm install or update runs as nish before its staging dirs go"]
 PATTERN = NPM_CHECK["ansible.builtin.command"]["argv"][-1]
 WAIT = "Wait for the model router to answer before the smoke call"
@@ -70,6 +81,49 @@ def run_git_pin_check(tmp_path, packages, answers=ANSWERS):
 
 def matches(cmdline):
     return subprocess.run(["grep", "-qE", PATTERN], input=cmdline + "\n", text=True).returncode == 0
+
+
+def run_plugin_case(tmp_path, rc, stderr):
+    """Run the playbook's own plugin-update `failed_when` and its own final assert against a
+    synthetic `plugin_results`, so the tolerance is proven by the run and not by reading the
+    expression. The stderr reaches the task through argv, because `printf '%s'` inside a
+    shell string turns `\n` into a literal backslash-n and the rule needs real newlines."""
+    probe = [
+        {
+            "name": "probe the plugin-update tolerance of ansible/update.yml",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {
+                "failed_system": {"stdout_lines": []},
+                "failed_user": {"stdout_lines": []},
+                "rc_state": {"stdout": "active"},
+                "pi_smoke": {"stdout": "reply OK"},
+                "dispatch_still_paused": [],
+            },
+            "tasks": [
+                {
+                    "name": "Update every installed Claude Code plugin",
+                    "ansible.builtin.command": {
+                        "argv": ["/bin/sh", "-c", 'printf %s "$1" >&2; exit "$2"', "probe", stderr, str(rc)]
+                    },
+                    "register": "plugin_results",
+                    "ignore_errors": True,
+                    "failed_when": PLUGIN_FAIL_WHEN,
+                    "changed_when": False,
+                },
+                {
+                    "name": "Fail loudly if any step or check went wrong",
+                    "ansible.builtin.assert": {"quiet": True, "that": ASSERT["that"], "fail_msg": ASSERT["fail_msg"]},
+                },
+            ],
+        }
+    ]
+    path = tmp_path / "plugin-tolerance.yml"
+    path.write_text(json.dumps(probe), encoding="utf-8")
+    return subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", str(path)], capture_output=True, text=True, check=False
+    )
 
 
 def test_both_npm_leftovers_are_found_for_removal():
@@ -204,6 +258,34 @@ def test_a_failed_user_unit_still_fails_the_run(tmp_path):
     )
     assert result.returncode != 0, result.stdout + result.stderr
     assert "item9-pi-only-1028.service" in result.stdout
+
+
+def test_the_plugin_update_tolerates_an_org_policy_block_and_nothing_else():
+    """An org policy block makes `claude plugin update` exit 1, xargs turns that into 123 and
+    pipefail into a failed task, so one blocked plugin failed the whole daily update
+    (fleet-ops#10448). The rule tolerates the block alone: a real error beside it, a real error
+    on its own, a non-zero rc with no stderr at all, and a clean run are all still decided by
+    the probe below."""
+    assert PLUGIN_TASK["ignore_errors"] is True
+    assert "blocked by your organization's policy" in PLUGIN_FAIL_WHEN
+    assert "plugin_results.rc != 0" in PLUGIN_FAIL_WHEN
+
+
+@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible-playbook missing")
+@pytest.mark.parametrize("case, rc, stderr, run_fails", PLUGIN_CASES)
+def test_only_an_org_policy_block_keeps_the_daily_update_green(tmp_path, case, rc, stderr, run_fails):
+    result = run_plugin_case(tmp_path, rc, stderr)
+    assert (result.returncode != 0) == run_fails, case + "\n" + result.stdout + result.stderr
+    if run_fails:
+        assert f"Claude plugins: rc {rc}" in result.stdout
+
+
+def test_the_failure_text_names_the_plugin_result_so_a_red_run_says_why():
+    """The 2026-10-30 run failed with every named line reading ok and the plugin result absent,
+    so the cause took a 953 KB log to find (fleet-ops#10448)."""
+    assert "Claude plugins: rc " in FAIL_MSG
+    assert "(plugin_results | default({})).rc" in FAIL_MSG
+    assert "(plugin_results | default({})).stderr" in FAIL_MSG
 
 
 def test_the_git_pin_check_asks_github_about_the_default_branch_of_every_github_pin():

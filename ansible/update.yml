@@ -995,6 +995,16 @@
           timeout: 600
           register: plugin_results
           ignore_errors: true
+          # Claude Code's org policy blocks a plugin from updating and
+          # `claude plugin update` exits 1 for it, xargs turns that into 123 and
+          # pipefail turns 123 into a failed task, so one policy-blocked plugin
+          # used to fail the whole daily update (fleet-ops#10448). A policy
+          # block is an org decision nobody can act on from this box, so it is
+          # recorded and not failed on; every other plugin failure still is.
+          failed_when: >-
+            plugin_results.rc != 0 and
+            not (plugin_results.stderr | default('') | trim is
+                 regex("^(Plugin .* is blocked by your organization's policy and was not updated\n?)+$"))
 
         - name: Record Hermes and tincan versions after the update
           become: true
@@ -1440,6 +1450,7 @@
                  if (dispatch_still_paused | default(['unknown']) | length > 0) else '' }}fleet-update finished with problems (runners resumed). Failed tools:
               {{ (tool_results | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | map(attribute='argv') | map('join', ' ') | list }};
               Hermes update: {{ (hermes_update | default({})).stderr | default('ok') | truncate(300) }};
+              Claude plugins: rc {{ (plugin_results | default({})).rc | default('not run') }} {{ (plugin_results | default({})).stderr | default('') | truncate(300) }};
               tincan upgrade: {{ (tincan_upgrade | default({})).stderr | default('ok') | truncate(300) }};
               pi smoke: {{ (('reply ' ~ (pi_smoke.stdout | default('', true) | trim)) if (pi_smoke.stdout | default('', true) | trim) else ('no reply, stderr: ' ~ (pi_smoke.stderr | default('', true) | trim | truncate(300)))) if pi_smoke is defined else 'not run, an earlier step in the block failed' }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
