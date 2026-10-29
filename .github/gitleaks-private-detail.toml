@@ -47,13 +47,6 @@ description = "This file names the patterns it looks for"
 paths = ['''(^|/)gitleaks-private-detail\.toml$''']
 
 [[allowlists]]
-description = "The pre-existing prometheus-reload and blacksmith-flip retirement lines in fleet-sync.service, touched by earlier commits of #9697 (a PR scan reads every commit, and history cannot be rewritten on an open PR)"
-targetRules = ["private-home-path"]
-paths = ['''(^|/)systemd/fleet-sync\.service$''']
-regexes = ['''fleet-prometheus-reload|blacksmith-flip''']
-condition = "AND"
-
-[[allowlists]]
 description = "The pilot runner drop-in hands the worker App key over with LoadCredential=, which must name the key's source path (no %h for a system unit, no inline comment to carry gitleaks:allow); fleet-ops#10153"
 targetRules = ["private-home-path"]
 paths = ['''(^|/)rootfs/etc/systemd/system/actions\.runner\.Nishfleet\.netcup-agent-1\.service\.d/30-pilot-user\.conf$''']
@@ -172,6 +165,20 @@ regexes = ['''home/nish/\.config/systemd/user/(timers\.target\.wants/)?seofixkit
 condition = "AND"
 
 [[allowlists]]
+description = "The SSH socket drop-in must name the box's own tailnet address: a ListenStream= line takes an address and not a name, and a unit line cannot carry an inline gitleaks:allow comment. The same address is already published in systemd/tigervnc.service, allowlisted below for the same reason (fleet-ops#10541). Only that one address is allowed in this file"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''(^|/)rootfs/etc/systemd/system/ssh\.socket\.d/override\.conf$''']
+regexes = ['''^100\.108\.184\.97$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The unit-key test names the CGNAT block itself as the tailnet range it checks binds against, the same generic block the runner egress and dockerd-eval drop-ins carry, and an earlier commit of #10541 named the box's own bind before the test read it from the shipped drop-in (a PR scan reads every commit, and history cannot be rewritten on an open PR). Only those two values are allowed in this file"
+targetRules = ["private-tailscale-ipv4"]
+paths = ['''^tests/test_systemd_unit_keys\.py$''']
+regexes = ['''^100\.64\.0\.0$''', '''^100\.108\.184\.97$''']
+condition = "AND"
+
+[[allowlists]]
 description = "The Hermes backend unit is a system unit (no %h, and no inline comment to carry gitleaks:allow), so it names its program, its environment file and its PATH entries, and the tailnet address it binds; moved byte for byte from /etc/systemd/system, fleet-ops#10542. Only paths under its own .hermes tree, .local/bin, and the one address that unit binds are allowed"
 targetRules = ["private-home-path", "private-tailscale-ipv4"]
 paths = ['''(^|/)rootfs/etc/systemd/system/hermes-serve\.service$''']
@@ -190,4 +197,25 @@ regexes = [
   '''^home/nish/\.hermes/hermes-agent/\.hermes/bin/hermes$''',
   '''^100\.108\.184\.97$''',
 ]
+condition = "AND"
+
+[[allowlists]]
+description = "An earlier commit of the Drive pin (fleet-ops#10547) wrote the server's root as an absolute home path; the fragment now carries ~/Drive and the play renders it from nish_home, and the test asserts that form. A PR scan reads every commit while history cannot be rewritten on an open PR. Only that one path is allowed"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)(config/drive-mcp\.json|tests/test_chrome_devtools_mcp\.py)$''']
+regexes = ['''^home/nish/Drive$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The machine-wide Claude Code managed-settings file denies Read on the seat and tincan secret paths and Edit on the deploy clone, so it must name them; a JSON file has no comment line to carry gitleaks:allow. Only those three home paths and the one relative seats path are allowed, so a new one still fails the scan; fleet-ops#10543"
+targetRules = ["private-home-path", "private-fleet-seats-config"]
+paths = ['''(^|/)rootfs/etc/claude-code/managed-settings\.json$''']
+regexes = ['''^(home/nish/\.config/fleet-ops/seats/|home/nish/\.config/tincan/|home/nish/workspaces/tooling/fleet-ops-deploy-clone/|\.config/fleet-ops/seats)$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The pre-existing ~/.claude backup-exclusion row in config/restic/README.md, edited by fleet-ops#10625 (a PR scan reads the edited line, and history cannot be rewritten on an open PR)"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)config/restic/README\.md$''']
+regexes = ['''^home/nish/\.claude$''']
 condition = "AND"

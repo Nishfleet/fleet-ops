@@ -27,6 +27,12 @@
 #    no threshold step and fires on any sample, so the rule file carries that
 #    half and this case pins that A returns the row at all.
 #
+# 7. opencodego on the shape that filed #10506, #10588, #10630 and #10757: a big
+#    worker-capable row at 0.956 plus a small row at 0.6 reads 0.9097, silent
+#    under its 0.8800 floor (it fired under the older floors). The same mix with
+#    the big row at 0.90 reads 0.861 and fires. Case 1 carries the silent
+#    half, the last case the firing half.
+#
 # The alert name, `for` and labels here are the deployed ones, so a case that
 # fires here is a case Grafana calls Alerting.
 evaluation_interval: 12h
@@ -51,14 +57,22 @@ tests:
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53-worker-capable"}'
         values: '0+93750000x14'
-      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashe-worker-capable"}'
         values: '0+100000000x14'
-      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashe-worker-capable"}'
         values: '0+90625000x14'
       - series: 'litellm_input_tokens_metric_total{model_id="cline-ling30-worker-capable"}'
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="cline-ling30-worker-capable"}'
         values: '0+81250000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+87000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+83172000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+13000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+7800000x14'
     alert_rule_test:
       - eval_time: 7d
         alertname: PromptCacheShareBelowBaseline
@@ -112,11 +126,11 @@ tests:
             (
               label_replace(vector(0.9396), "vendor", "stepfun", "", "")
               or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
-              or label_replace(vector(0.9221), "vendor", "opencodego", "", "")
+              or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
               or label_replace(vector(0.9259), "vendor", "minimax", "", "")
               or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
               or label_replace(vector(0.9056), "vendor", "zai", "", "")
-              or label_replace(vector(0.8723), "vendor", "synthetic", "", "")
+              or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
               or label_replace(vector(0.8231), "vendor", "straitly", "", "")
               or label_replace(vector(0.7566), "vendor", "cline", "", "")
               or label_replace(vector(0.4331), "vendor", "anthropic", "", "")
@@ -178,3 +192,100 @@ tests:
       - eval_time: 7d
         alertname: PromptCacheShareBelowBaseline
         exp_alerts: []
+
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+87000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-capable"}'
+        values: '0+78300000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+13000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="opencodego-ds41flash-worker-cheap"}'
+        values: '0+7800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: opencodego
+
+  # synthetic on the shape that filed #10654: a senior row at 0.69 (37% of the
+  # tokens) beside a worker-capable row at 0.87 reads 0.803, silent under 0.7700.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+37000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+25530000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+63000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+54810000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The same mix with the senior row's cache gone reads 0.548 and fires.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+37000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flash-senior"}'
+        values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+63000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="synthetic-glm53flashb-worker-capable"}'
+        values: '0+54810000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: synthetic
+
+  # zai on the shape that filed #10692: the one-shot senior row at 0.06 (40% of
+  # the tokens) beside a worker-capable row at 0.93 is not judged, so zai reads
+  # 0.93 and stays silent. Left in, it would read 0.598 and fire.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+55800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The worker-capable row at 0.88 still fires beside the same senior row.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+40000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flash-senior"}'
+        values: '0+2400000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+60000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="zai-glm53flashb-worker-capable"}'
+        values: '0+52800000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: zai

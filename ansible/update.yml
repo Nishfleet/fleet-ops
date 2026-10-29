@@ -7,7 +7,11 @@
 #              its hold-risky guard keeps running), stop the user timers that
 #              start work, wait until no runner has a job (agent jobs time out
 #              at 60 min), then stop the runner services so no CI job lands
-#              on a half-upgraded box.
+#              on a half-upgraded box. With the box quiet, take one restic
+#              snapshot through restic-r2-backup.service (which dumps the
+#              LiteLLM database itself): no step below runs without a
+#              restorable state, and a missing or failed backup fails the
+#              run rather than being skipped quietly (fleet-ops#9965).
 #   2. prune   apt's download cache, stopped Docker containers created over a
 #              day ago (never a Cua-managed one), dangling images and old
 #              build cache, the npm and uv caches.
@@ -18,7 +22,10 @@
 #              libraries (needrestart), then each user-level tool through its
 #              own official updater (Hermes on its stable channel with its
 #              services restarted, tincan with its idle listeners restarted,
-#              the npm and uv tools (yt-dlp is a uv tool)) and the redis container through
+#              the npm and uv tools (yt-dlp is a uv tool and must never
+#              self-update: that replaced its running binary and broke it,
+#              fleet-ops#9971, now blocked by .semgrep/no-glue.yml)) and the
+#              redis container through
 #              `podman auto-update`. Stale npm staging dirs go first, so
 #              one interrupted self-update cannot fail `npm update`.
 #   4. resume  In `always:`, so it runs even when a step above failed: start the
@@ -258,6 +265,36 @@
             state: stopped
           loop: "{{ runner_units.stdout_lines | map('split') | map('first') | list }}"
           register: runners_stopped
+
+        # The safety net before the first update step: a restic snapshot of
+        # the box as it stands, so every change below has a restorable state
+        # to return to (fleet-ops#9965). The service's own ConditionPathExists
+        # would skip it silently, so the env file is checked first; a failed
+        # or unconfigured backup fails the run here (the always: block below
+        # still resumes the fleet). The service dumps the LiteLLM database in
+        # its own ExecStartPre; this run adds no separate dump.
+        - name: Back the box up before anything changes
+          block:
+            - name: Check the backup's configuration
+              ansible.builtin.stat:
+                path: /etc/restic/netcup-r2.env
+              register: backup_env
+
+            - name: Refuse to update a box that cannot be restored
+              ansible.builtin.assert:
+                quiet: true
+                that: backup_env.stat.exists
+                fail_msg: >-
+                  restic-r2-backup.service is not configured
+                  (/etc/restic/netcup-r2.env is missing), so no update step
+                  rolls forward.
+
+            - name: Run the backup and wait for it to finish
+              ansible.builtin.command:
+                argv: [systemctl, start, restic-r2-backup.service]
+              register: pre_update_backup
+              timeout: 3600
+              changed_when: true
 
         - name: Record tool versions before the update
           become: true
@@ -952,6 +989,39 @@
           changed_when: false
           ignore_errors: true
 
+        # GitHub's compare status is `diverged`, `ahead`, `behind` or `identical`
+        # (https://docs.github.com/en/rest/commits/commits#compare-two-commits):
+        # `behind` and `identical` pass, `ahead` and `diverged` fail, and no
+        # answer at all (404, no network, no gh login) fails too, because a
+        # check that waves itself through when it cannot run is not a check
+        # (fleet-ops#10144).
+        - name: Check every git extension pin is on its repo's default branch
+          become: true
+          become_user: nish
+          environment: "{{ nish_env }}"
+          ansible.builtin.shell:
+            executable: /bin/bash
+            cmd: |
+              specs=$(jq -r '.packages[] | select(type == "string" and startswith("git:github.com/"))' "${HOME}/.pi/agent/settings.json") || {
+                echo "could not read the git pins from settings.json"; exit 1; }
+              bad=0
+              while IFS= read -r spec; do
+                [ -n "${spec}" ] || continue
+                repo=${spec#git:github.com/}; repo=${repo%@*}; sha=${spec##*@}
+                if status=$(gh api "repos/${repo}/compare/HEAD...${sha}" --jq .status 2>&1); then
+                  case "${status}" in
+                    identical|behind) ;;
+                    *) echo "${spec} is not on the default branch (${status})"; bad=1 ;;
+                  esac
+                else
+                  echo "no answer from GitHub for ${spec}: ${status}"; bad=1
+                fi
+              done <<< "${specs}"
+              exit "${bad}"
+          register: off_branch_pins
+          changed_when: false
+          ignore_errors: true
+
       always:
         - name: Start the runner services this run stopped
           ansible.builtin.systemd_service:
@@ -1152,8 +1222,18 @@
               when: reboot_issue.stdout | int == 0
 
         - name: Report the run
+          vars:
+            tincan_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
           ansible.builtin.debug:
             msg:
+              # One plain line per update this run checked but did not apply,
+              # with the reason, so nothing is held back silently (#9965).
+              checked_not_applied: >-
+                {{ (['Cua Spaces ' ~ cua_target ~ ' not installed, ' ~ ((cua_installed | default({})).stdout | default('unknown')) ~ ' kept: a desk agent run was busy. The next run tries again.']
+                    if cua_desk_busy | default(false) | bool else [])
+                   + (tincan_busy | map('regex_replace', '^(.*)$', 'tincan listener \1 not restarted on the new build: it was not idle. The next upgrade restarts it.') | list)
+                   + (['Reboot not done: ' ~ ((reboot_pkgs | default({})).stdout_lines | default([]) | join(', ') | default('unknown packages', true)) ~ ' need it. Only Nish starts a reboot, from the open reboot issue.']
+                      if reboot_flag.stat.exists else []) }}
               dispatch_still_paused: "{{ dispatch_still_paused | default('unknown: the resume block did not finish') }}"
               stale_pause_cleared: "{{ (stale_cleared | default({})).results | default([]) | map(attribute='item') | list }}"
               dispatch_paused: "{{ (dispatch_paused | default({})).results | default([]) | map(attribute='item.item') | list }}"
@@ -1178,8 +1258,9 @@
               app_versions_after: "{{ (app_versions_after | default({})).results | default([]) | map(attribute='stdout') | map('default', '') | map('trim') | list }}"
               hermes_banned_tools_removed: "{{ (hermes_banned_tools | default({})).files | default([]) | map(attribute='path') | list }}"
               hermes_services_restarted: "{{ (hermes_restart | default({})).results | default([]) | map(attribute='item') | list }}"
+              pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
-              tincan_listeners_busy: "{{ ((tincan_units | default({})).stdout_lines | default([])) | difference(tincan_idle | default([])) }}"
+              tincan_listeners_busy: "{{ tincan_busy }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"
@@ -1189,6 +1270,7 @@
                 upgraded: "{{ cua_upgrade | default(false) }}"
                 desk_busy: "{{ cua_desk_busy | default('unknown') }}"
               npm_stage_dirs_removed: "{{ (npm_stage_dirs | default({})).files | default([]) | map(attribute='path') | list }}"
+              git_pins_off_default_branch: "{{ (off_branch_pins | default({})).stdout_lines | default([]) | list }}"
               reboot_required: "{{ reboot_flag.stat.exists }}"
 
         - name: Fail loudly if any step or check went wrong
@@ -1204,6 +1286,7 @@
               - "not (hermes_update | default({})).failed | default(false)"
               - "not (hermes_restart | default({})).failed | default(false)"
               - "not (tincan_upgrade | default({})).failed | default(false)"
+              - "not (pre_update_backup | default({})).failed | default(false)"
               - "(hermes_banned_removed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_cgroups | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "(tincan_procs | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
@@ -1214,6 +1297,8 @@
               - "not (router_before_smoke | default({})).failed | default(false)"
               - "(unpinned_extensions | default({})).rc | default(0) == 0"
               - "(unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
+              - "(off_branch_pins | default({})).rc | default(0) == 0"
+              - "(off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | length == 0"
               - "(dispatch_resumed | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length == 0"
               - "dispatch_still_paused is defined and dispatch_still_paused | length == 0"
               - "(sweep_result | default({})).results | default([]) | map(attribute='stdout') | reject('match', '^accepted: ') | reject('equalto', 'success') | list | length == 0"
@@ -1232,6 +1317,7 @@
               tincan upgrade: {{ (tincan_upgrade | default({})).stderr | default('ok') | truncate(300) }};
               pi smoke: {{ (('reply ' ~ (pi_smoke.stdout | default('', true) | trim)) if (pi_smoke.stdout | default('', true) | trim) else ('no reply, stderr: ' ~ (pi_smoke.stderr | default('', true) | trim | truncate(300)))) if pi_smoke is defined else 'not run, an earlier step in the block failed' }};
               unpinned pi extensions: {{ (unpinned_extensions | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) }};
+              git pins off the default branch: {{ (off_branch_pins | default({'stdout_lines': []})).stdout_lines | default([]) | join(', ') | default('none', true) if off_branch_pins is defined else 'not run, an earlier step in the block failed' }};
               Cua Spaces update: {{ cua_update_failed | default('ok') }};
               podman auto-update: {{ (podman_autoupdate | default({})).stdout_lines | default(['ok']) }} {{ (podman_autoupdate | default({})).stderr | default('') }};
               failed units: {{ failed_system.stdout_lines + failed_user.stdout_lines }};

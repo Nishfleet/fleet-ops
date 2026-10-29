@@ -1,20 +1,21 @@
-"""Agent runners are sized to the box: 1-10 stay, 11-36 are retired (fleet-ops#10480)."""
+"""Agent runners are sized to the box: 1-30 stay, 31-36 are retired (fleet-ops#10480; 30 since 2026-10-28)."""
 
 from pathlib import Path
 
 import yaml
+import ansible_host
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAY = yaml.safe_load((ROOT / "ansible/host.yml").read_text())[0]
+PLAY = ansible_host.play()
 
 
 def tasks():
     return {t["name"]: t for t in PLAY["tasks"] if "name" in t}
 
 
-def test_retired_ids_are_11_to_36():
+def test_retired_ids_are_31_to_36():
     expr = PLAY["vars"]["agent_runner_retired_ids"]
-    assert expr == "{{ range(11, 37) | list }}"
+    assert expr == "{{ range(31, 37) | list }}"
 
 
 def test_retired_units_are_stopped_then_removed():
@@ -30,4 +31,4 @@ def test_retired_units_are_stopped_then_removed():
 
 def test_nothing_installs_agent_runner_units_any_more():
     assert not (ROOT / "ansible/templates/actions.runner.Nishfleet.netcup-agent.service.j2").exists()
-    assert "agent_runner_ids" not in (ROOT / "ansible/host.yml").read_text()
+    assert "agent_runner_ids" not in ansible_host.text()
