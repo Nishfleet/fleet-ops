@@ -100,3 +100,36 @@ tests:
     exp_samples:
     - labels: '{requested_model="jev-latest"}'
       value: 30
+- interval: 1m
+  name: a row parked on a 401 fires
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="commandcode-glm53flashb-worker-capable",litellm_model_name="worker-capable",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",exception_status="401"}'
+    values: '0+1x120'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 60m
+    exp_alerts:
+    - exp_labels:
+        model_id: commandcode-glm53flashb-worker-capable
+        grafana_folder: fleet
+        severity: warning
+        signal: router-dead-row
+      exp_annotations: {}
+- interval: 1m
+  name: a 401 row that stopped parking stays quiet
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="commandcode-glm53flashb-worker-capable",litellm_model_name="worker-capable",api_base="https://api.commandcode.ai/provider/v1",api_provider="openai",exception_status="401"}'
+    values: '0+1x4 4+0x200'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 120m
+    exp_alerts: []
+- interval: 1m
+  name: a 429 quota wall is a resting row, not a dead one
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="zai-glm53flashc-worker-capable",litellm_model_name="worker-capable",api_base="https://api.z.ai/api/coding/paas/v4",api_provider="openai",exception_status="429"}'
+    values: '0+1x120'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 60m
+    exp_alerts: []

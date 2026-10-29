@@ -289,7 +289,7 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
@@ -326,8 +326,12 @@ jobs:
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
-            # $HOME is the line's only expansion; no eval of file text.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
+            # The line's own variables expand, and so does its ${VAR:+...}, which
+            # leaves nothing behind on a runner that sets no VAR. No eval of file
+            # text. bwrap refuses the unexpanded token, so a line that keeps it
+            # fails here. The pattern escapes its $, {, } and " so the text it
+            # matches stays literal.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
             read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control"
             # No engine but claude can read either Claude seat's login: the bound
@@ -352,7 +356,7 @@ jobs:
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
