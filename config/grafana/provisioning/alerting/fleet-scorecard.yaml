@@ -5,12 +5,19 @@
 # data source and the SQL expression returns 1 only when both windows miss. Routing as
 # queue-stuck.yaml: severity warning, catch-all route files the issue. No data is OK.
 #
-# The run-failure rule reads two 3h windows a day apart, not two 24h windows: GitHub caps a
-# workflow-run list at 1,000 rows, agent-dispatch.yml runs about 200 times an hour, and the
-# newest 1,000 rows therefore cover about 4h, so a 24h window can never be read and its day was
-# always empty (fleet-ops#10964). Each window has its own target, so neither can spend the
-# other's 1,000 rows, and 3h keeps both reads inside Grafana's 45s evaluation timeout. The
-# products rule reads pull requests, which are far fewer than runs, so it keeps 24h windows.
+# The run-failure rule reads two 1h windows a day apart, the one that ended an hour ago and the
+# same hour a day earlier: GitHub stops a filtered workflow-run list at 1,000 rows and the stock
+# plugin pages 100 at a time, so a read costs one page per 100 runs in its window. Measured
+# 2026-10-29 on agent-dispatch.yml: 163 runs in an hour, 714 in the last 3h, 1,106 in the 24-27h
+# window, and about 2.8s a page, so the 3h reads took 22.1s and 29.3s of Grafana's 45s evaluation
+# timeout and the day-ago one was cancelled at 45s with `fetching workflow runs: context
+# canceled`, which the rule reported as DatasourceError (fleet-ops#11042). At 1h the four reads
+# take 0.3s, 0.3s, 6.8s and 4.4s, and 24h stays unreadable. Each window ends an hour before the
+# evaluation because a run created in the newest minutes has no conclusion yet, so the
+# finished-run filter below drops it and no later evaluation sees it: 10 of 168 runs were
+# unfinished in the hour that ended now, 0 in the settled one, and the p99 run took 51 min. Each
+# window has its own target, so neither can spend the other's rows. The products rule reads pull
+# requests, which are far fewer than runs, so it keeps 24h windows.
 #
 # Five of the six scorecard numbers have a source: the failed share (every non-success
 # finished run, because GitHub run data has no infra-versus-test split), products ahead of
@@ -32,11 +39,11 @@ groups:
     interval: 1h
     rules:
       - uid: scorecard-run-failure-share
-        title: Agent run failure share over 2% in the same 3h window two days running
+        title: Agent run failure share over 2% in the same 1h window two days running
         condition: E
         data:
           - refId: A
-            relativeTimeRange: {from: 10800, to: 0}
+            relativeTimeRange: {from: 7200, to: 3600}
             datasourceUid: fleet-github
             model:
               datasource: {type: grafana-github-datasource, uid: fleet-github}
@@ -46,7 +53,7 @@ groups:
               options: {owner: Nishfleet, repository: fleet-ops, workflow: agent.yml}
               refId: A
           - refId: B
-            relativeTimeRange: {from: 97200, to: 86400}
+            relativeTimeRange: {from: 93600, to: 90000}
             datasourceUid: fleet-github
             model:
               datasource: {type: grafana-github-datasource, uid: fleet-github}
@@ -56,7 +63,7 @@ groups:
               options: {owner: Nishfleet, repository: fleet-ops, workflow: agent.yml}
               refId: B
           - refId: C
-            relativeTimeRange: {from: 10800, to: 0}
+            relativeTimeRange: {from: 7200, to: 3600}
             datasourceUid: fleet-github
             model:
               datasource: {type: grafana-github-datasource, uid: fleet-github}
@@ -66,7 +73,7 @@ groups:
               options: {owner: Nishfleet, repository: fleet-ops, workflow: agent-dispatch.yml}
               refId: C
           - refId: D
-            relativeTimeRange: {from: 97200, to: 86400}
+            relativeTimeRange: {from: 93600, to: 90000}
             datasourceUid: fleet-github
             model:
               datasource: {type: grafana-github-datasource, uid: fleet-github}
@@ -85,10 +92,10 @@ groups:
               expression: |-
                 SELECT CASE WHEN t0 > 0 AND t1 > 0 AND f0 * 50 > t0 AND f1 * 50 > t1 THEN 1 ELSE 0 END AS missed
                 FROM (
-                  SELECT SUM(CASE WHEN age < 10800 THEN 1 ELSE 0 END) AS t0,
-                         SUM(CASE WHEN age < 10800 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f0,
-                         SUM(CASE WHEN age >= 86400 AND age < 97200 THEN 1 ELSE 0 END) AS t1,
-                         SUM(CASE WHEN age >= 86400 AND age < 97200 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f1
+                  SELECT SUM(CASE WHEN age >= 3600 AND age < 7200 THEN 1 ELSE 0 END) AS t0,
+                         SUM(CASE WHEN age >= 3600 AND age < 7200 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f0,
+                         SUM(CASE WHEN age >= 90000 AND age < 93600 THEN 1 ELSE 0 END) AS t1,
+                         SUM(CASE WHEN age >= 90000 AND age < 93600 AND conclusion <> 'success' THEN 1 ELSE 0 END) AS f1
                   FROM (
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(created_at) AS age, conclusion
                     FROM (SELECT created_at, conclusion FROM A UNION ALL SELECT created_at, conclusion FROM B UNION ALL SELECT created_at, conclusion FROM C UNION ALL SELECT created_at, conclusion FROM D) AS all_runs
@@ -99,7 +106,7 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}More than 2% of finished agent and dispatch runs in fleet-ops failed in the same 3h window on two consecutive days.{{ else }}The fleet cannot read GitHub runs for the Fleet scorecard failure-share rule, so it is blind until the read is fixed.{{ end }}'
+          summary: '{{ if $values }}More than 2% of finished agent and dispatch runs in fleet-ops failed in the same 1h window on two consecutive days.{{ else }}The fleet cannot read GitHub runs for the Fleet scorecard failure-share rule, so it is blind until the read is fixed.{{ end }}'
           description: '{{ if $values }}Scorecard target: under 2% (fleet-ops#10711). Find what fails most (a runner, a seat, a lane), fix that, and prove the share fell. Dashboard: Fleet scorecard.{{ else }}Check the GitHub data source in Grafana.{{ end }} Runs: https://github.com/Nishfleet/fleet-ops/actions/workflows/agent.yml'
         labels: {severity: warning, signal: fleet-scorecard}
         isPaused: false
