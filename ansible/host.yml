@@ -389,6 +389,18 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    # A glob, so a runner added after this line was written restarts too, and a no-match
+    # glob is a success, so a host with no runner installed still converges. try-restart
+    # leaves a runner that is already stopped stopped. A job running on a restarted
+    # runner fails; every runner started before its current drop-in is the case this
+    # restores (fleet-ops#10866).
+    - name: Restart the agent runners
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - try-restart
+          - actions.runner.Nishfleet.netcup-agent-*.service
+
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
       ansible.builtin.systemd_service:
