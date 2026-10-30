@@ -6,7 +6,7 @@ Reasons and switches that used to sit as comments in the workflow files; they mo
 
 ```
 Events that put work on the agent queue. Repo variable AGENT_MODE:
-  shadow (default) = only issues also labelled shadow-actions, no rework
+  shadow (default) = nothing dispatches
   live             = every agent-ready issue, plus rework on red CI
 Repo variable ORCHESTRATE:
   off                  = the orchestrate job never starts
