@@ -1522,13 +1522,21 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
 RUNNER_DROPIN = ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf"
 
 
-def test_a_runner_is_killed_at_a_pressure_a_stalled_job_reaches() -> None:
+def test_runner_pressure_limit_kills_only_a_stalled_cgroup() -> None:
+    assert RUNNER_DROPIN.is_file(), f"{RUNNER_DROPIN.relative_to(ROOT)} is not in the repo, so a git pull carries no edit to it"
     keys = effective_directives(RUNNER_DROPIN)
     assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
+    assert _last(keys, "MemoryHigh") == "4G", "the high line the 2026-10-05 sizing set is gone"
     limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
-    assert limit == 40, (
-        "a job stalled at its MemoryHigh reads 45-56% memory pressure and a busy one reads 0.00, so the kill line belongs at 40%: 80% killed nothing (fleet-ops#11123)"
+    assert 1 <= limit <= 40, (
+        "a cgroup pinned at its MemoryHigh reads 45-56% memory pressure and a busy one reads 0.00, so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), at 0 it kills every job"
     )
+    shadow = [
+        p.name
+        for p in RUNNER_DROPIN.parent.glob("*.conf")
+        if p.name != RUNNER_DROPIN.name and "ManagedOOMMemoryPressureLimit" in p.read_text()
+    ]
+    assert not shadow, f"{shadow} also set ManagedOOMMemoryPressureLimit for the runner units, so 10-agent.conf does not decide"
 
 
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
