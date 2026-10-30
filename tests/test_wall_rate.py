@@ -55,7 +55,7 @@ def _runs_fixture(fake, runs, timeouts=(), early_failures=()):
         (fake / f"ann-{900 + rid}.json").write_text(json.dumps(msgs))
 
 
-def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509"):
+def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509", wall_at="0230"):
     fake = tmp_path / "fake"
     fake.mkdir()
     _runs_fixture(fake, runs, timeouts, early_failures)
@@ -63,7 +63,7 @@ def _run(tmp_path, runs, timeouts=(), early_failures=(), repo="Nishfleet/0509"):
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
     env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": repo,
+           "GITHUB_REPOSITORY": repo, "WALL_AT": wall_at,
            "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
            "WALL_MINUTES": _env_var("WALL_MINUTES")}
     return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
@@ -104,6 +104,13 @@ def test_target_boundary_is_red(tmp_path):
     assert "3 of 20" in r.stdout + r.stderr
 
 
+def test_off_the_daily_time_gate_is_a_silent_skip(tmp_path):
+    runs = [_wr(1, "success", _S, _E1_H)]
+    r = _run(tmp_path, runs, wall_at="0930")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout == ""
+
+
 def test_short_run_is_not_a_real_run(tmp_path):
     r = _run(tmp_path, [_wr(1, "failure", _S, "2026-10-10T10:01:00Z")], timeouts=(1,))
     assert r.returncode == 0
@@ -114,6 +121,25 @@ def test_wall_death_needs_the_annotation_not_the_duration(tmp_path):
     r = _run(tmp_path, [_wr(70, "failure", _S, _E1_H)], early_failures=(70,))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "0 of 1" in r.stdout
+
+
+def test_job_level_timeout_text_counts_too(tmp_path):
+    runs = [_wr(n, "success", _S, _E1_H) for n in range(3, 12)] + [_wr(12, "failure", _S, "2026-10-10T10:56:00Z")]
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    _runs_fixture(fake, runs, timeouts=(), early_failures=())
+    (fake / "jobs-12.json").write_text(json.dumps({"jobs": [{"id": 912, "steps": [{"name": "Worker"}]}]}))
+    (fake / "ann-912.json").write_text(json.dumps(
+        [{"message": "The job running on runner host has exceeded the maximum execution time of 55 minutes."}]))
+    gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
+    env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
+           "GITHUB_REPOSITORY": "Nishfleet/0509", "WALL_AT": "0230",
+           "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
+           "WALL_MINUTES": _env_var("WALL_MINUTES")}
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 of 10" in r.stdout
 
 
 def test_cancelled_and_untimely_runs_are_not_counted(tmp_path):
@@ -127,14 +153,14 @@ def test_missing_started_at_falls_back_to_created_at(tmp_path):
     runs = [{"id": 8, "conclusion": "failure", "created_at": _S,
              "updated_at": "2026-10-10T10:50:00Z"}]
     runs += [_wr(n, "success", _S, _E1_H) for n in range(9, 17)]
-    fake = None  # fixture built inline
-    tmp = tmp_path / "fake"; tmp.mkdir(); fake = tmp
+    fake = tmp_path / "fake"
+    fake.mkdir()
     (fake / "runs.json").write_text(json.dumps({"workflow_runs": runs}))
     (fake / "jobs-8.json").write_text(json.dumps({"jobs": [{"id": 908, "steps": [{"name": "Worker"}]}]}))
     (fake / "ann-908.json").write_text(json.dumps([{"message": "The action 'Worker' has timed out after 55 minutes."}]))
     gh = fake / "gh"; gh.write_text(FAKE_GH); gh.chmod(0o755)
     env = {**os.environ, "FAKE_DIR": str(fake), "PATH": f"{fake}:{os.environ['PATH']}",
-           "GITHUB_REPOSITORY": "Nishfleet/0509",
+           "GITHUB_REPOSITORY": "Nishfleet/0509", "WALL_AT": "0230",
            "WALL_RATE_MAX": _env_var("WALL_RATE_MAX"), "WALL_MIN_SECS": _env_var("WALL_MIN_SECS"),
            "WALL_MINUTES": _env_var("WALL_MINUTES")}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _run_block()],
@@ -146,9 +172,9 @@ def test_missing_started_at_falls_back_to_created_at(tmp_path):
 def test_shape_pins_the_daily_read():
     cond = _yq(f".jobs.{JOB}.if")
     assert "FLEET_DISPATCH_PAUSED != 'true'" in cond, f"{JOB} must skip on FLEET_DISPATCH_PAUSED"
-    assert "github.event.schedule == '30 2 * * *'" in cond, f"{JOB} not keyed to the 02:30 cron: {cond}"
+    assert "github.event.schedule == '*/10 * * * *'" in cond, f"{JOB} not on the sweep cron: {cond}"
     src = open(WF).read()
-    assert "cron: '30 2 * * *'" in src, f"{JOB}: the daily cron line is missing"
+    assert 'WALL_AT:-$(date -u +%H%M)}" = 0230' in src, f"{JOB}: the once-a-day clock gate is missing"
     run = _run_block()
     for needle in ('.name == "Worker"', "has timed out after", "check-runs", "$WALL_RATE_MAX", "run_started_at"):
         assert needle in run, f"{JOB} run block lost: {needle}"

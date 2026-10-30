@@ -207,8 +207,6 @@ def test_middle_goes_to_orchestrator(tmp_path):
 
 
 def test_wall_fit_blocked_goes_to_orchestrator_and_names_the_reason(tmp_path):
-    # The admit verdict is high but the estimate does not fit one worker session
-    # (fleet-ops#9288): the orchestrator lane gets it, and the comment names size.
     r, w, _ = _run(tmp_path, resp=_answer(0.96, wall=0.2))
     assert r.returncode == 0, r.stderr
     assert "--add-label needs-orchestrator --remove-label needs-triage" in w
