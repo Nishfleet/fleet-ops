@@ -33,6 +33,7 @@ POOLS = {
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
 USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+KEY = "nishfleet-worker.private-key.pem"
 
 
 def values(text: str, key: str) -> list[str]:
@@ -352,11 +353,20 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro"]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree and the seat token files the unjailed steps read. The App key
+    # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
+    for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
+    assert [token for token in bound.split() if "/.config/fleet-worker" in token] == []
+    loaded = merged_values(agent, "LoadCredential")
+    assert len(loaded) == 1, loaded
+    name, _, source = loaded[0].partition(":")
+    # A wrong name, directory or file is a unit that fails at start, so the whole value
+    # is checked here, and by its tail: an absolute home path in a test is the public
+    # detail this issue takes out of the repo.
+    assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
 
 
 FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")

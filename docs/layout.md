@@ -78,16 +78,19 @@
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `systemd/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish), exactly
-  `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
+- `rootfs/etc/systemd/system/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish),
+  exactly `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
   new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
   `harness.name=hermes`, `collection_method=poll` events to
   `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
   have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
   (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
-  again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
-  deploy. Off switch: remove that step and its enable line, then
-  `systemctl --user disable --now beacon-hermes-poll.service`.
+  again, it would capture twice). A system unit and not a user one (fleet-ops#11089): it parses
+  Telegram text, and a unit the user manager starts gets no mount sandbox on this box
+  (`docs/user-unit-sandboxing.md`), so it runs as `User=nish` under `ProtectSystem=strict` and
+  `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
+  and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
+  switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`

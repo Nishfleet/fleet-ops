@@ -33,6 +33,13 @@ hand-placed host state, root- and service-owned: any process that can reach
 the loopback listener already runs as nish, so a credential nish could read
 would protect nothing.
 
+It also holds the dispatch end of the same path: a contact point that files an
+issue writes a title prefix, and `.github/workflows/agent.yml`'s gate closes a
+repeated alert as a duplicate of its older twin only when the title starts with
+one of the prefixes in its `--argjson titles` list. A prefix the list does not
+name files one issue per firing and closes nothing (fleet-ops#11086), so every
+prefix a filing contact point writes is checked against the gate's own list.
+
 usage: alert_routes_check.py [provisioning/alerting dir]
 """
 import json
@@ -255,6 +262,20 @@ def selftest():
     assert unguarded_refs('{{- with $labels.a -}} for {{ . }}{{ end }}') == []
     assert unguarded_refs('{{ if gt .Value 0.0 }}maxed{{ else }}idle{{ end }}') == []
     assert unguarded_refs('{{ printf "%v %v" $values $values.D }}') == ["values", "values.D"]
+    repo = Path(__file__).resolve().parents[1]
+    assert TITLE_PRINTF.search('{{ coll.Dict "title" (printf "cost alarm: %s %s" .Labels.a) }}').group(1) == "cost alarm: "
+    assert TITLE_PRINTF.search('{{ printf "a body fragment" }}{{ $$row = printf "%s (proxy-level)" .Labels.b }}{{ coll.Dict "title" (printf "router dead row: %s" $$row) }}').group(1) == "router dead row: "
+    filing = {"settings": {"url": "https://api.github.com/repos/o/r/issues", "payload": {"template": '{{ coll.Dict "title" (printf "alert: %s" .A) }}'}}}
+    assert issue_title_prefixes({"filing": {"receivers": [filing]}, "telegram": {"receivers": [{"settings": {"url": "https://telegram.example/send", "payload": {"template": "no title"}}}]}}) == {"filing": {"alert: "}}
+    assert issue_title_prefixes({"filing": {"receivers": [{**filing, "settings": {**filing["settings"], "payload": {"template": "no title printf"}}}]}}) == {"filing": set()}
+    titles, why = gate_titles(repo)
+    assert why is None, why
+    assert titles, "the live gate names no title prefix at all"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / AGENT_GATE).parent.mkdir(parents=True)
+        (root / AGENT_GATE).write_text("a gate with no --argjson titles list\n")
+        assert gate_titles(root)[1]
     audience_policy = {"receiver": "root", "repeat_interval": "24h", "routes": [
         {"receiver": "nish-ask-dispatch", "repeat_interval": "7d",
          "object_matchers": [["audience", "=", "nish"],
@@ -447,6 +468,76 @@ def dead_key_shape(rules, points, bad):
     names = set(re.findall(r'"([^"]+)"', filed[0])) if filed else set()
     if "needs-nish-decision" not in names or "agent-ready" in names:
         bad.append("router-dead-key-dispatch: a rejected provider key is Nish's to renew, so its issue is filed needs-nish-decision and never agent-ready, or a worker run and a hand-off are spent on a decision only Nish can take (fleet-ops#11081)")
+
+
+AGENT_GATE = ".github/workflows/agent.yml"
+# Anchored on the title dict: a template that formats a body fragment with a
+# literal printf before it builds the title would otherwise hand over the wrong
+# prefix, and the gate would be judged against a string no title starts with.
+TITLE_PRINTF = re.compile(r'"title" \(printf "([^"%]+)')
+
+
+def issue_title_prefixes(points):
+    """{contact point: the prefixes its issue titles start with} for every contact
+    point that files a GitHub issue. A point that files but writes no literal
+    'x: ' title prefix maps to an empty set: a title built from a label value
+    cannot be prefix-matched, so the twin check never closes its duplicate
+    (fleet-ops#11086)."""
+    out = {}
+    for name, point in sorted(points.items()):
+        prefixes, files = set(), False
+        for rcv in point.get("receivers") or []:
+            settings = rcv.get("settings") or {}
+            if "/issues" not in str(settings.get("url", "")):
+                continue
+            files = True
+            found = TITLE_PRINTF.search((settings.get("payload") or {}).get("template", ""))
+            if found:
+                prefixes.add(found.group(1))
+        if files:
+            out[name] = prefixes
+    return out
+
+
+def gate_titles(repo):
+    """(the title prefixes agent.yml's twin check closes as duplicates, why the
+    list could not be read). Read out of the workflow itself, so a copy of the
+    list cannot drift from the one the gate runs."""
+    text = (repo / AGENT_GATE).read_text()
+    found = re.search(r"^ *if jq -e --argjson titles '(\[[^']*\])'", text, re.M)
+    if not found:
+        return None, (f"{AGENT_GATE}: the dispatch gate's twin check no longer names its alert title prefixes in one "
+                      f"--argjson titles list, or that line was reformatted")
+    try:
+        return json.loads(found.group(1)), None
+    except json.JSONDecodeError as e:
+        return None, f"{AGENT_GATE}: the twin check's title prefix list is not a JSON array ({e})"
+
+
+def alert_titles_agree(points, repo, bad):
+    """Every title prefix an issue-filing contact point writes is in the dispatch
+    gate's twin list, and the list holds nothing stale."""
+    written = issue_title_prefixes(points)
+    gate, why = gate_titles(repo)
+    findings = [why] if why else []
+    if not findings:
+        if not written:
+            findings.append("no contact point under the scanned provisioning dir files a GitHub issue, "
+                            "so the gate's twin list is checked against nothing")
+        for name, prefixes in sorted(written.items()):
+            if not prefixes:
+                findings.append(f"{name} files an issue whose title carries no 'x: ' printf prefix, so the twin check can never match it")
+            for prefix in sorted(prefixes - set(gate)):
+                findings.append(f"{name} files issues titled {prefix!r}, which the dispatch gate's twin check does not list, "
+                                f"so a repeated alert files one issue per firing and nothing closes the older twin (fleet-ops#11086)")
+        listed = {prefix for prefixes in written.values() for prefix in prefixes}
+        for prefix in gate:
+            if prefix not in listed:
+                findings.append(f"the dispatch gate's twin list holds {prefix!r}, which no issue-filing contact point writes")
+    if findings:
+        bad += findings
+    else:
+        print(f"alert titles: {len(written)} contact points file issues, and the dispatch gate's twin list covers every title prefix")
 
 
 ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
@@ -675,6 +766,7 @@ def audience_check(rules, policy, points, bad):
 
 def main(root):
     selftest()
+    repo = Path(__file__).resolve().parents[1]
     rules, policy, contacts, contacts_doc, points = [], None, set(), [], {}
     for f in sorted(Path(root).glob("*.y*ml")):
         doc = yaml.safe_load(f.read_text()) or {}
@@ -736,7 +828,8 @@ def main(root):
     if aud:
         print(f"audience: {len(aud)} rule(s) file for a seat instead of the worker queue -> {aud}")
     annotation_guards(rules, bad)
-    bad += alertmanager_auth(Path(__file__).resolve().parents[1])
+    alert_titles_agree(points, repo, bad)
+    bad += alertmanager_auth(repo)
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
     units = [{"signal": "prometheus", "severity": "warning", "alertname": "Prometheus alert firing",
