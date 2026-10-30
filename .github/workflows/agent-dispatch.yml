@@ -1169,7 +1169,10 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Bounded concurrency (fleet-ops#11167): the `handoff` label is held by 5 runners, so a sixth hand-off
+    # waits for a free runner at GitHub, with no API calls. 5 is the plans' measured carry of 4 to 6 on
+    # 2026-10-30 (#11146, #11160). Raise it only when router capacity grows. Runner labels live at GitHub.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops","handoff"]') || fromJSON('["self-hosted","agent","handoff"]') }}  # fleet-ops#10717
     # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
     # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
     # margin here is slack, not the budget the session runs in (fleet-ops#11059).
