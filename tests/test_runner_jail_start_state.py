@@ -465,10 +465,9 @@ def test_an_existing_mount_point_keeps_its_owner_and_mode(tmp_path: Path) -> Non
     """
     token_dir = tmp_path / "token"
     token_dir.mkdir()
-    chowned = subprocess.run([*SUDO, "chown", "1000:1000", str(token_dir)], capture_output=True).returncode == 0
-    if not chowned:
-        pytest.skip("this job cannot chown the mount point to uid 1000, so it cannot set up its own precondition")
-    os.chmod(token_dir, 0o700)
+    made = subprocess.run([*SUDO, "install", "-d", "-o", "1000", "-g", "1000", "-m", "0700", str(token_dir)], capture_output=True).returncode == 0
+    if not made:
+        pytest.skip("this job cannot make the mount point uid 1000 mode 0700, so it cannot set up its own precondition")
     proc = subprocess.run(transient_run([f"TemporaryFileSystem={token_dir}:ro"], "true"), capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     stat = token_dir.stat()
