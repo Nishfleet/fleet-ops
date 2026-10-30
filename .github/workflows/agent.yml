@@ -102,7 +102,8 @@ jobs:
           # One list: every contact point files one of these title prefixes; tests/alert_routes_check.py holds it against the provisioning templates (fleet-ops#11086).
           if jq -e --argjson titles '["cost alarm: ","router dead row: ","router dead key: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then
             t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title)
-            twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open")
+            # A cost alarm files its own issue on every page (fleet-ops#9859), so the twin check exempts it: an hourly re-file of a still-firing cost rule must stay open, not close as a duplicate of the first.
+            twin=$(jq -r --argjson i "$i" --arg t "$t" 'if ($t | startswith("cost alarm:")) then empty else [.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty end' <<<"$open")
             if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi
           fi
           for l in agent-blocked needs-split needs-orchestrator needs-nish-decision epic; do

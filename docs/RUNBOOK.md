@@ -279,7 +279,10 @@ evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy
 analytics token, from `~/.config/cloudflare/deploy-ci.env`). A firing rule opens a fleet-ops
 issue labelled `agent-ready` and `priority-now` through the webhook contact point
 `cloudflare-spend-dispatch`, and that route repeats every hour, the same cadence as the page, so a
-page of a still-firing rule never lands without an issue of its own (fleet-ops#9859). The webhook
+still-firing cost rule files an open issue per page (fleet-ops#9859: the route used to repeat every
+12 hours, and the dispatch gate closed the re-files as duplicates, so a rule that stayed firing
+paged twelve times and left one issue). A read error on the rule itself still files on the catch-all's
+daily cadence. The webhook
 sends a GitHub App installation token (issues:write on Nishfleet/fleet-ops only), see
 "Grafana's GitHub token" below. `grafana_alerting_notifications_failed_total` rising pages hermes-urgent through `cloudflare-spend-delivery.yaml`. Replay a rule by typing a past
 window into its GraphQL `filter:` in place of the `${__timeFrom:date:iso}` and `${__timeTo:date:iso}`
@@ -300,7 +303,8 @@ still-firing alert files a new issue per repeat. CI fails when a rule has no sev
 without being on the urgent list (or the reverse), a critical alert would re-send slower than
 hourly, or a cost rule's issue route repeats slower than its page (fleet-ops#9859: the spend route
 repeated every 12h while the cost rules paged hourly, so a group that stayed firing paged twelve
-times and filed one issue). To make a new rule page, add it to the list there with the reason and
+times and filed one issue), or the dispatch gate's twin check stops exempting 'cost alarm:' titles.
+To make a new rule page, add it to the list there with the reason and
 label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
 

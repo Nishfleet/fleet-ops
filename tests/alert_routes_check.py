@@ -6,8 +6,9 @@ rule carries a severity label: critical for the rules in URGENT (they page again
 at least hourly until they resolve), warning for every other rule (never pages).
 Every firing alert, whatever its severity, also reaches a webhook that files a
 fleet-ops issue. No rule may set its own notification_settings, which would
-bypass the policy tree. A cost rule's issue is filed at least as often as it
-pages, so a page never lands with no issue of its own. This reads the
+bypass the policy tree. A cost rule's firing alert files its issue at least as
+often as it pages, so a firing page never lands without an issue of its own (a
+read error on the rule still files on the catch-all's daily cadence). This reads the
 provisioning files, walks the policy tree for each rule (also for the
 DatasourceError and DatasourceNoData alerts the rule can turn into), and fails
 when any of that does not hold. Adding a paging rule
@@ -287,6 +288,9 @@ def selftest():
         (root / AGENT_GATE).parent.mkdir(parents=True)
         (root / AGENT_GATE).write_text("a gate with no --argjson titles list\n")
         assert gate_titles(root)[1]
+        assert gate_exempt(root)
+        (root / AGENT_GATE).write_text('twin=$(jq -r --argjson i "$i" --arg t "$t" \'if ($t | startswith("cost alarm:")) then empty else [.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty end\')\n')
+        assert not gate_exempt(root)
     audience_policy = {"receiver": "root", "repeat_interval": "24h", "routes": [
         {"receiver": "nish-ask-dispatch", "repeat_interval": "7d",
          "object_matchers": [["audience", "=", "nish"],
@@ -517,6 +521,18 @@ def gate_titles(repo):
         return None, f"{AGENT_GATE}: the twin check's title prefix list is not a JSON array ({e})"
 
 
+def gate_exempt(repo):
+    """Why the dispatch gate's twin check may be missing its cost-alarm
+    exemption. The spend route files one issue per page (fleet-ops#9859), so a
+    still-firing cost rule's re-file must stay open; a twin close would undo it
+    an hour later."""
+    text = (repo / AGENT_GATE).read_text()
+    if not re.search(r'startswith\("cost alarm:"\)', text):
+        return (f"{AGENT_GATE}: the dispatch gate's twin check no longer exempts 'cost alarm:' titles, so a still-firing "
+                f"cost rule's hourly re-file closes as a duplicate and the page lands with no open issue of its own (fleet-ops#9859)")
+    return None
+
+
 def alert_titles_agree(points, repo, bad):
     """Every title prefix an issue-filing contact point writes is in the dispatch
     gate's twin list, and the list holds nothing stale. The stale-prefix finding
@@ -526,6 +542,9 @@ def alert_titles_agree(points, repo, bad):
     written = issue_title_prefixes(points)
     gate, why = gate_titles(repo)
     findings = [why] if why else []
+    exempt = gate_exempt(repo)
+    if exempt:
+        findings.append(exempt)
     if not findings:
         if not gate:
             findings.append("the dispatch gate's twin check names no title prefix, so no repeated alert is closed as a duplicate")
@@ -545,7 +564,8 @@ def alert_titles_agree(points, repo, bad):
     if findings:
         bad += findings
     else:
-        print(f"alert titles: {len(written)} contact points file issues, and the dispatch gate's twin list covers every title prefix")
+        print(f"alert titles: {len(written)} contact points file issues, the dispatch gate's twin list covers every title prefix, "
+              f"and the twin check exempts cost alarms (fleet-ops#9859)")
 
 
 ACTION = re.compile(r"\{\{(.*?)\}\}", re.S)
