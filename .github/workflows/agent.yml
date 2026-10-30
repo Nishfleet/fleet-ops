@@ -411,16 +411,8 @@ jobs:
             fi
             # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
             q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
-            red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
-              8) ;; # gh's pending exit: --jq still printed any red names, empty if none
-              *) case ${red,,} in
-                   *"no required checks reported"*)
-                     red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] ||
-                       case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;;
-                   *"no checks reported"*) red= ;;
-                   *) red="unreadable ($red)" ;;
-                 esac ;;
-            esac
+            # gh's pending exit (8) means only pending checks: --jq still printed any red names, empty if none
+            red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in 8) ;; *) case ${red,,} in *"no required checks reported"*) red=$(gh pr checks "$n" -R "$REPO" --json name,bucket --jq "$q" 2>&1) || [ $? = 8 ] || case ${red,,} in *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; *"no checks reported"*) red= ;; *) red="unreadable ($red)" ;; esac ;; esac
             if [ -n "$red" ]; then
               gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # errors when it was not armed
               echo "::error::claim PR #$n not armed, red required checks on its head: $red"
