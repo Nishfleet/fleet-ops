@@ -1,5 +1,5 @@
 """GitHub "blocked by" in the coordinator path (fleet-ops#10489): the real `run:` blocks of
-agent-dispatch.yml against a fake gh.
+orchestrate.yml against a fake gh.
 
 The orchestrate issue step skips a blocked issue. When an issue closes, the list job
 re-labels each unblocked needs-orchestrator dependent (remove, then add, on the runner login).
@@ -10,8 +10,9 @@ import pathlib
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-WF = str(ROOT / ".github/workflows/agent-dispatch.yml")
+WF = str(ROOT / ".github/workflows/orchestrate.yml")
 ISSUE_STEP = '.jobs.orchestrate.steps[] | select(.id == "issue")'
+DISPATCH = str(ROOT / ".github/workflows/agent-dispatch.yml")
 LIST_STEP = '.jobs.list.steps[] | select(.id == "list")'
 
 FAKE_GH = r"""#!/usr/bin/env bash
@@ -30,8 +31,8 @@ esac
 """
 
 
-def _y(expr):
-    return subprocess.run(["yq", expr, WF], check=True, capture_output=True, text=True).stdout
+def _y(expr, wf=WF):
+    return subprocess.run(["yq", expr, wf], check=True, capture_output=True, text=True).stdout
 
 
 def _fake(tmp_path):
@@ -75,7 +76,7 @@ def close(tmp_path, dependents):
     (tmp_path / "out").write_text("")
     env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "CLOSED": "1", "ISSUE": "",
            "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": ""}
-    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
+    r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run", DISPATCH)],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     log = tmp_path / "writes.log"

@@ -1,7 +1,7 @@
 {
   "description": "Payloads that must and must not start an orchestrate hand-off, and payloads the agent.yml Gate must park for the workflow-path route. CI jq evaluates fire() and parks() against each case; needles must appear in the named workflow so the if: and the Gate jq cannot drift from this file. cap_cases run the orchestrate job's real 'Check the issue is still parked' script against a fake gh serving each case's issue comments (handoffs are today's 'orchestrator hand-off started:' comments from a member, overridable by when YESTERDAY, assoc and body; noise adds that many unrelated comments; fail_comments 5xx's the list that many times; fail_post fails the marker post); a go=true case must post the marker; CI asserts go, model and turns, so removing the cap, the model pin or the turns pin fails it. session_cases run the real session step against a fake claude and assert its argv, so removing --settings disableAllHooks fails it. Every claude session case also asserts the start-up trim flags --strict-mcp-config, --disable-slash-commands and --setting-sources project,local (the pi cases are exempt), so deleting one fails CI. Runner (fleet-ops#9407): cap_cases assert want_runner (pi or claude) from the issue step; session_cases with runner pi run the real step against a fake pi and assert provider litellm, the seat, and FLEET_TASK_ID.",
   "needles": {
-    "agent-dispatch.yml": [
+    "orchestrate.yml": [
       "ORCHESTRATE",
       "needs-orchestrator",
       "orchestrate",
@@ -25,7 +25,7 @@
       "vars.ORCHESTRATE != 'off' && (",
       "github.event.label.name == 'needs-orchestrator'",
       "github.event.sender.login == 'nish3451'",
-      "inputs.task == 'orchestrate' && inputs.issue != ''",
+      "github.event_name == 'workflow_dispatch' && inputs.issue != ''",
       "ORCHESTRATE_RUNNER",
       "ORCHESTRATE_SEAT",
       "--provider litellm",
@@ -136,7 +136,6 @@
       "want": true,
       "orchestrate": "live",
       "event_name": "workflow_dispatch",
-      "task": "orchestrate",
       "issue": "9211"
     },
     {
@@ -144,23 +143,13 @@
       "want": false,
       "orchestrate": "live",
       "event_name": "workflow_dispatch",
-      "task": "orchestrate",
       "issue": ""
-    },
-    {
-      "id": "dispatch-admit",
-      "want": false,
-      "orchestrate": "live",
-      "event_name": "workflow_dispatch",
-      "task": "admit",
-      "issue": "9211"
     },
     {
       "id": "dispatch-sweep",
       "want": false,
       "orchestrate": "live",
       "event_name": "workflow_dispatch",
-      "task": "",
       "issue": ""
     },
     {

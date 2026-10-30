@@ -3,7 +3,7 @@ unit uses as its WorkingDirectory.
 
 On 2026-10-07 the step removed orch-drive-642 under the detached
 orch-drive-642-build unit (status=200/CHDIR, uncommitted edits lost). This test
-runs the real `run:` block of the step from agent-dispatch.yml against a real
+runs the real `run:` block of the step from orchestrate.yml against a real
 git mirror and worktree. Only `systemctl` is a stub on PATH, because CI has no
 user systemd; the drill on the VPS uses a real transient unit.
 """
@@ -18,7 +18,7 @@ STEP = "Clean up and mark a PR-less hand-off"
 def _run_block():
     # yq, as the other ci.yml steps read workflow steps; no PyYAML needed.
     out = subprocess.run(
-        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/agent-dispatch.yml")],
+        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/orchestrate.yml")],
         check=True, capture_output=True, text=True,
     ).stdout
     assert out.strip(), f"step {STEP!r} not found"

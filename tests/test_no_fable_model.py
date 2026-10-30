@@ -13,7 +13,7 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github/workflows").glob("*.yml"))
 AGENT = (ROOT / ".github/workflows/agent.yml").read_text()
-DISPATCH = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
+ORCHESTRATE = (ROOT / ".github/workflows/orchestrate.yml").read_text()
 
 
 def test_fable_is_named_once_as_the_guard_second_reviewer():
@@ -41,5 +41,5 @@ def test_worker_gate_only_picks_sonnet():
 
 
 def test_orchestrate_hand_off_can_only_run_sonnet():
-    assert re.findall(r'echo "model=([^"$]*)"', DISPATCH) == ["claude-sonnet-5-5"]
-    assert re.findall(r'echo "turns=([^"$]*)"', DISPATCH) == ["40"]
+    assert re.findall(r'echo "model=([^"$]*)"', ORCHESTRATE) == ["claude-sonnet-5-5"]
+    assert re.findall(r'echo "turns=([^"$]*)"', ORCHESTRATE) == ["40"]

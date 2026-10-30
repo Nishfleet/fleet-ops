@@ -172,7 +172,7 @@ def _issue_env(tmp_path, exists, pulls, pulls_fail=False):
     return env, log
 
 
-ISSUE_STEP = ("agent-dispatch.yml", "orchestrate", "Check the issue is still parked")
+ISSUE_STEP = ("orchestrate.yml", "orchestrate", "Check the issue is still parked")
 
 
 @pytest.mark.parametrize("exists,pulls,go", [
@@ -268,7 +268,7 @@ def _mirror(tmp_path):
                                 "GIT_CONFIG_KEY_0": f"url.{seed}.insteadOf", "GIT_CONFIG_VALUE_0": "https://github.com/Nishfleet/fleet-ops.git"}
 
 
-WORKTREE_STEP = ("agent-dispatch.yml", "orchestrate", "Fresh worktree on origin/main")
+WORKTREE_STEP = ("orchestrate.yml", "orchestrate", "Fresh worktree on origin/main")
 
 
 def test_worktree_step_starts_from_the_pr_head_on_origin(tmp_path):

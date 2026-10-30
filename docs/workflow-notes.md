@@ -13,7 +13,7 @@ Repo variable ORCHESTRATE:
   live (default, unset) = a needs-orchestrator label starts one hand-off run.
   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
   newly stubbed repo cannot sit off by omission. Start one by hand with
-  gh workflow run agent-dispatch.yml -f task=orchestrate -f issue=<N>
+  gh workflow run orchestrate.yml -f issue=<N>
   (an alert contact point, fleet-ops#10204, uses this).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.

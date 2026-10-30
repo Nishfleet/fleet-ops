@@ -3,7 +3,7 @@ the future must park it on-hold, not handoff-ended.
 
 handoff-ended is the label the parked hand-off sweep re-fires and later-sweep skips, so a
 future-dated issue could never reach its date: three tries, then needs-nish-decision, then a
-person clears the label. This runs the real `run:` block of agent-dispatch.yml's no-PR step
+person clears the label. This runs the real `run:` block of orchestrate.yml's no-PR step
 against a fake gh, one case per branch.
 """
 import os
@@ -13,7 +13,7 @@ import subprocess
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-WF = ROOT / ".github/workflows/agent-dispatch.yml"
+WF = ROOT / ".github/workflows/orchestrate.yml"
 STEP = "Clean up and mark a PR-less hand-off"
 
 FAKE_GH = r"""#!/usr/bin/env bash

@@ -2,7 +2,7 @@
 `run:` block and REQUEUE program (read out with yq) against a fake gh.
 
 A handoff-ended issue idle over 6 h goes back to needs-orchestrator (and an agent-blocked one, even with
-old end markers, is left alone). A labelled idle one with no orch/issue-N PR is re-fired by a task=orchestrate
+old end markers, is left alone). A labelled idle one with no orch/issue-N PR is re-fired by an orchestrate.yml
 dispatch of the calling workflow file, with a marker comment and no label write. At most 12 minus the live
 orchestrate runs a sweep, and a closed blocker releases at most 12. Three ended or re-fired hand-offs give
 needs-nish-decision.
@@ -28,13 +28,10 @@ cred() { [ -n "$GH_TOKEN" ] || [ -e "$FAKE_DIR/login" ] || { echo "gh: no creden
 case "$1 $2" in
   "issue list") case "$*" in *"-S label:handoff-ended,needs-orchestrator "*) ;; *) echo "fake gh: unexpected search: $*" >&2; exit 1 ;; esac; cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
-  "api repos/o/r/actions/workflows/stub.yml/runs?status=in_progress&per_page=100")
+  "run list")
+    case "$*" in *"-R o/r --workflow=orchestrate.yml --status in_progress -L 100 --json databaseId --jq length"*) ;; *) echo "fake gh: unexpected run list: $*" >&2; exit 1 ;; esac
     [ -z "$FAIL_RUNS" ] || exit 1
-    jq -r "$4" "$FAKE_DIR/runs.json" ;;
-  "api repos/o/r/actions/runs/"*)
-    [ -z "$FAIL_JOBS" ] || exit 1
-    id=${2#repos/o/r/actions/runs/}; id=${id%/jobs}
-    jq --arg id "$id" '.[$id]' "$FAKE_DIR/jobs.json" | jq -r "$4" ;;
+    jq 'length' "$FAKE_DIR/runs.json" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   "issue edit"|"issue comment") cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
@@ -73,19 +70,11 @@ def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0):
     }
 
 
-def job(name, status="in_progress"):
-    return {"name": name, "status": status}
-
-
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(), login=True):
-    """Every live run is titled differently (sweep, stub); only its job names say orchestrate. login
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, login=True):
+    """queued is the count of live runs of orchestrate.yml, which holds only hand-offs. login
     models the runner's own ~/.config/gh, which every hosted runner lacks."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
-    jobs = {str(i): {"jobs": [job("orchestrate" if i % 2 else "stub / orchestrate")]} for i in range(queued)}
-    for i, j in enumerate(other_jobs):
-        jobs[str(100 + i)] = {"jobs": [j]}
-    (tmp_path / "runs.json").write_text(json.dumps({"workflow_runs": [{"id": int(k)} for k in jobs]}))
-    (tmp_path / "jobs.json").write_text(json.dumps(jobs))
+    (tmp_path / "runs.json").write_text(json.dumps([{"databaseId": i} for i in range(queued)]))
     (tmp_path / "prs.json").write_text(json.dumps(list(prs)))
     if login:
         (tmp_path / "login").touch()
@@ -94,7 +83,7 @@ def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, other_jobs=(),
     gh.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path),
            "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x",
-           "WORKFLOW_REF": "o/r/.github/workflows/stub.yml@refs/heads/main", "GITHUB_SERVER_URL": "https://example.invalid", "GITHUB_RUN_ID": "7", **(fail or {}), "REQUEUE": _y(f"{STEP} | .env.REQUEUE")}
+       "GITHUB_SERVER_URL": "https://example.invalid", "GITHUB_RUN_ID": "7", **(fail or {}), "REQUEUE": _y(f"{STEP} | .env.REQUEUE")}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{STEP} | .run")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -178,10 +167,8 @@ def test_a_closed_epic_releases_no_more_than_the_requeue_batch(tmp_path):
 
 
 def test_live_runs_use_up_the_batch(tmp_path):
-    """Live orchestrate jobs count, whatever the run is titled, plain or behind a stub; other jobs and
-    finished orchestrate jobs do not (fleet-ops#10475)."""
-    noise = [job("list") for _ in range(8)] + [job("orchestrate", "completed")]
-    w = run(tmp_path, [issue(n) for n in range(1, 15)], queued=10, other_jobs=noise)
+    """Live orchestrate.yml runs count, one call, no job read (fleet-ops#11192)."""
+    w = run(tmp_path, [issue(n) for n in range(1, 15)], queued=10)
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
 
@@ -199,7 +186,7 @@ def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
                        issue(3, ended=0, labels=labelled),
                        issue(4, ended=0, labels=labelled + ("needs-nish-decision",))],
             prs=["orch/issue-3"])
-    assert [l for l in w if l.startswith("workflow run")] == ["workflow run stub.yml -R o/r -f task=orchestrate -f issue=1"]
+    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R o/r -f issue=1"]
     assert not [l for l in w if l.startswith("issue edit")], "a dispatch needs no label write"
     marker = REFIRED.split("https")[0]
     assert [l for l in w if l.startswith("issue comment 1 ") and marker in l]
@@ -207,7 +194,7 @@ def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
 
 
 def test_failed_dispatch_fails_loud_and_counts_a_strike(tmp_path):
-    """A stub without the task and issue inputs refuses every dispatch: the marker still posts, so
+    """A workflow without the issue input refuses every dispatch: the marker still posts, so
     the third sweep escalates instead of retrying forever."""
     i = [issue(1, ended=0, labels=("needs-orchestrator",))]
     out = run(tmp_path, i, fail={"FAIL_DISPATCH": "1"}, out=True)
@@ -222,7 +209,7 @@ def test_refires_count_toward_the_three_strikes(tmp_path):
     labelled = ("needs-orchestrator",)
     w = run(tmp_path, [issue(1, ended=0, labels=labelled, refired=3), issue(2, ended=1, labels=labelled, refired=1)])
     assert edits(w, "--add-label needs-nish-decision") == [1]
-    assert [l for l in w if l.startswith("workflow run")] == ["workflow run stub.yml -R o/r -f task=orchestrate -f issue=2"]
+    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R o/r -f issue=2"]
 
 
 @pytest.mark.parametrize("login", ["github-actions", "github-actions[bot]"])
@@ -248,7 +235,7 @@ def test_open_pr_blocks_requeue_of_a_tried_issue(tmp_path):
     assert w == []
 
 
-@pytest.mark.parametrize("fail", ["FAIL_RUNS", "FAIL_JOBS", "FAIL_PRS"])
+@pytest.mark.parametrize("fail", ["FAIL_RUNS", "FAIL_PRS"])
 def test_partial_api_error_requeues_nothing_but_escalates(tmp_path, fail):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=2, fail={fail: "1"})
     assert edits(w, "--add-label needs-orchestrator") == []
@@ -286,7 +273,8 @@ def test_requeue_counts_the_prefix_the_orchestrate_job_posts():
     counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE"))
     assert counted, "REQUEUE no longer counts ended hand-offs with a startswith() prefix"
     prefix = counted.group(1)
-    run = _y(".jobs.orchestrate.steps[] | select(.run) | .run")
+    run = subprocess.run(["yq", ".jobs.orchestrate.steps[] | select(.run) | .run", str(ROOT / ".github/workflows/orchestrate.yml")],
+                         check=True, capture_output=True, text=True).stdout
     bodies = [b for line in run.splitlines() if "gh issue comment" in line
               for b in re.findall(r'--body "([^"]*)"', line)]
     from_var = {b.lstrip("$") for b in bodies if b.startswith("$")}

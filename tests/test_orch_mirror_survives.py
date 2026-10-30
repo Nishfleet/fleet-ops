@@ -26,7 +26,7 @@ CONF = ROOT / "config/user-tmpfiles.d/agent-worktrees.conf"
 
 def _run_block():
     out = subprocess.run(
-        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/agent-dispatch.yml")],
+        ["yq", f'.jobs.orchestrate.steps[] | select(.name == "{STEP}") | .run', str(ROOT / ".github/workflows/orchestrate.yml")],
         check=True, capture_output=True, text=True,
     ).stdout
     assert out.strip(), f"step {STEP!r} not found"
@@ -161,7 +161,7 @@ def test_tmpfiles_age_out_keeps_the_mirror(tmp_path):
 
 def test_concurrency_group_is_per_issue():
     group = subprocess.run(
-        ["yq", ".jobs.orchestrate.concurrency.group", str(ROOT / ".github/workflows/agent-dispatch.yml")],
+        ["yq", ".jobs.orchestrate.concurrency.group", str(ROOT / ".github/workflows/orchestrate.yml")],
         check=True, capture_output=True, text=True,
     ).stdout
     assert "github.event.issue.number" in group and "inputs.issue" in group

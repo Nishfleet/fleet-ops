@@ -233,7 +233,7 @@ The rules still in force:
   fleet-ops work behind it. Every agent runner carries the label `fleet-ops`,
   and `netcup-agent-20` to `-30` (not the offline `-23`) do not carry `agent`,
   so no build can take those 10; they keep `review`. agent.yml's
-  `work`, `stuck` and `inish-daily` jobs and agent-dispatch.yml's `orchestrate`
+  `work`, `stuck` and `inish-daily` jobs and orchestrate.yml's `orchestrate`
   job ask for `[self-hosted, fleet-ops]` when `github.repository` (the caller)
   is fleet-ops, and `[self-hosted, agent]` for every other caller, so fleet-ops
   can use every live runner while products share the rest, and no product

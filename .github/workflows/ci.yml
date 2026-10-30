@@ -426,7 +426,7 @@ jobs:
                 (.event_name == "issues" and .action == "labeled" and .label == "needs-orchestrator" and
                   ((.sender // "") == "nish3451" or
                    (((.sender // "") | endswith("[bot]")) and ((.sender // "") == "nishfleet-worker[bot]" or (.sender // "") == "github-actions[bot]"))))
-                or (.event_name == "workflow_dispatch" and .task == "orchestrate" and ((.issue // "") | length) > 0)
+                or (.event_name == "workflow_dispatch" and ((.issue // "") | length) > 0)
               );
             (.orchestrate_cases | map(select(.want != fire)) | if length == 0 then true else error("orchestrate filter mismatch: \(map(.id)|join(","))") end)
           ' config/orchestrate-events.json
@@ -447,8 +447,8 @@ jobs:
             [ "$got" = "$want" ] || { echo "gate detector mismatch: $id parks=$got want=$want"; bad=1; }
           done < <(jq -c '.gate_cases[]' config/orchestrate-events.json)
           test "$bad" -eq 0
-          jq -r '.needles["agent-dispatch.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
-            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing dispatch needle: $n"; exit 1; }
+          jq -r '.needles["orchestrate.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/orchestrate.yml >/dev/null || { echo "missing orchestrate needle: $n"; exit 1; }
           done
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
@@ -464,7 +464,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          f=.github/workflows/agent-dispatch.yml
+          f=.github/workflows/orchestrate.yml
           cfg="$PWD/config/orchestrate-events.json"
           chk=$(yq '.jobs.orchestrate.steps[] | select(.id == "issue") | .run' "$f")
           ses=$(yq '.jobs.orchestrate.steps[] | select(.name == "Run the orchestrator session") | .run' "$f")
@@ -755,10 +755,10 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          f=.github/workflows/agent-dispatch.yml
           gated="new rework conflicts remerge ejected list unblocked orchestrate admit review-risky stuck-prs stuck-review stuck-arm stuck-rework stuck-file red-main"
           guards="hold-risky close-claim rework-note"
           bad=0
+          for f in .github/workflows/agent-dispatch.yml .github/workflows/orchestrate.yml; do
           for j in $(yq '.jobs | keys | .[]' "$f"); do
             cond=$(yq ".jobs.\"$j\".if // \"\"" "$f" | tr -s ' \n' '  ' | sed 's/ $//')
             case " $gated " in
@@ -776,6 +776,7 @@ jobs:
                 continue ;;
             esac
             echo "job $j is not classed as dispatch or guard in this check"; bad=1
+          done
           done
           u=ansible/update.yml
           ! grep -nE 'gh, *workflow, *(disable|enable)' "$u" || { echo "$u disables or enables a workflow"; bad=1; }

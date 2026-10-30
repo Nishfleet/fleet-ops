@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / ".github/workflows/agent-dispatch.yml"
+ORCHESTRATE = ROOT / ".github/workflows/orchestrate.yml"
 AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
 SWEEP_MATRICES = ("unblocked", "stuck-rework")
@@ -163,12 +164,10 @@ def test_hand_summons_reaches_the_review_job():
 
 
 def test_hand_summons_reaches_the_orchestrate_job():
-    cfg = yaml_json(DISPATCH)
+    cfg = yaml_json(ORCHESTRATE)
     dispatch = cfg["on"]["workflow_dispatch"]["inputs"]
-    for name in ("task", "issue"):
-        assert dispatch.get(name, {}).get("type") == "string", f"agent-dispatch cannot be dispatched with {name}"
+    assert dispatch.get("issue", {}).get("type") == "string", "orchestrate.yml cannot be dispatched with issue"
     orchestrate = cfg["jobs"]["orchestrate"]["if"]
-    assert "inputs.task == 'orchestrate'" in orchestrate, "the orchestrate job's if: does not read inputs.task"
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
@@ -248,7 +247,7 @@ def test_every_group_the_pi_lane_picks_has_a_desk_alias():
 
 
 def test_the_orchestrate_session_books_its_wall_for_landing():
-    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    job = yaml_json(ORCHESTRATE)["jobs"]["orchestrate"]
     step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
     wall = int(step["timeout-minutes"])
     text = (ROOT / "prompts/orchestrator-handoff.md").read_text()
