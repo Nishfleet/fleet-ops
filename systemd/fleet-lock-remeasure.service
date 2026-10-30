@@ -1,0 +1,51 @@
+[Unit]
+Description=Fail loud when the Hermes lock no longer matches what is on disk and what the gateway reads
+# fleet-ops#10269, follow-up to #9981. InaccessiblePaths= is a list of overmounts
+# made when the unit starts: it hides what it names at that moment and nothing
+# created later, so a new credential file in an open directory (~/.config/tincan,
+# ~/.hermes, ~/.cua, ~/.pi, ~/.config/gh), or a tool whose login lands somewhere the
+# list does not name, is readable from the first turn. tests/test_agent_locks.py and
+# tests/test_systemd_unit_keys.py prove the conf and config/agent-locks.json agree
+# with each other, not that either still matches the filesystem. This oneshot
+# re-measures, and fails with the diff, so a new store is a red unit and a page
+# through fleet-unit-failed@, not a discovery after an incident.
+#
+# Two reads of the live host, as the service user:
+#  1. UNLISTED: walk ~/.*, ~/.config/*, ~/.config/tincan/* and ~/.local/share/*.
+#     Every entry must be in the gateway's must_hide or needs, or in the contract's
+#     reviewed_open (looked at and left readable on purpose, with the reason).
+#  2. READS: the gateway's cgroup (the process and its MCP children): every open fd
+#     and every environ or Environment= value must not name a must_hide path.
+# The table is read from the deploy clone, the same file the tests check. This unit
+# changes no lock and no file.
+#
+# Switch off: systemctl --user disable --now fleet-lock-remeasure.timer, remove the
+# fleet-sync.service step 2n and its enable line, then delete the two unit files.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+# LOCKS, UNIT, PROC, CGROUP and SYSTEMCTL exist so CI can run this very ExecStart
+# against a fake home and a fake /proc (tests/test_lock_remeasure.py); the host
+# never overrides them.
+Environment=LOCKS=%h/workspaces/tooling/fleet-ops-deploy-clone/config/agent-locks.json
+Environment=UNIT=hermes-gateway
+Environment=PROC=/proc
+Environment=CGROUP=/sys/fs/cgroup/system.slice/hermes-gateway.service/cgroup.procs
+Environment=SYSTEMCTL=/usr/bin/systemctl
+ExecStart=/bin/sh -c 'set -u; d=$$(mktemp -d); trap "rm -rf $$d" EXIT; \
+jq -r ".agents[env.UNIT].must_hide[]" "$$LOCKS" | sed "s|^~|$$HOME|" | sort -u > $$d/hidden; \
+jq -r "(.agents[env.UNIT].must_hide + .agents[env.UNIT].needs)[], (.reviewed_open // {} | keys[])" "$$LOCKS" | sed "s|^~|$$HOME|" | sort -u > $$d/known; \
+test -s $$d/hidden || { echo "LOCK-REMEASURE: no must_hide for $$UNIT in $$LOCKS"; exit 1; }; \
+ls -d "$$HOME"/.[!.]* "$$HOME"/.config/* "$$HOME"/.config/tincan/* "$$HOME"/.local/share/* 2>/dev/null | grep -vx -e "$$HOME/.config" -e "$$HOME/.local" | sort -u | grep -Fxv -f $$d/known > $$d/unlisted; \
+pids=$$(cat "$$CGROUP" 2>/dev/null); \
+test -n "$$pids" || { echo "LOCK-REMEASURE: no process in $$CGROUP, so the read set was not measured"; exit 1; }; \
+{ for p in $$pids; do test -d "$$PROC/$$p" || continue; test -r "$$PROC/$$p/environ" -a -x "$$PROC/$$p/fd" || { echo "LOCK-REMEASURE: cannot read /proc/$$p, so the read set was not measured" >&2; echo unreadable > $$d/bad; }; ls -l "$$PROC/$$p/fd" 2>/dev/null | sed -n "s|.* -> ||p"; xargs -0 -n1 < "$$PROC/$$p/environ" 2>/dev/null; done; "$$SYSTEMCTL" show "$$UNIT" -p Environment | sed "s|^Environment=||" | xargs -n1; } > $$d/reads; \
+test ! -e $$d/bad || { echo "LOCK-REMEASURE: the gateway process tree is not readable by this user, so the read set was not measured"; exit 1; }; \
+while read -r h; do grep -F -e "$$h" $$d/reads | grep -E "(^|[^A-Za-z0-9_.-])$$h(/|$$|[^A-Za-z0-9_.-])" | sed "s|^|$$h: |"; done < $$d/hidden > $$d/reading; \
+test -s $$d/unlisted -o -s $$d/reading || { echo "lock remeasure ok: $$(wc -l < $$d/hidden) hidden paths, $$(echo $$pids | wc -w) gateway processes, nothing unlisted"; exit 0; }; \
+echo "LOCK-REMEASURE: the hermes lock no longer matches the host"; \
+test -s $$d/unlisted && { echo "on disk, in none of must_hide, needs or reviewed_open of config/agent-locks.json:"; sed "s|^|  |" $$d/unlisted; }; \
+test -s $$d/reading && { echo "a hidden path the gateway still reads or is told about:"; sed "s|^|  |" $$d/reading; }; \
+echo "fix: hide it in rootfs/etc/systemd/system/hermes-.service.d/sandbox.conf and must_hide, or add it to reviewed_open with the reason"; exit 1'
+TimeoutStartSec=120
