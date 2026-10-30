@@ -78,16 +78,19 @@
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `systemd/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish), exactly
-  `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
+- `rootfs/etc/systemd/system/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish),
+  exactly `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
   new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
   `harness.name=hermes`, `collection_method=poll` events to
   `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
   have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
   (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
-  again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
-  deploy. Off switch: remove that step and its enable line, then
-  `systemctl --user disable --now beacon-hermes-poll.service`.
+  again, it would capture twice). A system unit and not a user one (fleet-ops#11089): it parses
+  Telegram text, and a unit the user manager starts gets no mount sandbox on this box
+  (`docs/user-unit-sandboxing.md`), so it runs as `User=nish` under `ProtectSystem=strict` and
+  `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
+  and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
+  switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
@@ -95,6 +98,15 @@
   with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
   enables the timer on every deploy. Off switch: remove that step and its enable
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
+- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
+  does not have is more than 35 min old, so a merge that reached no deploy is loud
+  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
+  min later, and the review job read a retired file out of the clone). It fetches
+  `main` itself into its own ref and only reads. Every 5 min;
+  `fleet-sync.service` step 2m links both and enables the timer on every deploy.
+  Off switch: remove that step and its enable line, then
+  `systemctl --user disable --now fleet-clone-lag.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.
@@ -156,7 +168,7 @@
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
-  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  the agent-dispatch sweep in `Nishfleet/<instance>` every 15 minutes with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
   times a day (measured 2026-10-11). It runs on an Actions-only nishfleet-worker
   App token minted per start and revoked on stop, never the owner's personal
@@ -248,7 +260,8 @@
   `BackupStale` (the nightly off-site backup timer has not fired for
   30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
-  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
+  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours, on the rows that
+  carry a dollar budget, so the flat-plan MiniMax rows are left out) and
   `AISpendMetricMissing` (that spend metric absent for a day). Every one but
   the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends

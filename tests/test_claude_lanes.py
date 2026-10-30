@@ -148,7 +148,7 @@ def _gate_full(tmp_path, labels=",strong-only,", failed=0, live=None, env=None, 
     end = script.index('gh issue edit "$i" -R "$REPO" --remove-label agent-ready')
     seg = script[start:end]
     b, home = _bin(tmp_path)
-    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "senior=$senior"\necho "engine=$engine model=$claude_model"\n'
+    prog = f'skip() {{ echo "SKIP $1"; exit 0; }}\ni=5 REPO=o/r labels="{labels}"\nissue=\'{{"title":"t","body":"b"}}\'\n{seg}\necho "engine=$engine model=$claude_model"\n'
     env = {**os.environ, "HOME": str(home), "PATH": f"{b}:{SYS_PATH}", "COMMENTS_JSON": comments or _comments(failed), **{f"LIVE_{k}": str(v) for k, v in (live or {}).items()}, **(env or {})}
     r = subprocess.run(["bash", "-c", prog], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -272,15 +272,7 @@ def test_there_is_no_claude_cap(tmp_path):
     assert _route(tmp_path, ("judgment", "0.95"), live={"claude": 40})[0].startswith("engine=claude ")
 
 
-def test_only_strong_only_is_senior(tmp_path):
-    last, _, out, _ = _route(tmp_path, ("judgment", "0.95"), labels=",bug,")
-    assert last == "engine=claude model=claude-sonnet-5-5" and "senior=false" in out
-    d = tmp_path / "b"
-    d.mkdir()
-    assert "senior=true" in _route(d, labels=",strong-only,")[2]
-
-
-def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, senior="true", claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
+def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out="", runner_name="netcup-agent-1", issue=5, claude_err="", login_a="x", login_b="x", tok_a=None, tok_b=None, real_bwrap=False, bad_tokens="", ahead="0", live=None):
     b, home = _bin(tmp_path, real_bwrap)
     state = tmp_path / "state"
     tmp = tmp_path / "runner-tmp"
@@ -317,7 +309,6 @@ def _worker(tmp_path, engine, model="claude-sonnet-5-5", claude_rc=0, claude_out
         "REPO": "o/r",
         "CLAUDE_MODEL": model,
         "CLAUDE_MAX_TURNS": "200",
-        "SENIOR": senior,
         "CLAUDE_RC": str(claude_rc),
         "CLAUDE_OUT": claude_out,
         "CLAUDE_ERR": claude_err,
@@ -450,13 +441,6 @@ def test_both_logins_missing_skips_the_claude_lane_and_falls_through(tmp_path, i
     assert ran == ["pi"]
 
 
-def test_both_logins_missing_sends_non_senior_work_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", senior="false", login_a=None, login_b=None)
-    assert r.returncode == 0, r.stderr
-    assert "fallthrough: pi (claude login missing)" in r.stdout
-    assert claude == "" and ran == ["pi"]
-
-
 def test_claude_worker_runs_with_hooks_disabled(tmp_path):
     r, _, claude, _, _, _ = _worker(tmp_path, "claude")
     assert r.returncode == 0, r.stderr
@@ -536,7 +520,7 @@ def _lane_seat(issue, home, seat_a_dir, runner_name="netcup-agent-1"):
     lines = _step("work", "Worker").splitlines()
     a = next(i for i, ln in enumerate(lines) if ln.strip().startswith("seat_a_dir="))
     b = next(i for i, ln in enumerate(lines) if ln.strip().startswith('if [ "$claude_seat" = a ]; then claude_jail='))
-    prog = "live() { echo 0; }\nENGINE=claude SENIOR=true fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
+    prog = "live() { echo 0; }\nENGINE=claude fallback=pi\nid=r-%s\n" % issue + "\n".join(lines[a:b]) + '\necho "$claude_seat ${CLAUDE_CONFIG_DIR:-unset}"\n'
     r = subprocess.run(["bash", "-c", prog], env={"HOME": str(home), "RUNNER_TEMP": str(home), "RUNNER_NAME": runner_name, "CLAUDE_CONFIG_DIR": str(seat_a_dir), "PATH": SYS_PATH}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     seat, cfg = r.stdout.splitlines()[-1].split()
@@ -587,12 +571,30 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     seat_b = seat == "b"
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
+    runner_temp = home / "runner-temp"
+    # systemd keeps the credential store outside $HOME (/run/credentials for a system
+    # unit), and the whole store belongs to the unit's user, so a sibling runner's copy
+    # of the same key is what the store hide is there for.
+    store = tmp_path / "run-credentials"
+    creds = store / "nishfleet-agent"
+    sibling = store / "nishfleet-agent-2"
+    (runner_temp / "_runner_file_commands").mkdir(parents=True)
+    (runner_temp / "_runner_file_commands/pem").write_text("planted")
+    for d in (creds, sibling):
+        d.mkdir(parents=True)
+        (d / "pem").write_text("planted")
+    opt = "$cred_hide"
+    flags = f"--tmpfs {creds} --tmpfs {store}"
 
-    def expand(name):
+    def expand(name, cred_dir=creds):
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
         for k, v in sub.items():
             line = line.replace("$" + k, v)
-        return line.split() + ["--"]
+        line = line.replace("$RUNNER_TEMP", str(runner_temp))
+        assert opt in line, name
+        # cred_dir=None is the runner whose unit mounts no credential dir: the jail
+        # hides nothing there and still starts.
+        return (line.replace(opt, "") if cred_dir is None else line.replace(opt, flags)).split() + ["--"]
 
     def read_all(name):
         cmd = expand(name)
@@ -604,6 +606,18 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
             out[key] = "planted" in r.stdout
         return out
 
+    def read_app_key(name, cred_dir):
+        """What the jail shows of the runner's App key (fleet-ops#11051): the minted
+        PEM, the unit's credential dir the store holds, and a sibling runner's copy of
+        the same key. cred_dir=None is the runner that sets none; rc 0 proves the jail
+        started."""
+        cmd = expand(name, cred_dir)
+        out = {}
+        for key, path in {"pem": runner_temp / "_runner_file_commands/pem", "dir": creds / "pem", "sibling": sibling / "pem"}.items():
+            r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
+            out[key] = r.returncode == 0 and "planted" in r.stdout
+        return out
+
     none = {k: False for k in ("b", "cj", "file", "bk0", "bk1", "bk2")}
     # Every other engine reads no login at all.
     assert read_all("jail_base") == {"a": False, **none}
@@ -613,6 +627,11 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
         assert read_all("claude_jail_b") == {"a": False, **{**none, "b": True, "cj": True}}
     else:
         assert read_all("claude_jail_a") == {"a": True, **none}
+    for jail in ("jail_base", "claude_jail_a", "claude_jail_b"):
+        assert read_app_key(jail, creds) == {"pem": False, "dir": False, "sibling": False}, jail
+    assert read_app_key("jail_base", None) == {"pem": False, "dir": True, "sibling": True}
+    argv = expand("jail_base", creds)
+    assert argv[argv.index(str(creds)) - 1] == "--tmpfs"
 
 
 TOK = "tok-%s-planted"
@@ -736,7 +755,7 @@ def test_real_jail_other_engines_cannot_read_either_token_file_or_the_backups(tm
 
 
 def test_judgment_job_rate_limited_falls_through_to_pi(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit", senior="false")
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", claude_rc=1, claude_out="429 rate limit")
     assert r.returncode == 0, r.stderr
     assert "claude -p" in claude and ran == ["claude", "pi"]
 
@@ -763,7 +782,7 @@ def test_token_file_is_parsed_not_run_and_defines_nothing_else(tmp_path):
     # A token file is read, never sourced: its other lines run no code and export nothing.
     marker = tmp_path / "ran-as-shell"
     raw = f"RAW:OTHER=1\ntouch {marker}\nCLAUDE_CODE_OAUTH_TOKEN={_tok_env('a')}\n"
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", senior="false", tok_a=raw)
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=raw)
     assert r.returncode == 0, r.stderr
     assert f"TOK={_tok_env('a')}" in claude and "auth=token" in r.stdout
     assert not marker.exists()
@@ -824,7 +843,7 @@ def test_both_tokens_revoked_fails_once_each_and_does_not_fall_through(tmp_path)
 
 
 def test_rate_limit_is_not_an_auth_failure_and_does_not_retry(tmp_path):
-    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", senior="false", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
+    r, _, claude, ran, _, _ = _worker(tmp_path, "claude", runner_name="netcup-agent-1", claude_rc=1, claude_out="429 rate limit", tok_a=_tok_env("a"), tok_b=_tok_env("b"))
     assert r.returncode == 0, r.stderr
     assert _tokens_tried(claude) == [_tok_env("a")] and "retrying" not in r.stdout and ran == ["claude", "pi"]
 
@@ -894,7 +913,7 @@ case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;
 def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
-    start = script.index("# A still-firing alert re-files")
+    start = script.index("if jq -e --argjson titles")
     end = script.index("skip duplicate-alert; fi\n", start)
     end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
     b = tmp_path / "bin"
@@ -929,9 +948,27 @@ def test_alert_without_an_open_twin_proceeds(tmp_path):
 
 
 def test_non_alert_title_skips_the_lookup(tmp_path):
-    out, log = _dup_gate(tmp_path, "grafana alert: DatasourceError", [{"number": 41, "title": "grafana alert: DatasourceError"}])
+    out, log = _dup_gate(tmp_path, "feat: add a thing", [{"number": 41, "title": "feat: add a thing"}])
     assert out == "PROCEED"
     assert log == ""
+
+
+@pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
+def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
+    """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
+    the other three filed one issue per firing and closed nothing."""
+    title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
+    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
+    assert out == "SKIP duplicate-alert"
+    assert "gh issue close 50 -R o/r --duplicate-of 41" in log
+
+
+@pytest.mark.parametrize("prefix", ["cost alarm: ", "router dead row: ", "router dead key: ", "grafana alert: "])
+def test_a_new_prefix_with_no_older_twin_proceeds(tmp_path, prefix):
+    title = prefix + "DatasourceError"
+    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 60, "title": title + " x"}])
+    assert out == "PROCEED"
+    assert "issue close" not in log
 
 
 def test_a_failed_twin_lookup_fails_the_gate_loud(tmp_path):
