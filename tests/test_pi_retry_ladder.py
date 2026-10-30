@@ -21,13 +21,13 @@ seconds and then releases: old block died at 250 s (exit 1), the shipped block
 The file is live-only (pi rewrites it; docs/install.md), so this test reads the
 installed file and holds the box to the invariant, in both directions: the
 ladder must reach a call after the shortest worker cooldown (waiting it out),
-and its give-up tail — last call plus last wait, the worst case a session sits
-in a 429 before dying — must stay under the tightest wall a pi lane on this box
-runs under, the 40-minute inish-daily timeout (the worker step has 55 minutes,
-the hand-off job 75). Longer windows the router can name — the 1800 s desk rows
-and the 21600 s budget-exhausted rows in the same config — name a wait no
-in-session ladder can cover; they are out of scope here (fleet-ops#11151 pins
-the 900-second case).
+and its worst-case stall — pi throws at the last failed call with no trailing
+sleep, so the stall is the last call's time — must stay under the tightest wall
+a pi lane on this box runs under, the 40-minute inish-daily timeout (the worker
+step has 55 minutes, the hand-off job 75). Windows longer than that — the 1800 s
+desk rows and the 21600 s budget-exhausted rows in the same config — name a wait
+no in-session ladder can cover; they are out of scope here (fleet-ops#11151
+pins the 900-second case).
 """
 import json
 import pathlib
@@ -49,11 +49,13 @@ requires_settings = pytest.mark.skipif(
 def worker_cooldown_ms() -> int:
     text = ROUTER_CONFIG.read_text()
     blocks = re.findall(r"- model_name: (\S+)\n(.*?)(?=- model_name:|\Z)", text, re.S)
-    cooldowns = [
-        int(re.search(r"cooldown_time: (\d+)", body).group(1))
-        for name, body in blocks
-        if name == "worker-capable" and "cooldown_time:" in body
-    ]
+    cooldowns = []
+    for name, body in blocks:
+        if name != "worker-capable":
+            continue
+        found = re.search(r"cooldown_time: (\d+)", body)
+        assert found, f"worker-capable row with no numeric cooldown_time: {body[:120]}"
+        cooldowns.append(int(found.group(1)))
     assert cooldowns, "no worker-capable cooldown_time in config/litellm-proxy.yaml"
     return min(cooldowns) * 1000
 
@@ -84,9 +86,9 @@ def test_ladder_makes_a_call_after_the_named_window():
 
 
 @requires_settings
-def test_give_up_tail_stays_under_the_tightest_pi_wall():
+def test_worst_case_stall_stays_under_the_tightest_pi_wall():
     waits = ladder_waits_ms(json.loads(SETTINGS.read_text()).get("retry", {}))
-    tail = sum(waits) + waits[-1] if waits else 0
-    assert tail < TIGHTEST_PI_WALL_MS, (
-        f"worst-case stall {tail / 1000:g}s reaches past the 40-minute inish wall"
+    stall = sum(waits)
+    assert stall < TIGHTEST_PI_WALL_MS, (
+        f"worst-case stall {stall / 1000:g}s reaches past the 40-minute inish wall"
     )
