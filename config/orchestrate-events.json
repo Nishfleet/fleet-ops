@@ -38,6 +38,9 @@
       "workflow-files",
       "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator",
       "fleet_ops=false"
+    ],
+    "agent-dispatch.yml": [
+      "inputs.task == 'orchestrate' && inputs.issue != ''"
     ]
   },
   "orchestrate_cases": [

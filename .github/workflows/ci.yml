@@ -450,6 +450,9 @@ jobs:
           jq -r '.needles["orchestrate.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/orchestrate.yml >/dev/null || { echo "missing orchestrate needle: $n"; exit 1; }
           done
+          jq -r '.needles["agent-dispatch.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
+            grep -F -- "$n" .github/workflows/agent-dispatch.yml >/dev/null || { echo "missing shim needle: $n"; exit 1; }
+          done
           jq -r '.needles["agent.yml"][]' config/orchestrate-events.json | while IFS= read -r n; do
             grep -F -- "$n" .github/workflows/agent.yml >/dev/null || { echo "missing gate needle: $n"; exit 1; }
           done

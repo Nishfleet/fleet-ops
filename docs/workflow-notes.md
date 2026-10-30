@@ -14,7 +14,8 @@ Repo variable ORCHESTRATE:
   Default on (Nish 2026-10-04, "on for everything the fleet touches"), so a
   newly stubbed repo cannot sit off by omission. Start one by hand with
   gh workflow run orchestrate.yml -f issue=<N>
-  (an alert contact point, fleet-ops#10204, uses this).
+  (an alert contact point, fleet-ops#10204, may still send `gh workflow run agent-dispatch.yml -f task=orchestrate -f issue=<N>`;
+  agent-dispatch.yml forwards that to orchestrate.yml, but such a run is counted under agent-dispatch.yml, so point the contact point at orchestrate.yml).
 Cost controls on the orchestrate job (fleet-ops#9351), one line per part:
   Daily cap: ORCHESTRATE_DAILY_MAX hand-off runs per IST day, default 10. Off: set the variable to 0.
   Model/turns pin: Sonnet, 40 turns, on every hand-off. There is no model variable

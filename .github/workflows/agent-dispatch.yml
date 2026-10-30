@@ -602,11 +602,12 @@ jobs:
               fi
             done
   # Stub repos (0509, drive) have no orchestrate.yml: their stub calls this file, so the hand-off
-  # reaches the one copy through this call. fleet-ops runs orchestrate.yml directly (fleet-ops#11192).
+  # reaches the one copy through this call. fleet-ops runs orchestrate.yml directly on a label (fleet-ops#11192); the
+  # old `task=orchestrate` dispatch (the #10204 alert contact point) is still forwarded here, so it keeps starting a hand-off.
   orchestrate:
     if: >-
-      github.repository != 'Nishfleet/fleet-ops' && (
-        (github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') ||
+      vars.FLEET_DISPATCH_PAUSED != 'true' && (
+        (github.repository != 'Nishfleet/fleet-ops' && github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') ||
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != ''))
     permissions: {issues: read, contents: read, pull-requests: read}
     uses: Nishfleet/fleet-ops/.github/workflows/orchestrate.yml@main
