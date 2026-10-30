@@ -165,7 +165,7 @@ def test_unit_wiring_and_defaults_match_the_test():
     assert "+refs/heads/main:refs/fleet-clone-lag/main" in text
     assert "Restart=on-failure" in text
     assert "RestartMode=direct" in text
-    assert "StartLimitIntervalSec=30min" in text
+    assert "StartLimitIntervalSec=5min" in text  # = OnUnitActiveSec: timer starts count toward the limit
     timer = TIMER.read_text()
     assert "OnUnitActiveSec=5min" in timer
     assert "OnBootSec=" in timer
