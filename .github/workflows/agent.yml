@@ -704,18 +704,18 @@ jobs:
           # logged) with the reset clause or the epoch form, so a review that quotes one of those lines in passing is still a
           # review. The stuck-review sweep asks again an hour after a hold and stops at twelve asks, and a held ask does not
           # count toward its three tries.
-          lim_re="(^[{]\"text\":\")?(you('?ve| have)? (hit|reached) your [a-z0-9 -]*limit[^a-z0-9]{0,8}resets |claude ai usage limit reached\\|[0-9]+)"
+          lim_re="^([{]\"text\":\")?(you('?ve| have)? (hit|reached) your [a-z0-9 -]*limit[^a-z0-9]{0,8}resets |claude ai usage limit reached\\|[0-9]+)"
           # True when $1 has content and every non-blank line in it is a usage-limit line.
-          lim_only() { [ -s "$1" ] && [ "$(grep -c . "$1")" = "$(grep -ciE "$lim_re" "$1")" ]; }
+          lim_only() { [ "$(grep -c . "$1")" -gt 0 ] && [ "$(grep -c . "$1")" = "$(grep -ciE "$lim_re" "$1")" ]; }
           # $1 = the failed calls' stderr, $2 = a call's whole answer, $3 = which review, $4 = model.
           hold_at_limit() { cat "$1" "$2" >&2 2>/dev/null || true
             lim=$(grep -hm 1 -iE "$lim_re" "$1" "$2" 2>/dev/null | cut -c 1-200 || true)
             [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe %s (%s) is at its Claude usage limit (%s). Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.' "$SHA" "$3" "$4" "$lim")"; exit 0; }; }
           # A call answers 0, answers nothing 1, or answers only a usage limit 2. $3 = its stderr, $4 = its whole answer.
-          ask_claude() { local d out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2>> "$3") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; printf '%s' "$out"; return 0; fi; lim_only "$3" && return 2; done; return 1; }
+          ask_claude() { local d out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2> "$3") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; printf '%s' "$out"; return 0; fi; lim_only "$3" && return 2; done; return 1; }
           rc=0; review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans") || rc=$?
           if [ "$rc" = 2 ]; then hold_at_limit "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans" "first review" "$first_model"; fi
-          [ "$rc" = 0 ] || review=
+          [ "$rc" = 0 ] || { review=; cat "$RUNNER_TEMP/first.err" >&2 2>/dev/null || true; }
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
           body=$(jq -nc --arg item "$review" '{model: "jev-latest", state: {item: $item, context: "Independent review findings for one risky pull request. approve = the review lists no blocker line (risk and nit lines alone are not a reason to block). block = the review lists a blocker line, or it is empty or unclear."},
             questions: {verdict: {type: "choice", instructions: "Is this pull request safe to merge?", criteria: {approve: "The review lists no blocker line. Risk and nit lines alone do not block.", block: "The review lists at least one blocker line, or the review is empty or unclear."}}}}')
@@ -776,7 +776,7 @@ jobs:
           seat_try "$THIRD_SEAT" third "$THIRD_FAMILY" "" & p3=$!; rc_second=0; rc_third=0; wait "$p2" || rc_second=$?; wait "$p3" || rc_third=$?
           [ "$rc_third" = 0 ] || { [ "$rc_third" = 1 ] && [ -e "$RUNNER_TEMP/third-why" ]; } || give_up "reviewer process crashed: the third reviewer exited $rc_third with no reason written" # seat_try ends 1 with a -why file when its retries ran out; any other non-zero exit is a crash
           if [ "$rc_second" = 2 ]; then hold_at_limit "$RUNNER_TEMP/second.err" "$RUNNER_TEMP/second.ans" "second review" "$SECOND_MODEL"; fi
-          [ "$rc_second" = 0 ] || retry "the second review ($SECOND_MODEL) gave no answer"
+          [ "$rc_second" = 0 ] || { cat "$RUNNER_TEMP/second.err" >&2 2>/dev/null || true; retry "the second review ($SECOND_MODEL) gave no answer"; }
           # Qwen with no healthy row after the retries is replaced by another non-Claude family that has not reviewed this head. The assistant seat is asked, because its only row is DeepSeek: the judge seat answers with Qwen (order 1) while that row is healthy.
           used="$JUDGE_FAMILY $SECOND_FAMILY"
           [ -s "$RUNNER_TEMP/third-row" ] || seat_try assistant third "" "$used" || give_up "the third reviewer and the fallback family both failed; the last reason: $(cat "$RUNNER_TEMP/third-why" 2>/dev/null || echo "the review process died")"
