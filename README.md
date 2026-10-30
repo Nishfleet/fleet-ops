@@ -46,7 +46,7 @@ is one line and updates every gate at once.
 - `config/tincan-relay/agents.txt` is the roster of our agents. `config/tincan-relay/policy.jq`
   renders the policy from it with stock `jq`: every roster agent gets a gate whose `unless` list
   is the roster plus the relay, so a request whose chain names any other agent is held for 24 hours
-  and reported to Hermes. The render has no secrets (agent names, a notify target, a ttl).
+  and reported to the notify target. The render has no secrets (agent names, a notify target, a ttl).
 - `ansible/tasks/tincan-relay-policy.yml` (run by `ansible/host.yml`) renders the file and installs it at
   `~/.local/state/tincan-relay/approval.json` (0600) through the copy module's `validate:`, so a
   render that is not JSON or not a gate fails the run before it replaces the live file (an empty
