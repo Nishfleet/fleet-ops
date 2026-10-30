@@ -28,4 +28,6 @@ jobs:
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
+      - name: Fail when the host-config run left no ~/.claude.json
+        run: test -e "$HOME/.claude.json" || { echo "::error::$HOME/.claude.json is missing on $RUNNER_NAME; the claude jail's bwrap bind dies without it (fleet-ops#11194)"; exit 1; }
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
