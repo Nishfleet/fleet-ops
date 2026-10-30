@@ -1498,6 +1498,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user": "made at boot by systemd's shipped tmpfiles file (/usr/lib/tmpfiles.d/systemd.conf, d /run/user 0755 root root -), before the runners; nothing unprivileged recreates it (fleet-ops#11232)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",
