@@ -1686,6 +1686,16 @@ jobs:
           # count marks nothing.
           # shellcheck disable=SC2016 # $o, $r, $n are GraphQL variables
           [ "$(env -u GH_TOKEN -u GITHUB_TOKEN gh api graphql -F o="${REPO%/*}" -F r="${REPO#*/}" -F n="$ISSUE" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){closedByPullRequestsReferences(first:1){totalCount}}}}' --jq '.data.repository.issue.closedByPullRequestsReferences.totalCount')" = 0 ] || { echo "orchestrate: #$ISSUE has a linked closing PR, or the link read failed; nothing to mark"; exit 0; }
+          # A hand-off whose deliverable went to another repo ends with the marker comment the
+          # hand-off prompt pins (fleet-ops#10275): this lane never writes to another repo, so
+          # the session files an issue in the product repo, comments the marker here and strips
+          # needs-orchestrator itself, and the issue stays open for a receipt close when that
+          # issue is delivered. The mark below is then only for a run with no deliverable
+          # anywhere. The marker is trusted at the sweep's own bar (an OWNER, MEMBER or
+          # COLLABORATOR comment) and is never resolved here; a read that fails marks nothing,
+          # like the check above.
+          link=$(gh issue view "$ISSUE" -R "$REPO" --json comments --jq '[.comments[] | select((.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) and (.body | startswith("orchestrator: deliverable filed in "))) | .body | sub("^orchestrator: deliverable filed in "; "") | split(" ")[0]] | last // empty') || { echo "orchestrate: #$ISSUE comment read failed; nothing to mark"; exit 0; }
+          if [ -n "$link" ]; then echo "orchestrate: #$ISSUE deliverable filed in another repo: $link; nothing to mark"; exit 0; fi
           # The writes need issues: write, which this job deliberately does not
           # hold: the orchestrator session, not this job, owns pushing. So the
           # mark is posted as the runner user's own login (gh's stored host
