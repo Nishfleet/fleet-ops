@@ -109,7 +109,7 @@ def test_an_open_claim_pr_is_left_alone(tmp_path):
 
 def test_no_label_event_at_all_is_skipped(tmp_path):
     log, writes, _ = sweep(tmp_path, events=[])
-    assert "no agent-in-progress label event, skip" in log
+    assert "no agent-in-progress label event over 15 minutes old, skip" in log
     assert writes == []
 
 
