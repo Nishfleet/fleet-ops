@@ -190,14 +190,18 @@ def runs_an_agent(unit: Path) -> bool:
     return False
 
 
-def test_every_user_unit_that_runs_an_agent_is_in_the_contract() -> None:
-    covered = {entry["unit"] for entry in AGENTS.values()} | set(STALE_USER_UNITS)
+def test_every_unit_that_runs_an_agent_is_in_the_contract() -> None:
+    covered = {entry["unit"] for entry in AGENTS.values()}
     covered |= {gap["unit"] for gap in CONTRACT["gaps"] if gap.get("unit")}
-    uncovered = [
-        f"systemd/{path.name}"
-        for path in sorted(USER_UNITS.glob("*.service"))
-        if runs_an_agent(path) and f"systemd/{path.name}" not in covered
-    ]
+    uncovered = []
+    for path in sorted(USER_UNITS.glob("*.service")):
+        rel = f"systemd/{path.name}"
+        if runs_an_agent(path) and rel not in covered | set(STALE_USER_UNITS):
+            uncovered.append(rel)
+    for path in sorted(INSTALLED.glob("*.service")):
+        rel = str(path.relative_to(ROOT))
+        if runs_an_agent(path) and rel not in covered:
+            uncovered.append(rel)
     assert uncovered == [], (
         f"{uncovered} run an agent and are in no contract entry, so deleting that entry would "
         "leave an unlocked agent behind. Add each one as an agent or as a gap."

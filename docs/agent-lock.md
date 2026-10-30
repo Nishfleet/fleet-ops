@@ -21,8 +21,9 @@ symlinked shared drop-in, and fails when a unit is not a system unit with a
 service user, when a hidden path is still readable, when a need is hidden, when
 the unit sets no `HOME` and no `PATH` that starts with the fleet user's
 `~/.local/bin`, when a gap names a unit the repo no longer ships, or when a user
-unit under `systemd/` starts an agent engine in an `ExecStart*=` line and
-appears in no contract entry. The `unit` job in CI runs it.
+unit under `systemd/` or a system unit under `rootfs/etc/systemd/system/` starts
+an agent engine in an `ExecStart*=` line and appears in no contract entry. The
+`unit` job in CI runs it.
 `ansible/tasks/agent-lock.yml` runs the same lists on the box inside a transient
 unit with the same `User=` and `InaccessiblePaths=`. The contract spells its
 paths with `~`, and `InaccessiblePaths=` takes them relative to the host's root
