@@ -518,9 +518,9 @@ jobs:
           prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$prior" -ge 1 ]; then
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
           else
-            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress,agent-failed
+            gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label agent-ready,strong-only --remove-label agent-in-progress
           fi
       - name: Sweep token
         id: sweep-token
