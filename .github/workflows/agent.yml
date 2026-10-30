@@ -391,6 +391,8 @@ jobs:
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
+          RISKY_PATHS_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/config/risky-paths.json
+          RISKY_RULES_URL: https://raw.githubusercontent.com/Nishfleet/fleet-ops/main/.github/workflows/agent-dispatch.yml
         run: |
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             i=${REF#claim/issue-}; i=${i%%-*}
@@ -398,14 +400,45 @@ jobs:
             grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?) #$i\b" <<<"$body" ||
               gh pr edit "$REF" -R "$REPO" --body "$body"$'\n\n'"Closes #$i"
             n=$(gh pr view "$REF" -R "$REPO" --json number --jq .number)
-            # Nothing here classifies the diff. config/risky-paths.json is the one
-            # source of what is risky: hold-risky reads it when this arm raises
-            # auto_merge_enabled, labels the PR and disarms it. The allowlist that
-            # used to live here disagreed with that file, so a risky PR could arm
-            # with no label and no hold (fleet-ops#9278 item 1). The label is
-            # created here because hold-risky adds it through the labels API, which
-            # fails in a repo that does not have it yet.
-            gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "a path config/risky-paths.json marks risky: the coordinator approves and arms it"
+            # Classify before arming, against the one list and the one program that
+            # hold-risky and the merge-queue gate run; both are read the way hold-risky
+            # reads them, from fleet-ops main by URL, so the check cannot drift from the
+            # hold (fleet-ops#9278 item 1, #11164). A claim PR the classifier calls risky
+            # is not armed here: the label (created first, because hold-risky adds it
+            # through the labels API, which fails in a repo that does not have it yet)
+            # fires hold-risky, whose review arms the head once an approval lands on it.
+            # A read of the program, the list or the diff that fails holds too, so an
+            # outage at arm time cannot arm a risky head, and neither can hold-risky's
+            # absence on a repo without a merge queue.
+            rules=$(mktemp "$RUNNER_TEMP/rules-XXXXXX.yml") || rules=
+            if [ -z "$rules" ]; then
+              verdict='{"risky":true,"why":["the rules file could not be written"]}'
+            elif ! curl -fsSL --max-time 20 --retry 2 "$RISKY_RULES_URL" > "$rules"; then
+              verdict='{"risky":true,"why":["the rules on fleet-ops main are unreadable"]}'
+            elif ! classify=$(yq '.env.CLASSIFY' "$rules") || [ -z "$classify" ]; then
+              verdict='{"risky":true,"why":["agent-dispatch.yml has no CLASSIFY program"]}'
+            elif ! cfg=$(curl -fsSL --max-time 20 --retry 2 "$RISKY_PATHS_URL" | jq -c .); then
+              verdict='{"risky":true,"why":["the risky-path list is unreadable"]}'
+            elif ! gh pr view "$n" -R "$REPO" --json labels,changedFiles > "$RUNNER_TEMP/arm-pr.json" ||
+                 ! gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" \
+                 --jq '.[] | {f: .filename, p: (.previous_filename // null), patch: (.patch // null)}' > "$RUNNER_TEMP/arm-files.txt"; then
+              verdict='{"risky":true,"why":["the claim PR or its diff read failed"]}'
+            else
+              jq -sc '{files: [.[] | .f, (.p // empty)], patches: [.[] | {file: .f, patch}]}' \
+                < "$RUNNER_TEMP/arm-files.txt" > "$RUNNER_TEMP/arm-facts-files.json"
+              jq -c --arg repo "$REPO" --slurpfile d "$RUNNER_TEMP/arm-facts-files.json" \
+                '{repo: $repo, labels: [(.labels // [])[].name], files: $d[0].files, patches: $d[0].patches, changed_files: (.changedFiles // 0)}' < "$RUNNER_TEMP/arm-pr.json" \
+                > "$RUNNER_TEMP/arm-facts.json"
+              verdict=$(jq -c --argjson cfg "$cfg" --arg label needs-coordinator "$classify" < "$RUNNER_TEMP/arm-facts.json") ||
+                verdict='{"risky":true,"why":["the classifier failed"]}'
+            fi
+            if jq -e .risky <<<"$verdict" >/dev/null; then
+              gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "a path config/risky-paths.json marks risky: the coordinator approves and arms it"
+              gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
+              gh pr merge "$REF" -R "$REPO" --disable-auto 2>/dev/null || true  # a previous head may still be armed
+              echo "::notice::claim PR #$n not armed here: $verdict"
+              exit 0
+            fi
             # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
             q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
             red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
