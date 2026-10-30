@@ -46,10 +46,13 @@ Description=Fail loud when the deploy clone is more than 35 min behind origin/ma
 OnFailure=fleet-unit-failed@%N.service
 # Three tries 20 s apart, so one failed fetch does not page: RestartMode=direct
 # (systemd 254+) restarts without the failed state, so OnFailure= fires once, when
-# the start limit is spent. fleet-unit-failed@ sends a healthchecks.io fail ping
-# per invocation, so the 30 min interval keeps a clone that stays behind to three
-# pings per half hour; the failed state itself is what Prometheus alerts on.
-StartLimitIntervalSec=30min
+# the start limit is spent. Timer starts count toward the limit too (systemd.unit,
+# StartLimitIntervalSec=), so the interval is the timer's 5 min period: one timer
+# start plus two retries. A 30 min interval refused every fourth timer start and left
+# the unit failed with start-limit-hit while the clone was current (same fix as #11098).
+# A repeat healthchecks.io fail ping while the check is already down does not re-alert;
+# the failed state itself is what Prometheus alerts on.
+StartLimitIntervalSec=5min
 StartLimitBurst=3
 
 [Service]
@@ -69,7 +72,7 @@ git merge-base --is-ancestor HEAD refs/fleet-clone-lag/main || { echo "CLONE-LAG
 behind=$$(git rev-list --count HEAD..refs/fleet-clone-lag/main); \
 old=$$(git rev-list --reverse HEAD..refs/fleet-clone-lag/main | head -n1); \
 age=$$(git log -1 --format=%%ct "$$old"); \
-case "$$age" in ''|*[!0-9]*) echo "CLONE-LAG: cannot read the commit date of $$old (git log said \"$$age\"), so the lag is unknown"; exit 1;; esac; \
+case "$$age" in ""|*[!0-9]*) echo "CLONE-LAG: cannot read the commit date of $$old (git log said \"$$age\"), so the lag is unknown"; exit 1;; esac; \
 old=$$(git rev-parse --short "$$old"); \
 age=$$(( ($$(date +%%s) - age) / 60 )); [ "$$age" -ge 0 ] || age=0; \
 [ "$$age" -ge "$$LAG_MIN" ] || { echo "deploy pending: oldest unshipped commit $$old landed $${age} min ago, clone head $$head is behind origin/main ($$want) by $$behind commit(s)"; exit 0; }; \

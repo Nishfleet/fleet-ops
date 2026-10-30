@@ -1,9 +1,9 @@
 name: agent-dispatch
 on:
+  # issue_comment fired ≈7,000 all-skipped runs in 30 days here and no job
+  # consumes it, so the trigger is gone; fleet-ops#10944.
   issues:
     types: [labeled, closed, reopened]
-  issue_comment:
-    types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
@@ -36,7 +36,9 @@ on:
   # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
   # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
+    # closed and auto_merge_disabled consume nothing below (ejected and hold-risky
+    # are the only pull_request_target consumers; fleet-ops#10944).
+    types: [dequeued, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
@@ -381,13 +383,17 @@ jobs:
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
           permission-actions: write
-      - id: list
+      # The claim-PR re-dispatch (fleet-ops#9368): its own step, so a read fault here cannot abort
+      # the sweep pick. It feeds the pick, so it runs first; continue-on-error keeps the pick
+      # alive with no claim-PR append for this run only. The gate states the shell condition the
+      # block used to sit behind (ISSUE and CLOSED both empty), so it covers every trigger that
+      # re-dispatched before — schedule, workflow_run, workflow_call with no issue,
+      # pull_request_target — and not the issue events or a single-issue dispatch.
+      - id: redispatch
+        continue-on-error: true
+        if: ${{ !inputs.issue && !github.event.issue }}
         env:
           GH_TOKEN: ${{ github.token }}
-          # The App token, for the writes that must fire a workflow event.
-          LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
-          CLOSED: ${{ github.event.issue.number }}
-          ISSUE: ${{ inputs.issue }}
           # jq defs shared by the missing-checks and red-PR cases below.
           CHECK_DEFS: |
             def pending: (.status != null and .status != "COMPLETED") or .state == "PENDING";
@@ -410,15 +416,94 @@ jobs:
                else "go" end) as $reason
             | {reason: $reason, run: ($started[-1].body // "")}
         run: |
+          # One issue as JSON for the red-PR case below: exit 3 when it is gone (404/410), 1 on any
+          # other fault. The pick step keeps the same rule, and a shell function does not cross a
+          # step boundary, so this copy is deliberate: keep the two identical.
+          issue_json() {
+            local out err rc=0; err=$(mktemp); out=$(gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err") || rc=$?
+            if [ "$rc" = 0 ]; then printf '%s\n' "$out"; rm -f "$err"; return 0; fi
+            if [[ $(jq -r '.status // empty' <<<"$out" 2>/dev/null) =~ ^(404|410)$ ]] || grep -qE '\(HTTP (404|410)\)' "$err"; then rm -f "$err"; return 3; fi
+            echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
+          }
+          # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after
+          # arming, so it never enters the queue (0509#4384). Each armed PR is
+          # re-read, because the bulk list says UNKNOWN after a push to main (fleet-ops#8557).
+          all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
+          if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
+            unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
+            conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
+              for _ in 1 2 3; do v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable); [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break; sleep 10; done
+              jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
+            done | jq -sc .)
+            # Armed claim PRs whose required checks never reported (fleet-ops#8777):
+            # BLOCKED with nothing pending and nothing failed; a completed failure is the
+            # red PRs case below, and a repo with no required checks lists none (#8981).
+            missing=$(
+              for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
+                gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
+              done | jq -sc "$CHECK_DEFS"'
+                [.[] | (.statusCheckRollup // []) as $checks | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not)) | .headRefName]'
+            )
+            # Claim PRs whose issue is still agent-in-progress after the worker is gone
+            # (fleet-ops#8777): live means the newest "agent run started:" run is queued or running.
+            inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
+            orphans=$(
+              jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
+              while IFS= read -r n; do
+                body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
+                if [ -z "$body" ]; then echo "claim/issue-$n"; continue; fi
+                if [[ $body =~ actions/runs/([0-9]+) ]]; then id=${BASH_REMATCH[1]}
+                else echo "::error::agent run started comment on #$n has no run id" >&2; exit 1; fi
+                rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
+                [ "$live" = true ] || echo "claim/issue-$n"
+              done | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )
+            # Red claim PRs the rework event missed (drive#765, 0509#7182, #7172). The
+            # verdict is RED_REWORK above; a live newest run or a DIRTY PR is left alone.
+            red=$(
+              set -o pipefail
+              for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
+                v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
+                ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
+                jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
+                # A claim PR outlives a deleted issue (gh api answers 410), and its empty comments
+                # aborted the whole sweep (fleet-ops#9553). Skip the PR; any other read fault stays fatal.
+                rc=0; issue=$(issue_json "$n") || rc=$?
+                case $rc in 0) ;; 3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;; *) exit 1 ;; esac
+                comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
+                verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
+                  '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
+                [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
+                if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
+                  rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
+                  if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: run live, skip" >&2; continue; fi; fi
+                echo "$ref"
+              done | jq -Rsc 'split("\n") | map(select(length > 0))'
+            )
+            prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson d "$red" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[], $d[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
+            echo "claim PRs missing required checks: $missing"; echo "claim PRs with a dead agent run: $orphans"
+            echo "claim PRs red with no rework since: $red"; echo "claim PRs picked by the sweep: $prs"
+          else
+            echo "::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run"
+            prs='[]'
+          fi
+          echo "prs=${prs:-[]}" >> "$GITHUB_OUTPUT"
+      - id: list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The App token, for the writes that must fire a workflow event.
+          LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLOSED: ${{ github.event.issue.number }}
+          ISSUE: ${{ inputs.issue }}
+          PRS: ${{ steps.redispatch.outputs.prs }}
+          REDISPATCH: ${{ steps.redispatch.outcome }}
+        run: |
           # One issue as JSON for the sweep: exit 3 when it is gone (404/410), 1 on any other fault.
           issue_json() {
-            local out err rc=0
-            err=$(mktemp)
-            out=$(gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err") || rc=$?
+            local out err rc=0; err=$(mktemp); out=$(gh api "repos/$GITHUB_REPOSITORY/issues/$1" 2>"$err") || rc=$?
             if [ "$rc" = 0 ]; then printf '%s\n' "$out"; rm -f "$err"; return 0; fi
-            if [[ $(jq -r '.status // empty' <<<"$out" 2>/dev/null) =~ ^(404|410)$ ]] || grep -qE '\(HTTP (404|410)\)' "$err"; then
-              rm -f "$err"; return 3
-            fi
+            if [[ $(jq -r '.status // empty' <<<"$out" 2>/dev/null) =~ ^(404|410)$ ]] || grep -qE '\(HTTP (404|410)\)' "$err"; then rm -f "$err"; return 3; fi
             echo "#$1: issue read failed: $(cat "$err") $out" >&2; rm -f "$err"; return 1
           }
           if [ -n "$ISSUE" ]; then
@@ -441,120 +526,41 @@ jobs:
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-              [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                echo "requeued #$n: claimed with no live run and no claim PR"
+              if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                # A failed read is not proof the run died: skip, never requeue a live worker.
+                rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+                [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ] || continue
+              else
+                # agent.yml's Gate labels the issue and posts "agent run started:" one line apart, so
+                # a live worker carries the comment within seconds and a label without one is a run
+                # that died between the two lines (fleet-ops#10903: 0509#7070 held the label 24 days
+                # with no branch, no PR and no comment). The label's own age is then the proof, read
+                # at the 15-minute idle cutoff stuck-prs uses; no label event at all is no proof
+                # either way, so it is skipped.
+                labelled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events?per_page=100" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "agent-in-progress") | .created_at' | tail -n1) || { echo "::warning::#$n: label event read failed, skip"; continue; }
+                [ -n "$labelled" ] && [ "$(date -u -d "$labelled" +%s)" -lt "$(( $(date +%s) - 900 ))" ] || { echo "::warning::#$n: no agent-in-progress label event over 15 minutes old, skip"; continue; }
               fi
+              gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+              echo "requeued #$n: claimed with no live run and no claim PR"
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
-            # CONFLICTING too: auto-merge stays armed on a PR that turns DIRTY after
-            # arming, so it never enters the queue (0509#4384). Each armed PR is
-            # re-read, because the bulk list says UNKNOWN after a push to main (fleet-ops#8557).
-            all=$(gh pr list -R "$GITHUB_REPOSITORY" -L 1000 --json number,headRefName,autoMergeRequest,isDraft,isCrossRepository,mergeable,labels \
-              --jq '[.[] | select((.headRefName|startswith("claim/issue-")) and (.isDraft|not))]')
-            if queued=$(gh api graphql -f query="query{repository(owner:\"${GITHUB_REPOSITORY%/*}\",name:\"${GITHUB_REPOSITORY#*/}\"){mergeQueue{entries(first:100){nodes{pullRequest{headRefName}}}}}}" \
-              --jq '[.data.repository.mergeQueue.entries.nodes[]?.pullRequest.headRefName]'); then
-              unarmed=$(jq -c '[.[] | select(.autoMergeRequest == null and (.labels | map(.name) | index("needs-coordinator") | not)) | .headRefName]' <<<"$all")
-              conflicted=$(for pr in $(jq -r '.[] | select(.autoMergeRequest != null and .mergeable != "MERGEABLE") | .number' <<<"$all"); do
-                for _ in 1 2 3; do
-                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,mergeable)
-                  [ "$(jq -r .mergeable <<<"$v")" != UNKNOWN ] && break
-                  sleep 10
-                done
-                jq -c 'select(.mergeable == "CONFLICTING") | .headRefName' <<<"$v"
-              done | jq -sc .)
-              # Armed claim PRs whose required checks never reported (fleet-ops#8777):
-              # BLOCKED with nothing pending and nothing failed; a completed failure is the
-              # red PRs case below, and a repo with no required checks lists none (#8981).
-              missing=$(
-                for pr in $(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$all"); do
-                  gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus || exit 1
-                done | jq -sc "$CHECK_DEFS"'
-                  [.[] | (.statusCheckRollup // []) as $checks
-                    | select(.mergeStateStatus == "BLOCKED" and ($checks | any(pending) | not) and ($checks | any(failed) | not))
-                    | .headRefName
-                  ]'
-              )
-              # Claim PRs whose issue is still agent-in-progress after the worker is gone
-              # (fleet-ops#8777): live means the newest "agent run started:" run is queued or running.
-              inprog=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '[.[].number]')
-              orphans=$(
-                jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
-                while IFS= read -r n; do
-                  body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
-                  if [ -z "$body" ]; then
-                    echo "claim/issue-$n"
-                    continue
-                  fi
-                  if [[ $body =~ actions/runs/([0-9]+) ]]; then
-                    id=${BASH_REMATCH[1]}
-                  else
-                    echo "::error::agent run started comment on #$n has no run id" >&2
-                    exit 1
-                  fi
-                  rv=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
-                  live=$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv") || exit 1
-                  [ "$live" = true ] || echo "claim/issue-$n"
-                done | jq -Rsc 'split("\n") | map(select(length > 0))'
-              )
-              # Red claim PRs the rework event missed (drive#765, 0509#7182, #7172). The
-              # verdict is RED_REWORK above; a live newest run or a DIRTY PR is left alone.
-              red=$(
-                set -o pipefail
-                for pr in $(jq -r '.[] | select((.isCrossRepository | not) and (.headRefName | test("^claim/issue-[0-9]+$"))) | .number' <<<"$all"); do
-                  v=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json headRefName,statusCheckRollup,mergeStateStatus) || exit 1
-                  ref=$(jq -r .headRefName <<<"$v"); n=${ref#claim/issue-}
-                  jq -e --argjson q "$queued" '.headRefName | IN($q[]) | not' <<<"$v" >/dev/null || continue
-                  # A claim PR outlives a deleted issue (gh api answers 410), and its empty comments
-                  # aborted the whole sweep (fleet-ops#9553). Skip the PR; any other read fault stays fatal.
-                  rc=0; issue=$(issue_json "$n") || rc=$?
-                  case $rc in
-                    0) ;;
-                    3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
-                    *) exit 1 ;;
-                  esac
-                  comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
-                  verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
-                    '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
-                  [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
-                  if [[ $(jq -r .run <<<"$verdict") =~ actions/runs/([0-9]+) ]]; then
-                    rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || exit 1
-                    if [ "$(jq -r --arg ref "$ref" "$RUN_LIVE_JQ" <<<"$rv")" != false ]; then echo "#$n: run live, skip" >&2; continue; fi
-                  fi
-                  echo "$ref"
-                done | jq -Rsc 'split("\n") | map(select(length > 0))'
-              )
-              prs=$(jq -nc --argjson a "$unarmed" --argjson b "$conflicted" --argjson m "$missing" --argjson o "$orphans" --argjson d "$red" --argjson q "$queued" '(reduce ($a[], $b[], $m[], $o[], $d[]) as $r ([]; if index($r) then . else . + [$r] end)) - $q')
-              echo "claim PRs missing required checks: $missing"
-              echo "claim PRs with a dead agent run: $orphans"
-              echo "claim PRs red with no rework since: $red"
-              echo "claim PRs picked by the sweep: $prs"
-            else
-              echo "::warning::merge-queue read failed; skipping all claim-PR re-dispatch this run"
-              prs='[]'
-            fi
           fi
           # Gone-issue skip as above; this loop runs in the shell, so any other read fault aborts the sweep.
           pages=''
           for n in $nums; do
             rc=0; i=$(issue_json "$n") || rc=$?
-            case $rc in
-              0) ;;
-              3) echo "#$n: issue gone, skipping" >&2; continue ;;
-              *) exit 1 ;;
-            esac
+            case $rc in 0) ;; 3) echo "#$n: issue gone, skipping" >&2; continue ;; *) exit 1 ;; esac
             pages="$pages$i"$'\n'
             # A closed blocker releases a parked hand-off: re-label it as the worker App so the label event starts it (fleet-ops#10489, #10949); at most 12 a sweep (fleet-ops#11010).
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
               released=$((${released:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
             fi
           done
+          # continue-on-error keeps this step alive, so a failed re-dispatch would leave no trace (fleet-ops#9368).
+          if [ "$REDISPATCH" = failure ]; then echo "::warning::claim-PR re-dispatch failed; this run appends no claim PRs"; fi
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
           refs=$(printf '%s' "$pages" |
-            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
+            jq -sc --argjson prs "${PRS:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
               | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
               | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
               | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
@@ -1165,7 +1171,10 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Bounded concurrency (fleet-ops#11167): the `handoff` label is held by 5 runners, so a sixth hand-off
+    # waits for a free runner at GitHub, with no API calls. 5 is the plans' measured carry of 4 to 6 on
+    # 2026-10-30 (#11146, #11160). Raise it only when router capacity grows. Runner labels live at GitHub.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops","handoff"]') || fromJSON('["self-hosted","agent","handoff"]') }}  # fleet-ops#10717
     # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
     # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
     # margin here is slack, not the budget the session runs in (fleet-ops#11059).
