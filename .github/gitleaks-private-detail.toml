@@ -278,8 +278,15 @@ regexes = ['''^\.config/fleet-ops/seats$''']
 condition = "AND"
 
 [[allowlists]]
-description = "An earlier commit of the runner-jail bind cut (fleet-ops#10826) spelled the fleet config dir out as an absolute home path, before the test read it off the drop-in's own bind; a PR scan reads every commit and history cannot be rewritten on an open PR. Only that one directory is allowed, so a new home path in this file still fails the scan"
+description = "An earlier commit of the runner-jail bind cut (fleet-ops#10826) spelled the fleet config dir out as an absolute home path, before the test read it off the drop-in's own bind; a PR scan reads every commit and history cannot be rewritten on an open PR. fleet-ops#11120's first commit compared the TemporaryFileSystem= lines against absolute home paths, and its merge of main re-spelled that assertion from the drop-in's merged values. Only those directories are allowed, so a new home path in this file still fails the scan"
 targetRules = ["private-home-path"]
 paths = ['''^tests/test_runner_jail_start_state\.py$''']
-regexes = ['''^home/nish/\.config/fleet-ops$''']
+regexes = ['''^home/nish/\.config/fleet-ops$''', '''^home/nish/\.config/(gh|cloudflare)$''']
+condition = "AND"
+
+[[allowlists]]
+description = "The nish config dirs tmpfiles file owns the two paths the jailed runner jobs mask and bind, so its lines must name them from the root (a tmpfiles line has no trailing comment to carry gitleaks:allow, fleet-ops#11120). Only those paths are allowed, so a new one in this file still fails the scan"
+targetRules = ["private-home-path"]
+paths = ['''(^|/)rootfs/etc/tmpfiles\.d/nish-config-dirs\.conf$''']
+regexes = ['''^home/nish/\.config(/cloudflare)?$''']
 condition = "AND"
