@@ -458,6 +458,28 @@ def test_the_live_config_parks_a_401_row_on_its_first_failure():
     assert named == [], named
 
 
+def test_the_live_config_parks_a_quota_wall_row_on_its_first_429():
+    """fleet-ops#11146 pre-flight, gated: the z.ai and StepFun rows sit on quota walls
+    with a fixed reset clock, not bursts, so each parks on its first 429 for 6 h
+    (#9075, #9122) and re-probes about 4x/day. Without this gate a config edit back to
+    the 900 s burst cool with allowed_fails 1 re-enters the wall every 15 min and leaks
+    it to the caller again (58.9% of worker-capable chat calls failed on 2026-10-30
+    02:28Z with 19 of the 29 worker-capable rows walled)."""
+    walled_api_bases = (
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://api.stepfun.ai/step_plan/v1",
+    )
+    with open(CONFIG_PATH, "rb") as fh:
+        cfg = yaml.safe_load(fh)
+    walled = [row for row in cfg["model_list"]
+              if row["litellm_params"].get("api_base") in walled_api_bases]
+    assert len(walled) == 21, [row["model_info"]["id"] for row in walled]
+    for row in walled:
+        assert row["litellm_params"]["cooldown_time"] == 21600, row["model_info"]["id"]
+        policy = row.get("model_info", {}).get("allowed_fails_policy") or {}
+        assert policy.get("RateLimitErrorAllowedFails") == 0, row["model_info"]["id"]
+
+
 def test_the_pinned_litellm_is_the_one_these_numbers_were_measured_on():
     # The behavioural tests below assert pick counts and a same-row retry, which
     # are litellm-version facts. A silent bump invalidates every number in this

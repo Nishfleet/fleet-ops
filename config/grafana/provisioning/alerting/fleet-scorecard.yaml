@@ -165,16 +165,6 @@ groups:
               repository: siterep-public
               options: {owner: Nishfleet, repository: siterep-public, query: "is:merged repo:Nishfleet/siterep-public", timeField: 2}
               refId: E
-          - refId: F
-            relativeTimeRange: {from: 259200, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Pull_Requests
-              owner: Nishfleet
-              repository: tether
-              options: {owner: Nishfleet, repository: tether, query: "is:merged repo:Nishfleet/tether", timeField: 2}
-              refId: F
           - refId: G
             relativeTimeRange: {from: 259200, to: 0}
             datasourceUid: fleet-github
@@ -195,16 +185,6 @@ groups:
               repository: seo-fix-kit
               options: {owner: Nishfleet, repository: seo-fix-kit, query: "is:merged repo:Nishfleet/seo-fix-kit", timeField: 2}
               refId: H
-          - refId: I
-            relativeTimeRange: {from: 259200, to: 0}
-            datasourceUid: fleet-github
-            model:
-              datasource: {type: grafana-github-datasource, uid: fleet-github}
-              queryType: Pull_Requests
-              owner: Nishfleet
-              repository: mailbox
-              options: {owner: Nishfleet, repository: mailbox, query: "is:merged repo:Nishfleet/mailbox", timeField: 2}
-              refId: I
           - refId: J
             datasourceUid: __expr__
             model:
@@ -230,13 +210,9 @@ groups:
                     UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM E
                     UNION ALL
-                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM F
-                    UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM G
                     UNION ALL
                     SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM H
-                    UNION ALL
-                    SELECT UNIX_TIMESTAMP() - UNIX_TIMESTAMP(closed_at), 'products' FROM I
                   ) AS merged
                 ) AS windows
         noDataState: OK

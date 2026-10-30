@@ -58,7 +58,8 @@ def test_failure_share_ignores_cancelled_and_skipped():
 def _merged(own_today, prod_today, own_yday, prod_yday):
     own = [(1, None)] * own_today + [(30, None)] * own_yday
     prod = [(1, None)] * prod_today + [(30, None)] * prod_yday
-    spread = {name: prod[i::8] for i, name in enumerate("BCDEFGHI")}
+    letters = "BCDEGH"
+    spread = {name: prod[i::len(letters)] for i, name in enumerate(letters)}
     return _missed("scorecard-products-behind", {"A": own, **spread}, "closed_at TEXT, unused TEXT")
 
 
@@ -139,9 +140,20 @@ def test_the_searched_repositories_are_the_registry_products_and_the_control_pla
     assert {t["repository"] for t in _searches(targets)} == _declared_products() | {"fleet-ops"}
 
 
-@pytest.mark.parametrize("targets", [_dashboard_targets, _rule_targets])
-def test_every_pull_request_search_reads_the_closed_timestamp(targets):
-    assert {t["options"]["timeField"] for t in _searches(targets)} == {2}
+# The hand-off rate panel (fleet-ops#11167) buckets PRs by created_at; every other PR
+# search on the dashboard and the rule counts on closed or merged PRs (timeField 2).
+CREATED_DAY_QUERY = "is:pr head:orch/ repo:Nishfleet/fleet-ops"
+
+
+@pytest.mark.parametrize("targets,want_rate", [(_dashboard_targets, True), (_rule_targets, False)])
+def test_every_pull_request_search_reads_the_closed_timestamp(targets, want_rate):
+    rate = [t for t in _searches(targets) if t["options"]["query"] == CREATED_DAY_QUERY]
+    closed = [t for t in _searches(targets) if t["options"]["query"] != CREATED_DAY_QUERY]
+    assert {t["options"]["timeField"] for t in closed} == {2}
+    if want_rate:
+        assert {t["options"]["timeField"] for t in rate} == {1}
+    else:
+        assert rate == []
 
 
 def test_the_rule_searches_the_three_days_its_two_windows_divide():

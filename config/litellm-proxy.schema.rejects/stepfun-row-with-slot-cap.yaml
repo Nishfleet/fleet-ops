@@ -42,7 +42,7 @@ model_list:
     order: 1
     weight: 1
     max_parallel_requests: 1
-    cooldown_time: 900
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -50,6 +50,7 @@ model_list:
     id: stepfun-step5previewd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: judge
   litellm_params:
     model: openai/qwen3.8-max
