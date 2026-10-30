@@ -601,7 +601,7 @@
       "models": "claude-opus-5-5"
     },
     {
-      "name": "claude-limit-line-with-exit-0-still-holds",
+      "name": "claude-limit-line-on-stderr-with-exit-0-holds",
       "guard": "",
       "choice": "approve",
       "p": "0.95",
@@ -649,13 +649,13 @@
       "models": "claude-opus-5-5"
     },
     {
-      "name": "claude-one-line-that-is-not-a-limit-still-fails",
+      "name": "claude-a-failure-that-is-not-a-limit-still-fails",
       "guard": "",
       "choice": "approve",
       "p": "0.95",
       "first": "clean",
       "second": "none",
-      "extra": "CLAUDE_ONE_LINE=1",
+      "extra": "CLAUDE_WALL=1",
       "approved": "no",
       "code": "1",
       "models": "claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-opus-5-5"
@@ -685,7 +685,7 @@
       "models": "claude-opus-5-5 claude-fable-5-1"
     },
     {
-      "name": "guard-second-limit-line-with-exit-0-still-holds",
+      "name": "guard-second-limit-line-on-stderr-with-exit-0-holds",
       "guard": "1",
       "choice": "approve",
       "p": "0.95",
@@ -719,6 +719,30 @@
       "approved": "no",
       "code": "1",
       "models": ""
+    },
+    {
+      "name": "claude-quoted-limit-line-in-a-review-is-still-a-review",
+      "guard": "1",
+      "choice": "approve",
+      "p": "0.95",
+      "first": "quotes_limit",
+      "second": "clean_ok",
+      "extra": "THIRD=clean_ok",
+      "approved": "no",
+      "code": "0",
+      "models": "claude-opus-5-5 claude-fable-5-1"
+    },
+    {
+      "name": "prior-held-comment-is-reviewed",
+      "guard": "1",
+      "choice": "approve",
+      "p": "0.95",
+      "first": "clean",
+      "second": "clean_ok",
+      "extra": "PRIOR=held THIRD=clean_ok",
+      "approved": "yes",
+      "code": "0",
+      "models": "claude-opus-5-5 claude-fable-5-1"
     }
   ]
 }

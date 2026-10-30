@@ -636,7 +636,7 @@ jobs:
           [ -n "$prog" ] && [ "$prog" != null ] && [ "$who" = "$(yq '.env.APPROVERS' "$f")" ] || { echo "STUCK or its APPROVERS missing or not the coordinator-approval gate"; exit 1; }
           run=$(yq '.jobs.stuck-prs.steps[] | select(.id == "find") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
-          for n in '--arg who "$APPROVERS" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
+          for n in '--arg who "$APPROVERS" --argjson cut "$(( $(date +%s) - 3600 ))" "$STUCK"' 'echo "review=$review"' 'echo "arm=$arm"' 'echo "rework=$rework"' 'echo "file=$file"' '(HTTP (404|410)' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing stuck-prs wiring: $n"; exit 1; }
           done
           bad=0
@@ -644,9 +644,10 @@ jobs:
             [ "$(yq ".jobs.\"${j%%:*}\".needs" "$f")" = stuck-prs ] && [ "$(yq ".jobs.\"${j%%:*}\".with.${j#*:}" "$f")" != null ] || { echo "${j%%:*} is not wired to stuck-prs"; bad=1; }
           done
           [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
+          # The hold's cooldown reads a cutoff epoch, so a case can name one (or take the default) and stay deterministic.
           while IFS= read -r c; do
             in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
-            got=$(jq -r --arg who "$who" "$prog | .class" <<<"$in")
+            got=$(jq -r --arg who "$who" --argjson cut "$(jq -r '.cut // 1793318400' <<<"$c")" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
           done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
           test "$bad" -eq 0
@@ -1072,17 +1073,17 @@ jobs:
           while [ $# -gt 0 ]; do case $1 in --model) model=$2 ;; --tools) tools=$2 ;; --permission-mode|--allowedTools|--dangerously-skip-permissions) echo "claude review uses $1" >> "$STATE/claude-bad" ;; esac; shift; done
           [ "$tools" = "" ] || echo "tools not disabled: '$tools'" >> "$STATE/claude-bad"
           cat > /dev/null; echo "$model" >> "$STATE/models"
-          # claude's own usage-limit line, recorded from a 429 on this fleet's seat. LIMIT_FORM picks the reached wording, the
-          # epoch form of the same wall, or the JSON-wrapped shape the host logged. CLAUDE_LIMIT and SECOND_LIMIT are the exit code.
+          # claude's own usage-limit line, recorded from a 429 on this fleet's seat: it goes to stderr and the call exits
+          # non-zero. LIMIT_FORM picks the reached wording, the epoch form of the same wall, or the JSON-wrapped shape the
+          # host logged. CLAUDE_LIMIT and SECOND_LIMIT are the exit code. CLAUDE_WALL is a failure no reset clears.
           lim="You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)"
           [ "${LIMIT_FORM:-}" != reached ] || lim="You've reached your weekly limit · resets Nov 2"
           [ "${LIMIT_FORM:-}" != epoch ] || lim="Claude AI usage limit reached|1793276330"
           [ "${LIMIT_FORM:-}" != json ] || lim='{"text":"You have reached your weekly limit · resets Nov 2"}'
-          if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; [ -z "${SECOND_LIMIT:-}" ] || { echo "You've hit your weekly limit · resets Nov 2"; exit "$SECOND_LIMIT"; }; printf '%b\n' "$SECOND"; exit 0; fi
+          if [ "$model" = "$SECOND_MODEL" ]; then [ -z "${SECOND_FAILS:-}" ] || exit 1; [ -z "${SECOND_LIMIT:-}" ] || { echo "$lim" >&2; exit "$SECOND_LIMIT"; }; printf '%b\n' "$SECOND"; exit 0; fi
           [ -z "${CLAUDE_FAILS:-}" ] || exit 1
-          # A one-line failure that is not a limit (a wall no reset clears) must stay a failure.
-          [ -z "${CLAUDE_ONE_LINE:-}" ] || { echo "You're out of usage credits"; exit 1; }
-          [ -z "${CLAUDE_LIMIT:-}" ] || { echo "$lim"; exit "$CLAUDE_LIMIT"; }
+          [ -z "${CLAUDE_WALL:-}" ] || { echo "You're out of usage credits" >&2; exit 1; }
+          [ -z "${CLAUDE_LIMIT:-}" ] || { echo "$lim" >&2; exit "$CLAUDE_LIMIT"; }
           printf '%b\n' "$FIRST"
           MOCK
           printf '%s\n' '#!/usr/bin/env bash' 'case "$*" in *init*) ;; *fetch*) if printenv GIT_FAILS | grep -q .; then exit 1; fi; case "$*" in *"credential.helper=!gh auth git-credential"*) ;; *) echo "mock git: the fetch does not authenticate with gh credential helper" >&2; exit 1 ;; esac; case "$*" in *":refs/base"*":refs/head"*) ;; *) echo "mock git: the fetch must fetch both refs: $*" >&2; exit 1 ;; esac ;; *ls-tree*) echo app/routes/home.tsx ;; *"diff --no-color refs/base...refs/head"*) if printenv DIFF_BIG | grep -q .; then head -c 300000 /dev/zero | tr "\0" x; elif printenv DIFF_MID | grep -q .; then head -c 200000 /dev/zero | tr "\0" x; else printf "diff --git a/app/routes/home.tsx b/app/routes/home.tsx\\n+x\\n"; fi ;; *grep*|*show*) ;; *) echo "mock git: unexpected call: $*" >&2; exit 1 ;; esac' > "$t/bin/git"
@@ -1115,7 +1116,8 @@ jobs:
           none_words='blocker: none found in the lock file, the gate is gone.\nAPPROVE'
           first_none='Blockers: none\nchecked: a, b'
           none_then_real='blocker: none.\nblocker .github/workflows/new.yml: removes a gate\nAPPROVE'
-          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
+          quotes_limit='blocker .github/workflows/new.yml: removes a gate\nrisk: the review can print "Claude AI usage limit reached|1793276330" and stop\nnit: y'
+          : "$none" "$clean" "$blocked" "$clean_ok" "$blocked_b" "$blocked_ok" "$forged" "$none_ok" "$first_none" "$none_then_real" "$quotes_limit"  "$none_words" "$v_none" "$v_found" "$v_nob" "$v_nothing" "$v_na" "$v_dash" "$v_bold" "$v_ident" "$v_expl" "$v_dashexpl" "$v_semi" "$real_none_of" "$real_nothing" "$header_echo"  # read through ${!first} and ${!second}
           # every “blocker: none” shape a reviewer can write, then the same line with a real blocker after it
           gen_none_rows() { for v in v_none v_found v_nob v_nothing v_na v_dash v_bold v_ident v_expl v_dashexpl v_semi real_none_of real_nothing; do want=yes; case $v in real_none_of|real_nothing) want=no ;; esac; printf -v row 'none-%s|1|approve|0.95|clean|%s|THIRD=clean_ok|%s|0|claude-opus-5-5 claude-fable-5-1\n' "$v" "$v" "$want"; printf '%s' "$row"; done; }
           # case: name|guard (1 = edits a workflow)|judge choice|judge p|first review|second review|extra env|want approved (yes/no)|want exit|want models (a seat that answers nothing is asked again, so a dead seat is listed once per REVIEW_BACKOFF delay plus the first call)
@@ -1126,7 +1128,7 @@ jobs:
           [ -n "$cases" ] || { echo "config/review-cases.json gave no cases"; exit 1; }
           while IFS='|' read -r name guard choice p first second extra approved code models; do
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
-              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' CLAUDE_ONE_LINE='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
+              GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' CLAUDE_LIMIT='' LIMIT_FORM='' SECOND_LIMIT='' CLAUDE_WALL='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
             mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
@@ -1139,6 +1141,7 @@ jobs:
                   not-approved) prior="reviewer: $SHA not approved. The judge found no blocker line but was only 80% sure, and approval needs 90%." ;;
                   blocked) prior="$(printf 'reviewer: %s blocked. Fix these and push; a new head gets a fresh review.\n\nblocker x: y' "$SHA")" ;;
                   near-approval) prior="reviewer: $SHA approved, but only 50% sure" ;;
+                  held) prior="$(printf 'review-held: %s\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked.' "$SHA")" ;;
                   fallback-text) prior="reviewer: $SHA edits the merge guard or a workflow, so a person approves it. Nothing was approved or blocked automatically. Fallback: an approver's PR comment line \`coordinator-approval: $SHA\`." ;;
                   blocked-none-only) prior="$(printf 'reviewer: %s blocked. This change edits the merge guard or a workflow, so it needs all three reviews to approve.\n\nSecond reviewer (Claude family, served row claude-fable-5-1): blocked\nblocker: none.\n\nrisk: x' "$SHA")" ;;
                   blocked-none-five) copies=5; prior="$(printf 'reviewer: %s blocked. Fix these.\n\nblocker: none found.' "$SHA")" ;;
