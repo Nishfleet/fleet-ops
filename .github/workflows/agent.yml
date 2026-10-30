@@ -44,7 +44,7 @@ on:
         options: [inish-daily]
         default: inish-daily
         required: true
-      # By hand when agent-dispatch cannot start review-risky: gh workflow run agent.yml -f review_pr=<N> -f review_sha=<sha> (fleet-ops#10199); never a worker App token.
+      # By hand from main when agent-dispatch cannot start review-risky: gh workflow run agent.yml -f review_pr=<N> -f review_sha=<sha> (fleet-ops#10199); needs actions: write: never a worker App token.
       review_pr: {description: "risky PR number to review by hand, when agent-dispatch cannot start it", type: string}
       review_sha: {description: "its head sha, the one the review approves or blocks", type: string}
 permissions: {}
@@ -74,7 +74,7 @@ jobs:
           [ -s "$keyfile" ] || { echo "::error::app private key file missing on runner"; exit 1; }
           grep . "$keyfile" | sed 's/^/::add-mask::/'
           { echo 'pem<<APP_PRIVATE_KEY_END'; cat "$keyfile"; echo APP_PRIVATE_KEY_END; } >> "$GITHUB_OUTPUT"
-      # No owner and no repositories: the token scopes to GITHUB_REPOSITORY (every caller event sets it); the three writes are the App's whole grant (credentials/app-manifest.json).
+      # No owner and no repositories: the token scopes to GITHUB_REPOSITORY (every caller event sets it); the three writes (contents, issues, pull-requests) are the App's whole grant.
       - name: App token
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
@@ -205,12 +205,12 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
-          # Pi sends FLEET_TASK_ID as x-litellm-session-id and exits 1 without it (fleet-ops#9015); the ref suffix separates sweep-matrix calls sharing github.run_id (#9081).
+          # FLEET_TASK_ID becomes x-litellm-session-id, which keeps the whole run on one router model; without it the call exits 1 (fleet-ops#9015); the ref suffix separates sweep-matrix calls sharing run_id (#9081).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.ref }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
-          # --unshare-pid kills daemonized strays (actions/runner#4601); only claude sees its own seat; ci.yml runs these jail lines verbatim (fleet-ops#9274).
+          # --unshare-pid kills what the worker daemonized (actions/runner#4601); every engine but claude hides both seat logins; ci.yml fails a readable hidden path (fleet-ops#9274).
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
@@ -859,7 +859,7 @@ jobs:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - uses: Nishfleet/fleet-ops/.github/actions/stuck@main
   inish-daily:
-    # The Daily (nish.sh/daily): standards in HERMES_DAILY.md (inish-site) and prompts/inish-daily.md here; jailed, output rebuilt in a fresh clone; a review summons publishes nothing.
+    # The Daily (nish.sh/daily): standards in inish-site's automation/HERMES_DAILY.md and prompts/inish-daily.md here; jailed, output rebuilt in a fresh clone; a review summons publishes nothing.
     if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 150
