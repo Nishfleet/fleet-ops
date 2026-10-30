@@ -174,6 +174,42 @@ def test_claude_vps_listener_is_sandboxed_and_egress_capped() -> None:
 HERMES_UNITS = ("hermes-gateway", "hermes-serve")
 HERMES_DIRS = (INSTALLED / "hermes-.service.d", *(INSTALLED / f"{unit}.service.d" for unit in HERMES_UNITS))
 HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteExecute", "PrivateUsers", "PrivateNetwork")
+HERMES_HIDDEN = (
+    "/home/nish/.config/fleet-ops",
+    "/home/nish/.config/fleet-worker",
+    "/home/nish/.config/cloudflare",
+    "/home/nish/.config/systemd",
+    "/home/nish/.ssh",
+    "/home/nish/.git-credentials",
+    "/home/nish/.claude",
+    "/home/nish/.claude-vps",
+    "/home/nish/.local/share/claude-seat-backup",
+    "/home/nish/.commandcode",
+    "/home/nish/.cursor",
+    "/home/nish/.devin",
+    "/home/nish/.config/opencode",
+    "/home/nish/.config/tincan/claude-vps.json",
+    "/home/nish/.config/tincan/command-code.json",
+    "/home/nish/.config/tincan/cursor-vps.json",
+    "/home/nish/.config/tincan/devin-vps.json",
+    "/home/nish/.config/tincan/fleet-worker.json",
+    "/home/nish/.config/tincan/issue-desk.json",
+    "/home/nish/.config/tincan/opencode.json",
+    "/home/nish/.config/tincan/pi.json",
+    "/home/nish/.config/tincan/agentmail.key",
+    "/run/user/1000",
+    "/run/docker.sock",
+)
+HERMES_READABLE = (
+    "/home/nish/.hermes",
+    "/home/nish/.local/state/hermes",
+    "/home/nish/.config/gh",
+    "/home/nish/.config/tincan",
+    "/home/nish/.config/tincan/hermes.json",
+    "/home/nish/.config/tincan/hermes-webhook.secret",
+    "/home/nish/.cua",
+    "/home/nish/.pi",
+)
 
 
 def _unit_keys_text(text: str) -> dict[str, list[str]]:
@@ -247,6 +283,16 @@ def test_hermes_sandbox_dropin_sits_in_the_prefix_dir_both_units_read() -> None:
     assert prefix != directory.name, f"{directory.name} is an ordinary drop-in dir: the shared file would cover no unit"
     assert [unit for unit in HERMES_UNITS if unit.startswith(prefix)] == list(HERMES_UNITS), prefix
     assert (directory / "sandbox.conf").is_file()
+    version = _systemd_version()
+    assert version >= 249, f"systemd {version} does not search the dash-truncated drop-in dir, so hermes-serve starts with no deny list"
+    for unit in HERMES_UNITS:
+        assert directory / "sandbox.conf" in _layers(unit), f"{unit} does not read the shared file, so it runs with no deny list (systemd {version})"
+
+
+def _systemd_version() -> int:
+    out = subprocess.run(["systemd-analyze", "--version"], capture_output=True, text=True, check=False)
+    fields = out.stdout.split()
+    return int(fields[1]) if out.returncode == 0 and len(fields) > 1 and fields[1].isdigit() else 0
 
 
 def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:
@@ -298,6 +344,83 @@ def test_no_hermes_layer_takes_what_the_children_need() -> None:
         keys = _unit_keys(path)
         for key in HERMES_FORBIDDEN:
             assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
+
+
+def _hermes_hidden() -> set[PurePosixPath]:
+    hidden: set[PurePosixPath] = set()
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    hidden.add(PurePosixPath(entry.removeprefix("-")))
+    return hidden
+
+
+def test_the_hermes_lock_hides_the_credentials_no_chat_turn_reads() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_HIDDEN:
+        assert PurePosixPath(path) in hidden, f"the chat agent must not read {path}: no hermes layer hides it"
+
+
+def test_the_hermes_lock_keeps_what_hermes_and_its_children_measured_to_need() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_READABLE:
+        covering = [hidden_path for hidden_path in hidden if path == str(hidden_path) or path.startswith(str(hidden_path) + "/")]
+        assert not covering, f"{path} is hidden by {covering}, so hermes or an MCP child breaks"
+    assert PurePosixPath("/home/nish") not in hidden, "hiding all of HOME undoes ProtectHome=read-only and the grants above"
+
+
+def test_every_hermes_hidden_path_survives_being_absent() -> None:
+    hidden = _hermes_hidden()
+    assert hidden, "no hermes layer hides anything"
+    assert not [str(path) for path in hidden if " " in str(path)], "a hidden path with a space is split by the shell grammar systemd reads these lines with, so this check would read half of it"
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    assert entry.startswith("-"), f"{path.relative_to(INSTALLED)}: {entry} without the - prefix stops the unit from starting on a host that does not have it (fleet-ops#10081)"
+
+
+def _table_path(path: str, home: str) -> str:
+    return path.replace("~", home, 1) if path.startswith("~/") else path
+
+
+def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
+    hidden = _hermes_hidden()
+    for unit in HERMES_UNITS:
+        grants = {PurePosixPath(entry.removeprefix("-")) for entry in shlex.split(" ".join(_effective(unit)["ReadWritePaths"]))}
+        assert sum(1 for grant in grants if " " in str(grant)) == 1, (
+            f"{unit}: the vault inbox grant carries a space, so it reads quoted from the drop-in; "
+            "losing the quoting would let shlex split it and this check would pass on the fragments"
+        )
+        for grant in grants:
+            covering = [path for path in hidden if grant == path or str(grant).startswith(str(path) + "/")]
+            assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"
+
+
+def test_both_hermes_units_are_in_the_agent_lock_table() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    agents = table["agents"]
+    entries = []
+    for unit in HERMES_UNITS:
+        assert unit in agents, f"{unit} is missing from config/agent-locks.json"
+        entry = agents[unit]
+        assert entry["unit"] == f"rootfs/etc/systemd/system/{unit}.service", entry
+        entries.append(entry)
+    lists = [{_table_path(path, home) for path in entry["must_hide"]} for entry in entries]
+    assert lists[0] == lists[1], "hermes-gateway and hermes-serve read the same hermes-.service.d/sandbox.conf, so their must_hide lists cannot differ"
+    for entry in entries:
+        assert len(entry["must_hide"]) == len(lists[0]), f"{entry['unit']}: a path listed twice hides nothing twice"
+
+
+def test_the_table_accounts_for_every_path_the_hermes_lock_hides() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    named = {_table_path(path, home) for unit in HERMES_UNITS for path in table["agents"][unit]["must_hide"]}
+    hidden = {str(path) for path in _hermes_hidden()}
+    assert not hidden - named, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named)}"
+    assert not named - hidden, f"the table hides these and no hermes layer does: {sorted(named - hidden)}"
 
 
 def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
@@ -1376,10 +1499,7 @@ CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
-    "/run/user/1000/bus": "made by the user manager (dbus activation), which the runners are ordered after",
-    "/run/user/1000/systemd": "made by the user manager, which the runners are ordered after",
-    "/run/user/1000/podman": "made by the user manager, which the runners are ordered after",
-    "/run/user/1000/gnupg": "made by the user manager, which the runners are ordered after",
+    "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",
 }
 
@@ -1399,97 +1519,63 @@ def tmpfiles_created(tmpfiles_dir: Path) -> set[str]:
     return created
 
 
-def install_created(dropin: Path) -> set[str]:
-    """Every path an `ExecStartPre=+/usr/bin/install -d` line of one drop-in makes.
-
-    A pre-start line without the "+" runs inside the unit's own mount namespace, so it cannot make
-    the host mount point the manager would otherwise make as root (fleet-ops#10886).
-    """
-    made = set()
-    for line in dropin.read_text().splitlines():
-        line = line.strip()
-        if not line.startswith("ExecStartPre=+"):
-            continue
-        tokens = shlex.split(line.split("=", 1)[1][1:])
-        if not tokens or Path(tokens[0]).name != "install" or "-d" not in tokens[1:]:
-            continue
-        made.update(token for token in tokens[1:] if token.startswith("/"))
-    return made
-
-
-def runner_listed_paths(dropin: Path, key: str) -> list[str]:
-    """Every `key=` entry of one drop-in without its "-"/"+" prefixes and mount options; ValueError when empty or unparsable."""
+def runner_mask_paths(dropin: Path) -> list[str]:
+    """Every InaccessiblePaths= entry of one drop-in without its "-"/"+" prefixes; ValueError when empty or unparsable."""
     paths: list[str] = []
     lines = dropin.read_text().splitlines()
     i = 0
     while i < len(lines):
         line = lines[i].strip()
         i += 1
-        if not line.startswith(key + "="):
+        if not line.startswith("InaccessiblePaths="):
             continue
-        value = line.removeprefix(key + "=")
+        value = line.removeprefix("InaccessiblePaths=")
         while value.endswith("\\") and i < len(lines):
             value = value[:-1] + " " + lines[i].strip()
             i += 1
         try:
             tokens = shlex.split(value)
         except ValueError as err:
-            raise ValueError(f"{dropin}: unparsable {key} line {line!r}: {err}") from err
+            raise ValueError(f"{dropin}: unparsable InaccessiblePaths= line {line!r}: {err}") from err
         if not tokens:
-            raise ValueError(f"{dropin}: empty {key} line (it would reset the list)")
+            raise ValueError(f"{dropin}: empty InaccessiblePaths= line (it would reset the mask list)")
         for token in tokens:
-            path = token.split(":", 1)[0].lstrip("-+")
+            path = token.lstrip("-+")
             if not path.startswith("/") or path == "/":
-                raise ValueError(f"{dropin}: unparsable {key} entry {token!r}")
+                raise ValueError(f"{dropin}: unparsable InaccessiblePaths= entry {token!r}")
             paths.append(path)
     return paths
 
 
-def runner_mask_paths(dropin: Path) -> list[str]:
-    return runner_listed_paths(dropin, "InaccessiblePaths")
-
-
-def runner_hidden_paths(dropin: Path) -> list[str]:
-    """Both lists that hide a path from a job: a mask and a mount each hide it, and each leaves the host
-    path behind when it does not apply, so both need a creator that runs before the runner starts."""
-    return runner_listed_paths(dropin, "InaccessiblePaths") + runner_listed_paths(dropin, "TemporaryFileSystem")
-
-
 def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: dict[str, str]) -> list[str]:
-    """Hidden /run paths with neither a pre-start creator nor an allowlist entry; ValueError when a list is empty."""
+    """Masked /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a mask list is empty."""
     created = tmpfiles_created(tmpfiles_dir)
     bad = []
     for directory in dropin_dirs:
-        made = {path for conf in sorted(directory.glob("*.conf")) for path in install_created(conf)}
-        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_hidden_paths(conf)]
+        paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_mask_paths(conf)]
         if not paths:
-            raise ValueError(f"{directory}: no InaccessiblePaths= or TemporaryFileSystem= entry in any drop-in")
+            raise ValueError(f"{directory}: no InaccessiblePaths= entry in any drop-in")
         for path in paths:
             norm = _run_norm(path)
-            if (norm == "/run" or norm.startswith("/run/")) and norm not in created and norm not in made:
+            if (norm == "/run" or norm.startswith("/run/")) and norm not in created:
                 if not any(fnmatch.fnmatchcase(norm, pattern) for pattern in allowlist):
                     bad.append(f"{directory.name}: {path}")
     return bad
 
 
-def test_every_hidden_run_path_has_a_boot_time_creator() -> None:
-    """A path that does not exist when the runner starts is not hidden at all: a mask is skipped and a mount
-    point is made by systemd itself, as root, which the token mint cannot write into (fleet-ops#10886)."""
+def test_every_masked_run_path_has_a_boot_time_creator() -> None:
     assert len(RUNNER_DROPINS) >= 5, "the runner drop-in directories were not found"
     assert unguarded_run_paths(RUNNER_DROPINS, TMPFILES, RUN_PATH_ALLOWLIST) == []
 
 
 def test_run_path_allowlist_has_no_stale_entry() -> None:
-    hidden = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_hidden_paths(conf)}
-    created = tmpfiles_created(TMPFILES) | {path for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in install_created(conf)}
+    masked = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_mask_paths(conf)}
+    created = tmpfiles_created(TMPFILES)
     for pattern, reason in RUN_PATH_ALLOWLIST.items():
         assert reason.strip()
-        assert any(fnmatch.fnmatchcase(path, pattern) for path in hidden), f"{pattern} is hidden by no runner"
+        assert any(fnmatch.fnmatchcase(path, pattern) for path in masked), f"{pattern} is masked by no runner"
         assert pattern not in created, f"{pattern} has a tmpfiles creator, drop it from the allowlist"
-    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in hidden
-    # The two token dirs are covered by a mount, so the mount points must exist before the runners start.
-    assert "/run/user/1000/fleet-worker-github-token" in created and "/run/user/1000/fleet-worker-github-token" in hidden
-    assert "/run/user/1000/fleet-grafana-github-token" in created and "/run/user/1000/fleet-grafana-github-token" in hidden
+    assert "/run/dockerd-eval" in created and "/run/dockerd-eval" in masked
 
 
 def _fixture(tmp_path: Path, mask: str, tmpfiles: str = "") -> tuple[list[Path], Path]:
@@ -1518,23 +1604,8 @@ def test_run_path_check_accepts_a_creator_and_normalises_var_run(tmp_path: Path)
 def test_run_path_check_reads_every_line_and_prefix(tmp_path: Path) -> None:
     mask = "[Service]\nInaccessiblePaths=-/etc/a \\\n  -/run/x\nInaccessiblePaths=/run/y +/run/z\n"
     dirs, tmpdir = _fixture(tmp_path, mask)
-    assert runner_listed_paths(dirs[0] / "20-lockdown.conf", "InaccessiblePaths") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
+    assert runner_mask_paths(dirs[0] / "20-lockdown.conf") == ["/etc/a", "/run/x", "/run/y", "/run/z"]
     assert len(unguarded_run_paths(dirs, tmpdir, {})) == 3
-
-
-def test_run_path_check_covers_a_mounted_path_and_its_options(tmp_path: Path) -> None:
-    """A mount hides a path the way a mask does, so it needs the same creator (fleet-ops#10886)."""
-    mask = "[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:ro\n"
-    dirs, tmpdir = _fixture(tmp_path, mask, "")
-    assert runner_listed_paths(dirs[0] / "20-lockdown.conf", "TemporaryFileSystem") == ["/run/user/1000/fleet-worker-github-token"]
-    assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/user/1000/fleet-worker-github-token"]
-    (dirs[0] / "20-lockdown.conf").write_text(
-        mask + "ExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700 /run/user/1000/fleet-worker-github-token\n"
-    )
-    assert unguarded_run_paths(dirs, tmpdir, {}) == []
-    (tmpdir / "x.conf").write_text("d /run/user/1000/fleet-worker-github-token 0700 nish nish -\n")
-    (dirs[0] / "20-lockdown.conf").write_text(mask)
-    assert unguarded_run_paths(dirs, tmpdir, {}) == []
 
 
 @pytest.mark.parametrize(

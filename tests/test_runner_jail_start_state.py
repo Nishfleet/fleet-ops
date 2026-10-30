@@ -1,39 +1,16 @@
-"""Runner jail: a token dir stays covered when it is made after the start, and no step runs under a hidden path (fleet-ops#10886).
+"""Runner jail: every hidden path must exist when the runner starts (fleet-ops#10081).
 
-InaccessiblePaths= is applied once, against the directory that exists then, and the pre-start
-mkdir that used to make these dirs ran after it, so the directory it made was never covered.
-The two token dirs are therefore covered by a TemporaryFileSystem= mount: systemd makes the
-mount point and mounts it before the runner runs, so a directory the mint creates later is
-already covered, nothing has to pre-create these dirs, and a mount that cannot be made stops
-the unit instead of leaving a job readable. A mount sits on the directory it was made on, so
-a delete-and-recreate from the host is as uncovered as a replaced mask, which is why the
-mints keep these dirs (RuntimeDirectoryPreserve=yes). runner-probe checks inside the job that
-every mount is live. The last two tests below run the real manager, on CI or a host that has
-one, and prove the mount point is made for an absent path and that a file written there
-later stays hidden from the job.
-
-A path may sit on one list or the other, never both: at one path systemd applies the more
-restrictive entry and drops the other, and InaccessiblePaths= sorts before
-TemporaryFileSystem= (namespace.c: mount_path_compare, then drop_duplicates), so a path on
-both lists is masked and the mount never happens.
-
-The paths still masked by inode (the user bus, the user systemd dir, podman, the user gpg
-dir) are made by the user manager itself, so every runner drop-in is ordered after it
-(fleet-ops#10081).
-
-An absent mount point is made by the manager itself, as root mode 0755, before it mounts, and the
-token mints run as nish. Each drop-in that mounts a token dir therefore makes both dirs first
-with an `ExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700` line: a "+" command runs with
-full privileges and skips the file system namespacing options (systemd.service(5), "Command
-lines"), so it writes the host path instead of the tmpfs the unit mounts there.
+InaccessiblePaths= hides a path only if it exists at the moment the unit starts. A path that
+user services create later stays visible to jobs until the runner restarts. The agent runner
+drop-in therefore starts after the user manager and creates the runtime dirs that user
+services would otherwise make later. The fleet-ci and vault runner drop-ins do the same
+(fleet-ops#10120).
 """
 
-import os
 import re
 import shlex
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -46,7 +23,7 @@ HOME = "/home/nish"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
-# pool -> the drop-in with the start order and the lockdown
+# pool -> (drop-in with the start order and the pre-start step, drop-in with InaccessiblePaths=)
 POOLS = {
     "agent": (AGENT_DIR / "10-agent.conf", AGENT_DIR / "20-lockdown.conf"),
     "fleet-ci": (FLEET_CI_DIR / "10-fleet-ci.conf", FLEET_CI_DIR / "20-lockdown.conf"),
@@ -54,26 +31,9 @@ POOLS = {
     "vault": (VAULT_DIR / "20-lockdown.conf", VAULT_DIR / "20-lockdown.conf"),
 }
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
+USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
 KEY = "nishfleet-worker.private-key.pem"
-# The runtime dirs the user token mints write their App tokens into (systemd/fleet-worker-github-token@.service,
-# systemd/fleet-grafana-github-token.service). A job that can read one reads a minted token.
-TOKEN_DIRS = (USER_RUN + "fleet-worker-github-token", USER_RUN + "fleet-grafana-github-token")
-IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
-SUDO = ["sudo", "-n"] if IN_CI else []
-SCOPE = [] if IN_CI else ["--user"]
-TOKEN_DIR_OWNER = "nish"
-TOKEN_DIR_MODE = "0700"
-
-
-def manager_usable() -> bool:
-    """A transient unit starts here, which a jail or a session with no user bus forbids."""
-    if shutil.which("systemd-run") is None:
-        return False
-    return subprocess.run([*SUDO, "systemd-run", *SCOPE, "--scope", "--quiet", "--", "true"], capture_output=True).returncode == 0
-
-
-needs_manager = pytest.mark.skipif(not manager_usable(), reason="no systemd manager starts a unit here")
 
 
 def values(text: str, key: str) -> list[str]:
@@ -86,30 +46,61 @@ def values(text: str, key: str) -> list[str]:
     return out
 
 
-def paths_of(text: str, key: str) -> set[str]:
-    """Every path one `key=` list names, with the mount options of a TemporaryFileSystem= entry stripped."""
-    out = set()
-    for value in values(text, key):
+def masked_user_run_names(lockdown_text: str) -> set[str]:
+    names = set()
+    for value in values(lockdown_text, "InaccessiblePaths"):
         for token in shlex.split(value):
-            out.add(token.split(":", 1)[0].lstrip("-+"))
-    return out
+            path = token.lstrip("-+")
+            if path.startswith(USER_RUN):
+                names.add(path.removeprefix(USER_RUN).split("/")[0])
+    return names
 
 
-def masked_paths(text: str) -> set[str]:
-    return paths_of(text, "InaccessiblePaths")
+def runtime_dirs_of_user_units(unit_dirs: list[Path]) -> dict[str, tuple[str, bool]]:
+    """RuntimeDirectory= name -> (RuntimeDirectoryMode=, preserved) of every repo user unit that sets one."""
+    found = {}
+    for unit_dir in unit_dirs:
+        for unit in sorted(unit_dir.rglob("*.service")) + sorted(unit_dir.rglob("*.conf")):
+            text = unit.read_text()
+            modes = values(text, "RuntimeDirectoryMode")
+            preserve = values(text, "RuntimeDirectoryPreserve")
+            for names in values(text, "RuntimeDirectory"):
+                for name in names.split():
+                    found[name] = (modes[0] if modes else "0755", bool(preserve) and preserve[-1] == "yes")
+    return found
 
 
-def mounted_paths(text: str) -> set[str]:
-    return paths_of(text, "TemporaryFileSystem")
+def pre_created(agent_text: str) -> dict[str, str]:
+    """Path -> mode of every directory an unprivileged ExecStartPre= `mkdir -p -m` makes."""
+    made = {}
+    for value in values(agent_text, "ExecStartPre"):
+        if value.startswith(("+", "!", "-", "@", ":")):
+            continue
+        argv = shlex.split(value)
+        if len(argv) < 4 or Path(argv[0]).name != "mkdir" or "-p" not in argv or "-m" not in argv:
+            continue
+        mode = argv[argv.index("-m") + 1]
+        for path in argv[1:]:
+            if path.startswith("/"):
+                made[path] = mode
+    return made
 
 
-def masked_user_run_names(text: str) -> set[str]:
-    return {p.removeprefix(USER_RUN).split("/")[0] for p in masked_paths(text) if p.startswith(USER_RUN)}
-
-
-def hidden_token_dirs(text: str) -> set[str]:
-    """The token dirs a drop-in hides, masked or mounted."""
-    return (masked_paths(text) | mounted_paths(text)) & set(TOKEN_DIRS)
+def uncovered(lockdown_text: str, agent_text: str, unit_dirs: list[Path]) -> list[str]:
+    """Hidden user-runtime paths that a user service creates later and the runner does not pre-create."""
+    later = runtime_dirs_of_user_units(unit_dirs)
+    made = pre_created(agent_text)
+    bad = []
+    for name in sorted(masked_user_run_names(lockdown_text) & set(later)):
+        mode, preserved = later[name]
+        made_mode = made.get(USER_RUN + name)
+        if made_mode is None:
+            bad.append(f"{name}: not created before start")
+        elif int(made_mode, 8) != int(mode, 8):
+            bad.append(f"{name}: mode {made_mode} differs from the service's {mode}")
+        elif not preserved:
+            bad.append(f"{name}: the service does not set RuntimeDirectoryPreserve=yes")
+    return bad
 
 
 def section_values(text: str, section: str, key: str) -> list[str]:
@@ -161,35 +152,21 @@ def runner_units() -> dict[str, list[Path]]:
     return units
 
 
-def merged_paths(dirs: list[Path], key: str) -> set[str]:
-    text = "\n".join(f"{key}={value}" for value in merged_values(dirs, key))
-    return paths_of(text, key)
-
-
-def both_lists(dirs: list[Path]) -> set[str]:
-    """Paths on InaccessiblePaths= and on TemporaryFileSystem= at once: systemd keeps the more
-    restrictive of the two at one path, InaccessiblePaths= sorts first, so these mounts never happen."""
-    return merged_paths(dirs, "InaccessiblePaths") & merged_paths(dirs, "TemporaryFileSystem")
-
-
 def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
     """Paths an unprivileged ExecStartPre= touches that sit under a directory the unit hides whole.
 
     InaccessiblePaths= also applies to ExecStartPre= (same mount namespace), so a mkdir below a hidden
-    parent fails with "Permission denied" and the runner never starts. A directory the unit covers
-    with a mount hides its whole subtree too: a step under one writes into the empty tmpfs and never
-    reaches the host. Hiding the target itself is fine: the mount point exists already. A "+" command
-    skips the file system namespacing options (systemd.service(5)), so it writes the host path and is
-    the one pre-start form that can make a mount point under a hidden parent (fleet-ops#10886).
+    parent fails with "Permission denied" and the runner never starts. Hiding the target itself is fine:
+    it exists already, so mkdir -p finds it.
     """
-    hidden = merged_paths(dirs, "InaccessiblePaths") | merged_paths(dirs, "TemporaryFileSystem")
+    hidden = set()
+    for value in merged_values(dirs, "InaccessiblePaths"):
+        hidden |= {Path(t.lstrip("-+")) for t in shlex.split(value)}
     bad = []
     for value in merged_values(dirs, "ExecStartPre"):
-        if value.startswith("+"):
-            continue
         for arg in shlex.split(value.lstrip("-@:!")):
-            if arg.startswith("/") and hidden & {str(parent) for parent in Path(arg).parents}:
-                bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & {str(parent) for parent in Path(arg).parents})[0]}")
+            if arg.startswith("/") and hidden & set(Path(arg).parents):
+                bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & set(Path(arg).parents))[0]}")
     return bad
 
 
@@ -230,10 +207,10 @@ def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> N
     assert len(units) >= 5, "the runner drop-in dirs were not found"
     for name, dirs in units.items():
         assert pre_start_paths_under_hidden_dir(dirs) == [], name
-    # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in once made dirs in it (2026-10-23).
+    # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in makes dirs in it (2026-10-23).
     ci3 = units["actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"]
     assert FLEET_CI_DIR in ci3
-    assert [v for v in merged_values(ci3, "ExecStartPre") if not v.startswith("+")] == []
+    assert merged_values(ci3, "ExecStartPre") == []
     assert any("/run/user/1000" in [t.lstrip("-+") for t in v.split()] for v in merged_values(ci3, "InaccessiblePaths"))
 
 
@@ -247,11 +224,7 @@ def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: 
     assert pre_start_paths_under_hidden_dir([shared, own]) == [
         "ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a needs /run/user/1000/a, below hidden /run/user/1000"
     ]
-    # A "+" command skips the namespace, so it can make a mount point under the hidden parent.
-    (shared / "10.conf").write_text("[Service]\nExecStartPre=+/usr/bin/install -d /run/user/1000/a\n")
-    assert pre_start_paths_under_hidden_dir([shared, own]) == []
-    (shared / "10.conf").write_text("[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a\n")
-    # Hiding the target itself is fine (the mount point or the dir exists), and an empty ExecStartPre= clears the shared line.
+    # Hiding the target itself is fine (it exists, so mkdir -p finds it), and an empty ExecStartPre= clears the shared line.
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/a\n")
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000\nExecStartPre=\n")
@@ -279,189 +252,92 @@ def test_runner_starts_after_the_user_manager(start_conf: Path, lockdown_conf: P
     assert starts_after_user_manager(start_conf.read_text()) == []
 
 
-def test_gate_fails_when_the_start_order_is_missing(tmp_path: Path) -> None:
-    """The self-test of starts_after_user_manager(): without it a drop-in that loses its start order passes."""
-    good = tmp_path / "good.conf"
-    good.write_text("[Unit]\nAfter=user@1000.service\nWants=user@1000.service\n")
-    assert starts_after_user_manager(good.read_text()) == []
-    bad = tmp_path / "bad.conf"
-    bad.write_text("[Unit]\nAfter=user@1000.service\n")
-    assert starts_after_user_manager(bad.read_text()) == ["[Unit] Wants=user@1000.service"]
-    worse = tmp_path / "worse.conf"
-    worse.write_text("[Unit]\nAfter=network.target\n[Service]\nWants=user@1000.service\n")
-    assert starts_after_user_manager(worse.read_text()) == [
-        "[Unit] After=user@1000.service",
-        "[Unit] Wants=user@1000.service",
-    ]
+@pool
+def test_late_runtime_dirs_exist_before_the_runner_starts(start_conf: Path, lockdown_conf: Path) -> None:
+    names = masked_user_run_names(lockdown_conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS))
+    assert len(names) >= 2, "the hidden runtime dirs made by user services were not found"
+    assert uncovered(lockdown_conf.read_text(), start_conf.read_text(), USER_UNIT_DIRS) == []
 
 
 @pool
-def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: Path) -> None:
-    """The mint makes its dir after the runner started, so the path is covered by a mount and not by a mask (fleet-ops#10886)."""
-    text = lockdown_conf.read_text()
-    covered = mounted_paths(text)
-    for name in TOKEN_DIRS:
-        assert name in covered, f"{lockdown_conf.name}: {name} is masked by inode, not covered by a mount"
+def test_the_pre_create_line_does_not_run_as_root(start_conf: Path, lockdown_conf: Path) -> None:
+    lines = values(start_conf.read_text(), "ExecStartPre")
+    assert lines, "no ExecStartPre= pre-create line"
+    # Check every drop-in of the pool: a "+" line anywhere would run outside the sandbox, as root.
+    for conf in {start_conf, lockdown_conf}:
+        assert not any(line.startswith("+") for line in values(conf.read_text(), "ExecStartPre")), conf.name
 
 
-def install_made(dirs: list[Path]) -> dict[str, tuple[str, str]]:
-    """Path -> (mode, owner) for every directory a privileged pre-start line makes.
-
-    Only an `ExecStartPre=+` line runs outside the unit's own namespace (systemd.service(5), "Command
-    lines"), so only that line can make the host directory the mount will cover; a line without the
-    "+" writes into the tmpfs instead and leaves the host mount point root-owned (fleet-ops#10886).
-    """
-    made: dict[str, tuple[str, str]] = {}
-    for value in merged_values(dirs, "ExecStartPre"):
-        if not value.startswith("+"):
-            continue
-        tokens = shlex.split(value[1:])
-        if not tokens or Path(tokens[0]).name != "install" or "-d" not in tokens[1:]:
-            continue
-        mode = owner = ""
-        args = tokens[1:]
-        for i, token in enumerate(args):
-            if token == "-m" and i + 1 < len(args):
-                mode = args[i + 1]
-            elif token == "-o" and i + 1 < len(args):
-                owner = args[i + 1]
-        for token in args:
-            if token.startswith("/"):
-                made[token] = (mode, owner)
-    return made
-
-
-def unguarded_run_mount_points(units: dict[str, list[Path]]) -> list[str]:
-    """A TemporaryFileSystem= entry under the user runtime dir whose mount point no privileged
-    pre-start line makes nish-owned mode 0700: the manager makes an absent mount point itself, as
-    root, and the mint that writes the token there runs as nish (fleet-ops#10886)."""
-    bad = []
-    for name, dirs in units.items():
-        made = install_made(dirs)
-        for path in sorted(merged_paths(dirs, "TemporaryFileSystem")):
-            if not path.startswith(USER_RUN):
-                continue
-            creator = made.get(path)
-            if creator is None:
-                bad.append(f"{name}: {path} has no privileged pre-start creator, so the manager makes the mount point as root")
-            elif creator != (TOKEN_DIR_MODE, TOKEN_DIR_OWNER):
-                bad.append(f"{name}: {path} is made mode {creator[0]} owner {creator[1]}, so the token mint cannot write its token there")
-    return bad
-
-
-def test_every_run_mount_point_has_a_creator_the_mint_can_write() -> None:
-    units = runner_units()
-    assert len(units) >= 5, "the runner drop-in dirs were not found"
-    assert unguarded_run_mount_points(units) == []
-
-
-def test_gate_fails_when_a_run_mount_point_has_no_creator(tmp_path: Path) -> None:
-    dirs = tmp_path / "x-.service.d"
-    dirs.mkdir()
-    conf = dirs / "20.conf"
-    units = {"x-.service.d": [dirs]}
-    path = "/run/user/1000/fleet-worker-github-token"
-    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\n")
-    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} has no privileged pre-start creator, so the manager makes the mount point as root"]
-    # Without the "+", the command runs inside the namespace the unit mounts, so the host point stays root-owned.
-    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=/usr/bin/install -d -o nish -g nish -m 0700 {path}\n")
-    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} has no privileged pre-start creator, so the manager makes the mount point as root"]
-    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o root -g root -m 0700 {path}\n")
-    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} is made mode 0700 owner root, so the token mint cannot write its token there"]
-    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0755 {path}\n")
-    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} is made mode 0755 owner nish, so the token mint cannot write its token there"]
-    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700 {path}\n")
-    assert unguarded_run_mount_points(units) == []
-
-
-def masked_paths_holding_a_colon(units: dict[str, list[Path]]) -> list[str]:
-    """Masked paths that hold a colon: runner-probe reads the options after a colon as the mark of a
-    mount, so such a path would be tested as a mount and its own check skipped (fleet-ops#10886)."""
-    bad = []
-    for name, dirs in units.items():
-        for value in merged_values(dirs, "InaccessiblePaths"):
-            for token in shlex.split(value):
-                path = token.lstrip("-+")
-                if ":" in path:
-                    bad.append(f"{name}: {path}")
-    return bad
-
-
-def test_no_masked_path_holds_a_colon() -> None:
-    assert masked_paths_holding_a_colon(runner_units()) == []
-
-
-def test_gate_fails_when_a_masked_path_holds_a_colon(tmp_path: Path) -> None:
-    dirs = tmp_path / "x-.service.d"
-    dirs.mkdir()
-    (dirs / "20.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/bus:/nested\n")
-    assert masked_paths_holding_a_colon({"x-.service.d": [dirs]}) == ["x-.service.d: /run/user/1000/bus:/nested"]
-
-
-def test_no_path_is_masked_and_mounted_at_once() -> None:
-    units = runner_units()
-    assert len(units) >= 5, "the runner drop-in dirs were not found"
-    for name, dirs in units.items():
-        assert both_lists(dirs) == set(), f"{name}: {sorted(both_lists(dirs))} sit on both lists, so their mounts never happen"
-
-
-def test_gate_fails_when_a_path_sits_on_both_lists(tmp_path: Path) -> None:
-    d = tmp_path / "x-.service.d"
-    d.mkdir()
-    (d / "20.conf").write_text(
-        "[Service]\nInaccessiblePaths=-/run/user/1000/fleet-worker-github-token\n"
-        "TemporaryFileSystem=/run/user/1000/fleet-worker-github-token\n"
-    )
-    assert both_lists([d]) == {"/run/user/1000/fleet-worker-github-token"}
-    (d / "20.conf").write_text(
-        "[Service]\nInaccessiblePaths=-/run/user/1000/gnupg\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token\n"
-    )
-    assert both_lists([d]) == set()
-    # Options are part of the value, not the path: a mode on the mount is the same path.
-    (d / "20.conf").write_text("[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:mode=0700\n")
-    assert both_lists([d]) == set()
-    assert merged_paths([d], "TemporaryFileSystem") == {"/run/user/1000/fleet-worker-github-token"}
-
-
-def test_every_runner_drop_in_that_hides_a_token_dir_is_covered() -> None:
-    """A new runner pool that hides a token dir, masked or mounted, must be added to POOLS, not skipped."""
+def test_every_runner_drop_in_that_hides_user_runtime_paths_is_covered() -> None:
+    """A new runner pool that hides /run/user/1000/ paths must be added to POOLS, not skipped."""
     hiding = set()
     for conf in SYSTEM.glob("actions.runner.*.service.d/*.conf"):
-        if hidden_token_dirs(conf.read_text()):
+        if masked_user_run_names(conf.read_text()) & set(runtime_dirs_of_user_units(USER_UNIT_DIRS)):
             hiding.add(conf)
     covered = {conf for pair in POOLS.values() for conf in pair}
     assert hiding <= covered, sorted(str(c.relative_to(ROOT)) for c in hiding - covered)
 
 
-@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
-def test_systemd_analyze_finds_no_syntax_error_in_every_runner_dropin(tmp_path: Path) -> None:
-    """One standin unit per runner unit dir, carrying every drop-in that applies to it (fleet-ops#10886).
+def _fixture(tmp_path: Path, mode: str = "0700", preserve: str = "RuntimeDirectoryPreserve=yes\n") -> list[Path]:
+    units = tmp_path / "systemd"
+    units.mkdir()
+    (units / "x.service").write_text(f"[Service]\nRuntimeDirectory=late-dir\nRuntimeDirectoryMode={mode}\n{preserve}")
+    return [units]
 
-    The dependency on user@1000.service is not resolved here: that unit does not exist on a CI
-    host. The pilot runner starts a script in a root-only directory, so its "is not executable"
-    line is this host's permissions, not a syntax error.
-    """
-    (tmp_path / "standin.service").write_text("[Service]\nExecStart=/usr/bin/true\nUser=nish\n")
-    dropins = tmp_path / "standin.service.d"
-    units = runner_units()
-    assert len(units) >= 5, "the runner drop-in dirs were not found"
-    for name, dirs in units.items():
-        shutil.rmtree(dropins, ignore_errors=True)
-        dropins.mkdir()
-        files = {}
-        for d in dirs:  # prefix dirs first, so the unit's own dir wins on a same name
-            files.update({conf.name: conf for conf in d.glob("*.conf")})
-        for conf_name, conf in files.items():
-            (dropins / conf_name).write_text(conf.read_text())
-        proc = subprocess.run(
-            ["systemd-analyze", "verify", "--man=no", "./standin.service"], cwd=tmp_path, capture_output=True, text=True, check=False
-        )
-        bad = [
-            line
-            for line in (proc.stdout + proc.stderr).splitlines()
-            if re.search(r"Unknown key|Unknown section|Failed to parse|Invalid|Executable", line) and "is not executable" not in line
-        ]
-        assert bad == [], f"{name}: {bad}"
+
+LOCK = "[Service]\nInaccessiblePaths=-/run/user/1000/bus -/run/user/1000/late-dir\n"
+GOOD = "[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/late-dir\n"
+
+
+def test_gate_fails_when_a_late_dir_is_not_pre_created(tmp_path: Path) -> None:
+    assert uncovered(LOCK, "[Service]\n", _fixture(tmp_path)) == ["late-dir: not created before start"]
+
+
+def test_gate_fails_on_a_mode_mismatch_and_on_a_root_line(tmp_path: Path) -> None:
+    units = _fixture(tmp_path)
+    wrong = "[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0755 /run/user/1000/late-dir\n"
+    assert uncovered(LOCK, wrong, units) == ["late-dir: mode 0755 differs from the service's 0700"]
+    root = GOOD.replace("ExecStartPre=", "ExecStartPre=+")
+    assert uncovered(LOCK, root, units) == ["late-dir: not created before start"]
+
+
+def test_gate_fails_when_the_service_does_not_keep_its_dir(tmp_path: Path) -> None:
+    units = _fixture(tmp_path, preserve="")
+    assert uncovered(LOCK, GOOD, units) == ["late-dir: the service does not set RuntimeDirectoryPreserve=yes"]
+
+
+def test_gate_fails_when_the_start_order_is_missing() -> None:
+    both = "[Unit]\nAfter=user@1000.service\nWants=user@1000.service\n"
+    assert starts_after_user_manager(both) == []
+    assert starts_after_user_manager("[Service]\nNoNewPrivileges=yes\n") == [
+        "[Unit] After=user@1000.service",
+        "[Unit] Wants=user@1000.service",
+    ]
+    assert starts_after_user_manager(both.replace("Wants=", "Requires=")) == ["[Unit] Wants=user@1000.service"]
+    # Right key, wrong section: a [Service] line is not an ordering.
+    assert starts_after_user_manager("[Service]\nAfter=user@1000.service\nWants=user@1000.service\n") == [
+        "[Unit] After=user@1000.service",
+        "[Unit] Wants=user@1000.service",
+    ]
+
+
+def test_gate_accepts_a_pre_created_dir(tmp_path: Path) -> None:
+    assert uncovered(LOCK, GOOD, _fixture(tmp_path)) == []
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+@pool
+def test_systemd_analyze_finds_no_syntax_error_in_the_dropins(tmp_path: Path, start_conf: Path, lockdown_conf: Path) -> None:
+    (tmp_path / "standin.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
+    (tmp_path / "standin.service.d").mkdir()
+    for conf in {start_conf, lockdown_conf}:
+        (tmp_path / "standin.service.d" / conf.name).write_text(conf.read_text())
+    proc = subprocess.run(
+        ["systemd-analyze", "verify", "--man=no", "./standin.service"], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    out = proc.stdout + proc.stderr
+    # Syntax only: user@1000.service does not exist on a CI host, so the dependency itself is not resolved here.
+    assert not re.search(r"Unknown key|Unknown section|Failed to parse|Invalid|Executable", out), out
 
 
 def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
@@ -475,16 +351,9 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs, then the token dirs (#10886).
+    # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [
-        ":mode=0700,uid=1000,gid=1000,size=512M",
-        "/.config/cloudflare:ro",
-        "/.config/gh:ro",
-        "/.config/fleet-worker:ro",
-        "/run/user/1000/fleet-worker-github-token:ro",
-        "/run/user/1000/fleet-grafana-github-token:ro",
-    ]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree and the seat token files the unjailed steps read. The App key
     # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
@@ -498,150 +367,6 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     # is checked here, and by its tail: an absolute home path in a test is the public
     # detail this issue takes out of the repo.
     assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
-
-
-def transient_run(properties: list[str], script: str) -> list[str]:
-    """A one-shot unit, so the manager builds the mount namespace exactly as it does for a runner."""
-    return [
-        *SUDO,
-        "systemd-run",
-        *SCOPE,
-        "--collect",
-        "--quiet",
-        "--wait",
-        "--pipe",
-        *[arg for prop in properties for arg in ("-p", prop)],
-        "--",
-        "/bin/sh",
-        "-c",
-        script,
-    ]
-
-
-def await_file(path: Path, what: str) -> None:
-    deadline = time.monotonic() + 60
-    while not path.exists() and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert path.exists(), f"the transient unit never {what}"
-
-
-@needs_manager
-def test_systemd_makes_the_mount_point_when_the_path_is_absent_at_start(tmp_path: Path) -> None:
-    """The mint may create its dir after the runner started, so the mount point cannot wait for a pre-start mkdir (fleet-ops#10886)."""
-    absent = tmp_path / "absent"
-    assert not absent.exists()
-    script = f"awk -v m={shlex.quote(str(absent))} '$5 == m {{ f = 1 }} END {{ exit !f }}' /proc/self/mountinfo"
-    proc = subprocess.run(transient_run([f"TemporaryFileSystem={absent}:ro"], script), capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    assert absent.is_dir(), "the unit started, but the host has no mount point where systemd mounted"
-
-
-@needs_manager
-def test_an_existing_mount_point_keeps_its_owner_and_mode(tmp_path: Path) -> None:
-    """A mount point that exists already is not re-owned: systemd makes an absent one as root (fleet-ops#10886).
-
-    The ExecStartPre=+install line makes the two token dirs nish-owned mode 0700 before the unit's
-    own namespace exists, so the mount point is there with the owner the mint needs and systemd
-    never makes one.
-
-    The stat is on the host, not in the unit: systemd.exec(5) mounts a TemporaryFileSystem= tmpfs
-    with mode=0755 and the root owner, so a unit reads the mount and not the mount point.
-    """
-    token_dir = tmp_path / "token"
-    token_dir.mkdir()
-    made = subprocess.run([*SUDO, "install", "-d", "-o", "1000", "-g", "1000", "-m", "0700", str(token_dir)], capture_output=True).returncode == 0
-    if not made:
-        pytest.skip("this job cannot make the mount point uid 1000 mode 0700, so it cannot set up its own precondition")
-    proc = subprocess.run(transient_run([f"TemporaryFileSystem={token_dir}:ro"], "true"), capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    stat = token_dir.stat()
-    assert (stat.st_uid, stat.st_gid, stat.st_mode & 0o777) == (1000, 1000, 0o700), "the mount point changed owner or mode, so the mint cannot write its token there"
-
-
-@needs_manager
-def test_a_privileged_pre_start_line_makes_the_mount_point_on_the_host(tmp_path: Path) -> None:
-    """The line that makes the token dirs: a "+" command skips the namespace, so it writes the host
-    path before systemd mounts over it (fleet-ops#10886).
-
-    Run without the "+" it would see the tmpfs systemd already mounted at the path, change that
-    instead, and leave the host mount point root-owned mode 0755, which the mint cannot write into.
-    """
-    point = tmp_path / "point"
-    assert not point.exists()
-    script = f"awk -v m={shlex.quote(str(point))} '$5 == m {{ f = 1 }} END {{ exit !f }}' /proc/self/mountinfo"
-    proc = subprocess.run(
-        transient_run(
-            [
-                f"ExecStartPre=+{shutil.which('install')} -d -o 65534 -g 65534 -m 0700 {point}",
-                f"TemporaryFileSystem={point}:ro",
-            ],
-            script,
-        ),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-    stat = point.stat()
-    assert (stat.st_uid, stat.st_gid, stat.st_mode & 0o777) == (65534, 65534, 0o700), (
-        "the pre-start line wrote inside the unit's namespace, so the host mount point stays root-owned"
-    )
-
-
-@needs_manager
-def test_a_mount_nested_under_a_masked_parent_is_dropped(tmp_path: Path) -> None:
-    """A pool that hides /run/user/1000 whole still lists the nested token mounts, and systemd drops
-    them instead of failing the start (namespace.c: drop_inaccessible; fleet-ops#10886).
-
-    The pilot and eval drop-ins carry both lists: the mask and the two mounts share the shared
-    drop-in's lines, and the unit's own 30-* file only adds the mask. If systemd tried to make or
-    mount the nested point instead, the unit would fail to start and that pool would stay down.
-    """
-    parent = tmp_path / "parent"
-    (parent / "nested").mkdir(parents=True)
-    nested = parent / "nested"
-    script = f"awk -v m={shlex.quote(str(nested))} '$5 == m {{ f = 1 }} END {{ exit f }}' /proc/self/mountinfo"
-    proc = subprocess.run(
-        transient_run([f"InaccessiblePaths=-{parent}", f"TemporaryFileSystem={nested}:ro"], script),
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
-@needs_manager
-def test_an_absent_mount_point_is_made_root_owned(tmp_path: Path) -> None:
-    """The cause a privileged pre-start line prevents: systemd makes an absent mount point itself, as root (fleet-ops#10886)."""
-    absent = tmp_path / "absent"
-    assert not absent.exists()
-    proc = subprocess.run(transient_run([f"TemporaryFileSystem={absent}:ro"], "true"), capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr
-    assert absent.is_dir(), "the unit started, but the host has no mount point where systemd mounted"
-    owner = absent.stat().st_uid
-    assert owner == 0, f"systemd made the mount point as uid {owner}, so the root-owned mount point has another cause"
-
-
-@needs_manager
-def test_a_dir_made_at_the_covered_path_after_the_start_stays_hidden(tmp_path: Path) -> None:
-    """A file the mint writes after the runner started lands inside the mount, so a job reading that path reads nothing (fleet-ops#10886)."""
-    token_dir = tmp_path / "token"
-    started, go = tmp_path / "started", tmp_path / "go"
-    script = f"touch {started}\nwhile [ ! -e {go} ]; do sleep 0.1; done\nls -A {token_dir}"
-    unit = subprocess.Popen(
-        transient_run([f"TemporaryFileSystem={token_dir}:ro"], script), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
-    try:
-        await_file(started, "started")
-        assert token_dir.is_dir(), "systemd did not make the mount point on the host"
-        # The manager creates the mount point as root, so the host write needs the same hand in CI.
-        subprocess.run([*SUDO, "touch", str(token_dir / "drive.env")], check=True)
-        go.touch()
-        out, err = unit.communicate(timeout=120)
-    finally:
-        go.touch()
-        unit.kill()
-        unit.wait()
-    assert unit.returncode == 0, err
-    assert out == "", f"the job read {out!r} through the path the unit covers: {err}"
 
 
 FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
