@@ -1,31 +1,28 @@
 # Pilot for fleet-ops#10932: the vendor's own issue-to-PR agent (OpenCode GitHub agent,
-# https://opencode.ai/docs/github) next to the home-made lanes, on a few labelled issues.
+# https://opencode.ai/docs/github) next to the home-made lanes, on a few owner-picked issues.
 # GitHub-hosted, not self-hosted: the agent runs unjailed, and GitHub's hardening guide keeps
 # self-hosted runners off public repos. The CLI is pinned here because the composite action
-# installs whatever opencode release is latest.
+# installs whatever opencode release is latest; opencode-ai has no dependencies beyond its
+# exact-pinned platform binaries. One run at a time, never while the fleet is paused, and
+# never on an issue an old lane holds.
 name: stock-agent-pilot
 on:
   issues:
     types: [labeled]
 permissions: {}
+concurrency: stock-agent-pilot
 jobs:
   opencode:
-    if: github.event.label.name == 'pilot-stock' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+    if: github.event.label.name == 'pilot-stock' && vars.FLEET_DISPATCH_PAUSED != 'true' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) && !contains(github.event.issue.labels.*.name, 'agent-ready') && !contains(github.event.issue.labels.*.name, 'needs-orchestrator') && !contains(github.event.issue.labels.*.name, 'agent-in-progress')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    concurrency: stock-agent-pilot-${{ github.event.issue.number }}
+    timeout-minutes: 30
     steps:
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: "4728578"
-          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-          permission-issues: write
+        with: {app-id: "4728578", private-key: "${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}", permission-contents: write, permission-pull-requests: write, permission-issues: write}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          token: ${{ steps.app.outputs.token }}  # zizmor: ignore[artipacked] opencode's token mode pushes with the token checkout stores (opencode.ai/docs/github); no artifact is uploaded
+        with: {token: "${{ steps.app.outputs.token }}"}  # zizmor: ignore[artipacked] opencode's token mode pushes with the token checkout stores (opencode.ai/docs/github); no artifact is uploaded
+      - run: git config --global user.name 'nishfleet-worker[bot]' && git config --global user.email '321485391+nishfleet-worker[bot]@users.noreply.github.com'
       - run: npx -y opencode-ai@1.19.1 github run
         env:
           MODEL: commandcode/z-ai/glm-5.3-flash
@@ -34,7 +31,3 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           COMMANDCODE_API_KEY: ${{ secrets.COMMANDCODE_PILOT_KEY }}
           OPENCODE_CONFIG_CONTENT: '{"share": "disabled", "provider": {"commandcode": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "https://api.commandcode.ai/provider/v1", "apiKey": "{env:COMMANDCODE_API_KEY}"}, "models": {"z-ai/glm-5.3-flash": {}}}}}'
-          GIT_AUTHOR_NAME: nishfleet-worker[bot]
-          GIT_AUTHOR_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
-          GIT_COMMITTER_NAME: nishfleet-worker[bot]
-          GIT_COMMITTER_EMAIL: 321485391+nishfleet-worker[bot]@users.noreply.github.com
