@@ -389,6 +389,10 @@ def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
     hidden = _hermes_hidden()
     for unit in HERMES_UNITS:
         grants = {PurePosixPath(entry.removeprefix("-")) for entry in shlex.split(" ".join(_effective(unit)["ReadWritePaths"]))}
+        assert sum(1 for grant in grants if " " in str(grant)) == 1, (
+            f"{unit}: the vault inbox grant carries a space, so it reads quoted from the drop-in; "
+            "losing the quoting would let shlex split it and this check would pass on the fragments"
+        )
         for grant in grants:
             covering = [path for path in hidden if grant == path or str(grant).startswith(str(path) + "/")]
             assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"

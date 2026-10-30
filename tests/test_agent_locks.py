@@ -66,7 +66,9 @@ def covers(path: str, roots: list[str]) -> bool:
 
 
 def env(values: dict[str, list[str]], key: str) -> str:
-    for pair in values.get("Environment", []):
+    # systemd applies every Environment= assignment in file order and the last one
+    # for a variable wins, so a scalar read is the last match, not the first.
+    for pair in reversed(values.get("Environment", [])):
         name, _, value = pair.partition("=")
         if name.strip('"') == key:
             return value.rstrip('"')
