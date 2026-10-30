@@ -647,11 +647,15 @@ jobs:
           done
           [ "$(yq '.jobs.stuck.if' .github/workflows/agent.yml)" != null ] || { echo "agent.yml has no stuck job"; bad=1; }
           # The hold's cooldown reads a cutoff epoch, so a case can name one (or take the default) and stay deterministic.
+          # A file that will not parse or an empty list fails here instead of inside the loop, where it would leave every
+          # case untested and the step green.
+          cases=$(jq -c '.cases[]' config/stuck-pr-cases.json) || { echo "config/stuck-pr-cases.json did not parse"; exit 1; }
+          [ -n "$cases" ] || { echo "config/stuck-pr-cases.json gave no cases"; exit 1; }
           while IFS= read -r c; do
             in=$(jq -c --argjson c "$c" '.base * $c.set | {pr, comments, red}' config/stuck-pr-cases.json)
             got=$(jq -r --arg who "$who" --argjson cut "$(jq -r '.cut // 1793318400' <<<"$c")" "$prog | .class" <<<"$in")
             [ "$got" = "$(jq -r .want <<<"$c")" ] || { echo "case $(jq -r .id <<<"$c"): got $got, want $(jq -r .want <<<"$c")"; bad=1; }
-          done < <(jq -c '.cases[]' config/stuck-pr-cases.json)
+          done <<<"$cases"
           test "$bad" -eq 0
       - name: A deleted issue does not abort the dispatch sweep (fleet-ops#9553)
         # Runs the list job's own script against a mock gh whose claim PR #8002 points at deleted
