@@ -69,6 +69,13 @@ concurrency:
 # claim ref decides, none named all count, and no work job listed yet falls back to the run's
 # status. Input: `gh run view <id> --json status,jobs` on stdin, `--arg ref <ref>`; out: true or false.
 env:
+  # Pipeline control comments (park:, agent run started:, agent run failed:,
+  # infra-failed:, miss-review:) steer the fleet, so every read of them keeps
+  # only trusted authors: a repo OWNER, MEMBER or COLLABORATOR, or the worker
+  # App and the Actions bot that write them (fleet-ops#9273). A comment read
+  # starts its jq with $TRUSTED_JQ and selects trusted.
+  TRUSTED_JQ: >-
+    def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "github-actions", "app/github-actions"));
   RUN_LIVE_JQ: >-
     def live: IN("queued", "in_progress", "waiting", "pending", "requested");
     [.jobs[]? | select(.name | endswith("/ work"))] as $w
@@ -203,7 +210,7 @@ jobs:
             # Same skips as the Gate: closed, blocked or parked work gets no note.
             gh api "repos/$GITHUB_REPOSITORY/issues/$i" --jq '.state == "open" and (.issue_dependencies_summary.blocked_by // 0) == 0 and
               (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not)' | grep -qx true || continue
-            body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
+            body=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body | select(startswith("agent run started:"))] | last // ""')
             if [[ $body =~ actions/runs/([0-9]+) ]]; then
               # A failed read is not proof the run died: skip, never requeue a live worker.
               rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$i: run read failed, skip"; continue; }
@@ -580,7 +587,7 @@ jobs:
             # One with a claim PR is the orphans case below.
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json number --jq 'length' | grep -qx 0 || continue
-              body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
+              body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body | select(startswith("agent run started:"))] | last // ""')
               [[ $body =~ actions/runs/([0-9]+) ]] || continue
               # A failed read is not proof the run died: skip, never requeue a live worker.
               rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
@@ -635,7 +642,7 @@ jobs:
               orphans=$(
                 jq -r --argjson ip "$inprog" '.[] | select(.labels | map(.name) | index("needs-coordinator") | not) | .headRefName | capture("^claim/issue-(?<n>[0-9]+)$").n | tonumber as $i | select($ip | index($i)) | $i' <<<"$all" |
                 while IFS= read -r n; do
-                  body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
+                  body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body | select(startswith("agent run started:"))] | if length == 0 then "" else last end') || exit 1
                   if [ -z "$body" ]; then
                     echo "claim/issue-$n"
                     continue
@@ -680,7 +687,7 @@ jobs:
                     3) echo "#$n: issue gone, skipping claim PR $pr" >&2; continue ;;
                     *) exit 1 ;;
                   esac
-                  comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq .comments) || exit 1
+                  comments=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted)]') || exit 1
                   verdict=$(jq -nc --slurpfile pr <(printf '%s' "$v") --slurpfile issue <(printf '%s' "$issue") --slurpfile comments <(printf '%s' "$comments") \
                     '{pr: ($pr[0] | objects // error("pr")), issue: ($issue[0] | objects // error("issue")), comments: ($comments[0] | arrays // error("comments"))}' | jq -c "$CHECK_DEFS $RED_REWORK") || exit 1
                   [ "$(jq -r .reason <<<"$verdict")" = go ] || continue
@@ -885,7 +892,7 @@ jobs:
                     any(.labels[].name; IN("agent-blocked", "needs-split", "needs-orchestrator", "needs-nish-decision", "epic"))' <<<"$issue" >/dev/null; then
                     echo "#$n: issue #$i is parked or blocked, its owner has it"; continue
                   fi
-                  bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body]') || { errs=$((errs + 1)); continue; }
+                  bodies=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body]') || { errs=$((errs + 1)); continue; }
                   note="rework: PR #$n at ${sha:0:7} has waited over 15 minutes"
                   if jq -e --arg x "rework: PR #$n at ${sha:0:7}" 'any(.[]; startswith($x))' <<<"$bodies" >/dev/null; then
                     echo "#$n: issue #$i already has this rework note"; continue

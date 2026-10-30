@@ -50,6 +50,14 @@ on:
         default: inish-daily
         required: true
 permissions: {}
+env:
+  # Pipeline control comments (park:, agent run started:, agent run failed:,
+  # infra-failed:, miss-review:) steer the fleet, so every read of them keeps
+  # only trusted authors: a repo OWNER, MEMBER or COLLABORATOR, or the worker
+  # App and the Actions bot that write them (fleet-ops#9273). A comment read
+  # starts its jq with $TRUSTED_JQ and selects trusted.
+  TRUSTED_JQ: >-
+    def trusted: (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) or (.author.login | IN("nishfleet-worker", "app/nishfleet-worker", "github-actions", "app/github-actions"));
 jobs:
   work:
     if: inputs.ref
@@ -130,7 +138,7 @@ jobs:
           }
           miss_go() {
             [ "$MISS_REVIEW" = live ] || skip miss-review-off
-            last=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | select(.body | startswith("miss-review:")) | .createdAt] | last // empty')
+            last=$(gh issue view "$i" -R "$REPO" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | select(.body | startswith("miss-review:")) | .createdAt] | last // empty')
             if [ -n "$last" ]; then
               last_s=$(date -d "$last" +%s)
               now_s=$(date +%s)
@@ -201,7 +209,7 @@ jobs:
           # `attempt-cap reset: <why>` from an owner, member or collaborator
           # restarts the count like a park: comment does; a comment from any other association counts for nothing.
           # shellcheck disable=SC2016 # $v is a jq variable
-          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
+          runs=$(gh issue view "$i" -R "$REPO" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "agent attempt cap: $runs runs since the last park: comment or attempt-cap reset; parked for the orchestrator"
@@ -273,7 +281,7 @@ jobs:
           claude_model=claude-sonnet-5-5
           senior=false
           # shellcheck disable=SC2016 # $v is a jq variable
-          failed=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" elif (.body | startswith("agent run failed: ")) and ((.author.login == "nishfleet-worker") or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | not) then "untrusted" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
+          failed=$(gh issue view "$i" -R "$REPO" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" elif (.body | startswith("agent run failed: ")) and ((.author.login == "nishfleet-worker") or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | not) then "untrusted" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
           case $labels in *,needs-opus,*) claude_model=claude-opus-5-5 ;; esac
           [ "$failed" -lt 2 ] || claude_model=claude-opus-5-5
           # The audit line goes to the log and to the job summary.
@@ -630,7 +638,7 @@ jobs:
             [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           fi
           # shellcheck disable=SC2016 # $v is a jq variable
-          n=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
+          n=$(gh issue view "$i" -R "$REPO" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length')
           [ "$n" -lt 3 ] || { echo "::warning::#$i already has $n infra requeues since its last park; the strike step takes it (fleet-ops#9291)"; exit 0; }
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
@@ -698,7 +706,7 @@ jobs:
           i=${ISSUE_N:-}
           [ -n "$i" ] || { i=${REF#claim/issue-}; i=${i%%-*}; }
           if [ "$MISS" = true ]; then
-            gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[].body | select(startswith("miss-review:"))] | length' | grep -qxE '[1-9][0-9]*'
+            gh issue view "$i" -R "$REPO" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body | select(startswith("miss-review:"))] | length' | grep -qxE '[1-9][0-9]*'
             exit $?
           fi
           issue=$(gh api "repos/$REPO/issues/$i")
@@ -809,8 +817,8 @@ jobs:
           # held the group (agent-in-progress and agent-ready together on 10 of
           # 43 bare-branch issues in 0509).
           # shellcheck disable=SC2016 # $u is a jq variable
-          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
-          jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
+          comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'{comments: [.comments[] | select(trusted)]}')
+          jq -e --arg u "/runs/$GITHUB_RUN_ID" "$TRUSTED_JQ"'[.comments[] | select(trusted) | .body] | any(startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
             { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
           # fleet-ops#9291: a Worker death under host overload is infra, not a bad packet (the
           # 2026-10-05 overload struck 52 drive fixes into the 1-slot strong-only lane while 93 pi
@@ -833,7 +841,7 @@ jobs:
           fi
           if [ "$verdict" = infra ]; then
             # shellcheck disable=SC2016 # $v is a jq variable
-            infra_prior=$(jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
+            infra_prior=$(jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run infra-failed:"))) | length' <<<"$comments")
             if [ "$infra_prior" -ge "$INFRA_REQUEUE_CAP" ]; then
               echo "::warning::#$i already has $infra_prior infra requeues since its last park; striking (fleet-ops#9291)"
               verdict=strike
@@ -848,7 +856,7 @@ jobs:
             exit 0
           fi
           # shellcheck disable=SC2016 # $v is a jq variable
-          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
+          prior=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments --jq "$TRUSTED_JQ"'[.comments[] | select(trusted) | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed:"))) | length')
           gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "agent run failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ "$prior" -ge 1 ]; then
             gh issue edit "$i" -R "$GITHUB_REPOSITORY" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress,agent-failed
