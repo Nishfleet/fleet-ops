@@ -1351,6 +1351,7 @@ jobs:
           fi
           echo "worktree=$wt" >> "$GITHUB_OUTPUT"
       - name: Run the orchestrator session
+        id: session
         if: steps.issue.outputs.go == 'true' && steps.worktree.outputs.worktree != ''
         # 75, not 50 (fleet-ops#11059): 31 of the 67 failed agent-dispatch runs in the week to 2026-10-29
         # were this step's kill, 28 of the 32 failing orchestrate jobs ran at least 45 of the 50 minutes,
@@ -1394,7 +1395,7 @@ jobs:
             FLEET_TASK_ID="orch-${REPO_NAME#*/}-$ISSUE_N" \
               "${jail[@]}" "$HOME/.local/bin/pi" --print \
               --provider litellm --model "${SEAT:-worker-capable}" \
-              < "$RUNNER_TEMP/orchestrator-prompt.md"
+              < "$RUNNER_TEMP/orchestrator-prompt.md" 2>&1 | tee "$RUNNER_TEMP/orchestrator.log"
             exit 0
           fi
           # The repo's hooks only spend turns here; ORCHESTRATE_HOOKS=on keeps them.
@@ -1411,13 +1412,14 @@ jobs:
             --output-format json \
             --permission-mode bypassPermissions \
             --max-turns "$TURNS" \
-            < "$RUNNER_TEMP/orchestrator-prompt.md"
+            < "$RUNNER_TEMP/orchestrator-prompt.md" 2>&1 | tee "$RUNNER_TEMP/orchestrator.log"
       - name: Clean up and mark a PR-less hand-off
         if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}  # the App token, never the runner login (fleet-ops#10949)
           # Through env: zizmor template-injection, as with WORKTREE above.
           GO: ${{ steps.issue.outputs.go }}
+          SESSION_OUTCOME: ${{ steps.session.outcome }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2153 # REPO is the job-level env, not a misspelling
@@ -1475,6 +1477,16 @@ jobs:
           # The pattern is later-sweep's own, so one line decides what "due" means in both places.
           due=$(gh issue view "$ISSUE" -R "$REPO" --json body --jq .body | jq -Rse --argjson now "$(date +%s)" '((try (capture("(?m)^due:[ \t]*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]+(?<t>[0-9]{2}:[0-9]{2})[ \t]+[Ii][Ss][Tt]") | .d + "T" + .t + ":00Z" | fromdateiso8601) catch null) // 0) - 19800 > $now') || due=false
           label=handoff-ended color=BFD4F2 desc="Orchestrator hand-off ended without a PR; the sweep re-queues it after 6 h" note="orchestrator hand-off ended without a PR: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          # An ending the provider owns is no strike (fleet-ops#11166): the sweep counts
+          # only "orchestrator hand-off ended without a PR: ", so an ending with this
+          # other prefix re-queues the issue and never walks it to needs-nish-decision.
+          # A failed session whose output names a router error (the same patterns
+          # agent.yml's Router wall step greps) is the provider's ending; a clean
+          # failure, or a 429 the session merely quoted on its way to success, is
+          # still the work's.
+          if [ "$SESSION_OUTCOME" = failure ] && grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "${RUNNER_TEMP:-}/orchestrator.log" 2>/dev/null; then
+            note="orchestrator hand-off ended on infrastructure: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          fi
           if [ "$due" = true ]; then label=on-hold color=EDDEDD desc="Parked until the issue's due: date; later-sweep promotes it" note="orchestrator: on hold until the due date in this issue; nothing can be built before it, so this hand-off stops here and later-sweep promotes it then"; fi
           # These writes need issues: write, which the App token holds.
           # --force makes the label idempotent on a newly stubbed repo (drive#199).

@@ -22,6 +22,7 @@ STEP = ".jobs.list.steps[] | select(.env.REQUEUE)"
 LIST = '.jobs.list.steps[] | select(.id == "list")'
 REFIRED = "orchestrator re-fired by the sweep: https://example.invalid/runs/"
 ENDED = "orchestrator hand-off ended without a PR: https://example.invalid/runs/"
+INFRA = "orchestrator hand-off ended on infrastructure: https://example.invalid/runs/"
 
 FAKE_GH = r"""#!/usr/bin/env bash
 cred() { [ -n "$GH_TOKEN" ] || [ -e "$FAKE_DIR/login" ] || { echo "gh: no credential: $*" >&2; exit 4; }; }
@@ -61,9 +62,11 @@ def _yj(expr):
                                      capture_output=True, text=True).stdout)
 
 
-def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0):
+def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0, infra=0):
     t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours_idle)
-    comments = [{"body": f"{ENDED}{number}{i}", "authorAssociation": "OWNER", "author": {"login": "nish3451"}}
+    comments = [{"body": f"{INFRA}{number}{i}", "authorAssociation": "OWNER", "author": {"login": "nish3451"}}
+                for i in range(infra)]
+    comments += [{"body": f"{ENDED}{number}{i}", "authorAssociation": "OWNER", "author": {"login": "nish3451"}}
                 for i in range(ended)]
     comments += [{"body": f"{REFIRED}{number}{i}", "authorAssociation": "NONE", "author": {"login": "github-actions"}}
                  for i in range(refired)]
@@ -253,6 +256,31 @@ def test_partial_api_error_requeues_nothing_but_escalates(tmp_path, fail):
     w = run(tmp_path, [issue(1), issue(2, ended=3)], queued=2, fail={fail: "1"})
     assert edits(w, "--add-label needs-orchestrator") == []
     assert edits(w, "--add-label needs-nish-decision") == [2]
+
+
+def test_an_infra_ending_never_counts_toward_the_three(tmp_path):
+    """An ending the cleanup step blames on the provider carries the other comment prefix, so it is
+    no strike: three of them keep re-queueing issue #1, while three work endings still escalate #2
+    (fleet-ops#11166)."""
+    w = run(tmp_path, [issue(1, ended=0, infra=3), issue(2, ended=3)])
+    assert edits(w, "--add-label needs-orchestrator") == [1]
+    assert edits(w, "--add-label needs-nish-decision") == [2]
+
+
+def test_infra_endings_do_not_stack_with_work_ones(tmp_path):
+    w = run(tmp_path, [issue(1, ended=2, infra=2)])
+    assert edits(w, "--add-label needs-nish-decision") == []
+    assert edits(w, "--add-label needs-orchestrator") == [1]
+
+
+def test_the_infra_ending_is_not_the_counted_prefix():
+    """fleet-ops#11166: if REQUEUE's startswith() prefix ever swallows the provider's ending too,
+    the very case the prefix exists for escalates again."""
+    counted = re.search(r'startswith\("([^"]+)"\)', _y(f"{STEP} | .env.REQUEUE")).group(1)
+    cleanup = _y('.jobs.orchestrate.steps[] | select(.name == "Clean up and mark a PR-less hand-off") | .run')
+    infra = re.findall(r'note="(orchestrator hand-off ended on infrastructure: )', cleanup)
+    assert infra, "the cleanup step no longer marks an infra ending"
+    assert not infra[0].startswith(counted), (counted, infra[0])
 
 
 def test_three_tries_escalate_not_requeue(tmp_path):
