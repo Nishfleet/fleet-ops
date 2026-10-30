@@ -88,6 +88,13 @@ file and its live copy in `~/.config/user-tmpfiles.d/`, then
 
 ### Session retention: the vendor sweep, pinned (fleet-ops#9447)
 
+Warning: never point `--settings` at a small `cleanupPeriodDays`, even to test
+the sweep. The cutoff is box-wide and deletion has no trash: a 1-day test value
+removed 229 stale project dirs (562 files) on this host in one run
+(fleet-ops#9447). The pinned value is the stock 30 the lanes with full
+sources already ran at; the change of behavior is coverage — once the file is
+installed, the `project,local` lanes sweep where before they skipped.
+
 `rootfs/etc/claude-code/managed-settings.d/90-session-retention.json` pins
 Claude Code's stock transcript retention, `cleanupPeriodDays`, at 30 days. The
 install task copies the whole drop-in directory, so the file needs no new
@@ -128,25 +135,15 @@ older than 29 days, 6 older than 30, none older than 31.2. Re-measured
 dir, which holds 951 transcripts fresh within 30 days, and 1 inside a
 2026-09-28 remote-control session dir.
 
-Warning: never point `--settings` at a small `cleanupPeriodDays`, even to test
-the sweep. The cutoff is box-wide and deletion has no trash: a 1-day test value
-removed 229 stale project dirs (562 files) on this host in one run
-(fleet-ops#9447). The pinned value is the stock 30 the lanes with full
-sources already ran at; the change of behavior is coverage — once the file is
-installed, the `project,local` lanes sweep where before they skipped.
-
 - Verify: `jq -e . /etc/claude-code/managed-settings.d/90-session-retention.json`
   prints `{"cleanupPeriodDays": 30}` once the install runs, and
   `stat -c '%y' ~/.claude/.last-cleanup` reads inside the last 24 hours (the
-  sweep ran; measured 2026-10-30 19:55 IST). Retention is dir-granular and
-  desktop-host-written sessions never age out, so
-  `find ~/.claude/projects -name '*.jsonl' -mtime +31 | wc -l` is not 0 on a
-  box Nish uses daily; the honest check is the measurement above — the
-  survivors are within days of the cutoff and live in freshly written or
-  desktop-exempt dirs.
+  sweep ran; measured 2026-10-30 19:55 IST). The falsifiable bound is the
+  skip: with `--setting-sources project,local --debug`, a `claude -p` run
+  prints "Skipping retention cleanup: userSettings source is disabled
+  (--setting-sources)" until the pin installs, and not after.
 - Switch it off: a PR that deletes the file from `rootfs/` and adds
   `/etc/claude-code/managed-settings.d/90-session-retention.json` to `retired`
   in `ansible/host.yml`; the next `fleet-host-config.service` run removes the
   installed file and retention returns to the vendor default of the installed
   version.
-
