@@ -803,8 +803,10 @@ jobs:
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
-    # Not the two review runners: an arm waited 10+ minutes there behind reviews (2026-10-29). It needs only the App key.
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Back on the four review runners (#10587): the ten fleet-ops runners carry
+    # hour-long work jobs and a queued arm waits behind them (fleet-ops#11271, #11080:
+    # 15m27s queued, 13s run), while an arm is 13s next to 1-3min reviews. It needs only the App key.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","review"]') || fromJSON('["self-hosted","agent"]') }}
     timeout-minutes: 10
     permissions:
       pull-requests: write
@@ -840,8 +842,8 @@ jobs:
           [ "$(jq -r .draft <<<"$pr")" != true ] || { echo "#$PR is a draft; not arming"; exit 0; }
           [ "$(jq -r '.auto_merge != null' <<<"$pr")" != true ] || { echo "#$PR is already armed"; exit 0; }
           # The workflows permission lets a PR that edits .github/workflows/** arm like any other: no gh login of the runner user, no file listing (fleet-ops#10949, #10950).
-          GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
-          echo "armed #$PR at $SHA"
+          # Retried: one transient GitHub 502 left #11093 approved but unarmed for 64 minutes (fleet-ops#11271). Every failure retries, including 5xx per GitHub's API docs and the retry is head-pinned, so only a live failure or a moved head exhausts it.
+          for _ in 1 2 3 4; do GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA" && { echo "armed #$PR at $SHA"; exit 0; }; [ "$_" = 4 ] || sleep 30; done; exit 1  # a merge queue overrides the method; repos without one need squash
   # Files one orchestrator issue for a PR that has waited over an hour and no worker owns; one open issue per PR.
   stuck:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
