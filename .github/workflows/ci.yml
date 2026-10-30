@@ -217,7 +217,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 2}
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager acl
+        # acl brings setfacl: check-mode tasks that become_user nish hand their temp
+        # files to nish by ACL first, and without setfacl the chown fallback fails even
+        # as root (fleet-ops#10931).
       - name: ansible plays parse, pass the report test and show their host-config plan (fleet-ops#10931)
         # The three parse/runner gates below were one step each; the host-config plan needs the
         # same always-run gate. fleet-host-config.service runs ansible/host.yml as root on every
