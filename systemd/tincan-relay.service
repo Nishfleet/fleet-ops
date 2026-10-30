@@ -1,14 +1,19 @@
 # Agent Tincan relay on the VPS. Before this, the relay ran on the Mac (LaunchDaemon, tsnet node
 # `tincan-relay`), so every Tincan message stopped whenever the Mac was down (fleet-ops#9455).
 # The Mac was chosen only so VPS agents could not approve held requests. Nish dropped that gate on
-# 2026-10-04 (no approval.json), so the reason is gone.
+# 2026-10-04; the gate below (2026-10-22) is a different one: it holds requests from outsiders.
 #
 # Stock only, no glue: the vendor's own `tincan relay` in its default mode, as its own tailnet node
 # (tsnet, hostname tincan-relay-vps, port 80). Not `--listen`: with --listen the relay binds the
 # host's tailnet IP, and this host drops non-root connections to its own tailnet IP
 # (tailscale-peerapi-uid-filter), so VPS agents could not reach it. Proven 2026-10-08.
-# No approval.json is created, so there is no gate.
 #
+# The gate: ~/.local/state/tincan-relay/approval.json, which the relay re-reads when the file
+# changes, so a restart is never needed for a policy edit. ansible/host.yml renders it from
+# config/tincan-relay/agents.txt (fleet-ops#9979): a request whose chain names an agent that is
+# not in that roster is held for 24h and reported to Hermes. With the file missing the gate is
+# off, and with it malformed the relay refuses new sends, which is why host.yml checks it.
+# Rollback: delete the file (the gate is then off, as it was before 2026-10-22).
 # First start needs a one-time login: the journal prints "go to: https://login.tailscale.com/a/..."
 # Open it signed in as Nish and approve. State then lives in ~/.local/state/tincan-relay/tsnet.
 #
@@ -19,7 +24,8 @@
 # Switch off: systemctl --user disable --now tincan-relay.service
 #   (every Tincan agent then loses its relay until it is started again).
 # Delete: switch off, `systemctl --user unlink tincan-relay.service`, then delete this file in a PR.
-# State: ~/.local/state/tincan-relay (relay.db, wake.json, admin.sock, tsnet/). Back it up with ~/.local/state.
+# State: ~/.local/state/tincan-relay (relay.db, wake.json, admin.sock, tsnet/, approval.json).
+# Back it up with ~/.local/state.
 [Unit]
 Description=Agent Tincan relay (tincan relay, own tailnet node)
 Wants=network-online.target tailscaled.service

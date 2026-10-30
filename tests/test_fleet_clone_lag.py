@@ -6,6 +6,7 @@ message and the exit code are the code that ships, not a copy of it.
 
 import os
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -29,9 +30,11 @@ GIT_ENV = {
 def _exec_start():
     text = UNIT.read_text().replace("\\\n", "")
     line = next(ln for ln in text.splitlines() if ln.startswith("ExecStart="))
-    match = re.fullmatch(r"/bin/sh -c '(.*)'", line[len("ExecStart="):])
-    assert match, line
-    return ["/bin/sh", "-c", match.group(1).replace("$$", "$").replace("%%", "%")]
+    # Split with shell quoting, as systemd does (systemd.service, "Command lines"): a regex
+    # between the outer quotes kept a `''` that systemd strips, so a broken unit passed here.
+    argv = shlex.split(line[len("ExecStart="):])
+    assert argv[:2] == ["/bin/sh", "-c"] and len(argv) == 3, argv
+    return ["/bin/sh", "-c", argv[2].replace("$$", "$").replace("%%", "%")]
 
 
 def _git(cwd, *args, env=None):
