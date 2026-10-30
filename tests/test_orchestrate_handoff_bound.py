@@ -1,10 +1,9 @@
 """Fleet-ops#11167: the orchestrate lane keeps the per-issue concurrency group
 that fleet-ops#9700 fixed, and its admission step polls the in-flight hand-off
-runs of the same lane: a sixth concurrent hand-off re-checks every minute
+runs of the same lane: a sixth concurrent hand-off re-checks every 90 seconds
 instead of failing, so at most five hand-off jobs run at once near the plans'
 measured carry of four to six."""
 import pathlib
-import re
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -39,10 +38,17 @@ def test_the_poll_counts_only_this_lane_excluding_itself():
     script = _script()
     assert '.name | IN("orchestrate") or endswith(" / orchestrate")' in script
     assert '[ "$id" = "$GITHUB_RUN_ID" ] && continue' in script
-    assert "--status in_progress" in script
+    assert "runs?status=in_progress&per_page=100" in script
 
 
 def test_a_sixth_hand_off_queues_and_rechecks_instead_of_failing():
     script = _script()
-    assert re.search(r'sleep 60\s*done', script)
-    assert '[ "$in_flight" -lt "$SLOTS" ] && break' in script
+    assert [line for line in script.splitlines() if line.strip() == "sleep 90"]
+    assert '[ "$in_flight" -ge "$SLOTS" ]' in script
+
+
+def test_the_poll_fails_closed_on_a_rate_limit_brownout():
+    script = _script()
+    assert script.count("keeping issue $ISSUE waiting for a slot") == 2
+    assert "echo \"::warning::orchestrate: the run list failed" in script
+    assert "echo \"::warning::orchestrate: the job read failed on run $id" in script

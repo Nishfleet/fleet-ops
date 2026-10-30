@@ -1272,19 +1272,33 @@ jobs:
         # GitHub has no fleet-wide cap and its expressions have no arithmetic,
         # so the cap is a poll: other runs of this lane whose orchestrate job is
         # not completed count against SLOTS, and a queued hand-off re-checks
-        # every minute instead of failing (fleet-ops#11167).
+        # every 90 seconds instead of failing (fleet-ops#11167). The rate limit
+        # is a second ceiling (2026-10-30 technical lead note on #11167), so the
+        # poll makes no call unless the list call succeeds and fails closed: a
+        # hand-off keeps waiting on a brownout rather than spilling past five.
         run: |
           while :; do
+            if ! ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id'); then
+              echo "::warning::orchestrate: the run list failed; keeping issue $ISSUE waiting for a slot"
+              sleep 90
+              continue
+            fi
             in_flight=0
-            while IFS= read -r id; do
+            for id in $ids; do
               [ "$id" = "$GITHUB_RUN_ID" ] && continue
-              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length')" != '0' ]; then
-                in_flight=$((in_flight + 1))
+              if ! c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length'); then
+                echo "::warning::orchestrate: the job read failed on run $id; keeping issue $ISSUE waiting for a slot"
+                in_flight=0
+                break
               fi
-            done < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent-dispatch.yml --status in_progress --limit 60 --json databaseId --jq '.[].databaseId')
-            [ "$in_flight" -lt "$SLOTS" ] && break
-            echo "orchestrate: $in_flight hand-offs in flight, $SLOTS planned capacity; issue $ISSUE waits"
-            sleep 60
+              in_flight=$((in_flight + c))
+            done
+            if [ "$in_flight" -ge "$SLOTS" ]; then
+              echo "orchestrate: $in_flight hand-offs in flight, $SLOTS planned capacity; issue $ISSUE waits"
+              sleep 90
+              continue
+            fi
+            break
           done
       - name: Fresh worktree on origin/main
         id: worktree
