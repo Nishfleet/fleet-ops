@@ -297,8 +297,13 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"; cred_flags="--tmpfs $tmp_home/.cred-store/nishfleet-agent --tmpfs $tmp_home/.cred-store"; sibling="$tmp_home/.cred-store/nishfleet-agent-2"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
+          # On the runner the App key is a systemd credential, so a jail must hide the
+          # credential directory the same way it hides $HOME/.config/fleet-worker.
+          # agent.yml hides the unit's directory and the store that holds it ($cred_hide),
+          # which is what keeps a sibling runner's copy of the same key out of reach, so
+          # the drill plants one in each (fleet-ops#10957).
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
@@ -310,7 +315,7 @@ jobs:
           bk1=$HOME/.claude-ci-backup
           bk2=$HOME/backups-claude-ci
           test ! -e "$seat_a" && test ! -e "$bk1" && test ! -e "$bk2" && test ! -e "$HOME/.claude/.credentials.json" && test ! -e "$HOME/.claude.json"
-          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker"
+          mkdir -p "$seat_a" "$bk1" "$bk2" "$HOME/.claude" "$HOME/workspaces/tooling/fleet-ops-deploy-clone" "$HOME/.config/gh" "$HOME/.config/cloudflare" "$HOME/.config/fleet-ops" "$HOME/.config/fleet-worker" "$CREDENTIALS_DIRECTORY" "$sibling"
           echo planted > "$bk1/creds"
           echo planted > "$bk2/creds"
           # The jail lines' hide lists come from agent.yml's own claude_hides function.
@@ -327,21 +332,18 @@ jobs:
           echo 'CLOUDFLARE_API_TOKEN=planted' > "$HOME/.config/cloudflare/deploy-ci.env"
           echo visible > "$HOME/.config/control"
           test ! -e "$HOME/.config/fleet-ops/planted-seat"
-          test ! -e "$HOME/.config/fleet-worker/planted-key"
-          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"' EXIT
+          test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
+          trap 'rm -rf "$seat_a" "$bk1" "$bk2" "$tmp_home"; rm -f "$HOME/.claude/.credentials.json" "$HOME/.claude.json" "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control" "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key" "$sibling/planted-key"' EXIT
           echo planted > "$HOME/.config/fleet-ops/planted-seat"
-          echo planted > "$HOME/.config/fleet-worker/planted-key"
+          echo planted > "$HOME/.config/fleet-worker/planted-key"; echo planted > "$CREDENTIALS_DIRECTORY/planted-key"; echo planted > "$sibling/planted-key"
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
-            # The line's own variables expand, and so does its ${VAR:+...}, which
-            # leaves nothing behind on a runner that sets no VAR. No eval of file
-            # text. bwrap refuses the unexpanded token, so a line that keeps it
-            # fails here. The pattern escapes its $, {, } and " so the text it
-            # matches stays literal.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
+            # The line's own variables expand. No eval of file text. bwrap refuses
+            # an unexpanded token, so a line that keeps one fails here.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$cred_hide/$cred_flags}
             read -ra jail <<< "$exp --"
-            "${jail[@]}" test -r "$HOME/.config/control"
+            "${jail[@]}" test -r "$HOME/.config/control" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             # No engine but claude can read either Claude seat's login: the bound
             # files are empty and the seat directory is an empty tmpfs.
             test "$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null)" != planted
@@ -357,16 +359,16 @@ jobs:
             case "$line" in
               *'--tmpfs $HOME/.config/fleet-ops'*)
                 "${jail[@]}" test ! -e "$HOME/.config/fleet-ops/planted-seat"
-                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key"
+                "${jail[@]}" test ! -e "$HOME/.config/fleet-worker/planted-key" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
                 sealed=$((sealed + 1)) ;;
             esac
           done
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$cred_hide/$cred_flags}
             read -ra jail <<< "$l --"
-            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
+            "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml" -a ! -e "$CREDENTIALS_DIRECTORY/planted-key" -a ! -e "$sibling/planted-key"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
             got_a=$("${jail[@]}" cat "$seat_a/.credentials.json" 2>/dev/null || true)
             got_b=$("${jail[@]}" cat "$HOME/.claude/.credentials.json" 2>/dev/null || true)
@@ -377,7 +379,7 @@ jobs:
             else test "$got_a" != planted && test "$got_b" = planted && test "$got_j" = planted; fi
           done
           test -r "$HOME/.config/gh/hosts.yml"
-          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key"
+          rm -f "$HOME/.config/fleet-ops/planted-seat" "$HOME/.config/fleet-worker/planted-key" "$CREDENTIALS_DIRECTORY/planted-key" "$sibling/planted-key"
           rm -f "$HOME/.config/gh/hosts.yml" "$HOME/.config/cloudflare/deploy-ci.env" "$HOME/.config/control"
       - name: No shell ${...} or bare %s/%u/%h inside systemd Exec lines (fleet-ops#8382)
         # systemd expands ${...} and % specifiers before any shell runs. Refused on Exec*= lines:
