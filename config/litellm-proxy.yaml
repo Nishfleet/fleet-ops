@@ -941,6 +941,33 @@ model_list:
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
       RateLimitErrorAllowedFails: 0
+# Second assistant row (fleet-ops#11239): when OpenCode Go is inside its usage wall, Hermes
+# chat and the review's fallback family had no row at all. MiniMax is a flat plan already
+# serving the worker groups, and a family no other reviewer uses (agent.yml family_of).
+- model_name: assistant
+  litellm_params:
+    model: anthropic/MiniMax-M3.1-Flash-Preview
+    api_base: https://api.minimax.io/anthropic
+    api_key: os.environ/MINIMAX_API_KEY
+    input_cost_per_token: 3e-07
+    output_cost_per_token: 1.2e-06
+    cache_read_input_token_cost: 6e-08
+    cache_creation_input_token_cost: 3.75e-07
+    tags:
+    - prepaid
+    - minimax
+    order: 2
+    weight: 1
+    max_parallel_requests: 12
+    cooldown_time: 1800
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "2026-10-07 #9357 scoreboard: 93.4% cache-read 7d on real router traffic."
+    id: minimax-m31-assistant
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 3
 - model_name: tether
   litellm_params:
     model: anthropic/claude-sonnet-5-5
