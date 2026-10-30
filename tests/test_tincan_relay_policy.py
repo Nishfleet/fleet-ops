@@ -173,7 +173,7 @@ def test_the_host_playbook_renders_installs_and_checks_the_policy():
     assert "- name: Fail when the roster names an agent the relay does not have\n" in HOST_PLAYBOOK
 
 
-@pytest.mark.skipif(not shutil.which("ansible-playbook"), reason="ansible is not installed")
+@pytest.mark.skipif(not (shutil.which("ansible-playbook") and shutil.which("yq")), reason="ansible or yq is not installed")
 def test_the_host_playbook_installs_the_render_byte_for_byte(tmp_path):
     # The install moves the render through a registered result, and Ansible
     # folds a multi-line registered string into one line unless the task turns

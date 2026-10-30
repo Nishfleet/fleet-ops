@@ -56,7 +56,7 @@
     argv:
       - jq
       - -e
-      - 'type == "object" and (.gate | type == "object" and length > 0) and (.notify | type == "string") and (.hold_ttl | type == "string") and ([.gate[] | has("unless")] | all)'
+      - 'type == "object" and (.gate | type == "object" and length > 0) and (.notify | type == "string") and (.hold_ttl | type == "string") and ([.gate[] | (.unless | type == "array")] | all)'
       - "{{ tincan_relay_policy_path }}"
   register: tincan_relay_policy_check
   changed_when: false
