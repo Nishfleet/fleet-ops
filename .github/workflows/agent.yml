@@ -543,13 +543,10 @@ jobs:
         env:
           SWEEP_TOKEN: ${{ steps.sweep-token.outputs.token }}
         run: |
-          # A freed lane starts the next ready issue through the stock sweep dispatch, which also re-lists stuck work; the relabel loop it replaces got waiting runs cancelled (fleet-ops#10809, #9269).
-          GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
-          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too; .sweep_only[] retries agent-ready only (fleet-ops#10638).
+          # A freed lane starts the next ready issue through the stock sweep dispatch, in every enrolled repo including this one, and the sweep re-lists stuck work; the relabel loop it replaces got waiting runs cancelled (fleet-ops#10809, #9269). .sweep_only[] retries agent-ready only (fleet-ops#10638).
           others=$(jq -r '.repos[].name, .sweep_only[]?.name' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || others=
           [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
-          for other in $others; do
-            [ "${REPO%/*}/$other" = "$REPO" ] && continue
+          for other in $(printf '%s\n' "${REPO#*/}" $others | sort -u); do
             GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "${REPO%/*}/$other" || echo "::warning::sweep dispatch on $other failed"
           done
       - name: Clean workspace

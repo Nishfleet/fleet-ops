@@ -163,8 +163,7 @@ jobs:
           i=${REF#claim/issue-}; i=${i%%-*}
           # The note names the run, not an excerpt: the worker reads the full log with stock
           # `gh run view --log-failed`, and a 30-line cut often missed the cause (fleet-ops#10808).
-          body="rework: CI run $RUN_URL failed on ${SHA:0:7}. Read it with \`gh run view $RUN_ID --log-failed\`, fix it, then push to $REF."
-          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "$body"
+          gh issue comment "$i" -R "$GITHUB_REPOSITORY" --body "rework: CI run $RUN_URL failed on ${SHA:0:7}. Read it with \`gh run view $RUN_ID --log-failed\`, fix it, then push to $REF."
   rework:
     needs: rework-note
     if: >-
