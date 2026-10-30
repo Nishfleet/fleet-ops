@@ -11,7 +11,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIRS = [".github", "prompts", "systemd", "rootfs", "ansible"]
 SUFFIXES = {".yml", ".yaml", ".md", ".service", ".conf", ".sh", ".j2", ""}
-# `-H`/`--header` whose value carries an auth header and a shell expansion.
 ARGV_HEADER = re.compile(
     r"""(?:-H|--header)[ =]+(['"])[^'"\n]*(?:authorization|x-auth|api-key|bearer|token)[^'"\n]*\$[{(A-Za-z_]""",
     re.IGNORECASE,
