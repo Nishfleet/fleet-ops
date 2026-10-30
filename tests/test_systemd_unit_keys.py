@@ -1526,7 +1526,7 @@ def test_runner_pressure_limit_kills_only_a_stalled_cgroup() -> None:
     assert RUNNER_DROPIN.is_file(), f"{RUNNER_DROPIN.relative_to(ROOT)} is not in the repo, so a git pull carries no edit to it"
     keys = effective_directives(RUNNER_DROPIN)
     assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
-    assert _last(keys, "MemoryHigh") == "4G", "the high line the 2026-10-05 sizing set is gone"
+    assert _last(keys, "MemoryHigh") == "4g", "the high line the 2026-10-05 sizing set is gone"
     limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
     assert 1 <= limit <= 40, (
         "a cgroup pinned at its MemoryHigh reads 45-56% memory pressure and a busy one reads 0.00, so the line belongs between them: at 80% oomd never fires (fleet-ops#11123), at 0 it kills every job"
