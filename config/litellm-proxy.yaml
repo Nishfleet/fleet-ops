@@ -261,7 +261,8 @@ model_list:
     order: 1
     weight: 1
     # z.ai Coding Plan: no slot count, the plan's own 429 cools the row and it re-probes itself (fleet-ops#10694).
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -269,6 +270,7 @@ model_list:
     id: zai-glm53flashi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/hf:zai-org/GLM-5.3-Flash
@@ -399,7 +401,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -407,6 +410,7 @@ model_list:
     id: zai-glm53flash-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -417,7 +421,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -425,6 +430,7 @@ model_list:
     id: zai-glm53flashb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -435,7 +441,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -443,6 +450,7 @@ model_list:
     id: zai-glm53flashc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -453,7 +461,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -461,6 +470,7 @@ model_list:
     id: zai-glm53flashd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -471,7 +481,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -479,6 +490,7 @@ model_list:
     id: zai-glm53flashe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -489,7 +501,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -497,6 +510,7 @@ model_list:
     id: zai-glm53flashf-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -507,7 +521,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -515,6 +530,7 @@ model_list:
     id: zai-glm53flashg-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/glm-5.3-flash
@@ -525,7 +541,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -533,6 +550,7 @@ model_list:
     id: zai-glm53flashh-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/glm-5.3-flash
@@ -543,7 +561,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -551,6 +570,7 @@ model_list:
     id: zai-glm53flash-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-cheap
   litellm_params:
     model: openai/glm-5.3-flash
@@ -561,7 +581,8 @@ model_list:
     - zai
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the z.ai 429 is a weekly quota with a fixed reset (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -569,6 +590,7 @@ model_list:
     id: zai-glm53flashb-worker-cheap
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # MiniMax Yearly Plus: the plan's quota is the cap, so no max_budget; 12 lanes per row; a 4th 429 parks a row 1800 s (fleet-ops#9220).
 - model_name: worker-capable
   litellm_params:
@@ -678,7 +700,8 @@ model_list:
     order: 1
     weight: 1
     # No slot count: v1.105.0 never frees an abandoned stream's slot, so a capped row jams (fleet-ops#10762).
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -686,6 +709,7 @@ model_list:
     id: stepfun-step5preview-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -696,7 +720,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -704,6 +729,7 @@ model_list:
     id: stepfun-step5previewb-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -714,7 +740,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -722,6 +749,7 @@ model_list:
     id: stepfun-step5previewc-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -732,7 +760,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -740,6 +769,7 @@ model_list:
     id: stepfun-step5previewd-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -750,7 +780,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -758,6 +789,7 @@ model_list:
     id: stepfun-step5previewe-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -768,7 +800,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -776,6 +809,7 @@ model_list:
     id: stepfun-step5previewf-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -786,7 +820,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -794,6 +829,7 @@ model_list:
     id: stepfun-step5previewg-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -804,7 +840,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -812,6 +849,7 @@ model_list:
     id: stepfun-step5previewh-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -822,7 +860,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -830,6 +869,7 @@ model_list:
     id: stepfun-step5previewi-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 - model_name: worker-capable
   litellm_params:
     model: openai/step-5-preview
@@ -840,7 +880,8 @@ model_list:
     - stepfun
     order: 1
     weight: 1
-    cooldown_time: 900
+    # 6 h park on the first 429: the StepFun 429 is a drained prepaid balance (fleet-ops#11146).
+    cooldown_time: 21600
   model_info:
     mode: chat
     supports_prompt_caching: true
@@ -848,6 +889,7 @@ model_list:
     id: stepfun-step5previewj-worker-capable
     allowed_fails_policy:
       BadRequestErrorAllowedFails: 1
+      RateLimitErrorAllowedFails: 0
 # Alibaba Token Plan: judge row only, order 1, never a worker rung; rpm and max_parallel_requests 3; prepaid, so no max_budget (fleet-ops#9220, #9374, #4445).
 - model_name: judge
   litellm_params:

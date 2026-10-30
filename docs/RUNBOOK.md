@@ -159,7 +159,12 @@ It never uses `git pull`: a polluted `FETCH_HEAD` there merges into
 `fatal: Cannot fast-forward to multiple branches` and silently stops every
 deploy (fleet-ops#8893). A trailing `merge-base --is-ancestor` pair
 asserts `HEAD == origin/main`, so a stopped deploy is a failed unit rather
-than a lagging clone.
+than a lagging clone. Two things keep that true: the workflow's two deploy steps
+come first and its security probe runs last in the same job, so a red probe still
+fails the run and can never skip a deploy step, and
+`fleet-clone-lag.timer` (every 5 min) fails the unit when the oldest commit on
+`origin/main` the clone lacks is 35 min old, printing the fix
+in its message (fleet-ops#10046).
 Its LINK-GUARD passes fail the unit while any live symlink under
 `~/.config/systemd/user/`, `~/.local/bin/`, `~/.pi/agent/` or the vault is
 broken or resolves into a throwaway root (`*worktrees/*`, `agent-state`,
@@ -264,7 +269,10 @@ compare the rule's `expression` with the repo file. Wire the pair once after mer
 `fleet-litellm-proxy-config` (README "Wiring a NEW unit"): `systemctl --user link` both
 files, then `systemctl --user enable --now fleet-grafana-provisioning.path`. Until it is
 wired, reload by hand with `systemctl --user start fleet-grafana-provisioning.service`
-once linked, or `curl -X POST` the two endpoints.
+once linked, or `curl -X POST` the two endpoints. The service never restarts itself: systemd
+fails the `.path` unit with result `unit-start-limit-hit` the moment the service it triggers
+spends its start limit, and a `.path` unit cannot restart itself, so the wait for a Grafana
+restart lives inside the one start (fleet-ops#10848).
 
 Cloudflare cost alarm (fleet-ops#9355): `config/grafana/provisioning/alerting/cloudflare-spend.yaml`
 evaluates hourly through the Infinity data source `fleet-cloudflare` (the deploy-ci
@@ -285,11 +293,32 @@ paid-plan-idle rules, prompt-cache-hit and the deploy-failed-24h rules. They pag
 page every 12 hours. Every other rule (router-dead-row, cpu-pressure, the 30-minute deploy-failed
 rules, any new rule) is `warning`: it does not page. Every firing alert, of either severity, files
 a fleet-ops issue labelled `agent-ready` (`fleet-alert-dispatch`, or the cost-alarm and
-router-dead-row variants); the webhook cannot comment or close, so a still-firing alert files a
-new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
+router-dead-row variants; `router-dead-key-dispatch` labels its issue `needs-nish-decision`,
+because a rejected provider key is Nish's to renew); the webhook cannot comment or close, so a
+still-firing alert files a new issue per repeat. CI fails when a rule has no severity, overrides the tree, is critical
 without being on the urgent list (or the reverse), or a critical alert would re-send slower than
 hourly. To make a new rule page, add it to the list there with the reason and label it critical.
 Switch off the fleet issue route: point the policy root and the last route back at `hermes-urgent`.
+
+Router dead-row persistence (fleet-ops#9562). `router-dead-row.yaml` fires only when a row
+answered 402, 403 or 404 more than 5 times in the last hour and is still failing: at least one
+such failure in the last 10 minutes, held for 15 continuous minutes. A row that answered for a
+minute and healed files nothing, and a dead row still files while the failures continue. To fire
+on the first burst again, set `for: 0s` and drop the 10-minute factor; to silence the rule, set
+`isPaused: true`. `config/grafana/tests/router-dead-row.test.yml` holds the behaviour under
+promtool in CI, and `tests/test_grafana_fixture_drift.py` fails when that fixture and the
+deployed rule drift apart.
+
+Router dead key (fleet-ops#11063, split out in fleet-ops#11081). A second rule in the same file,
+`router-dead-key` on `signal=router-dead-key`, fires when one row parked on a 401 more than
+2 times in 6 hours and is still parking: at least one park in the last 30 minutes, held for 15
+minutes. A 401 row parks on its first failure, so a park is one cooldown, and a row cannot park
+again until that cooldown ends (15 minutes on the worker rows), which is why its bar is 2 and
+not the row rule's 5. No worker can renew a key, so this rule's issue is filed
+`needs-nish-decision`: a worker run and a hand-off on it are wasted until Nish renews the key or
+approves taking its rows out of the router. `config/grafana/tests/router-dead-key.test.yml`
+holds its bar under promtool, and `tests/alert_routes_check.py` fails when the rule, its
+threshold or its issue label drift.
 
 Grafana's GitHub token (fleet-ops#9445). A webhook contact point sends one static
 Authorization value and a GitHub App installation token lives an hour, so a token pasted into
@@ -465,11 +494,10 @@ on the .path, both from the deploy clone (README "Install").
 `/jev` is a pass-through with `auth: true`, so any valid virtual key reaches it
 and each call books `cost_per_request` against the calling key. Its cap is a
 `fleet-jev` virtual key (`POST /key/generate` with `max_budget`,
-`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 and
-miss-review still read `LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is
-not that key; the cap takes effect when the key is minted and that seat file
-holds it. LiteLLM v1.98 has no declarative key list, so minting is one
-admin-API call, not a config edit.
+`budget_duration` `1d` and `rpm_limit`). Today worker.md step 4 still reads
+`LITELLM_JEV_KEY` from `seats/typesafe-jev.env`, which is not that key; the cap
+takes effect when the key is minted and that seat file holds it. LiteLLM v1.98
+has no declarative key list, so minting is one admin-API call, not a config edit.
 
 Backup: the restic backup unit runs `pg_dump -Fc` of the `litellm` database
 into `agent-state/backups/litellm.dump` before every run, and that dump is the
@@ -486,8 +514,11 @@ because the unit files name the backup targets and this repo is public
 (Nish, 2026-10-03, "split"). `/etc/fleet-ops/box-only` lists them, so
 `fleet-host-config.service`'s drift check skips them; this repo tracks only the
 additive drop-ins under `rootfs/` and the lists in `config/restic/`, so this
-section does not schedule them. A box rebuild cannot restore these units from
-the repo — copy them off the live box to private storage before wiping it, and
+section does not schedule them — the one pair tracked whole is the monthly
+restore drill (`restic-r2-restore-drill.service` and `.timer`), which is new,
+names no backup target and no credential, and is enabled by
+`tasks/services.yml`. A box rebuild cannot restore the box-only units from the
+repo — copy them off the live box to private storage before wiping it, and
 never commit the copies here.
 
 Rollback (immediate): `systemctl --user stop fleet-litellm-postgres.service
@@ -701,7 +732,7 @@ plan now fixes. Data restore is that vault's
 
 - Before: ruleset 23692529 required `ratchet`, an inline job in `ci.yml`, so a PR judged itself by its own copy (#9627). After: `ci.yml` calls `.github/workflows/ratchet.yml` and the ruleset requires `ratchet / ratchet`. 0509 and drive call the same file at `@main` and require the same context. Nothing else in the ruleset changed.
 - Order, because the PR's own head cannot report the old name: remove `ratchet` from the required list, merge, add `ratchet / ratchet`. `ci` kept `ratchet` in its `needs` the whole time.
-- A reusable workflow cannot be required from another repo on the Free plan: `gh api orgs/Nishfleet/rulesets` answers 403 "Upgrade to GitHub Team", and a repository ruleset `workflows` rule is rejected. So the caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is still caught only by review.
+- A reusable workflow can be required from another repo: the organization ruleset `org-required-workflows` (`config/org-ruleset.json`, fleet-ops#10554) runs `Nishfleet/fleet-ops` `.github/workflows/ratchet.yml@main` in every repo. The 403 on `gh api orgs/Nishfleet/rulesets` was the token's missing org-owner scope, not the plan. The caller file still lives in the PR. The reusable job fails a PR that edits the caller's `ratchet` job; a PR that repoints the caller's `uses:` is caught by the ruleset's own run once the rule is active.
 - Check: `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 --jq '[.rules[]|select(.type=="required_status_checks").parameters.required_status_checks[].context]'`.
 - Undo (switch the ratchet off, as the Nish-only emergency path): `gh api repos/Nishfleet/fleet-ops/rulesets/23692529 | jq '{name,target,enforcement,bypass_actors,conditions,rules:(.rules|map(if .type=="required_status_checks" then .parameters.required_status_checks|=map(select(.context!="ratchet / ratchet")) else . end))}' | gh api -X PUT repos/Nishfleet/fleet-ops/rulesets/23692529 --input -`.
 

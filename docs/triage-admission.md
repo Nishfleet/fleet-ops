@@ -15,8 +15,11 @@ state.
 Only the issue author `nish3451` is admitted. The newest `needs-triage` label
 event must also come from `nish3451`. Non-owner issues are skipped with a notice
 and left as `needs-triage` (no Jev call). A daily cap (`vars.ADMIT_DAILY_MAX`,
-default 10) counts `triage-admit: admitted` comments since IST midnight and
-stops early when reached. The job runs only when
+default 10, 0 = no cap) counts `triage-admit: admitted` comments since IST midnight and
+stops early when reached, so a re-run or a retried sweep cannot over-admit. A run
+also stops after `ADMIT_BUDGET_SEC` (default 780): at a 90 s router timeout each,
+`MAX_ISSUES` (20) would overrun the 20-minute job timeout, so the rest keeps
+`needs-triage` for the next sweep. The job runs only when
 `(inputs.agent_mode || vars.AGENT_MODE) == 'live'`. Issue title and body are
 wrapped in `<ISSUE_TEXT>` fences so the model treats them as data, never as
 instructions.
