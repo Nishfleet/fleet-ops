@@ -1,0 +1,50 @@
+[Unit]
+Description=Beacon Hermes poll: read new Hermes sessions from ~/.hermes/state.db into the Beacon runtime log
+# Owner: Nish (Beacon local session capture, 2026-10-21). Stock Beacon, no glue: the vendor's own
+# watcher, `beacon endpoint hermes sync --watch`, reads the committed Hermes session store
+# (~/.hermes/state.db) every minute and appends harness.name=hermes,
+# harness.collection_method=poll events to ~/.beacon/endpoint/logs/runtime.jsonl, with its cursor in
+# ~/.beacon/endpoint/state/hermes.json. It runs here, outside the Hermes sandbox, so the sandboxed
+# gateway needs no write access to ~/.beacon (fleet-ops#9941 gave it four file binds; they pinned
+# an inode that Beacon's 10 MB rotation leaves behind, and are gone). Beacon's own Hermes hooks are
+# uninstalled (`beacon endpoint hooks uninstall --harness hermes`) so a turn is not captured twice.
+# Nothing leaves the box from here: it reads a local SQLite file and appends to a local file.
+# The Syncthing send-only `beacon-server` folder mirrors that log to Nish's own MacBook.
+#
+# A system unit, not a user one (fleet-ops#11089). This unit parses Telegram text the gateway wrote,
+# so it needs a sandbox that holds, and on this box a unit the user manager starts gets none of the
+# mount keys: systemd 255 cannot unshare the mount namespace after it enters the unprivileged user
+# namespace AppArmor gates, and it carries on without the sandbox at debug level
+# (docs/user-unit-sandboxing.md, fleet-ops#10880). Here the system manager is root, so it builds the
+# namespace before it drops to User=nish, and ProtectSystem= and PrivateTmp= are real. Ansible
+# installs this file from rootfs/etc/systemd/system/ and ansible/tasks/services.yml enables it; a
+# system unit does not belong in systemd/, which fleet-sync.service links into the user manager.
+#
+# Switch off: `systemctl disable --now beacon-hermes-poll.service`, then delete this file and the
+# task that starts it in ansible/tasks/services.yml (a hand disable alone is re-enabled by the next
+# deploy). Do not run `beacon endpoint hooks install --harness hermes` again: it would capture
+# twice and the sandbox no longer lets the hook write.
+OnFailure=fleet-unit-failed@%N.service
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+User=nish
+Environment=HOME=/home/nish
+ExecStart=/home/nish/.local/bin/beacon endpoint hermes sync --watch --interval 1m
+Restart=on-failure
+RestartSec=30
+MemoryMax=256M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+# .beacon holds the log and the cursor. .hermes holds state.db, and SQLite in WAL mode opens
+# state.db-shm and state.db-wal beside it, creating them when the gateway has none open: a read-only
+# grant there fails the open instead of reading the store, so the directory is writable and home is
+# `read-only` above, which is what keeps the rest of /home out of reach. Both paths carry a `-` so a
+# host without them starts the unit instead of refusing it.
+ReadWritePaths=-/home/nish/.beacon -/home/nish/.hermes
+
+[Install]
+WantedBy=multi-user.target

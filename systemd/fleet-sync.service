@@ -147,18 +147,19 @@ ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-
 #     below, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
 ExecStart=/bin/sh -c 'for f in fleet-cua-desk-check.service fleet-cua-desk-check.timer; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
 ExecStart=/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.service %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/fleet-cua-desk-check.timer
-# 2i. The Beacon Hermes poll watcher (beacon-hermes-poll.service): link it so every deploy
-#     carries edits to it, the same way as step 2h, and enable it on every deploy, because a
-#     capture that is silently off is the failure it ships to fix. The restart after enable
-#     applies edits to a service that is already running (enable --now does not). The lines are
-#     prefixed with `-` so a broken capture watcher cannot stop the deploy steps after it (the
-#     pr-sweep timers below); the unit's OnFailure= pages when it fails. Off switch: delete this
-#     step and the enable line below, then `systemctl --user disable --now beacon-hermes-poll.service`.
-#     The prefix goes AFTER the `=` (`ExecStart=-`): `-ExecStart=` is an unknown key, which systemd
-#     skips with a warning and exit 0, so those four lines silently never ran and
-#     beacon-hermes-poll.service was never linked (fleet-ops#9967).
-ExecStart=-/bin/sh -c 'for f in beacon-hermes-poll.service; do test "$$(readlink %h/.config/systemd/user/$$f)" = %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/$$f || rm -f %h/.config/systemd/user/$$f; done'
-ExecStart=-/usr/bin/systemctl --user link %h/workspaces/tooling/fleet-ops-deploy-clone/systemd/beacon-hermes-poll.service
+# 2i. The Beacon Hermes poll watcher is a system unit now (fleet-ops#11089): it parses Telegram
+#     text, and a unit the user manager starts gets none of the mount sandbox keys on this box
+#     (docs/user-unit-sandboxing.md), so its file moved to rootfs/etc/systemd/system/, where
+#     fleet-host-config installs it, and ansible/tasks/services.yml starts it. The user link is
+#     stopped and deleted here, before the LINK-GUARD pass (step 9): its file is gone from the
+#     clone, so a surviving link dangles and fails the deploy. The stop comes first and both lines
+#     carry `-`, so a host that has already dropped it stays quiet. This unit runs before
+#     fleet-host-config in deploy-box.yml, so the two never poll at once. The rm names the
+#     default.target.wants link outright: systemd expands no glob in ExecStart, so a `*.wants`
+#     path would reach rm literally, leave the link, and fail LINK-GUARD on a dangling file.
+#     Delete this step once a deploy has run it.
+ExecStart=-/usr/bin/systemctl --user stop beacon-hermes-poll.service
+ExecStart=-/bin/rm -f %h/.config/systemd/user/beacon-hermes-poll.service %h/.config/systemd/user/default.target.wants/beacon-hermes-poll.service
 # 2j. The Tincan wake services (fleet-ops#10133) were hand-placed regular files
 #     under ~/.config/systemd/user with no repo copy, so a git pull carried no
 #     edit to them and the unit-key test could not read them. The two left after
@@ -237,8 +238,6 @@ ExecStart=/usr/bin/systemctl --user daemon-reload
 ExecStart=/bin/sh -c 'test -f %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container && { cmp -s %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container || { /usr/bin/systemctl --user try-restart fleet-grafana.service && /usr/bin/install -C -D -m 0600 %h/workspaces/tooling/fleet-ops-deploy-clone/containers/quadlet/fleet-grafana.container %h/.config/fleet-ops/grafana-quadlet.container; }; }'
 ExecStart=/usr/bin/systemctl --user enable --now later-sweep.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-cua-desk-check.timer
-ExecStart=-/usr/bin/systemctl --user enable --now beacon-hermes-poll.service
-ExecStart=-/usr/bin/systemctl --user restart beacon-hermes-poll.service
 ExecStart=/usr/bin/systemctl --user enable --now fleet-d1-restore-drill.timer
 ExecStart=/usr/bin/systemctl --user enable --now fleet-pr-sweep@fleet-ops.timer fleet-pr-sweep@0509.timer fleet-pr-sweep@drive.timer fleet-pr-sweep@aiconverter-app.timer fleet-pr-sweep@TinyStudio.io-public.timer fleet-pr-sweep@siterep-public.timer fleet-pr-sweep@rera-report-card.timer
 # 3-4. Root-owned files (/etc/prometheus/*.yml, agent.slice and every other

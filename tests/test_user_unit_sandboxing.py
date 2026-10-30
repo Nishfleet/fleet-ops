@@ -116,3 +116,38 @@ def test_no_system_unit_lands_in_the_user_tree() -> None:
         "user tree that fleet-sync.service links into ~/.config/systemd/user; a system unit belongs in "
         "rootfs/etc/systemd/system/, where the sandbox keys do apply"
     )
+
+
+def test_the_poll_watcher_ships_as_a_system_unit_with_its_sandbox() -> None:
+    unit = ROOT / "rootfs/etc/systemd/system/beacon-hermes-poll.service"
+    assert unit.is_file(), "beacon-hermes-poll.service parses Telegram text and needs a sandbox that holds"
+    assert not (ROOT / "systemd/beacon-hermes-poll.service").exists(), (
+        "the user unit it replaced is gone, so a copy under systemd/ would be linked a second time"
+    )
+    pairs = dict(settings(unit))
+    assert pairs.get("User") == "nish"
+    assert pairs.get("WantedBy") == "multi-user.target"
+    assert {"ProtectSystem=strict", "ProtectHome=read-only", "PrivateTmp=yes"} <= set(guarded(unit)), (
+        f"{unit.relative_to(ROOT)}: the system manager applies these, so the file must set them"
+    )
+    assert "/home/nish/.beacon" in pairs.get("ReadWritePaths", ""), "the watcher writes its log and cursor there"
+
+
+def test_fleet_sync_drops_the_retired_user_link_before_the_link_guard() -> None:
+    lines = (ROOT / "systemd/fleet-sync.service").read_text().splitlines()
+    link = "%h/.config/systemd/user/beacon-hermes-poll.service"
+    stop = [i for i, line in enumerate(lines) if line.startswith("ExecStart=") and line.endswith("--user stop beacon-hermes-poll.service")]
+    rm = [i for i, line in enumerate(lines) if line.startswith("ExecStart=") and "rm -f " in line and link in line]
+    guard = [i for i, line in enumerate(lines) if line.startswith("ExecStart=") and "-xtype l" in line]
+    assert stop and rm and guard, "fleet-sync.service must stop the unit, delete the link and keep its LINK-GUARD"
+    assert max(stop + rm) < guard[0], (
+        "the link is deleted after LINK-GUARD (step 9) runs, which fails the deploy on the dangling link "
+        "the deleted file leaves behind"
+    )
+    assert "default.target.wants/beacon-hermes-poll.service" in lines[rm[0]], (
+        "the wants link is named outright: systemd expands no glob in ExecStart, so `*.wants` reaches rm "
+        "literally, leaves a dangling link, and LINK-GUARD fails the next deploy"
+    )
+    assert not [line for line in lines if "--user link" in line and "beacon-hermes-poll" in line], (
+        "a link line would put the user unit back"
+    )
