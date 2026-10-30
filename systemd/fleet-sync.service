@@ -132,9 +132,13 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #      top level saw no write for 3 days is removed whole by the user
 #      systemd-tmpfiles-clean.timer (preset-enabled, 90-systemd.preset). Fleet
 #      sessions live minutes to about one day under the dispatch walls, so
-#      nothing valid is 3 days old; the first pass deleted what the old
-#      orch-0509-7744 scan had already cleared, and the scan the PR quotes
-#      found every old tree delivered, clean or node_modules debris.
+#      nothing valid is 3 days old. The first pass's reach on this host was
+#      scanned before push: 54 entries older than 3 days out of 740, and every
+#      git tree among them is delivered, archived to
+#      `orch-issue-10183-flock-archive` (its flock rework went another way on
+#      main), declared scrap (a deleted remote, broken checkouts), or
+#      uncommitted work the standing rule calls not-happened; the PR body
+#      names one for each class.
 #      Off switch: delete this step first, then
 #      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
