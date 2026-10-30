@@ -1437,11 +1437,11 @@ jobs:
           # with the App token in GH_TOKEN (fleet-ops#10949). The prompt
           # goes on stdin: its `---` front matter parses as an option as an argument.
           # The session never sees the App key the token above came from (fleet-ops#9521, #10949).
-          # The runner's credential dir holds the App key file, so the session hides it by name,
-          # not through $CREDENTIALS_DIRECTORY: a runner started with a cleared environment
-          # would set no flag and leave it readable (fleet-ops#10957).
-          # shellcheck disable=SC2207 # the substitution is the two argv words, or nothing at all
-          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" $(if [ -d /run/credentials ]; then echo --tmpfs /run/credentials; fi) --die-with-parent --)
+          # The unit's LoadCredential= puts the App key in systemd's credential store, and this
+          # session reads outsider issue text, so the jail hides the unit's credential directory
+          # and the store that holds it, which leaves a sibling runner's copy of the same key out
+          # of reach too (fleet-ops#10957).
+          jail=(bwrap --dev-bind / / --tmpfs "$HOME/.config/fleet-worker" --tmpfs "$RUNNER_TEMP/_runner_file_commands" ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"} --die-with-parent --)
           if [ "$ORCH_RUNNER" = pi ]; then
             # No Claude spend and no turn cap: the step's timeout-minutes is the wall
             # (fleet-ops#10349).

@@ -7,7 +7,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DROPINS = ROOT / "rootfs/etc/systemd/system"
-CRED_HIDE = "$(if [ -d /run/credentials ]; then echo --tmpfs /run/credentials; fi)"
+CRED_HIDE = '${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}'
 
 
 def test_no_runner_dropin_binds_the_gh_login():
@@ -39,8 +39,8 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
 def test_the_worker_jails_hide_the_credential_directory():
     """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
     wf = (ROOT / ".github/workflows/agent.yml").read_text()
-    assert f"cred_hide={CRED_HIDE}" in wf, "the hide names the systemd credential dir and asks whether it exists; $CREDENTIALS_DIRECTORY is empty in a runner started without the unit's environment"
-    assert "--tmpfs $CREDENTIALS_DIRECTORY" not in wf, "the credential dir must not come from the environment"
+    assert f"cred_hide={CRED_HIDE}" in wf, "the hide is one parameter expansion over the directory systemd names: systemd sets $CREDENTIALS_DIRECTORY for every unit that loads a credential, and a hand-rolled test of the path could disagree with the unit that mounts the key"
+    assert "[ -d /run/credentials ]" not in wf, "the store path is a system-scope detail, and a user service keeps its credentials under /run/user"
     jails = [line for line in wf.splitlines() if re.match(r'\s*(?:jail_base|claude_jail_[ab])="bwrap --dev-bind', line)]
     assert len(jails) >= 4, jails
     for line in jails:
