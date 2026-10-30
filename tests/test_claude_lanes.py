@@ -572,12 +572,19 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     jail_seat = home / ".config/gh" if seat_b else seat_a  # the Worker's seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
     sub = {"hide_all": _hides(home, ""), "hide_but_a": _hides(home, str(jail_seat))}
     runner_temp = home / "runner-temp"
-    creds = home / "runner-creds"
+    # systemd keeps the credential store outside $HOME (/run/credentials for a system
+    # unit), and the whole store belongs to the unit's user, so a sibling runner's copy
+    # of the same key is what the store hide is there for.
+    store = tmp_path / "run-credentials"
+    creds = store / "nishfleet-agent"
+    sibling = store / "nishfleet-agent-2"
     (runner_temp / "_runner_file_commands").mkdir(parents=True)
     (runner_temp / "_runner_file_commands/pem").write_text("planted")
-    creds.mkdir()
-    (creds / "pem").write_text("planted")
-    opt = '${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}'
+    for d in (creds, sibling):
+        d.mkdir(parents=True)
+        (d / "pem").write_text("planted")
+    opt = "$cred_hide"
+    flags = f"--tmpfs {creds} --tmpfs {store}"
 
     def expand(name, cred_dir=creds):
         line = lines[name].replace("$HOME", str(home)).replace("$seat_a", str(jail_seat))
@@ -585,7 +592,9 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
             line = line.replace("$" + k, v)
         line = line.replace("$RUNNER_TEMP", str(runner_temp))
         assert opt in line, name
-        return (line.replace(opt, "") if cred_dir is None else line.replace(opt, f"--tmpfs {cred_dir}")).split() + ["--"]
+        # cred_dir=None is the runner whose unit mounts no credential dir: the jail
+        # hides nothing there and still starts.
+        return (line.replace(opt, "") if cred_dir is None else line.replace(opt, flags)).split() + ["--"]
 
     def read_all(name):
         cmd = expand(name)
@@ -599,11 +608,12 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
 
     def read_app_key(name, cred_dir):
         """What the jail shows of the runner's App key (fleet-ops#11051): the minted
-        PEM and the key dir $CREDENTIALS_DIRECTORY names. cred_dir=None is the runner
-        that sets none; rc 0 proves the jail started."""
+        PEM, the unit's credential dir the store holds, and a sibling runner's copy of
+        the same key. cred_dir=None is the runner that sets none; rc 0 proves the jail
+        started."""
         cmd = expand(name, cred_dir)
         out = {}
-        for key, path in {"pem": runner_temp / "_runner_file_commands/pem", "dir": creds / "pem"}.items():
+        for key, path in {"pem": runner_temp / "_runner_file_commands/pem", "dir": creds / "pem", "sibling": sibling / "pem"}.items():
             r = subprocess.run(cmd + ["cat", str(path)], capture_output=True, text=True)
             out[key] = r.returncode == 0 and "planted" in r.stdout
         return out
@@ -618,8 +628,8 @@ def test_real_jail_claude_lane_reads_only_its_own_seat_and_nobody_reads_the_rest
     else:
         assert read_all("claude_jail_a") == {"a": True, **none}
     for jail in ("jail_base", "claude_jail_a", "claude_jail_b"):
-        assert read_app_key(jail, creds) == {"pem": False, "dir": False}, jail
-    assert read_app_key("jail_base", None) == {"pem": False, "dir": True}
+        assert read_app_key(jail, creds) == {"pem": False, "dir": False, "sibling": False}, jail
+    assert read_app_key("jail_base", None) == {"pem": False, "dir": True, "sibling": True}
     argv = expand("jail_base", creds)
     assert argv[argv.index(str(creds)) - 1] == "--tmpfs"
 
