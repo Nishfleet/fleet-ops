@@ -1519,6 +1519,18 @@ def test_gpg_agent_oom_dropin_is_in_the_repo_and_the_shadowing_copy_is_retired()
     )
 
 
+RUNNER_DROPIN = ROOT / "rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/10-agent.conf"
+
+
+def test_a_runner_is_killed_at_a_pressure_a_stalled_job_reaches() -> None:
+    keys = effective_directives(RUNNER_DROPIN)
+    assert _last(keys, "ManagedOOMMemoryPressure") == "kill"
+    limit = int(_last(keys, "ManagedOOMMemoryPressureLimit").removesuffix("%"))
+    assert limit == 40, (
+        "a job stalled at its MemoryHigh reads 45-56% memory pressure and a busy one reads 0.00, so the kill line belongs at 40%: 80% killed nothing (fleet-ops#11123)"
+    )
+
+
 TINCAN_RELAY_UNIT = ROOT / "systemd/tincan-relay.service"
 TINCAN_RELAY_DIST_DROPIN = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d/dist-temp.conf"
 TINCAN_RELAY_DIST_DROPIN_DIR = "{{ nish_home }}/.config/systemd/user/tincan-relay.service.d"
