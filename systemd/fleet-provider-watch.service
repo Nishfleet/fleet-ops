@@ -79,6 +79,7 @@ Environment=ISSUES_TOKEN=%t/fleet-grafana-github-token/token
 Environment=GH=%h/.local/bin/gh
 Environment=YQ=%h/.local/bin/yq
 UnsetEnvironment=GH_TOKEN GITHUB_TOKEN
+EnvironmentFile=-%E/fleet-ops/seats/commandcode.env
 EnvironmentFile=-%E/fleet-ops/seats/opencode.env
 EnvironmentFile=-%E/fleet-ops/seats/synthetic.env
 EnvironmentFile=-%E/fleet-ops/seats/zai.env

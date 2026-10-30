@@ -12,9 +12,106 @@
 # anthropic answers in the tether group only (fleet-ops#9980; Nishfleet/tether#7).
 # Long notes for this file: docs/litellm-router-notes.md
 # Devin and Cursor CLI lanes retired (item 9, 2026-10-28): Devin had no router route (404 on every base).
-# OpenCode keeps its paid plan, served as router rows below; Command Code keeps its paid plan and has no row.
+# OpenCode and Command Code keep paid plans, served as router rows below.
 model_list:
-# Command Code rows removed 2026-10-30 (fleet-ops#11065): COMMANDCODE_API_KEY answers 401 on every row, so no call could succeed on them. The plan and its approved model stay; the rows return with a working key. Note 1 has the record.
+# Command Code carries z-ai/glm-5.3-flash only, 10 USD/day per row (fleet-ops#9744); delete the two -b rows to drop that lane.
+# That is a file edit and a restart (about 101 s, with a 30 s drain of in-flight calls): POST /model/block answers 400 for a config-file row.
+- model_name: worker-capable
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flash-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flash-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flashb-worker-capable
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.commandcode.ai/provider/v1
+    api_key: os.environ/COMMANDCODE_API_KEY
+    tags:
+    - prepaid
+    - commandcode
+    order: 1
+    weight: 1
+    input_cost_per_token: 3e-07
+    cache_read_input_token_cost: 6e-09
+    output_cost_per_token: 1.2e-06
+    max_budget: 10.0
+    budget_duration: 1d
+    max_parallel_requests: 4
+    cooldown_time: 900
+  model_info:
+    mode: chat
+    supports_prompt_caching: true
+    cache_proof: "Caches: direct probe 2026-10-15 on api.commandcode.ai z-ai/glm-5.3-flash, 3 calls on a 19287-token prefix, cached_tokens 0/19264/19264 (fleet-ops#9744)."
+    id: commandcode-glm53flashb-worker-cheap
+    allowed_fails_policy:
+      BadRequestErrorAllowedFails: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/deepseek-v4.1-flash

@@ -431,7 +431,7 @@ data: {"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":13538,
 data: [DONE]
 ```
 
-A Command Code row, `commandcode-glm53flashb-worker-cheap` (removed 2026-10-30, fleet-ops#11065), ends its
+A row that still reports, `commandcode-glm53flashb-worker-cheap`, ends its
 stream the other way: seven content chunks, then two with an empty delta, and
 the `usage` block on the second of those. Same box, same proxy, minutes apart:
 
