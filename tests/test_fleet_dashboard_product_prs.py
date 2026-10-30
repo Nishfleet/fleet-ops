@@ -3,7 +3,7 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PANELS = json.loads((ROOT / "config/grafana/dashboards/fleet.json").read_text())["panels"]
-PRODUCTS = {"0509", "aiconverter-app", "rera-report-card", "siterep-public", "tether", "TinyStudio.io-public"}
+PRODUCTS = {"0509", "aiconverter-app", "rera-report-card", "seo-fix-kit", "siterep-public", "tether", "TinyStudio.io-public"}
 
 
 def test_product_prs_per_repo_leads_the_dashboard():
