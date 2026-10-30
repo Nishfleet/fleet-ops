@@ -8,7 +8,7 @@
   `systemctl --user disable --now fleet-grafana-github-token.timer` plus `systemctl --user mask
   fleet-grafana-github-token.service` (the quadlet also mints once per Grafana start; docs/RUNBOOK.md).
 - `rootfs/` — root-owned host config, laid out like `/` (`rootfs/etc/X` is
-  installed at `/etc/X`): system units, slices and drop-ins, `nftables.conf`,
+  installed at `/etc/X`): system units, slices and drop-ins, polkit rules, `nftables.conf`,
   `sysctl.d/`, `audit/rules.d/` and the prometheus config.
 - `ansible/host.yml` — the Ansible playbook that installs `rootfs/`.
   `fleet-host-config.service` runs it as root (`ansible-pull`) on every merge

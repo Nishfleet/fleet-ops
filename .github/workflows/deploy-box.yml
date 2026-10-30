@@ -20,8 +20,8 @@ jobs:
   apply:
     name: apply
     runs-on: [self-hosted, fleet-ci]
-    # fleet-deploy.service allows itself 900s; 20 min covers a wait behind a queued request.
-    timeout-minutes: 20
+    # fleet-deploy.service allows itself 900s; 35 min covers a wait behind one queued full-length run.
+    timeout-minutes: 35
     steps:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Write the deploy request and wait for the verdict

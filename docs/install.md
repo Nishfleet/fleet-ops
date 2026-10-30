@@ -109,7 +109,7 @@ cat /sys/fs/cgroup/agent.slice/memory.swap.max   # same number
 for root-owned host config. It runs its own clone of reviewed main, so a request
 can at most redeploy main. Two things start it: `.github/workflows/deploy-box.yml`
 writes a request to `/var/lib/fleet-deploy/request` on every push to main and
-`fleet-deploy.path` starts this unit from it, and
+`fleet-deploy.path` starts `fleet-deploy.service`, which runs this unit, and
 `fleet-host-config-boot.timer` once after every boot
 (3 minutes in), which starts tether's Cua Space again when a reboot stopped it.
 
