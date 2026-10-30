@@ -35,6 +35,7 @@
         "~/.config/tincan/hermes-webhook.secret",
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/agentmail.key",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock",
         "~/.config/tincan/claude-vps.json"
@@ -73,6 +74,7 @@
         "~/.config/tincan/opencode.json",
         "~/.config/tincan/pi.json",
         "~/.config/tincan/agentmail.key",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock",
         "~/.config/tincan/claude-vps.json"
@@ -107,6 +109,7 @@
         "~/.devin",
         "~/.config/opencode",
         "~/.config/tincan/pi.json",
+        "/run/fleet-hermes-github-token",
         "/run/user/1000",
         "/run/docker.sock"
       ]
@@ -126,7 +129,7 @@
     {
       "agent": "hermes-gateway and hermes-serve",
       "unit": "rootfs/etc/systemd/system/hermes-gateway.service",
-      "reason": "System units with a drop-in already, but the drop-in hides nothing: the chat agent can read the fleet's seats, Cloudflare tokens and the other agents' logins. Closing that needs its own probe, because the gateway also drives Claude Code and the vault.",
+      "reason": "System units with a drop-in already, and the drop-in now hides ~/.config/gh and points gh at its own minted one-hour login (fleet-ops#10267), but nothing else: the chat agent can still read the fleet's seats, Cloudflare tokens and the other agents' logins. Closing that needs its own probe, because the gateway also drives Claude Code and the vault.",
       "issue": "#9981"
     },
     {

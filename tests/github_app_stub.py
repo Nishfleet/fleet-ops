@@ -1,5 +1,6 @@
-"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service and
-systemd/fleet-worker-github-token@.service make.
+"""Stub of the two GitHub REST calls systemd/fleet-grafana-github-token.service,
+systemd/fleet-worker-github-token@.service and
+rootfs/etc/systemd/system/fleet-hermes-github-token.service make.
 
 fleet-ops#9445, fleet-ops#9738. CI runs each unit's real ExecStart under systemd
 against this stub (.github/workflows/ci.yml, step "GitHub App token units mint
@@ -16,7 +17,10 @@ fails the run instead of passing silently:
        [fleet-ops] and permissions {issues: write} (the Grafana token), or
        exactly the one repo whose installation was looked up and permissions
        {contents, issues, pull_requests: write} (the worker token) or
-       {actions: write} (the pr-sweep token, instance actions:<repo>).
+       {actions: write} (the pr-sweep token, instance actions:<repo>), or no
+       repositories key and permissions {actions: read, issues: write,
+       pull_requests: read} (the hermes login: every repo the App is installed
+       on, which is what gh repo list and the digest jobs need).
 
 Every answered mint returns a distinct token (ghs_stub_<n>) so a test can tell
 a refresh from a stale file. The mode file switches the stub to answering 401
@@ -35,6 +39,7 @@ PORT, PUB, APP_ID, MODE_FILE, LOG_FILE = sys.argv[1:6]
 MINTS = 0
 REPOS = {}
 WORKER_PERMS = {"contents": "write", "issues": "write", "pull_requests": "write"}
+HERMES_PERMS = {"actions": "read", "issues": "write", "pull_requests": "read"}
 
 
 def b64d(s):
@@ -93,8 +98,15 @@ class H(http.server.BaseHTTPRequestHandler):
             repo = REPOS.get(iid)
             wants = [{"repositories": ["fleet-ops"], "permissions": {"issues": "write"}},
                      {"repositories": [repo], "permissions": WORKER_PERMS},
-                     {"repositories": [repo], "permissions": {"actions": "write"}}]
-            if repo is None or json.loads(body or b"{}") not in wants:
+                     {"repositories": [repo], "permissions": {"actions": "write"}},
+                     {"permissions": HERMES_PERMS}]
+            if repo is None:
+                # A token request for an installation id nobody looked up is not
+                # what any unit here sends, and a 201 for it would hide a mint that
+                # skipped the lookup it needs to find the installation (review of
+                # PR #11116).
+                verdict, code, out = "unknown", 404, {"message": "Not Found"}
+            elif json.loads(body or b"{}") not in wants:
                 verdict, code, out = "bad-body", 422, {"message": "bad body"}
             else:
                 MINTS += 1

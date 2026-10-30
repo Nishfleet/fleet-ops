@@ -117,6 +117,22 @@
     mode: preserve
   notify: Reload systemd
 
+# Copied here on its own, before the directory copy below installs the same
+# bytes, so that a change to this file alone is visible to tasks/services.yml:
+# the restart it needs is decided there, once the deploy has a minted login to
+# point Hermes at (fleet-ops#10267). A handler here would flush before that
+# proof runs, and a flush after it would still miss a host whose next deploy
+# reports no change.
+- name: Install the Hermes sandbox drop-in and notice its change
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/sandbox.conf"
+    dest: /etc/systemd/system/hermes-.service.d/sandbox.conf
+    owner: root
+    group: root
+    mode: preserve
+  register: hermes_sandbox_dropin
+  notify: Reload systemd
+
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"

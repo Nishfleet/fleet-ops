@@ -1,0 +1,70 @@
+[Unit]
+Description=Mint the short-lived GitHub App login Hermes' gh CLI reads (fleet-ops#10267)
+# Hermes reads issues, pull requests and workflow runs through gh, and until
+# this unit it did that with nish's admin login in ~/.config/gh. The sandbox
+# drop-in (hermes-.service.d/sandbox.conf) hides that path and points
+# GH_CONFIG_DIR at this unit's runtime directory instead. gh has no plugin or
+# credential helper that mints a token (gh help environment, "GH_TOKEN"), so
+# the login is a hosts.yml this oneshot refreshes before the one-hour App
+# installation token expires (REST docs, "Create an installation access token
+# for an app").
+#
+# The request body is what config/hermes/digest-*.md run, and nothing wider: no
+# repositories key, because the digest counts with `gh repo list Nishfleet` and
+# then `gh pr list`/`gh run list`/`gh issue view` per repo, so it reads every
+# Nishfleet repo the App is installed on; issues write, because it comments on
+# the issues it is asked about; pull requests and actions read, because the
+# digest reads merged PRs and workflow runs. No contents, no administration, no
+# workflow write.
+#
+# The token lives in /run (tmpfs, mode 0700, owned by nish), never on disk and
+# never in argv: the App JWT goes to curl as a config fd. A failed mint leaves
+# the previous hosts.yml in place and pages through OnFailure=; the timer tries
+# again in 20 minutes. The token is the same nishfleet-worker App every worker
+# run uses, so the login is attributed to nishfleet-worker[bot], not to a person.
+#
+# The token directory is not private to Hermes: /run is readable by every
+# process that runs as nish, so the agent lock's shared drop-in hides this
+# directory from every locked listener (fleet-agent-lock.service.d/50-shared.conf
+# and config/agent-locks.json must_hide).
+#
+# Switch off: `systemctl disable --now fleet-hermes-github-token.timer` and
+# `systemctl mask fleet-hermes-github-token.service` (the Hermes units Wants=
+# it, so without the mask it still mints once per Hermes start). Remove
+# GH_CONFIG_DIR and the InaccessiblePaths= line from the sandbox drop-in too,
+# or Hermes keeps reading a directory nothing refreshes.
+OnFailure=fleet-unit-failed@%N.service
+
+[Service]
+Type=oneshot
+User=nish
+RuntimeDirectory=fleet-hermes-github-token
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# GITHUB_API_URL exists so CI can run this very ExecStart against a local stub
+# (tests/test_worker_github_token.py, which ci.yml runs); the host never
+# overrides it.
+Environment=GITHUB_API_URL=https://api.github.com
+Environment=APP_ID=4728578
+# A system unit's %h is the service manager's home (/root) whatever User= says
+# (systemd.unit, "Specifiers"), so this path is spelled out. %u is the unit's
+# own user, so the path stays absolute and still names no home directory.
+Environment=APP_KEY=/home/%u/.config/fleet-worker/nishfleet-worker.private-key.pem
+# RS256 App JWT (docs: "Generating a JSON Web Token (JWT) for a GitHub App";
+# iat 60 s back for clock drift, exp inside the 10 min cap), then the
+# installation id that covers this repo, then the login file. `$$` is systemd's
+# escape for a literal `$`, `%%` for `%`. The new file is written beside the old
+# one and renamed over it, so a reader never sees a partial hosts.yml.
+ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
+  b64() { openssl base64 -A | tr "+/" "-_" | tr -d "="; }; \
+  now=$$(date +%%s); \
+  h=$$(printf "{\\"alg\\":\\"RS256\\",\\"typ\\":\\"JWT\\"}" | b64); \
+  p=$$(printf "{\\"iat\\":%%d,\\"exp\\":%%d,\\"iss\\":\\"%%s\\"}" $$((now-60)) $$((now+540)) "$$APP_ID" | b64); \
+  s=$$(printf "%%s.%%s" "$$h" "$$p" | openssl dgst -sha256 -sign "$$APP_KEY" | b64); \
+  auth() { printf "header = \\"Authorization: Bearer %%s.%%s.%%s\\"\\nheader = \\"Accept: application/vnd.github+json\\"\\n" "$$h" "$$p" "$$s"; }; \
+  id=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 --config <(auth) "$$GITHUB_API_URL/repos/Nishfleet/fleet-ops/installation" | jq -er .id); \
+  tok=$$(curl -fsS --connect-timeout 10 --max-time 30 --retry 2 -X POST --config <(auth) -d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}" "$$GITHUB_API_URL/app/installations/$$id/access_tokens" | jq -er .token); \
+  { echo "github.com:"; echo "    user: nishfleet-worker"; echo "    oauth_token: $$tok"; echo "    git_protocol: https"; } > "$$RUNTIME_DIRECTORY/hosts.yml.new"; \
+  mv -f "$$RUNTIME_DIRECTORY/hosts.yml.new" "$$RUNTIME_DIRECTORY/hosts.yml"; \
+  echo "minted the nishfleet-worker App token as the Hermes gh login, valid one hour"'
+TimeoutStartSec=300

@@ -70,7 +70,7 @@ def mint(tmp_path_factory):
     target = UNIT_DIR / f"{NAME}.service"
     sh([*SUDO, "install", "-m", "0644", str(unit), str(target)], check=True)
     ctl("daemon-reload")
-    yield type("Mint", (), {"mode": mode, "log": log, "dir": d})
+    yield type("Mint", (), {"mode": mode, "log": log, "dir": d, "port": port})
     stub.terminate()
     sh([*SUDO, "rm", "-rf", str(target), str(ENV_DIR)])
     ctl("daemon-reload")
@@ -193,3 +193,45 @@ def test_pr_sweep_unit_revokes_its_token_then_deletes_it(mint):
         "ghs_stub api -X DELETE installation/token",
     ]
     assert sh([*SUDO, "test", "!", "-e", str(ENV_DIR / "actions:drive.env")]).returncode == 0
+
+
+def test_hermes_login_unit_writes_the_hosts_yml_gh_reads(mint):
+    # Runs rootfs/etc/systemd/system/fleet-hermes-github-token.service itself, as
+    # the host's system unit, through the same stub as the worker token above
+    # (fleet-ops#10267). The key path and the runtime directory are the only
+    # edits, so this is the ExecStart the host runs.
+    mint.mode.write_text("ok\n")
+    name = "fleet-hermes-token-pytest"
+    text = (ROOT / "rootfs/etc/systemd/system/fleet-hermes-github-token.service").read_text()
+    text = re.sub(r"^Environment=APP_KEY=.*$", f"Environment=APP_KEY={mint.dir / 'app.pem'}", text, flags=re.M)
+    text = re.sub(r"^OnFailure=.*\n", "", text, flags=re.M)
+    text = re.sub(r"^Environment=GITHUB_API_URL=.*$", f"Environment=GITHUB_API_URL=http://127.0.0.1:{mint.port}", text, flags=re.M)
+    text = re.sub(r"^RuntimeDirectory=.*$", f"RuntimeDirectory={name}", text, flags=re.M)
+    # The host runs this as User=nish; the runner has no such user, so the copy
+    # takes the job's user instead.
+    text = re.sub(r"^User=.*$", f"User={os.environ['USER']}" if IN_CI else "", text, flags=re.M)
+    unit = mint.dir / f"{name}.service"
+    unit.write_text(text)
+    target = UNIT_DIR / unit.name
+    sh([*SUDO, "install", "-m", "0644", str(unit), str(target)], check=True)
+    ctl("daemon-reload")
+    run = RUN_DIR / name
+    hosts = run / "hosts.yml"
+    try:
+        first = ctl("start", unit.name)
+        assert first.returncode == 0, first.stderr
+        body = sh([*SUDO, "cat", str(hosts)]).stdout
+        assert re.fullmatch(r"github\.com:\n {4}user: nishfleet-worker\n {4}oauth_token: ghs_stub_\d+\n {4}git_protocol: https\n", body), body
+        assert sh([*SUDO, "stat", "-c", "%a", str(hosts)]).stdout.strip() == "600"
+        assert sh([*SUDO, "stat", "-c", "%a", str(run)]).stdout.strip() == "700"
+        mint.mode.write_text("fail\n")
+        assert ctl("start", unit.name).returncode != 0
+        assert sh([*SUDO, "cat", str(hosts)]).stdout == body, "a failed mint replaced a login Hermes is still reading"
+        journal = sh([*SUDO, "journalctl", *SCOPE, "--no-pager", "-u", unit.name]).stdout
+        assert not re.search(r"ghs_stub_\d|eyJ", journal), "the token or the App JWT reached the journal"
+    finally:
+        ctl("reset-failed", unit.name)
+        sh([*SUDO, "rm", "-f", str(target)])
+        sh([*SUDO, "rm", "-rf", str(run)])
+        ctl("daemon-reload")
+    mint.mode.write_text("ok\n")

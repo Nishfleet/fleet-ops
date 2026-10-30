@@ -437,6 +437,10 @@
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+    # The Hermes units restart from tasks/services.yml, not from a handler: the
+    # restart waits there for the deploy to have a minted gh login, and a handler
+    # can flush before that proof runs (fleet-ops#10267).
+
     # Established SSH sessions live in ssh@.service and survive this (fleet-ops#10541).
     - name: Restart ssh.socket
       ansible.builtin.systemd_service:
