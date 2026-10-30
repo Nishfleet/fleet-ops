@@ -8,7 +8,7 @@ can hold lives in a check.
 - Diff-scoped semgrep: `semgrep --config p/default --baseline-commit "$(git merge-base HEAD origin/main)" --quiet --metrics=off`
 - Any diff under `.github/workflows/`: run the three offline gates `ci` runs — `actionlint .github/workflows/*.yml`, `uvx zizmor@1.30.1 --offline --format plain .github/workflows`, `shellcheck` on each changed shell file. Put all three results in the PR body, naming a gate that did not run.
 
-Do every task the way professional dev teams do (Nish 2026-10-30, non-negotiable): official docs first, then how well-run teams solve the same problem; name the source in the PR body. The reviewer holds this one, because no machine check can (`prompts/risky-review.md`).
+Do every task the way professional dev teams do (Nish 2026-10-30): before a design, fix, tool or config choice, check the vendor's official docs, then how well-run teams solve the same problem, and follow that. Name the source in the PR body, on the `stock:` line where there is one. Keep the check inside the run's wall: one docs lookup for a small step, a short search for a design. No machine check can hold this. The risky-PR reviewer weighs it (`prompts/risky-review.md`); on other PRs it is each agent's own duty.
 
 ## Hard rules
 

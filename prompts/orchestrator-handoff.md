@@ -37,7 +37,7 @@ Two things eat this wall and prove nothing: a test run wider than the change (a 
 
 ## 3. Build
 
-Pro-dev way, every decision (Nish 2026-10-30, non-negotiable): before you choose a design, fix, tool or config, find how professional teams do it, the vendor's official docs first, then how well-run engineering teams solve the same problem, and do it that way. Name the source (a URL) in the PR body. Your own approach is the last resort; when you use one, the PR body says why no standard way fits.
+Pro-dev way first (AGENTS.md): check the vendor's docs and how well-run teams solve it before choosing, within this run's wall, and name the source in the PR body.
 
 The issue's acceptance bullets are your spec, and `AGENTS.md` is your contract: quality bar, tests, no new `scripts/`/`bin/` files, secrets never in argv or output, and `main` is protected. Build the smallest change that meets every bullet. Run the checks that cover what you changed yourself (the tests for the changed paths, and the workflow gates below), never the whole suite: CI runs every test on the PR, and on 2026-10-28 a local full run (about 9 minutes) started at minute 45 hit the step's wall with a finished change unpushed (fleet-ops#10349). A claim without run output is not a deliverable. Commit and push as soon as those checks pass (step 4.1): a push survives the wall, a working tree does not.
 
