@@ -459,15 +459,20 @@ def test_an_existing_mount_point_keeps_its_owner_and_mode(tmp_path: Path) -> Non
 
     rootfs/etc/tmpfiles.d/fleet-runner-token-dirs.conf makes the two token dirs nish-owned mode 0700
     at boot, so the mount point is there with the owner the mint needs and systemd never makes one.
+
+    The stat is on the host, not in the unit: systemd.exec(5) mounts a TemporaryFileSystem= tmpfs
+    with mode=0755 and the root owner, so a unit reads the mount and not the mount point.
     """
     token_dir = tmp_path / "token"
     token_dir.mkdir()
-    os.chown(token_dir, 1000, 1000)
+    chowned = subprocess.run([*SUDO, "chown", "1000:1000", str(token_dir)], capture_output=True).returncode == 0
+    if not chowned:
+        pytest.skip("this job cannot chown the mount point to uid 1000, so it cannot set up its own precondition")
     os.chmod(token_dir, 0o700)
-    script = f"test -d {token_dir} && stat -c %u:%g:%a {token_dir}"
-    proc = subprocess.run(transient_run([f"TemporaryFileSystem={token_dir}:ro"], script), capture_output=True, text=True)
+    proc = subprocess.run(transient_run([f"TemporaryFileSystem={token_dir}:ro"], "true"), capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "1000:1000:700", "the mount point changed owner or mode, so the mint cannot write its token there"
+    stat = token_dir.stat()
+    assert (stat.st_uid, stat.st_gid, stat.st_mode & 0o777) == (1000, 1000, 0o700), "the mount point changed owner or mode, so the mint cannot write its token there"
 
 
 @needs_manager

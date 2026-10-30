@@ -43,7 +43,12 @@ def _stub(bindir: pathlib.Path, name: str, body: str) -> None:
 
 def _probe(tmp_path, masks=(), mounts=(), mount_points=(), require=False):
     """The probe's script here: `masks` is the unit's InaccessiblePaths, `mounts` its
-    TemporaryFileSystem, and `mount_points` is what the mountpoint command answers yes for."""
+    TemporaryFileSystem, and `mount_points` is what the mountpoint command answers yes for.
+
+    The systemctl stub prints one value per property line, which is the contract
+    `systemctl show -p <keys> --value` holds, and it suffixes every mount with `:ro`, the way a
+    TemporaryFileSystem= entry carries its mount options.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     _stub(bindir, "grep", f"#!/bin/sh\nprintf '%s\\n' '{UNIT}'\n")

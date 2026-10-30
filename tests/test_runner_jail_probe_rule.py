@@ -18,6 +18,8 @@ UID = "agent-runs-red-6h"
 COLUMNS = "created_at TEXT, conclusion TEXT"
 WINDOW = 43200  # the A query's relativeTimeRange: the GitHub plugin returns no run older than this
 
+pytestmark = pytest.mark.skipif(shutil.which("yq") is None, reason="yq reads the rule file and is not installed here")
+
 
 def _rule():
     out = subprocess.run(
