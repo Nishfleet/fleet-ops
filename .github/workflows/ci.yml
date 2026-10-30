@@ -297,15 +297,13 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp" CREDENTIALS_DIRECTORY="$tmp_home/.cred-store/nishfleet-agent"; cred_flags="--tmpfs $tmp_home/.cred-store/nishfleet-agent --tmpfs $tmp_home/.cred-store"; sibling="$tmp_home/.cred-store/nishfleet-agent-2"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
           # On the runner the App key is a systemd credential, so a jail must hide the
           # credential directory the same way it hides $HOME/.config/fleet-worker.
           # agent.yml hides the unit's directory and the store that holds it ($cred_hide),
           # which is what keeps a sibling runner's copy of the same key out of reach, so
           # the drill plants one in each (fleet-ops#10957).
-          cred_flags="--tmpfs $CREDENTIALS_DIRECTORY --tmpfs ${CREDENTIALS_DIRECTORY%/*}"
-          sibling=${CREDENTIALS_DIRECTORY%/*}/nishfleet-agent-2
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
           test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
