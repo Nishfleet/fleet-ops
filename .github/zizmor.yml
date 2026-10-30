@@ -9,6 +9,8 @@ rules:
         # agent.yml@refs/heads/main, and a SHA pin strands every job
         # (0509#5231, fleet-ops#8617).
         Nishfleet/fleet-ops/.github/workflows/agent.yml: ref-pin
+        # The stub-repo hand-off shim calls orchestrate.yml from main, so one definition serves every repo (fleet-ops#11192).
+        Nishfleet/fleet-ops/.github/workflows/orchestrate.yml: ref-pin
         # The ratchet must run from main so a PR cannot change the rule it is judged by (#9627).
         Nishfleet/fleet-ops/.github/workflows/ratchet.yml: ref-pin
         # The probe runs from main, like agent.yml, so one definition serves every

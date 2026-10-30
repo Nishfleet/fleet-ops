@@ -29,7 +29,7 @@ case "$1 $2" in
   "issue list") case "$*" in *"-S label:handoff-ended,needs-orchestrator "*) ;; *) echo "fake gh: unexpected search: $*" >&2; exit 1 ;; esac; cat "$FAKE_DIR/issues.json" ;;
   "pr list") [ -z "$FAIL_PRS" ] || exit 1; cat "$FAKE_DIR/prs.json" ;;
   "run list")
-    case "$*" in *"-R o/r --workflow=orchestrate.yml --status in_progress -L 100 --json databaseId --jq length"*) ;; *) echo "fake gh: unexpected run list: $*" >&2; exit 1 ;; esac
+    case "$*" in *"-R $GITHUB_REPOSITORY --workflow=$WANT_WF --status in_progress -L 100 --json databaseId --jq length"*) ;; *) echo "fake gh: unexpected run list: $*" >&2; exit 1 ;; esac
     [ -z "$FAIL_RUNS" ] || exit 1
     jq 'length' "$FAKE_DIR/runs.json" ;;
   "workflow run") [ -z "$FAIL_DISPATCH" ] || exit 1; cred "$@"; echo "$*" >> "$FAKE_DIR/writes.log" ;;
@@ -70,7 +70,7 @@ def issue(number, hours_idle=7, ended=1, labels=("handoff-ended",), refired=0):
     }
 
 
-def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, login=True):
+def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, login=True, repo="Nishfleet/fleet-ops"):
     """queued is the count of live runs of orchestrate.yml, which holds only hand-offs. login
     models the runner's own ~/.config/gh, which every hosted runner lacks."""
     (tmp_path / "issues.json").write_text(json.dumps(issues))
@@ -82,7 +82,8 @@ def run(tmp_path, issues, queued=0, prs=(), fail=None, out=False, login=True):
     gh.write_text(FAKE_GH)
     gh.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_DIR": str(tmp_path),
-           "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x",
+           "GITHUB_REPOSITORY": repo, "GH_TOKEN": "x",
+           "WANT_WF": "orchestrate.yml" if repo == "Nishfleet/fleet-ops" else "agent-dispatch.yml",
        "GITHUB_SERVER_URL": "https://example.invalid", "GITHUB_RUN_ID": "7", **(fail or {}), "REQUEUE": _y(f"{STEP} | .env.REQUEUE")}
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{STEP} | .run")],
                        env=env, capture_output=True, text=True)
@@ -172,6 +173,13 @@ def test_live_runs_use_up_the_batch(tmp_path):
     assert len(edits(w, "--add-label needs-orchestrator")) == 2
 
 
+def test_a_stub_repo_counts_and_refires_through_agent_dispatch(tmp_path):
+    """0509 and drive have no orchestrate.yml: the sweep there must use the shim job's workflow."""
+    labelled = ("needs-orchestrator",)
+    w = run(tmp_path, [issue(1, ended=0, labels=labelled)], queued=3, repo="Nishfleet/0509")
+    assert [l for l in w if l.startswith("workflow run")] == ["workflow run agent-dispatch.yml -R Nishfleet/0509 -f task=orchestrate -f issue=1"]
+
+
 def test_labelled_issues_are_not_queued_runs(tmp_path):
     """22 issues already labelled (fleet-ops#10475) must not eat the batch."""
     labelled = [issue(n, ended=0, labels=("needs-orchestrator",), hours_idle=2) for n in range(10, 32)]
@@ -186,7 +194,7 @@ def test_labelled_idle_issue_is_dispatched_not_relabelled(tmp_path):
                        issue(3, ended=0, labels=labelled),
                        issue(4, ended=0, labels=labelled + ("needs-nish-decision",))],
             prs=["orch/issue-3"])
-    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R o/r -f issue=1"]
+    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R Nishfleet/fleet-ops -f issue=1"]
     assert not [l for l in w if l.startswith("issue edit")], "a dispatch needs no label write"
     marker = REFIRED.split("https")[0]
     assert [l for l in w if l.startswith("issue comment 1 ") and marker in l]
@@ -209,7 +217,7 @@ def test_refires_count_toward_the_three_strikes(tmp_path):
     labelled = ("needs-orchestrator",)
     w = run(tmp_path, [issue(1, ended=0, labels=labelled, refired=3), issue(2, ended=1, labels=labelled, refired=1)])
     assert edits(w, "--add-label needs-nish-decision") == [1]
-    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R o/r -f issue=2"]
+    assert [l for l in w if l.startswith("workflow run")] == ["workflow run orchestrate.yml -R Nishfleet/fleet-ops -f issue=2"]
 
 
 @pytest.mark.parametrize("login", ["github-actions", "github-actions[bot]"])
