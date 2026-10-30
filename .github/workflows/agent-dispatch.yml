@@ -1331,8 +1331,7 @@ jobs:
           git -C "$mirror" worktree prune
           branch_ref="refs/heads/orch/issue-$ISSUE"
           # A branch on origin here has an open PR or none at all (step "issue"): continue from its head.
-          start=refs/remotes/origin/orch/issue-$ISSUE
-          git -C "$mirror" show-ref --verify --quiet "$start" || start=
+          start=$(git -C "$mirror" rev-parse --quiet --verify "refs/remotes/origin/orch/issue-$ISSUE" 2>/dev/null || true)
           if git -C "$mirror" show-ref --verify --quiet "$branch_ref"; then
             # A hand-off that died before its push holds its commits on this branch.
             while IFS= read -r line; do
@@ -1345,7 +1344,13 @@ jobs:
             done < <(git -C "$mirror" worktree list --porcelain)
             # A rework resets this branch to origin's head, so keep the tip.
             if [ -n "$start" ] && ! git -C "$mirror" merge-base --is-ancestor "$branch_ref" "$start" 2>/dev/null; then git -C "$mirror" branch -f "orch/issue-$ISSUE-unpushed" "$branch_ref"; echo "::warning::orchestrate: orch/issue-$ISSUE had unpushed commits, kept on orch/issue-$ISSUE-unpushed"; fi
-            git -C "$mirror" worktree add -q ${start:+-B "orch/issue-$ISSUE"} "$wt" "${start:-$branch_ref}"
+            # -B, never a full ref without it: `worktree add <path> refs/heads/…` detaches the worktree
+            # (fleet-ops#9376: the session's commit landed on detached HEAD, the branch push sent the
+            # stale tip, gh pr create said "No commits", and force-pushing the branch answered
+            # "Everything up-to-date" against that same tip). With no origin branch (start empty), pin
+            # the mirror branch to main when it carries nothing new; name the resume when it does.
+            [ -z "$start" ] && { git -C "$mirror" merge-base --is-ancestor "$branch_ref" refs/remotes/origin/main && git -C "$mirror" branch -f "orch/issue-$ISSUE" refs/remotes/origin/main || echo "::warning::orchestrate: origin has no orch/issue-$ISSUE branch and the mirror branch holds unpushed commits; resuming at its tip"; } || :
+            git -C "$mirror" worktree add -q -B "orch/issue-$ISSUE" "$wt" "${start:-$branch_ref}"
           else
             git -C "$mirror" worktree add -q -b "orch/issue-$ISSUE" "$wt" "${start:-refs/remotes/origin/main}"
           fi
