@@ -9,7 +9,7 @@ agent.yml itself, not copied: an issue whose title or body names a workflow
 file is parked for the orchestrator, because no worker App can push one. On
 fleet-ops the bare file names of its own workflows count too (fleet-ops#9275).
 
-The needle lists pin that the detector still reads all three workflow files
+The needle lists pin that the detector still reads both workflow files
 and that dispatch still carries the event filter.
 """
 import json
@@ -39,7 +39,7 @@ def _jq(*args, stdin=""):
     return subprocess.run(["jq", *args], check=True, capture_output=True, text=True, input=stdin).stdout
 
 
-GATE_LINE = re.compile(r"^\s*if jq -e --arg p .\.github/workflows/. --argjson fo")
+GATE_LINE = re.compile(r"^\s*if jq -e --arg p '\.github/workflows/' --argjson fo")
 
 
 def _gate_detector():
@@ -58,7 +58,7 @@ def test_gate_detector_case_table():
     for line in _jq("-c", ".gate_cases[]", str(CFG)).splitlines():
         case = json.loads(line)
         repo = case.get("repo", "Nishfleet/0509")
-        want = bool(case.get("want_park", case.get("want")))
+        want = case["want_park"]
         env = {"CASE": line, "DETECTOR": detector, "PATH": os.environ["PATH"], "fleet_ops": str(repo.endswith("/fleet-ops")).lower()}
         run = subprocess.run(
             ["bash", "-c", 'jq -c \'{title, body}\' <<<"$CASE" | eval "$DETECTOR" >/dev/null'],

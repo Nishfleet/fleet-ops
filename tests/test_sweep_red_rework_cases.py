@@ -18,7 +18,7 @@ NEEDLES = ('"$CHECK_DEFS $RED_REWORK"', '--argjson d "$red"', "$o[], $d[]", "run
 
 def _yq(expr):
     run = subprocess.run(["yq", f"{REDISPATCH} | {expr}", str(WF)], check=True, capture_output=True, text=True)
-    return run.stdout
+    return run.stdout.strip()
 
 
 def _jq(args, stdin=""):
