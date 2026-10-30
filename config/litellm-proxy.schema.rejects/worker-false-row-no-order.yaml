@@ -1,6 +1,7 @@
 # fleet-ops#9365: the same false verdict with no order key at all: order filtering
 # runs after the cooldown filter in LiteLLM v1.98.0 router.py, so a non-caching row
-# without an order is refused like one on order 1.
+# without an order is refused like one on order 1. The proof below is a plausible
+# false verdict, not a real measurement.
 # The rows and router_settings are the live config's judge fallback, judge paid,
 # Synthetic worker-capable, Straitly worker-public and tether rows plus its own
 # router_settings, which pass the schema alone, so the change above is the only

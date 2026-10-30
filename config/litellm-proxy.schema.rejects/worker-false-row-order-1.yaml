@@ -1,7 +1,8 @@
 # fleet-ops#9365: a worker-group row proven unable to cache must sit at order 2, so
 # the live Synthetic worker-capable row is given a false verdict here and stays on
 # order 1. The rule is dormant today (every free row probes as caching) and stays
-# for the next row a probe shows cannot cache.
+# for the next row a probe shows cannot cache. The proof below is a plausible false
+# verdict, not a real measurement.
 # The rows and router_settings are the live config's judge fallback, judge paid,
 # Synthetic worker-capable, Straitly worker-public and tether rows plus its own
 # router_settings, which pass the schema alone, so the change above is the only

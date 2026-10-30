@@ -1,5 +1,5 @@
-# fleet-ops#9075: a row's cooldown_time caps at 86400 s; a longer park is a bench by
-# another name.
+# fleet-ops#9075: a row's cooldown_time caps at 86400 s; a longer row-level park is a
+# bench by another name.
 # The rows and router_settings are the live config's judge fallback, judge paid,
 # Synthetic worker-capable, Straitly worker-public and tether rows plus its own
 # router_settings, which pass the schema alone, so the change above is the only
