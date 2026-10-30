@@ -1,0 +1,111 @@
+# The tincan relay's approval policy (fleet-ops#9979): rendered from config/tincan-relay/ and checked loudly.
+# The relay's approval policy (fleet-ops#9979), rendered from the one roster
+# file: every agent in config/tincan-relay/agents.txt gets a gate whose
+# `unless` list is that roster plus the relay, so a request between our own
+# agents goes through and a request whose chain names anything else is held.
+# The render is secret-free by construction (agent names, a notify
+# destination, a ttl), which is why the repo can hold it.
+- name: Render the tincan relay approval policy from the agent roster
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv:
+      - jq
+      - -j
+      - --indent
+      - "1"
+      - -n
+      - --rawfile
+      - roster
+      - "{{ tincan_relay_roster_file }}"
+      - -f
+      - "{{ tincan_relay_policy_program }}"
+  register: tincan_relay_policy
+  changed_when: false
+  # The render only prints, so it runs under --check too: the install and
+  # the check below then see the same bytes a real run would write.
+  check_mode: false
+
+# The relay re-reads the policy when the file changes, so this needs no
+# restart. 0600 in the relay's own state directory, which its unit creates
+# (StateDirectory=tincan-relay). `| string` is load-bearing: a registered
+# result is AnsibleUnsafeText, and this module folds an unsafe multi-line
+# string into one line, which would write a different file than the render
+# above produced. `| string` makes it a plain string and the bytes survive.
+- name: Install the rendered tincan relay approval policy
+  become: true
+  become_user: nish
+  ansible.builtin.copy:
+    content: "{{ tincan_relay_policy.stdout | string }}"
+    dest: "{{ tincan_relay_policy_path }}"
+    owner: nish
+    group: nish
+    mode: "0600"
+
+# A missing policy turns the gate off, and a malformed one makes the relay
+# refuse new sends, so the box's copy is checked here instead of being left
+# to the relay. jq exit: 2 = no such file, 5 = not JSON, 1 = JSON that is
+# not a gate (no non-empty gate map, no string notify or hold_ttl, or a
+# gate value without an `unless` list).
+- name: Read the tincan relay approval policy on the box
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv:
+      - jq
+      - -e
+      - 'type == "object" and (.gate | type == "object" and length > 0) and (.notify | type == "string") and (.hold_ttl | type == "string") and ([.gate[] | has("unless")] | all)'
+      - "{{ tincan_relay_policy_path }}"
+  register: tincan_relay_policy_check
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+  failed_when: false
+
+- name: Fail when the tincan relay approval policy is missing or malformed
+  ansible.builtin.assert:
+    that:
+      - tincan_relay_policy_check.rc == 0
+    quiet: true
+    fail_msg: >-
+      The tincan relay approval policy at {{ tincan_relay_policy_path }} is not a usable gate:
+      jq exit {{ tincan_relay_policy_check.rc }}, {{ tincan_relay_policy_check.stderr | default('') | truncate(200) }}.
+      2 = the file is missing, which turns the gate off, 5 = it is not JSON, 1 = it is JSON without a
+      non-empty gate, a string notify and a string hold_ttl. While it is malformed the relay refuses
+      new sends. Fix: re-run the host playbook, which renders the file from
+      config/tincan-relay/agents.txt.
+
+# The roster may not name an agent the relay has never seen: that agent's
+# gate would be dead config. The other direction is not checked, because an
+# agent the relay knows that the roster does not name is an outsider, and
+# the policy holds it by design. A relay that cannot be asked is skipped
+# here and caught by its own failed-units alarm.
+- name: List the relay's agents
+  become: true
+  become_user: nish
+  environment: "{{ nish_env }}"
+  ansible.builtin.command:
+    argv:
+      - tincan
+      - agents
+      - --json
+      - --socket
+      - "{{ tincan_relay_state }}/admin.sock"
+  register: tincan_relay_agents
+  changed_when: false
+  check_mode: false  # read-only; runs under --check too
+  failed_when: false
+
+- name: Fail when the roster names an agent the relay does not have
+  ansible.builtin.assert:
+    that:
+      - tincan_relay_roster | difference((tincan_relay_agents.stdout | default('{}', true) | from_json).agents | default([]) | map(attribute='name') | list) | length == 0
+    quiet: true
+    fail_msg: >-
+      config/tincan-relay/agents.txt names an agent the relay does not have, so that agent's gate in
+      approval.json is dead config. Roster: {{ tincan_relay_roster | join(', ') }}.
+      Relay: {{ ((tincan_relay_agents.stdout | default('{}', true) | from_json).agents | default([]) | map(attribute='name') | list) | join(', ') }}.
+      Fix the roster, or drop the name if that agent left the mesh.
+  when: tincan_relay_agents.rc == 0
+
