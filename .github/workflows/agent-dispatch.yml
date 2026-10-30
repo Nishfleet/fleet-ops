@@ -1264,6 +1264,28 @@ jobs:
           gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off started: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" ||
             echo "::warning::orchestrate: the hand-off-started comment failed; today's daily cap count misses this run"
           echo "go=true" >> "$GITHUB_OUTPUT"
+      - name: Wait for a free hand-off slot
+        id: slot
+        if: steps.issue.outputs.go == 'true'
+        env:
+          SLOTS: 5
+        # GitHub has no fleet-wide cap and its expressions have no arithmetic,
+        # so the cap is a poll: other runs of this lane whose orchestrate job is
+        # not completed count against SLOTS, and a queued hand-off re-checks
+        # every minute instead of failing (fleet-ops#11167).
+        run: |
+          while :; do
+            in_flight=0
+            while IFS= read -r id; do
+              [ "$id" = "$GITHUB_RUN_ID" ] && continue
+              if [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length')" != '0' ]; then
+                in_flight=$((in_flight + 1))
+              fi
+            done < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent-dispatch.yml --status in_progress --limit 60 --json databaseId --jq '.[].databaseId')
+            [ "$in_flight" -lt "$SLOTS" ] && break
+            echo "orchestrate: $in_flight hand-offs in flight, $SLOTS planned capacity; issue $ISSUE waits"
+            sleep 60
+          done
       - name: Fresh worktree on origin/main
         id: worktree
         if: steps.issue.outputs.go == 'true'
