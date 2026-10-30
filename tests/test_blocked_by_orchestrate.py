@@ -193,6 +193,6 @@ def test_the_alert_excludes_the_label_the_sweep_carries():
     assert "agent-blocked-dep" in pathlib.Path(WF).read_text()
 
 
-def test_the_syncs_no_event_claim_is_a_property_of_the_workflow():
+def test_the_sync_writes_run_on_the_job_token():
     assert _y('.jobs.list.steps[] | select(.id == "list") | .env.GH_TOKEN').strip() == "${{ github.token }}"
     assert _y('.jobs.list.steps[] | select(.env.REQUEUE) | .env.GH_TOKEN').strip() == "${{ github.token }}"
