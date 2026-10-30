@@ -639,7 +639,7 @@ jobs:
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
-          # A line starting with blocker(s) blocks, unless only a none-variant follows (none, no blockers, n/a, a dash); blk_re/none_re are the only copies (grep here, jq in the already-reviewed check) and anchored at both ends, so "blocker: none of the callers check the token" still blocks (tests/test_review_scan.py holds the cases).
+          # A line starting with blocker(s) blocks, unless only a none-variant follows (none, no blockers, n/a, a dash); blk_re/none_re are the only copies (grep here, jq in the already-reviewed check); only none_re is anchored at both ends, so "blocker: none of the callers check the token" still blocks (tests/test_review_scan.py holds the cases).
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"

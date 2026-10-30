@@ -372,9 +372,12 @@ is gone.
 ### agent.yml: the comment diet (fleet-ops#10946)
 
 The issue's comment bullet — comments one short line or none — applied to 38
-multi-line blocks (149 lines). Each collapses to one line. The prose that does
-not fit a short line lives here, and the one-liner keeps the issue ref that
-finds it:
+multi-line blocks. Count: `awk '/^[[:space:]]*#/{c++; next} {if(c>=2) print
+NR-c": "c; c=0}' .github/workflows/agent.yml`, which lists each block of two or
+more consecutive comment lines; summing its second field over the base commit
+gives 38 blocks totalling 149 lines. Each collapses to one line. The prose that
+does not fit a short line lives here, and the one-liner keeps the issue ref
+that finds it:
 
 - Labeled-run wait (fleet-ops#9269): a labeled run still waiting for a runner
   must not be poked; the new run displaces the waiting one in the
@@ -399,7 +402,9 @@ finds it:
   and the review posts publicly (claude honors an empty --tools, checked
   2026-10-10). No fallback to another family, no approval without this review;
   a call that fails or answers nothing, a usage limit included, did not finish:
-  retry.
+  retry. Fable is not a default reviewer because it burned 44% of a seat's
+  weekly limit in about two days when defaulted (Nish 2026-10-28, #10608); it
+  is the second reviewer of guard heads only.
 - Blocker lines: a line starting with blocker(s), with or without markup (not
   the echoed header "blocker/risk/nit"), unless only a none-variant follows
   (none, no blockers, n/a, a dash, then markup or a sentence). The grammar is
