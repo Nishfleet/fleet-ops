@@ -11,6 +11,7 @@ unread issue; the sync writes run on the job token, so they fire no event.
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -29,7 +30,7 @@ case "$*" in
   *git/ref/heads/*) exit 1 ;;
   "issue comment"*) ;;
   *issues/comments*) echo '[]' | jq -c "$q" ;;
-  *"no:label"* | *agent-in-progress*) echo '[]' ;;
+  *" -S no:label"* | *" -l agent-in-progress"*) echo '[]' ;;
   "pr list"*) echo '[]' ;;
   "issue list"*) [ -f "$FAKE_DIR/list.json" ] && jq -r "$q" "$FAKE_DIR/list.json" ;;
   "api repos/o/r/issues/"*) n=${2##*/}; jq -r "$q" "$FAKE_DIR/issue-$n.json" 2>/dev/null || jq -r "$q" "$FAKE_DIR/issue.json" ;;
@@ -137,7 +138,9 @@ def test_dependency_blocked_ready_issues_carry_the_dep_label_the_alert_excludes(
 
 def test_the_alert_excludes_the_label_the_sweep_carries():
     yml = (ROOT / "config/grafana/provisioning/alerting/fleet-scorecard.yaml").read_text()
-    assert "-label:agent-blocked-dep" in yml
+    query = re.search(r'query: "(org:Nishfleet is:issue label:agent-ready[^"]*)"', yml).group(1)
+    wanted = {"-label:agent-blocked-dep", "-label:needs-split", "-label:epic"}
+    assert wanted <= set(query.split()), "the query must carry the whole exclusion set, not just one qualifier"
     assert "agent-blocked-dep" in pathlib.Path(WF).read_text()
 
 
