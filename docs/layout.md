@@ -107,6 +107,14 @@
   `fleet-sync.service` step 2m links both and enables the timer on every deploy.
   Off switch: remove that step and its enable line, then
   `systemctl --user disable --now fleet-clone-lag.timer`.
+- `systemd/fleet-lock-remeasure.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when the Hermes gateway lock stops matching the host
+  (fleet-ops#10269): a store under `~/.*`, `~/.config/*`, `~/.config/tincan/*` or
+  `~/.local/share/*` that is in none of the gateway's `must_hide`, `needs` or the
+  contract's `reviewed_open`, or a `must_hide` path the gateway's process tree has
+  open or names in its environment. Daily, only reads; `fleet-sync.service` step 2n
+  links both and enables the timer. Off switch: remove that step and its enable
+  line, then `systemctl --user disable --now fleet-lock-remeasure.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.

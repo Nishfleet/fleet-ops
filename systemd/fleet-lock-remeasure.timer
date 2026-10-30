@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-measure what the Hermes chat agent can read, daily
+# Switch off: systemctl --user disable --now fleet-lock-remeasure.timer
+# See fleet-lock-remeasure.service.
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1d
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
