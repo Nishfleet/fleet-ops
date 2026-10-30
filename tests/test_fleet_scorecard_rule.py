@@ -58,7 +58,8 @@ def test_failure_share_ignores_cancelled_and_skipped():
 def _merged(own_today, prod_today, own_yday, prod_yday):
     own = [(1, None)] * own_today + [(30, None)] * own_yday
     prod = [(1, None)] * prod_today + [(30, None)] * prod_yday
-    spread = {name: prod[i::8] for i, name in enumerate("BCDEFGHI")}
+    letters = "BCDEGH"
+    spread = {name: prod[i::len(letters)] for i, name in enumerate(letters)}
     return _missed("scorecard-products-behind", {"A": own, **spread}, "closed_at TEXT, unused TEXT")
 
 
