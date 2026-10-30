@@ -184,9 +184,15 @@ jobs:
           # prose over-matches, which costs one orchestrator run, not a wrong push. fleet-ops
           # issues also name workflows by bare file name ("fix agent.yml"; #9275 slipped onto a
           # worker that way), so there a whole-word file name of its own workflows counts too.
+          # Elsewhere a body names only a path fragment ("workflows/deploy-production.yml";
+          # 0509#7004), so off fleet-ops a word-bounded dir/file.yml (or .yaml) mention counts
+          # too — fleet-ops keeps only the list, which already covers every one of its workflow
+          # files, because a general path test here would also route ansible and config yaml
+          # mentions. A bare name with no directory stays undetectable in general; the worker
+          # prompt routes the push refusal itself when detection misses (prompts/worker.md 5a).
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
-          if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
+          if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ((($fo | not)) and ($t | test("(^|[^A-Za-z0-9_.-])[\\w.-]+/[\\w.-]+\\.ya?ml($|[^A-Za-z0-9_-])"))) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
             gh issue edit "$i" -R "$REPO" --add-label needs-orchestrator --remove-label agent-ready,agent-in-progress
             gh issue comment "$i" -R "$REPO" --body "routed: the deliverable edits .github/workflows/**, which the worker App cannot push; handed to the orchestrator"
             skip workflow-files
