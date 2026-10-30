@@ -272,16 +272,6 @@ ExecStart=/usr/bin/git -C %h/workspaces/tooling/claude-mods merge --ff-only refs
 #     overlay mount in worker containers, where a link into the deploy clone
 #     would not resolve. install -C skips the write when the bytes already match.
 ExecStart=/usr/bin/install -C -D -m 0644 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/pi-models.json /home/nish/.pi/agent/models.json
-# 6b. The packages key of ~/.pi/agent/settings.json is repo-owned
-#     (config/pi-packages.json, fleet-ops#9302): a pin change is a PR, not a hand
-#     edit on the host. Merge, not copy: pi rewrites the file's own bookkeeping
-#     keys at runtime (fleet-ops#8568), so jq's object merge takes only
-#     .packages from the repo file and leaves every other key as pi wrote it.
-#     cmp guard, same as 7: a merge that changes nothing writes nothing, so a
-#     sync never races a running pi session's own write. The temp file sits next
-#     to the target so the mv replaces the file atomically, and every failure
-#     (a missing or unparsable file) exits non-zero and fails the unit loud.
-ExecStart=/bin/sh -c 't=%h/.pi/agent/.settings.json.sync; jq -s ".[0] * .[1]" %h/.pi/agent/settings.json %h/workspaces/tooling/fleet-ops-deploy-clone/config/pi-packages.json > "$$t" && { cmp -s "$$t" %h/.pi/agent/settings.json || mv "$$t" %h/.pi/agent/settings.json; }; r=$$?; rm -f "$$t"; exit $$r'
 # 7. ~/.config/fleet-ops/litellm-proxy.yaml is a COPY of config/litellm-proxy.yaml,
 #     same class as 6 (fleet-ops#8724: rung edits made live only, then lost or
 #     never reviewed). The repo is the only way in: a hand edit is overwritten
@@ -332,6 +322,17 @@ ExecStart=/bin/sh -c 'bad=0; for p in %h/.local/bin/claude %h/.local/bin/pi %h/.
 #    line) from becoming a second failure, and FleetSyncMetricMissing pages when
 #    the series never appears.
 ExecStopPost=-/bin/sh -c 'r=0; [ "$$SERVICE_RESULT" = success ] || r=1; { echo "# TYPE fleet_sync_failed gauge"; echo "fleet_sync_failed $$r"; } > /var/lib/prometheus/node-exporter/fleet-sync.prom'
+# 12. Last, so a failure here cannot skip the steps above it (a failed ExecStart
+#     stops the chain). The packages key of ~/.pi/agent/settings.json is
+#     repo-owned (config/pi-packages.json, fleet-ops#9302): a pin change is a
+#     PR, not a hand edit on the host. Merge, not copy: pi rewrites the file's
+#     own bookkeeping keys at runtime (fleet-ops#8568), so jq's object merge
+#     takes only .packages from the repo file and leaves every other key as pi
+#     wrote it. cmp guard, same as 7: a merge that changes nothing writes
+#     nothing; a real pin change writes once. The temp file sits next to the
+#     target so the mv replaces the file atomically, and every failure (a
+#     missing or unparsable file) exits non-zero and fails the unit loud.
+ExecStart=/bin/sh -c 't=%h/.pi/agent/.settings.json.sync; jq -s ".[0] * .[1]" %h/.pi/agent/settings.json %h/workspaces/tooling/fleet-ops-deploy-clone/config/pi-packages.json > "$$t" && { cmp -s "$$t" %h/.pi/agent/settings.json || mv "$$t" %h/.pi/agent/settings.json; }; r=$$?; rm -f "$$t"; exit $$r'
 # /etc/hosts carries a static `127.0.0.1 litellm.fleet.local` line
 # (fleet-ops#8259). An earlier fleet-sync step appended it once; it is a
 # one-time host setting, not a per-tick deploy action (fleet-ops#8584).

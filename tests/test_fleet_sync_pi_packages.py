@@ -41,11 +41,14 @@ def steps(home: Path) -> list[str]:
     return [expand(raw[len("ExecStart=") :], home) for raw in UNIT.read_text().splitlines() if raw.startswith("ExecStart=")]
 
 
+def pi_packages_step_at(home: Path) -> int:
+    found = [i for i, step in enumerate(steps(home)) if "pi-packages.json" in step]
+    assert len(found) == 1, "the tests must pin one packages merge step"
+    return found[0]
+
+
 def pi_packages_step(home: Path) -> list[str]:
-    for step in steps(home):
-        if "pi-packages.json" in step:
-            return shlex.split(step)
-    raise AssertionError("no pi packages step found in systemd/fleet-sync.service")
+    return shlex.split(steps(home)[pi_packages_step_at(home)])
 
 
 def merge_step_at(home: Path) -> int:
@@ -122,8 +125,24 @@ def test_a_missing_repo_file_fails_loud(tmp_path: Path) -> None:
 
 
 def test_the_step_reads_the_clone_copy_after_the_merge_that_carries_it() -> None:
-    step_at = next(i for i, s in enumerate(steps(HOME)) if "pi-packages.json" in s)
+    step_at = pi_packages_step_at(HOME)
     assert merge_step_at(HOME) < step_at, "the merge must read the copy the clone merge landed"
+
+
+def test_a_live_file_without_a_packages_key_gains_it(tmp_path: Path) -> None:
+    live = '{\n  "defaultProvider": "openrouter",\n  "lastChangelogVersion": "1.0.3"\n}'
+    home = home_at(tmp_path, live, REPO)
+    proc = run(home)
+    assert proc.returncode == 0, proc.stderr
+    merged = json.loads((home / SETTINGS).read_text())
+    assert merged["packages"] == REPO["packages"]
+    assert merged["defaultProvider"] == "openrouter"
+    assert merged["lastChangelogVersion"] == "1.0.3"
+
+
+def test_the_merge_target_is_the_home_the_step_runs_for(tmp_path: Path) -> None:
+    home = home_at(tmp_path, None, None)
+    assert str(home) in " ".join(pi_packages_step(home))
 
 
 def test_the_repo_file_carries_only_the_packages_list() -> None:
