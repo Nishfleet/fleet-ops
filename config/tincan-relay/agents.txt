@@ -11,15 +11,12 @@
 #
 # Check the live list before editing:
 #   tincan agents --json --socket ~/.local/state/tincan-relay/admin.sock
-amp
 claude-mac
 claude-vps
 command-code
-cursor-mac
 cursor-vps
 devin-mac
 devin-vps
-droid-mac
 fleet-worker
 grok-cli-mac
 hermes
