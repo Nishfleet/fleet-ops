@@ -543,7 +543,11 @@ jobs:
               gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
               echo "requeued #$n: claimed with no live run and no claim PR"
             done
-            nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
+            # A dependency-blocked agent-ready issue is never admissible (the refs filter below gates on
+            # issue_dependencies_summary.blocked_by): the sweep drops it at the search. GitHub filters issue
+            # dependencies only on the advanced endpoint (REST advanced_search=true, GraphQL ISSUE_ADVANCED); the
+            # legacy search treats is:blocked as an unrecognized token (fleet-ops#11094 probe in the PR body).
+            nums=$(gh api "search/issues?advanced_search=true&per_page=100&q=repo%3A${GITHUB_REPOSITORY//\//%2F}+is%3Aissue+is%3Aopen+label%3Aagent-ready+-is%3Ablocked" --paginate --jq '.items[].number')
           fi
           # Gone-issue skip as above; this loop runs in the shell, so any other read fault aborts the sweep.
           pages=''
@@ -559,11 +563,7 @@ jobs:
           # continue-on-error keeps this step alive, so a failed re-dispatch would leave no trace (fleet-ops#9368).
           if [ "$REDISPATCH" = failure ]; then echo "::warning::claim-PR re-dispatch failed; this run appends no claim PRs"; fi
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
-          refs=$(printf '%s' "$pages" |
-            jq -sc --argjson prs "${PRS:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
-              | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
-              | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
-              | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
+          refs=$(printf '%s' "$pages" | jq -sc --argjson prs "${PRS:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready") and (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))] | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at) | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran
@@ -607,6 +607,18 @@ jobs:
                 gh issue comment "$n" -R "$GITHUB_REPOSITORY" --body "orchestrator re-fired by the sweep: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || echo "::warning::#$n: re-fire marker refused"
               fi
             done
+          # Mirror label for the idle-runners alert (uid fleet-github cannot run an advanced search): at the pinned
+          # grafana/github-datasource v2.9.2 the Issues query hard-codes GraphQL `search(query: $query, type: ISSUE)`
+          # and ListIssuesOptions has no search-type field (fleet-ops#11094), so this step alone carries the
+          # dependency gate on the agent-blocked-dep label for the alert query. The label means exactly "agent-ready
+          # with an open blocked-by": the add search reads the blocked ready set minus the label, the remove search
+          # the unblocked mirrored set. Between syncs the mirror lags by one sweep interval, its staleness bound:
+          # a newly blocked issue stays in the alert count until the next sync clears it. Writes on the env's job
+          # token (GH_TOKEN above) fire no event; a read or edit fault surfaces on the ::warning. The create runs once per sweep with anything to add; if the label already
+          # exists the swallowed 422 says so, and without it --force would overwrite an existing description.
+          addset=$(gh api "search/issues?advanced_search=true&per_page=100&q=repo%3A${GITHUB_REPOSITORY//\//%2F}+is%3Aissue+is%3Aopen+label%3Aagent-ready+is%3Ablocked" --paginate --jq '.items[] | select([.labels[].name] | index("agent-blocked-dep") | not) | .number') || { echo "::warning::agent-blocked-dep add read failed"; addset=''; }; remset=$(gh api "search/issues?advanced_search=true&per_page=100&q=repo%3A${GITHUB_REPOSITORY//\//%2F}+is%3Aissue+is%3Aopen+label%3Aagent-blocked-dep+-is%3Ablocked" --paginate --jq '.items[].number') || { echo "::warning::agent-blocked-dep remove read failed"; remset=''; }
+          [ -n "$addset" ] && gh label create agent-blocked-dep -R "$GITHUB_REPOSITORY" --color F9D0C4 --description "Blocked by an open issue dependency; the queue waits for the blocker" >/dev/null 2>&1 || true
+          for n in $addset; do gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked-dep || echo "::warning::#$n: agent-blocked-dep add refused"; done; for n in $remset; do gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked-dep || echo "::warning::#$n: agent-blocked-dep remove refused"; done
   unblocked:
     needs: list
     if: vars.FLEET_DISPATCH_PAUSED != 'true' && needs.list.outputs.refs != '[]'

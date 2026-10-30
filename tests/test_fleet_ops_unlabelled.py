@@ -16,6 +16,7 @@ case "$*" in
   "issue list"*" -S "*) echo "$*" >> "$FAKE_DIR/searches.log"; jq -r "$q" "$FAKE_DIR/search.json" ;;
   "issue list"*) echo '[]' | jq -r "$q" ;;
   "pr list"*) echo '[]' | jq -r "$q" ;;
+  *'search/issues?advanced_search'*) echo '{"items": []}' | jq -r "$q" ;;
   "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | jq -r "$q" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
 esac
