@@ -159,8 +159,11 @@ jobs:
           stub=$!
           trap 'kill $stub 2>/dev/null || true; sudo systemctl stop fleet-token-ci.service 2>/dev/null || true; sudo rm -f /etc/systemd/system/fleet-token-ci.service; sudo systemctl daemon-reload; sudo systemctl reset-failed fleet-token-ci.service 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/18795) 2>/dev/null && break; sleep 0.5; done
+          # The mint is tested on its own, so the unit's own follow-up keys are
+          # dropped. `[ -]*` covers ExecStartPost=- too: systemd ignores that failure, so
+          # this sed is belt-and-braces rather than what keeps the step green.
           sed -e "s|%h/.config/fleet-worker/nishfleet-worker.private-key.pem|$d/app.pem|" \
-              -e '/^OnFailure=/d' -e '/^ExecStartPost=/d' \
+              -e '/^OnFailure=/d' -e '/^ExecStartPost=[ -]*/d' \
               -e 's|^Environment=GITHUB_API_URL=.*|Environment=GITHUB_API_URL=http://127.0.0.1:18795|' \
               -e "s|^\[Service\]|[Service]\nUser=$(id -un)|" "$u" | sudo tee /etc/systemd/system/fleet-token-ci.service >/dev/null
           sudo systemctl daemon-reload
@@ -198,10 +201,15 @@ jobs:
           m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
           test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
           echo "token wiring: %t/$rd -> $mount/token, $m contact points"
-      - name: Only the urgent rules are critical and page Nish hourly; every rule files a fleet issue (fleet-ops#9445)
-        run: |
-          sudo apt-get install -y -q python3-yaml >/dev/null
-          python3 tests/alert_routes_check.py
+      - name: Only the urgent rules are critical and page Nish hourly, and every enrolled dispatch stub forwards every pull_request_target type (fleet-ops#9445, #9730)
+        # Both read a repo file with python3-yaml and hold a contract written as prose: the alert
+        # routes against docs/grafana-alerts.md, and each config/intake-repos.json repo's stub against
+        # the nine pull_request_target types precondition 3 of docs/intake-enrolment.md requires, the
+        # list read from fleet-ops's own stub at the base ref so a PR cannot loosen the list that
+        # judges it. One step and one install, and the reason is in docs/workflow-notes.md.
+        if: always()
+        env: {GH_TOKEN: "${{ github.token }}", BASE_REF: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"}
+        run: sudo apt-get install -y -q python3-yaml >/dev/null && python3 tests/alert_routes_check.py && python3 tests/intake_stub_check.py
 
   unit:
     runs-on: ubuntu-latest
@@ -289,7 +297,7 @@ jobs:
           real_home=$(getent passwd "$(id -u)" | cut -d: -f6)
           test -n "$real_home"
           tmp_home=$(mktemp -d)
-          export HOME="$tmp_home"
+          export HOME="$tmp_home" RUNNER_TEMP="$tmp_home/runner-temp"
           if [ "$HOME" = "$real_home" ] || [ -z "$HOME" ]; then echo "refusing to run against the real home directory"; exit 1; fi
           # Plant only where nothing exists, so a login is never overwritten.
           test ! -e "$HOME/.config/gh/hosts.yml"
@@ -326,8 +334,12 @@ jobs:
           sealed=0
           for line in "${lines[@]}"; do
             test -n "$line"
-            # $HOME is the line's only expansion; no eval of file text.
-            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}
+            # The line's own variables expand, and so does its ${VAR:+...}, which
+            # leaves nothing behind on a runner that sets no VAR. No eval of file
+            # text. bwrap refuses the unexpanded token, so a line that keeps it
+            # fails here. The pattern escapes its $, {, } and " so the text it
+            # matches stays literal.
+            exp=${line//\$HOME/$HOME}; exp=${exp//\$seat_a/$seat_a}; exp=${exp//\$hide_all/$hide_all}; exp=${exp//\$RUNNER_TEMP/$RUNNER_TEMP}; exp=${exp//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
             read -ra jail <<< "$exp --"
             "${jail[@]}" test -r "$HOME/.config/control"
             # No engine but claude can read either Claude seat's login: the bound
@@ -352,7 +364,7 @@ jobs:
           test "$sealed" -ge 1
           # The claude lane sees its own seat and only that one.
           for v in a b; do
-            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}
+            l=line_$v; l=${!l}; l=${l//\$HOME/$HOME}; l=${l//\$seat_a/$seat_a}; l=${l//\$hide_all/$hide_all}; l=${l//\$hide_but_a/$hide_but_a}; l=${l//\$RUNNER_TEMP/$RUNNER_TEMP}; l=${l//\$\{CREDENTIALS_DIRECTORY:+--tmpfs \"\$CREDENTIALS_DIRECTORY\"\}/${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"}}
             read -ra jail <<< "$l --"
             "${jail[@]}" test ! -e "$HOME/.config/gh/hosts.yml"
             "${jail[@]}" test ! -e "$HOME/.config/cloudflare/deploy-ci.env"
@@ -1360,8 +1372,8 @@ jobs:
         # A run is live only while its `work` job is queued or running, not
         # while the run as a whole reads queued. Runs the RUN_LIVE_JQ filter
         # out of agent-dispatch.yml against the cases in
-        # config/sweep-liveness-events.json, and checks that all five sweep
-        # reads (conflicts, stalled, orphans, red PRs, stuck rework) use it and none still reads the
+        # config/sweep-liveness-events.json, and checks that all four sweep
+        # reads (stalled, orphans, red PRs, stuck rework) use it and none still reads the
         # run status alone.
         if: always()
         run: |
@@ -1369,9 +1381,9 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           filter=$(yq '.env.RUN_LIVE_JQ' "$f")
           [ -n "$filter" ] && [ "$filter" != null ] || { echo "RUN_LIVE_JQ missing from $f"; exit 1; }
-          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 5 ] || { echo "expected 5 sweep reads of status,jobs"; exit 1; }
+          [ "$(grep -cE '^ *rv=\$\(gh run view .*--json status,jobs\)' "$f")" -eq 4 ] || { echo "expected 4 sweep reads of status,jobs"; exit 1; }
           # shellcheck disable=SC2016 # the literal text "$RUN_LIVE_JQ" is the needle
-          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 5 ] || { echo "expected 5 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
+          [ "$(grep -c -- '"$RUN_LIVE_JQ"' "$f")" -eq 4 ] || { echo "expected 4 sweep reads judged by RUN_LIVE_JQ"; exit 1; }
           ! grep -n -- '--json status --jq' "$f" || { echo "a sweep read still judges the run status alone"; exit 1; }
           bad=0
           while IFS= read -r c; do
