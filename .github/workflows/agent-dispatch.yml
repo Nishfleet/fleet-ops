@@ -682,7 +682,7 @@ jobs:
             | [$bot[] | select(any(.lines[]; . == "stuck-review: \($sha)"))] as $asked
             | [$bot[] | select(any(.lines[]; . == "review-held: \($sha)"))] as $held
             | [$asked[] | .created_at as $a | ([$asked[] | select(.created_at > $a) | .created_at] | min) as $nx | select(($held | map(select(.created_at > $a and ($nx == null or .created_at < $nx))) | length) == 0)] as $tried
-            | ([$held[] | .created_at] | last) as $h
+            | ([$held[] | .created_at] | max) as $h
             | if .pr.mergeable == "CONFLICTING" then {class: "stuck", reason: "it conflicts with main", url: ""}
               elif (.red | length) > 0 then {class: "stuck", reason: "required checks failed (\(.red | join(", ")))", url: ""}
               elif ($ok | length) > 0 then {class: "arm", reason: "approved at \($s7) and not armed", url: ($ok[-1].html_url // "")}

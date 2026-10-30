@@ -538,6 +538,86 @@
    }
   },
   {
+   "id": "held-at-the-next-asks-second-does-not-cover-it",
+   "want": "stuck",
+   "set": {
+    "comments": [
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T16:00:00Z",
+      "updated_at": "2026-10-28T16:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.",
+      "created_at": "2026-10-28T16:12:50Z",
+      "updated_at": "2026-10-28T16:12:50Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T17:00:00Z",
+      "updated_at": "2026-10-28T17:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.",
+      "created_at": "2026-10-28T17:00:00Z",
+      "updated_at": "2026-10-28T17:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T18:00:00Z",
+      "updated_at": "2026-10-28T18:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.",
+      "created_at": "2026-10-28T18:00:00Z",
+      "updated_at": "2026-10-28T18:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "stuck-review: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThis PR waited over 15 minutes with no review verdict on its head, so the sweep asked for one.",
+      "created_at": "2026-10-28T19:00:00Z",
+      "updated_at": "2026-10-28T19:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     },
+     {
+      "user": {
+       "login": "github-actions[bot]"
+      },
+      "body": "review-held: 5183950e39f0a8063720918870dd0f6ce448401e\n\nThe first review (claude-opus-5-5) is at its Claude usage limit. Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.",
+      "created_at": "2026-10-28T19:00:00Z",
+      "updated_at": "2026-10-28T19:00:00Z",
+      "html_url": "https://github.com/Nishfleet/fleet-ops/pull/10735#issuecomment-6474257518"
+     }
+    ]
+   }
+  },
+  {
    "id": "twelve-asks-all-held-is-stuck-at-the-cap",
    "want": "stuck",
    "set": {

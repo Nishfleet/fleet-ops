@@ -709,10 +709,10 @@ jobs:
           lim_only() { [ "$(grep -c '[^[:space:]]' "$1")" -gt 0 ] && [ "$(grep -c '[^[:space:]]' "$1")" = "$(grep -ciE "$lim_re" "$1")" ]; }
           # $1 = the failed calls' stderr, $2 = a call's whole answer, $3 = which review, $4 = model.
           hold_at_limit() { cat "$1" "$2" >&2 2>/dev/null || true
-            lim=$(grep -hm 1 -iE "$lim_re" "$1" "$2" 2>/dev/null | cut -c 1-200 || true)
+            lim=$(grep -hm 1 -iE "$lim_re" "$1" "$2" 2>/dev/null | head -n 1 | cut -c 1-200 || true)
             [ -z "$lim" ] || { say "$(printf 'review-held: %s\n\nThe %s (%s) is at its Claude usage limit (%s). Nothing was approved or blocked. The stuck-review sweep asks again an hour after a hold, and the hold does not count toward its three tries.' "$SHA" "$3" "$4" "$lim")"; exit 0; }; }
-          # A call answers 0, answers nothing 1, or answers only a usage limit 2. $3 = its stderr, $4 = its whole answer.
-          ask_claude() { local d out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2> "$3") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; printf '%s' "$out"; return 0; fi; lim_only "$3" && return 2; done; return 1; }
+          # A call answers 0, answers nothing 1, or answers only a usage limit 2, read from the answer first and then its stderr, so a limit line on a failed call's stdout still holds. $3 = its stderr, $4 = its whole answer.
+          ask_claude() { local d out rc; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2" 2> "$3"); rc=$?; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out" > "$4"; lim_only "$4" && return 2; [ "$rc" -eq 0 ] && { printf '%s' "$out"; return 0; }; fi; lim_only "$3" && return 2; done; return 1; }
           rc=0; review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans") || rc=$?
           if [ "$rc" = 2 ]; then hold_at_limit "$RUNNER_TEMP/first.err" "$RUNNER_TEMP/first.ans" "first review" "$first_model"; fi
           [ "$rc" = 0 ] || { review=; cat "$RUNNER_TEMP/first.err" >&2 2>/dev/null || true; }
