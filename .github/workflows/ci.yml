@@ -1064,9 +1064,15 @@ jobs:
           ! grep -qF '$HOME' "$t/key.sh" || { echo "the reviewer App key has a path fallback outside the credential store"; bad=1; }
           yq '.jobs.review.steps[] | select(.id == "reviewer-token").uses' "$f" | grep -q '^actions/create-github-app-token@' || { echo "the review job does not mint a reviewer App token"; bad=1; }
           yq '.jobs.review.steps[] | select(.id == "reviewer-token").with' "$f" | grep -qF 'app-id: "5526765"' || { echo "the reviewer token is not minted from the review-only App"; bad=1; }
-          yq '.jobs.review.steps[] | select(.id == "review").env.REVIEWER_TOKEN' "$f" | grep -q 'reviewer-token.outputs.token' || { echo "the review step has no reviewer App token"; bad=1; }
+          # The reviewer App token reaches only the approval comment: parked in a file by its own step (nothing model-run
+          # executes there), off the review step's env a model-run reviewer could read, and approve_say reads the file (fleet-ops#9521).
+          ! yq '.jobs.review.steps[] | select(.id == "review").env | keys' "$f" | grep -qF 'REVIEWER_TOKEN' || { echo "the reviewer App token is in the review step env"; bad=1; }
+          yq '.jobs.review.steps[] | select(.name == "Park the reviewer App token in a private file") | .env.REVIEWER_TOKEN' "$f" | grep -q 'reviewer-token.outputs.token' || { echo "the parked token is not the reviewer App token"; bad=1; }
+          yq '.jobs.review.steps[] | select(.name == "Park the reviewer App token in a private file") | .run' "$f" > "$t/park.sh"
+          grep -qF 'umask 077' "$t/park.sh" || { echo "the parked token file is not 0600"; bad=1; }
+          grep -qF 'reviewer-app-token' "$t/park.sh" || { echo "the approval token is not parked in a private file"; bad=1; }
           # shellcheck disable=SC2016 # the needle is the literal approval-comment line
-          grep -q 'GH_TOKEN=$REVIEWER_TOKEN gh pr comment' "$t/review.sh" || { echo "the approval comment is not posted as the reviewer App"; bad=1; }
+          grep -q 'GH_TOKEN="$(cat "$RUNNER_TEMP/reviewer-app-token")" gh pr comment' "$t/review.sh" || { echo "the approval comment is not posted as the reviewer App"; bad=1; }
           ! grep -iE 'a person approves|person approve|tap Review|ask nish' <(yq '.jobs.hold-risky.steps[] | select(.id == "hold") | .run' .github/workflows/agent-dispatch.yml) || { echo "person-request wording in hold-risky"; bad=1; }
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
@@ -1119,7 +1125,7 @@ jobs:
           chmod +x "$t/bin/gh" "$t/bin/curl" "$t/bin/git" "$t/bin/claude"
           printf '#!/bin/sh\nexit 0\n' > "$t/bin/gitleaks"; chmod +x "$t/bin/gitleaks"
           export SHA=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345 GITHUB_REPOSITORY=Nishfleet/fleet-ops REPO=Nishfleet/fleet-ops PR=7 HOME=$t/home
-          export GH_TOKEN=x ARM_TOKEN=y REVIEWER_TOKEN=reviewer-app-token REVIEWER_LOGIN='nishfleet-reviewer[bot]'
+          export GH_TOKEN=x ARM_TOKEN=y REVIEWER_LOGIN='nishfleet-reviewer[bot]'
           none=
           clean='No blockers.\nchecked: a, b, c'
           blocked='blocker .github/workflows/new.yml: removes a gate\nrisk x'
@@ -1153,7 +1159,7 @@ jobs:
             export STATE=$t/$name RUNNER_TEMP=$t/$name/tmp GITHUB_OUTPUT=$t/$name/output GUARD=$guard JEV_CHOICE=$choice JEV_P=$p FIRST=${!first} SECOND=${!second} \
               GUARD_LIST_FAILS='' FALLBACK_MODEL_ID='' SECOND_FAILS='' HEAD_AFTER='' PRIOR='' COMMENTS='[]' copies=1 CLAUDE_FAILS='' DIFF_BIG='' GIT_FAILS='' THIRD='' THIRD_MODEL_ID='' DIFF_MID='' THIRD_CUT='' JUDGE_FAILS='' JUDGE_SLEEPS='' JUDGE_NO_HEADER='' THIRD_ONCE='' WANT_ISSUE=''
             unset CLAUDE_CONFIG_DIR
-            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"; : > "$STATE/tokens"
+            mkdir -p "$RUNNER_TEMP"; : > "$GITHUB_OUTPUT"; : > "$STATE/comments"; : > "$STATE/models"; : > "$STATE/issues"; : > "$STATE/tokens"; printf 'reviewer-app-token\n' > "$RUNNER_TEMP/reviewer-app-token"
             e1=${extra%% *} # the first token: PRIOR= and BUILT= carry one value, a case can add more tokens
             case $e1 in
               PRIOR=*) # a comment the bot already left on this head
@@ -1199,7 +1205,7 @@ jobs:
             [ "$rc" = "$code" ] || problem="$problem exit=$rc (want $code)"
             [ "$m" = "$models" ] || problem="$problem models='$m' (want '$models')"
             if [ "$approved" = yes ]; then [ "$n" = 1 ] && [ "$forged" = 1 ] || problem="$problem approval lines=$n/$forged (want 1/1)"
-              [ "$(tr '\n' ' ' < "$STATE/tokens" | tr -d ' ')" = "$REVIEWER_TOKEN" ] || problem="$problem the approval comment did not go out with the reviewer App token"
+              [ "$(tr '\n' ' ' < "$STATE/tokens" | tr -d ' ')" = "reviewer-app-token" ] || problem="$problem the approval comment did not go out with the reviewer App token"
               grep -q "commit_id=$SHA .*token=x\$" "$STATE/approved" || problem="$problem the Approve review did not use the job token"
             else [ "$forged" = 0 ] || problem="$problem a not-approved run posted an approval line"; fi
             # An approval names both served rows, so the family in the comment can be checked against the row that answered (fleet-ops#10172).

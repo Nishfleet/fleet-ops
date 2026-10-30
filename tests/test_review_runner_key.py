@@ -198,13 +198,20 @@ def test_no_worker_can_read_the_reviewer_key_or_the_owner_login() -> None:
 def test_the_review_job_posts_the_approval_as_the_reviewer_app() -> None:
     """The approval line is only worth the identity behind it (fleet-ops#9521)."""
     name, steps = {job_id: (n, s) for n, job_id, s in review_jobs()}["review"]
-    text = job_text(yaml.safe_load((ROOT / ".github/workflows/agent.yml").read_text())["jobs"]["review"])
+    job = yaml.safe_load((ROOT / ".github/workflows/agent.yml").read_text())["jobs"]["review"]
+    text = job_text(job)
     assert REVIEW_KEY in text, f"{name}: the review job does not read the reviewer App key"
-    assert "GH_TOKEN=$REVIEWER_TOKEN gh pr comment" in steps, f"{name}: the approval comment is not posted as the reviewer App"
+    assert 'GH_TOKEN="$(cat "$RUNNER_TEMP/reviewer-app-token")" gh pr comment' in steps, f"{name}: the approval comment is not read from the parked token file"
+    park = next(s for s in job["steps"] if s.get("name") == "Park the reviewer App token in a private file")
+    assert "umask 077" in park["run"], f"{name}: the parked token file is not 0600"
+    # The token sits in no env the model-run review step inherits; the parking step is its only env use.
+    reviewstep = next(s for s in job["steps"] if s.get("id") == "review")
+    assert "REVIEWER_TOKEN" not in (reviewstep.get("env") or {}), f"{name}: the review step inherits the reviewer App token"
+    assert park["env"]["REVIEWER_TOKEN"] == "${{ steps.reviewer-token.outputs.token }}", "the parked token is not the reviewer App token"
     # The login the approval goes out as is the login APPROVERS counts, or nothing counts it.
     approvers = yaml.safe_load((ROOT / ".github/workflows/agent-dispatch.yml").read_text())["env"]["APPROVERS"].split()
-    login = next(v for k, v in (line.split("=", 1) for line in text.splitlines() if line.startswith("REVIEWER_LOGIN=")))
-    assert login in approvers, f"{name}: {login} is not in APPROVERS {approvers}"
+    login = next((v for k, v in (line.split("=", 1) for line in text.splitlines() if line.startswith("REVIEWER_LOGIN="))), "")
+    assert login in approvers, f"{name}: {login!r} is not in APPROVERS {approvers}"
 
 
 def install_config() -> list[dict]:

@@ -667,12 +667,22 @@ jobs:
         id: reviewer-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with: {app-id: "5526765", private-key: "${{ steps.reviewer-key.outputs.pem }}", permission-issues: write}
+      - name: Park the reviewer App token in a private file
+        # The token reaches only the one command that posts an approval: a 0600 file under RUNNER_TEMP that approve_say
+        # reads, never a step env every reviewer process would inherit (a model-run reviewer could read its own env).
+        run: |
+          umask 077
+          # bash expands the value from its own environment inside the heredoc, so no child's argv ever carries it
+          cat > "$RUNNER_TEMP/reviewer-app-token" <<EOF
+          $REVIEWER_TOKEN
+          EOF
+        env:
+          # Scoped to this step: nothing model-run executes here, so no reviewer process inherits the token.
+          REVIEWER_TOKEN: ${{ steps.reviewer-token.outputs.token }}
       - name: Review the held head
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
-          # The only token that may post an approval: minted from the reviewer App key (fleet-ops#9521).
-          REVIEWER_TOKEN: ${{ steps.reviewer-token.outputs.token }}
           FLEET_TASK_ID: review-${{ github.run_id }}-${{ github.run_attempt }}
           # The first review is a no-tools Claude call: Opus 5.5 for all work, Claude-built or not (Nish 2026-10-10). Fable is not a default
           # reviewer (44% of a seat's weekly limit in ~2 days); it is the second reviewer of guard heads only (Nish 2026-10-28, #10608).
@@ -696,7 +706,7 @@ jobs:
             case $rc in 0) printf '%s\n' "$1" ;; 2) jq -er '[.[] | range(.StartLine; .EndLine + 1)] | unique | .[]' "$j" | awk 'NR == FNR { b[$1] = 1; next } FNR in b { if (!p) print "[a line was withheld: it matched a private-detail rule]"; p = 1; next } { p = 0; print }' - <(printf '%s\n' "$1") ;; *) return 1 ;; esac; }
           scan_failed() { echo "::error::the private-detail scan could not run, so nothing was posted"; gh pr comment "$PR" -R "$REPO" --body "review of $SHA did not finish: the private-detail scan could not read its rules or run, so no review text was posted. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again." || true; exit 1; }
           say() { local out; out=$(scan "$1") || scan_failed; gh pr comment "$PR" -R "$REPO" --body "$out"; }
-          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; GH_TOKEN=$REVIEWER_TOKEN gh pr comment "$PR" -R "$REPO" --body "$out"; }  # the approval comment goes out as the reviewer App, the only bot APPROVERS counts (fleet-ops#9521)
+          approve_say() { local out; out=$(scan "$1") || scan_failed; approve; GH_TOKEN="$(cat "$RUNNER_TEMP/reviewer-app-token")" gh pr comment "$PR" -R "$REPO" --body "$out"; }  # the approval comment goes out as the reviewer App, read from its parked file, the only bot APPROVERS counts (fleet-ops#9521)
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the job token posts this review, because the reviewer App carries no write on pull requests; a push dismisses it, so it goes before the verdict comment and a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
