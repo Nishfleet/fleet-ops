@@ -39,11 +39,13 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
+PrivateDevices=yes
 # .beacon holds the log and the cursor. .hermes holds state.db, and SQLite in WAL mode opens
 # state.db-shm and state.db-wal beside it, creating them when the gateway has none open: a read-only
 # grant there fails the open instead of reading the store, so the directory is writable and home is
 # `read-only` above, which is what keeps the rest of /home out of reach. Both paths carry a `-` so a
-# host without them starts the unit instead of refusing it.
+# host without them starts the unit instead of refusing it. PrivateDevices= matches the
+# hermes drop-in the gateway runs under: this unit opens files, never a device node.
 ReadWritePaths=-/home/nish/.beacon -/home/nish/.hermes
 
 [Install]

@@ -127,7 +127,7 @@ def test_the_poll_watcher_ships_as_a_system_unit_with_its_sandbox() -> None:
     pairs = dict(settings(unit))
     assert pairs.get("User") == "nish"
     assert pairs.get("WantedBy") == "multi-user.target"
-    assert {"ProtectSystem=strict", "ProtectHome=read-only", "PrivateTmp=yes"} <= set(guarded(unit)), (
+    assert {"ProtectSystem=strict", "ProtectHome=read-only", "PrivateTmp=yes", "PrivateDevices=yes"} <= set(guarded(unit)), (
         f"{unit.relative_to(ROOT)}: the system manager applies these, so the file must set them"
     )
     assert "/home/nish/.beacon" in pairs.get("ReadWritePaths", ""), "the watcher writes its log and cursor there"
