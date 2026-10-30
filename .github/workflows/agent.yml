@@ -111,7 +111,7 @@ jobs:
           # One list: every contact point that files an issue writes one of these
           # title prefixes, and tests/alert_routes_check.py holds the list against
           # the provisioning templates (fleet-ops#11086).
-          if jq -e --argjson titles '["cost alarm: ","router dead row: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then
+          if jq -e --argjson titles '["cost alarm: ","router dead row: ","router dead key: ","grafana alert: ","alert: "]' '[.title|startswith($titles[])]|any' <<<"$issue" >/dev/null; then
             t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title)
             twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open")
             if [ -n "$twin" ]; then gh issue close "$i" -R "$REPO" --duplicate-of "$twin" --comment "duplicate: the alert is still firing; #$twin is open for it"; skip duplicate-alert; fi
@@ -227,11 +227,11 @@ jobs:
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
-          hide_but_a=$(claude_hides "$seat_a")
-          # The runner keeps the file commands a job writes to $GITHUB_OUTPUT (the minted App PEM among them, fleet-ops#11051) under $RUNNER_TEMP/_runner_file_commands for the whole job, and a runner that sets $CREDENTIALS_DIRECTORY keeps the key dir there, so both go under an empty tmpfs in every jail. The orchestrator jail in agent-dispatch.yml hides the same two paths.
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
-          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
+          hide_but_a=$(claude_hides "$seat_a"); cred_hide=${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}
+          # The runner keeps the file commands a job writes to $GITHUB_OUTPUT (the minted App PEM among them, fleet-ops#11051) under $RUNNER_TEMP/_runner_file_commands for the whole job, and the unit's LoadCredential= puts the App key in systemd's credential store, so both go under an empty tmpfs in every jail. systemd sets $CREDENTIALS_DIRECTORY for every unit that loads a credential (systemd.exec: "the location of credentials is exported as the $CREDENTIALS_DIRECTORY environment variable"), so the jail hides the unit's directory and the store that holds it, and a sibling runner's copy of the same key, readable because the whole store belongs to the unit's user, stays out of reach too. A runner whose unit loads no credential has no copy to hide, and the same variable is what the key read already falls back on. The orchestrator jail in agent-dispatch.yml hides the same two paths (fleet-ops#10957).
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_a="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_but_a --proc /proc --unshare-pid --die-with-parent"
+          claude_jail_b="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a $hide_all --proc /proc --unshare-pid --die-with-parent"
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
@@ -1015,24 +1015,27 @@ jobs:
           echo "::add-mask::$key"; echo "::add-mask::$(cut -d= -f2- "$router_key")"; x_key=$(sed -n 's/^X_BEARER_TOKEN=//p' "$HOME/.config/fleet-ops/seats/x-api.env" 2>/dev/null | head -n 1 | tr -d "\"'" || true); [ -z "$x_key" ] || echo "::add-mask::$x_key" # gitleaks:allow
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; }
-          hide_all=$(claude_hides "")
-          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands ${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY"} --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
+          # The App key is a systemd credential in the store $CREDENTIALS_DIRECTORY names, and the unit's user, which is every jailed engine, can read the whole store: hide the unit's directory and the store (fleet-ops#10957).
+          hide_all=$(claude_hides ""); cred_hide=${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}
+          jail_base="bwrap --dev-bind / / --ro-bind $HOME/workspaces/tooling/fleet-ops-deploy-clone $HOME/workspaces/tooling/fleet-ops-deploy-clone --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --tmpfs $HOME/.config/fleet-ops --tmpfs $HOME/.config/fleet-worker --tmpfs $RUNNER_TEMP/_runner_file_commands $cred_hide --tmpfs $seat_a --ro-bind /dev/null $HOME/.claude/.credentials.json --ro-bind /dev/null $HOME/.claude.json $hide_all --proc /proc --unshare-pid --die-with-parent"
           today=$(TZ=Asia/Kolkata date +%F)
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"
           pool="$RUNNER_TEMP/pool"
-          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
-          echo "::add-mask::$basic"
           # Everything run through sys() (clone, fetch, build, tests) gets a system
           # PATH and no user git config: the jailed model can write under $HOME, so a shim in
           # ~/.local/bin or a line in ~/.gitconfig must not decide what gets
           # fetched, built or pushed. /usr/bin/node and python3 run the same two
           # suites `npm test` does; /usr/local/bin holds gh.
           sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
-          fresh_clone() {
-            rm -rf "$1"
-            sys git -c "http.extraheader=AUTHORIZATION: basic $basic" clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"
-          }
+          # inish-site is public, so the clone carries no credential. The job's only
+          # credential for it is a GitHub App installation token, and GitHub expires
+          # that after an hour (actions/create-github-app-token: "An installation access
+          # token expires after 1 hour"): this clone runs after the candidate fetch and
+          # up to two 40-minute model attempts, so a token minted at step start is dead
+          # by then. GitHub answers 401, git asks for a username a runner has no
+          # terminal for, and the attempt reports no valid edition (fleet-ops#10876).
+          fresh_clone() { rm -rf "$1"; sys git clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"; }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
           (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" X_BEARER_TOKEN="$x_key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
             || { echo "candidate fetch failed:"; tail -n 5 "$RUNNER_TEMP/fetch.out" | cut -c1-200; exit 1; }
@@ -1041,7 +1044,7 @@ jobs:
           mkdir -p "$src/data/candidates"
           cp -- "$pool/data/candidates/$today.json" "$src/data/candidates/$today.json"
           checked() {
-            fresh_clone "$dst" || return 1
+            fresh_clone "$dst" || { echo "the rebuild clone of inish-site main failed"; return 1; }
             mkdir -p "$dst/data/editions" "$dst/data/candidates"
             f="data/editions/$today.json"
             if [ -f "$src/$f" ] && [ ! -L "$src/$f" ] && [ "$(stat -c %s "$src/$f")" -lt 3000000 ]; then

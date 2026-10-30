@@ -6,14 +6,16 @@
 //
 // A runner reads its sandbox at unit start, and the deploy restarts no runner
 // (fleet-ops#10898), so an installed drop-in waits for a start. Without this grant the
-// only targeted restart was root's: netcup-agent-9 and -10 run the review and arm jobs,
+// only targeted restart was root's: netcup-agent-9 to -12 run the review and arm jobs,
 // so one sandbox change left every risky PR un-reviewable until the nightly update
 // drained the pool (fleet-ops#11016). netcup-agent-1 is the pilot and runs as
 // fleet-runner for the same reason (fleet-ops#10451).
 var fleetRestartableUnits = [
     "actions.runner.Nishfleet.netcup-agent-1.service",
     "actions.runner.Nishfleet.netcup-agent-9.service",
-    "actions.runner.Nishfleet.netcup-agent-10.service"
+    "actions.runner.Nishfleet.netcup-agent-10.service",
+    "actions.runner.Nishfleet.netcup-agent-11.service",
+    "actions.runner.Nishfleet.netcup-agent-12.service"
 ];
 
 polkit.addRule(function(action, subject) {

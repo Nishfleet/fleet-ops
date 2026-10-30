@@ -982,6 +982,11 @@
         # Plugins loaded with --plugin-dir (scope "session") or from
         # ~/.claude/skills/ have no marketplace, and `claude plugin update`
         # refuses them by design.
+        # `claude plugin list --json` already merges the user and managed settings
+        # into `enabled` (docs/claude-plugin-drop-ins.md). A plugin it reports off
+        # is left out: Claude Code refuses to update a plugin the managed settings
+        # switch off and exits 1, which the assert below turns into a red run for a
+        # plugin no session loads.
         - name: Update every installed Claude Code plugin
           become: true
           become_user: nish
@@ -989,7 +994,8 @@
           ansible.builtin.shell:
             cmd: >-
               set -o pipefail;
-              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
+              claude plugin list --json |
+              jq -r 'if any(.[]; .installedAt != null and ((.enabled | type) != "boolean")) then error("a plugin with no enabled flag cannot be updated safely") else .[] | select(.installedAt != null and .enabled) | .id end' |
               xargs -r -n1 claude plugin update
             executable: /bin/bash
           timeout: 600
