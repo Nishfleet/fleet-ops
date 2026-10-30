@@ -474,7 +474,6 @@ def dead_key_shape(rules, points, bad):
 AGENT_GATE = ".github/workflows/agent.yml"
 TITLE_PRINTF = re.compile(r'"title" \(printf "([^"%]+)')
 REPO = Path(__file__).resolve().parents[1]
-ALERTING_DIR = "config/grafana/provisioning/alerting"
 
 
 def issue_title_prefixes(points):
@@ -510,7 +509,10 @@ def gate_titles(repo):
 
 def alert_titles_agree(points, repo, bad):
     """Every title prefix an issue-filing contact point writes is in the dispatch
-    gate's twin list, and the list holds nothing stale."""
+    gate's twin list, and the list holds nothing stale. The stale-prefix finding
+    runs only when some point writes a literal prefix: when none does, the
+    no-prefix finding on every filing point (or the no-contact-point finding)
+    already fails the run, so the gate list is not the fault."""
     written = issue_title_prefixes(points)
     gate, why = gate_titles(repo)
     findings = [why] if why else []
@@ -824,10 +826,7 @@ def main(root):
     if aud:
         print(f"audience: {len(aud)} rule(s) file for a seat instead of the worker queue -> {aud}")
     annotation_guards(rules, bad)
-    if Path(root).resolve() == (REPO / ALERTING_DIR).resolve():
-        alert_titles_agree(points, repo, bad)
-    else:
-        print(f"alert titles: skipped, {root} is not the repo's own {ALERTING_DIR}")
+    alert_titles_agree(points, repo, bad)
     bad += alertmanager_auth(repo)
     # fleet-ops#10327: one host event (20 units failing) must file one issue per
     # alert name, not one per instance, and its body must name every instance.
