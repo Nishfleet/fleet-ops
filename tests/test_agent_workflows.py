@@ -10,6 +10,7 @@ dependent parked with no event left to free it, so it requeues a dependent that
 has no open blocker and no other recorded reason. The review job's session pin is
 here too: without it a held PR gets no review to clear it (fleet-ops#9428).
 """
+import json
 import os
 import pathlib
 import subprocess
@@ -94,13 +95,75 @@ def test_the_start_next_step_dispatches_the_issue_it_picked():
     assert 'gh workflow run agent-dispatch.yml -R "$REPO" -f "issue=$n"' in run
 
 
-def test_a_close_requeues_a_parked_dependent_only_when_nothing_else_blocks_it():
-    run = step(DISPATCH, ".jobs.close-claim.steps[0].run")
-    assert "dependencies/blocking" in run
-    assert 'IN("needs-split","needs-orchestrator","needs-nish-decision","needs-coordinator","handoff-ended","epic")' in run, (
-        "a park label that records a decision must keep the dependent parked")
-    assert "(proposal|blocked-on):" in run, "a worker's own park note must keep the dependent parked"
-    assert "--remove-label agent-blocked --add-label agent-ready" in run
+CLOSE = ".jobs.close-claim.steps[0].run"
+
+CLOSE_GH = r"""#!/usr/bin/env bash
+set -u
+slurp=0; expr=
+for ((i=1;i<=$#;i++)); do
+  a="${!i}"
+  [ "$a" = --slurp ] && slurp=1
+  if [ "$a" = --jq ]; then j=$((i+1)); expr="${!j}"; fi
+done
+case "$*" in
+  *"/comments"*)
+    if [ "$slurp" = 1 ]; then jq -r "$expr" "$STATE/comments-slurped.json"
+    else for p in 1 2; do jq -r "$expr" "$STATE/comments-page.json"; done; fi ;;
+  *"issue view"*"--json state"*) echo CLOSED ;;
+  *"issue view"*) echo "" ;;
+  *"/dependencies/blocking"*) cat "$STATE/deps" ;;
+  *"/issues/"*) cat "$STATE/dependent-row" ;;
+  *"issue edit"*) echo "$*" >> "$STATE/edits" ;;
+  *"pr list"*) ;;
+  *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
+esac
+"""
+
+
+def _close(tmp_path, deps, row, page):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    script = tmp_path / "close.sh"
+    script.write_text(step(DISPATCH, CLOSE))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "gh").write_text(CLOSE_GH)
+    (bindir / "gh").chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "deps").write_text(deps)
+    (state / "dependent-row").write_text(row)
+    (state / "comments-page.json").write_text(json.dumps(page))
+    (state / "comments-slurped.json").write_text(json.dumps([page, page]))
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", STATE=str(state),
+               GITHUB_REPOSITORY="Nishfleet/fleet-ops", ISSUE="1", GH_TOKEN="fake")
+    done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+                          env=env, capture_output=True, text=True, timeout=120)
+    edits = (state / "edits").read_text() if (state / "edits").exists() else ""
+    return done, edits
+
+
+QUIET = [{"body": "worker: started"}, {"body": "worker: ran the tests"}]
+PARKED = [{"body": "worker: started"}, {"body": "park: waiting on Nish"}]
+
+
+def test_a_close_requeues_a_dependent_whose_only_block_was_the_closed_issue(tmp_path):
+    done, edits = _close(tmp_path, "2\n", "0 true false", QUIET)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "--remove-label agent-blocked --add-label agent-ready" in edits, (
+        done.stdout + done.stderr + edits)
+
+
+def test_a_close_keeps_a_dependent_that_records_its_own_park(tmp_path):
+    done, edits = _close(tmp_path, "2\n", "0 true false", PARKED)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "agent-ready" not in edits, edits
+
+
+def test_a_close_keeps_a_dependent_with_an_open_blocker_or_a_decision_label(tmp_path):
+    for row in ("1 true false", "0 true true", "0 false false"):
+        done, edits = _close(tmp_path / row.replace(" ", "-"), "2\n", row, QUIET)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "agent-ready" not in edits, (row, edits)
 
 
 def test_the_review_job_names_its_router_session():

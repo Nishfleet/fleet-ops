@@ -976,7 +976,7 @@ jobs:
           for d in ${deps:-}; do
             row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked")) \(any(.labels[]; .name | IN("needs-split","needs-orchestrator","needs-nish-decision","needs-coordinator","handoff-ended","epic")))"') || row=
             [ "$row" = "0 true false" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
-            notes=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$d/comments" --jq '[.[].body | select(test("(^|\\n)(proposal|blocked-on):"))] | length') || notes=
+            notes=$(gh api --slurp --paginate "repos/$GITHUB_REPOSITORY/issues/$d/comments" --jq '[.[][].body | select(test("(^|\\n)(proposal|blocked-on|park):"))] | length') || notes=
             [ "$notes" = 0 ] || { [ -n "$notes" ] || echo "::warning::could not read dependent #$d park notes"; continue; }
             gh issue edit "$d" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked --add-label agent-ready || echo "::warning::could not requeue dependent #$d"
           done

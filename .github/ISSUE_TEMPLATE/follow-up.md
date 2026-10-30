@@ -10,10 +10,11 @@ work, never a second issue:
   gh issue list -R Nishfleet/<repo> --state all -L 200 \
     --search "<the key phrase from the title> in:title" --json number,title,state
 
-File through this template:
+File with this template's three headings in <file>. gh refuses `--template`
+beside `--body-file`, so the file carries them:
 
-  gh issue create -R Nishfleet/<repo> --template follow-up.md \
-    --title "<one line: the defect, not the fix>" --body-file <file>
+  gh issue create -R Nishfleet/<repo> --title "<one line: the defect, not the fix>" \
+    --body-file <file>
 
 The number this is judged on is the not-planned share of closed issues, which
 `state_reason: duplicate` and `state_reason: not planned` both lower:
