@@ -20,24 +20,20 @@ runs:
         n=0; bad=0
         # Both keys hide a path, and both leave a host path behind when they do not apply, so one
         # loop covers them. A masked path has no options and a mount may, so each value gets a
-        # "mask:" or "mount:" prefix here, and the loop reads the kind and then the path. No path
-        # this repo masks holds a colon: tests/test_runner_jail_start_state.py fails when one does,
-        # because that colon would split the path into mount options.
-        # A path the unit hides is absent here, or unreadable, and passes. A path the unit covers
-        # with a mount reads fine, because an empty tmpfs is readable by design, so the mount itself
-        # is the hide: it is there, and it is a mount point in this job's namespace. What fails is a
-        # masked path that reads, which is a host path, and a mount that is there, reads, and is no
-        # mount point. A host mount point under a mask is not caught: it reads and mountpoint says
-        # yes. A unit that hides a parent directory whole drops every mount nested under it
-        # (namespace.c: drop_inaccessible), so those paths are absent here and nothing is left to
-        # read. The token dirs exist before the unit starts (ExecStartPre=+/usr/bin/install in the
-        # drop-ins), and systemd makes any mount point still absent itself (mount_tmpfs() calls
-        # mkdir_p()), so a directory the mint creates after that start is covered (fleet-ops#10886).
+        # "mask:" or "mount:" prefix, and the loop reads the kind and then the path. No mask in
+        # this repo holds a colon (a start-state test fails when one does). A masked path passes
+        # when it is absent or unreadable; a host mount point under a mask is not caught, because
+        # it reads and mountpoint says yes. A mount passes when the job does not see it, and fails
+        # when it is there and is no mount point. A unit that hides a parent whole drops the
+        # mounts nested under it (namespace.c: drop_inaccessible). The token dirs exist before
+        # the unit starts (ExecStartPre=+/usr/bin/install), and systemd makes a still-absent
+        # point itself (mount_tmpfs() calls mkdir_p()), so a dir the mint creates later is
+        # covered (#10886).
         for v in $(systemctl show -p TemporaryFileSystem --value "$unit" | sed '/^$/d; s/^/mount:/') $(systemctl show -p InaccessiblePaths --value "$unit" | sed '/^$/d; s/^/mask:/'); do
           kind=${v%%:*}; p=${v#*:}; p=${p%%:*}; p=${p#-}; n=$((n + 1))
           if { [ "$kind" = mask ] && { test -r "$p" || test -w "$p"; }; } || { [ "$kind" = mount ] && [ -e "$p" ] && ! mountpoint -q "$p"; }; then echo "::error::$p is a host path in this job, so nothing hides it"; bad=$((bad + 1)); fi
         done
-        echo "runner=$RUNNER_NAME unit=$unit checked=$n readable=$bad"
+        echo "runner=$RUNNER_NAME unit=$unit checked=$n failed=$bad"
         if [ "$n" -eq 0 ]; then
           if [ "$REQUIRE" = true ]; then echo "::error::$unit hides no paths"; bad=1; else echo "::warning::$unit hides no paths"; fi
         fi

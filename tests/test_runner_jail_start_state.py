@@ -523,6 +523,27 @@ def test_a_privileged_pre_start_line_makes_the_mount_point_on_the_host(tmp_path:
 
 
 @needs_manager
+def test_a_mount_nested_under_a_masked_parent_is_dropped(tmp_path: Path) -> None:
+    """A pool that hides /run/user/1000 whole still lists the nested token mounts, and systemd drops
+    them instead of failing the start (namespace.c: drop_inaccessible; fleet-ops#10886).
+
+    The pilot and eval drop-ins carry both lists: the mask and the two mounts share the shared
+    drop-in's lines, and the unit's own 30-* file only adds the mask. If systemd tried to make or
+    mount the nested point instead, the unit would fail to start and that pool would stay down.
+    """
+    parent = tmp_path / "parent"
+    (parent / "nested").mkdir(parents=True)
+    nested = parent / "nested"
+    script = f"awk -v m={shlex.quote(str(nested))} '$5 == m {{ f = 1 }} END {{ exit f }}' /proc/self/mountinfo"
+    proc = subprocess.run(
+        transient_run([f"InaccessiblePaths=-{parent}", f"TemporaryFileSystem={nested}:ro"], script),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+@needs_manager
 def test_an_absent_mount_point_is_made_root_owned(tmp_path: Path) -> None:
     """The cause a privileged pre-start line prevents: systemd makes an absent mount point itself, as root (fleet-ops#10886)."""
     absent = tmp_path / "absent"

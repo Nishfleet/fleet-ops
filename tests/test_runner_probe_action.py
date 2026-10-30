@@ -77,7 +77,7 @@ def _probe(tmp_path, masks=(), mounts=(), mount_points=(), require=False):
 def test_the_probe_reads_both_lists_of_the_unit(tmp_path, paths) -> None:
     code, out = _probe(tmp_path, masks=[f"-{paths['hidden']}"], mounts=[f"{paths['covered']}:ro"], mount_points=[paths["covered"]])
     assert code == 0, out
-    assert "checked=2 readable=0" in out
+    assert "checked=2 failed=0" in out
     assert UNIT in out
 
 
@@ -87,7 +87,7 @@ def test_a_masked_path_that_reads_fails(tmp_path, paths) -> None:
     code, out = _probe(tmp_path, masks=[f"-{paths['covered']}"], mount_points=[paths["covered"]])
     assert code != 0
     assert f"::error::{paths['covered']} is a host path in this job, so nothing hides it" in out
-    assert "readable=1" in out
+    assert "failed=1" in out
 
 
 def test_a_masked_path_that_does_not_read_passes(tmp_path, paths) -> None:
