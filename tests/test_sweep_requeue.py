@@ -273,6 +273,16 @@ def test_infra_endings_do_not_stack_with_work_ones(tmp_path):
     assert edits(w, "--add-label needs-orchestrator") == [1]
 
 
+def test_ten_infra_endings_reach_the_owner(tmp_path):
+    """Infra endings are no strikes, but ten of them escalate (the judge's cap, fleet-ops#11166):
+    a real provider fault or an issue that loops on quoted 429s reaches a person, and the
+    escalation comment lists the infra runs it escalated on."""
+    w = run(tmp_path, [issue(1, ended=0, infra=10), issue(2, ended=0, infra=9)])
+    assert edits(w, "--add-label needs-nish-decision") == [1]
+    assert edits(w, "--add-label needs-orchestrator") == [2]
+    assert any(l.startswith("issue comment 1 ") and "runs/19" in l for l in w)
+
+
 def test_the_infra_ending_is_not_the_counted_prefix():
     """fleet-ops#11166: if REQUEUE's startswith() prefix ever swallows the provider's ending too,
     the very case the prefix exists for escalates again."""

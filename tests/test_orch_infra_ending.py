@@ -89,7 +89,7 @@ def comments(writes):
         "litellm.Router: No deployments available for model pi/worker-capable\n",
         "insufficient balance: exhibiting RateLimitError, provider list retry\n",
     ],
-    ids=["429", "no-deployments", "rate-limit"]
+    ids=["429", "no-deployments", "balance"]
 )
 def test_a_session_that_dies_on_a_router_error_is_an_infra_ending(tmp_path, log):
     """A failed session whose log names a router error gets the prefix the sweep never counts."""
@@ -102,10 +102,27 @@ def test_a_session_that_dies_on_a_router_error_is_an_infra_ending(tmp_path, log)
     assert "ended without a PR" not in comments(writes)[0], writes
 
 
-@pytest.mark.parametrize("outcome", ["success", "cancelled"])
-def test_a_pi_exit_or_a_wall_kill_on_a_router_error_is_an_infra_ending(tmp_path, outcome):
-    """pi exits 0 after printing the 429, and the job wall gives "cancelled": both still end on it."""
+@pytest.mark.parametrize("outcome", ["failure", "cancelled"])
+def test_a_pi_crash_or_a_wall_kill_on_a_router_error_is_an_infra_ending(tmp_path, outcome):
+    """The pi branch keeps its crash (no exit 0 any more) and the job wall gives "cancelled":
+    both outcomes read the log, so a pi session that dies on the router is excused too."""
     writes = run(tmp_path, outcome=outcome, log="work\nRateLimitError: Rate limit exceeded (429)\n")
+    assert "ended on infrastructure" in comments(writes)[0], writes
+
+
+def test_a_session_that_ended_on_its_own_is_the_works_ending_even_when_it_named_a_429(tmp_path):
+    """A session that exited 0 with no PR did not die on the provider: its ending counts,
+    whatever its last lines quoted."""
+    writes = run(tmp_path, outcome="success", log="work done; a test above printed 429\n")
+    assert "ended without a PR: " in comments(writes)[0], writes
+    assert "ended on infrastructure" not in comments(writes)[0], writes
+
+
+def test_a_work_failure_whose_own_task_quotes_429_gets_the_infra_prefix(tmp_path):
+    """The tail window reads output, not intent: a session built to fix 429 handling fails
+    and its last lines say 429, so it is excused as infra. The sweep's ten-infra cap is
+    what bounds this loop, not the grep (fleet-ops#11166)."""
+    writes = run(tmp_path, outcome="failure", log="wrote the 429 backoff test\nAssertionError: expected retry after 429\n")
     assert "ended on infrastructure" in comments(writes)[0], writes
 
 
@@ -144,3 +161,9 @@ def test_the_session_step_keeps_a_failing_exit_through_tee():
     """`| tee` hides a crash unless the step runs with pipefail."""
     session = _block("Run the orchestrator session")
     assert "set -euo pipefail" in session.splitlines()[0], session
+
+
+def test_the_pi_branch_lets_its_crash_through():
+    """The base exited 0 after pi, so a pi death always read as a success outcome and kept
+    its strike whatever killed it (fleet-ops#11166)."""
+    assert "exit 0" not in _block("Run the orchestrator session")
