@@ -76,7 +76,7 @@
           "owner": "Nishfleet",
           "repository": "",
           "options": {
-            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/siterep-public repo:Nishfleet/TinyStudio.io-public",
+            "query": "is:merged repo:Nishfleet/0509 repo:Nishfleet/aiconverter-app repo:Nishfleet/rera-report-card repo:Nishfleet/seo-fix-kit repo:Nishfleet/siterep-public repo:Nishfleet/TinyStudio.io-public",
             "timeField": 2
           }
         }
