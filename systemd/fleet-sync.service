@@ -130,7 +130,10 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #      it on every sync: tmpfiles.d(5) ages every entry, a file or a whole
 #      directory, on its own b/ctime/mtime (age-by bcmBCM), so a worktree whose
 #      top level saw no write for 3 days is removed whole by the user
-#      systemd-tmpfiles-clean.timer (preset-enabled, 90-systemd.preset). Fleet
+#      systemd-tmpfiles-clean.timer (the user preset
+#      /usr/lib/systemd/user-preset/90-systemd.preset line 15 enables it, and
+#      its systemd-tmpfiles-clean.service ran on this host 2026-10-30 18:27
+#      IST, journal systemd[1664]). Fleet
 #      sessions live minutes to about one day under the dispatch walls, so
 #      nothing valid is 3 days old. The first pass's reach on this host was
 #      scanned before push: 54 entries older than 3 days out of 740, and every
