@@ -126,11 +126,12 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #      .orch-mirror and the parked orch-damaged-*.git save-dirs) since Nish
 #      2026-09-19, but no task installed it, so old worktree dirs never aged
 #      out. Install it beside the claude-max one (COPY class, same as
-#      2c/2d/2f/6/7); step 5 below (`systemd-tmpfiles --user --create`) applies
-#      it on every sync: tmpfiles.d(5) ages every entry, a file or a whole
-#      directory, on its own b/ctime/mtime (age-by bcmBCM), so a worktree whose
-#      top level saw no write for 3 days is removed whole by the user
-#      systemd-tmpfiles-clean.timer (the user preset
+#      2c/2d/2f/6/7); step 5 below (`systemd-tmpfiles --user --create`)
+#      installs it on every sync, and the pass that ages anything out is the
+#      user systemd-tmpfiles-clean.timer's --clean: tmpfiles.d(5) ages every
+#      entry, a file or a whole directory, on its own b/ctime/mtime (age-by
+#      bcmBCM), so a worktree whose top level saw no write for 3 days is
+#      removed whole there. The timer is on by the user preset
 #      /usr/lib/systemd/user-preset/90-systemd.preset line 15 enables it, and
 #      its systemd-tmpfiles-clean.service ran on this host 2026-10-30 18:27
 #      IST, journal systemd[1664]). Fleet
@@ -142,7 +143,9 @@ ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-
 #      main), declared scrap (a deleted remote, broken checkouts), or
 #      uncommitted work the standing rule calls not-happened; the PR body
 #      names one for each class.
-#      Off switch: delete this step first, then
+#      Off switch: delete this step first, then the conf line in the clone
+#      (`config/user-tmpfiles.d/agent-worktrees.conf`) with it, or a later
+#      deploy reinstalls the file; then
 #      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the

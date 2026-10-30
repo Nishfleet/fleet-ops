@@ -143,7 +143,6 @@ def test_fleet_sync_installs_the_age_out():
     assert "config/user-tmpfiles.d/agent-worktrees.conf" in unit
     assert "%h/.config/user-tmpfiles.d/agent-worktrees.conf" in unit
     assert (ROOT / "config/user-tmpfiles.d/agent-worktrees.conf").is_file()
-    # The two other 7-day rules in the old conf hold worktrees aside; nothing installs them.
     assert (ROOT / "config/user-tmpfiles.d/pi-state.conf").is_file()
     assert "pi-state.conf" not in unit
     assert unit.index("ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf") < unit.index("ExecStart=/usr/bin/systemd-tmpfiles --user --create")
@@ -180,8 +179,6 @@ def test_tmpfiles_age_out_keeps_the_damaged_save_dirs_and_a_run_worktree(tmp_pat
     saved = base / "orch-damaged-siterep-public.git/HEAD"
     saved.parent.mkdir(parents=True)
     saved.write_text("ref: refs/heads/main\n")
-    # The fake age is 1s, so anything created before the sleep is already past
-    # it; the run worktree is created after, like a checkout done this second.
     time.sleep(1.5)
     live = base / "orch-fleet-ops-2/src"
     live.mkdir(parents=True)
@@ -192,7 +189,7 @@ def test_tmpfiles_age_out_keeps_the_damaged_save_dirs_and_a_run_worktree(tmp_pat
     assert live.is_dir() and (live / "keeper.txt").exists(), "the age-out deleted a work freshly checked out this run"
 
 
-def test_tmpfiles_age_out_removes_a_untouched_worktree_whole(tmp_path):
+def test_tmpfiles_age_out_removes_an_untouched_worktree_whole(tmp_path):
     if not shutil.which("systemd-tmpfiles"):
         pytest.skip("systemd-tmpfiles not installed")
     home = tmp_path / "home"
