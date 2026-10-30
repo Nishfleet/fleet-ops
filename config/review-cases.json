@@ -625,6 +625,18 @@
       "models": "claude-opus-5-5"
     },
     {
+      "name": "claude-json-wrapped-limit-line-holds-the-head",
+      "guard": "",
+      "choice": "approve",
+      "p": "0.95",
+      "first": "clean",
+      "second": "none",
+      "extra": "CLAUDE_LIMIT=1 LIMIT_FORM=json",
+      "approved": "no",
+      "code": "0",
+      "models": "claude-opus-5-5"
+    },
+    {
       "name": "claude-reached-your-limit-holds-the-head",
       "guard": "",
       "choice": "approve",

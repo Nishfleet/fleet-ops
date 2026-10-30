@@ -538,8 +538,8 @@
    }
   },
   {
-   "id": "asked-twelve-times-all-held-is-stuck",
-   "want": "stuck",
+   "id": "asked-twelve-times-all-held-is-asked-again",
+   "want": "review",
    "set": {
     "comments": [
      {

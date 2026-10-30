@@ -139,8 +139,8 @@ def claude_retry(tmp_path, answers, backoff="0"):
     (tmp_path / "in").write_text("diff")
     (tmp_path / "bin/claude").write_text(f'#!/bin/bash\necho x >> "$CALLS"\n[ "$(wc -l < "$CALLS")" -le {answers} ] && exit 0\nprintf "no blocker lines\\nAPPROVE"\n')
     (tmp_path / "bin/claude").chmod(0o755)
-    script = claude_calls() + '\nout=$(ask_claude opus "$IN"); echo "rc=$?"; echo "calls=$(wc -l < "$CALLS")"; echo "out=$out"\n'
-    env = {"HOME": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
+    script = claude_calls() + '\nout=$(ask_claude opus "$IN" "$ERR"); echo "rc=$?"; echo "calls=$(wc -l < "$CALLS")"; echo "out=$out"\n'
+    env = {"HOME": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "ERR": str(tmp_path / "err"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
 
 
@@ -158,5 +158,52 @@ def test_a_claude_seat_that_never_answers_uses_every_delay(tmp_path):
 def test_both_claude_reviews_are_asked_again():
     text = WF.read_text()
     assert "for d in 0 ${REVIEW_BACKOFF" in claude_calls()
-    assert 'review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt")' in text
-    assert 'r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt")' in text
+    assert 'review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt" "$RUNNER_TEMP/first.err")' in text
+    assert 'r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt" "$RUNNER_TEMP/second.err")' in text
+
+
+def hold_functions():
+    run = next(s["run"] for j in yaml.safe_load(WF.read_text())["jobs"].values() for s in j.get("steps", []) if s.get("id") == "review")
+    lines = run.split("\n")
+    at = next(i for i, l in enumerate(lines) if "hold_at_limit()" in l)
+    one = [l for l in lines if l.lstrip().startswith(('lim_re="', "keep_answer() {", "ask_claude() {"))]
+    return "\n".join(one + lines[at:at + 3])
+
+
+def limit_answer(tmp_path, line, backoff="0 0 0"):
+    for d in ("workspaces/tooling/fleet-ops-deploy-clone/prompts", "bin"):
+        (tmp_path / d).mkdir(parents=True)
+    (tmp_path / "workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md").write_text("")
+    (tmp_path / "AGENTS.md").write_text("")
+    (tmp_path / "in").write_text("diff")
+    (tmp_path / "line").write_text(line + "\n")
+    (tmp_path / "bin/claude").write_text('#!/bin/bash\ncat > /dev/null; echo x >> "$CALLS"; cat "$LINE" >&2; exit 1\n')
+    (tmp_path / "bin/claude").chmod(0o755)
+    script = hold_functions() + '''
+say() { printf "%s\\n" "$1" >> "$SAID"; }
+SHA=deadbeefcafe
+rc=0; out=$(ask_claude opus "$IN" "$RUNNER_TEMP/err") || rc=$?
+keep_answer "$rc" "$out" "$RUNNER_TEMP/err"
+echo "rc=$rc calls=$(wc -l < "$CALLS")"
+hold_at_limit "$RUNNER_TEMP/err" "first review" opus; echo "no-hold"
+'''
+    env = {"HOME": str(tmp_path), "RUNNER_TEMP": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "LINE": str(tmp_path / "line"), "CALLS": str(tmp_path / "calls"), "SAID": str(tmp_path / "said"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
+    out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+    said = tmp_path / "said"
+    return out, said.read_text() if said.exists() else ""
+
+
+def test_a_usage_limit_line_ends_the_ladder_and_holds_the_head(tmp_path):
+    out, said = limit_answer(tmp_path, "You've hit your 5-hour limit · resets 11pm (Asia/Kolkata)")
+    assert "rc=1 calls=1" in out and "no-hold" not in out
+    assert said.startswith("review-held: deadbeefcafe") and "Nothing was approved or blocked" in said
+
+
+def test_a_limit_line_wrapped_in_json_holds_the_head(tmp_path):
+    out, said = limit_answer(tmp_path, '{"text":"You have reached your weekly limit · resets Nov 2"}')
+    assert "rc=1 calls=1" in out and "no-hold" not in out and "review-held: deadbeefcafe" in said
+
+
+def test_a_one_line_answer_that_is_not_a_limit_keeps_the_retries(tmp_path):
+    out, said = limit_answer(tmp_path, "You're out of usage credits")
+    assert "rc=1 calls=4" in out and "no-hold" in out and said == ""
