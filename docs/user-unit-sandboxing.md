@@ -9,6 +9,8 @@ and the user manager's own mount namespace (fleet-ops#10880).
 
 ## Measured 2026-10-29
 
+History: `beacon-hermes-poll.service` is a system unit since fleet-ops#11089 (see
+"Resolved" below), so the unit measured here was the user one it replaced.
 `beacon-hermes-poll.service` set `ProtectSystem=strict`, `ReadWritePaths=%h/.beacon`
 and `PrivateTmp=yes`. `beacon-otelcol.service` sets none. Both run in the mount
 namespace of the user manager:
@@ -30,6 +32,34 @@ $ stat -c %i /proc/1805642/root/tmp /tmp
 $ journalctl --user -u beacon-hermes-poll.service --no-pager | grep -ci 'mount namespac'
 0
 ```
+
+## Resolved: a system unit with User= takes the keys (fleet-ops#11089)
+
+The system manager is root, so it builds the mount namespace before it drops to
+`User=`, and the same keys hold. `hermes-gateway.service` is that shape and was
+measured on this host:
+
+```
+$ systemctl show hermes-gateway.service -p User -p ProtectSystem -p PrivateTmp
+User=nish
+ProtectSystem=strict
+PrivateTmp=yes
+$ awk '$5=="/"||$5=="/tmp"{print $5, $4, $6}' /proc/1858858/mountinfo   # that unit's MainPID
+/ / ro,nosuid,relatime
+/tmp /tmp/systemd-private-ab309882c2a64e109ee5129eda78c14d-hermes-gateway.service-08RX7V/tmp rw,nosuid,relatime
+```
+
+The first row is `ProtectSystem=strict`, the second `PrivateTmp=yes`: a private
+`/tmp` and a read-only root, read from the process the manager started rather
+than from the unit file's claim about itself.
+
+So a unit that needs these keys under this host's `User=nish` ships in
+`rootfs/etc/systemd/system/`, where fleet-host-config installs it, and `systemd/`
+keeps none. `beacon-hermes-poll.service` moved there: `tests/test_user_unit_sandboxing.py`
+fails on a mount key in the user tree, and it fails if that unit leaves the system
+one. Not run: `systemctl show beacon-hermes-poll.service -p ProtectSystem -p PrivateTmp`
+on the host after the deploy that installs it: the file reaches `/etc/systemd/system/`
+through fleet-host-config, and no deploy has run since this change.
 
 ## Cause
 

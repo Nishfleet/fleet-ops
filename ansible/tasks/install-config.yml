@@ -117,6 +117,21 @@
     mode: preserve
   notify: Reload systemd
 
+# A drop-in applies at the next start, and Restart=always or the daily hermes update
+# would be the first start: unbounded. This copy runs before the generic one below
+# (which would consume the change) so the gateway takes the sandbox at the deploy
+# (fleet-ops#11185).
+- name: Install the hermes sandbox drop-in and restart the hermes units when it changes
+  ansible.builtin.copy:
+    src: "{{ rootfs }}/etc/systemd/system/hermes-.service.d/"
+    dest: /etc/systemd/system/hermes-.service.d/
+    owner: root
+    group: root
+    mode: preserve
+  notify:
+    - Reload systemd
+    - Restart hermes units for their sandbox
+
 - name: Install systemd units, slices and drop-ins
   ansible.builtin.copy:
     src: "{{ rootfs }}/etc/systemd/system/"

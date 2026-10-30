@@ -30,7 +30,7 @@
   `mac-scheduled-tasks.md` (the disposition of the Mac's 11 desktop
   scheduled tasks), `quality-bar.md` and `incidents/` (one blameless
   write-up per outage, named `YYYY-MM-DD-<slug>.md`).
-- `template/` — `agents/`, `cursor-rules/`, `devin-config.json` and
+- `template/` — `agents/` and
   `README.md`, source files the live host links or copies by hand (see
   [template/README.md](../template/README.md)).
 - `prompts/` — Pi agent prompts fed to workers on stdin.
@@ -74,8 +74,7 @@
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
   age-out rules `fleet-sync.service` applies on every sync: an
   `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
-  under `.pi/agent/sessions`, `.cursor/chats/*/` and
-  `.local/state/pi-issues`.
+  under `.pi/agent/sessions` and `.local/state/pi-issues`.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml` cites it for the App's grant).
 - `.agents/skills/verify-fleet/` — the verify-fleet skill. `SKILL.md` says how
@@ -84,23 +83,19 @@
   timer, path, slice or template.
 - `.semgrep/` — `no-glue.yml`, the no-glue rule `ci.yml` runs
   (`docs/ARCHITECTURE.md` already names it).
-- `systemd/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish), exactly
-  `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
+- `rootfs/etc/systemd/system/beacon-hermes-poll.service` — Beacon's own Hermes watcher (owner: Nish),
+  exactly `~/.local/bin/beacon endpoint hermes sync --watch --interval 1m`. Every minute it reads
   new sessions from `~/.hermes/state.db` (gateway and Telegram sessions included) and appends
   `harness.name=hermes`, `collection_method=poll` events to
   `~/.beacon/endpoint/logs/runtime.jsonl`. It runs outside the sandbox, so the Hermes units
   have no `.beacon` write path and Beacon's Hermes hooks stay uninstalled
   (`beacon endpoint hooks uninstall --harness hermes`; never `hooks install --harness hermes`
-  again, it would capture twice). `fleet-sync.service` step 2i links it and enables it on every
-  deploy. Off switch: remove that step and its enable line, then
-  `systemctl --user disable --now beacon-hermes-poll.service`.
-- `systemd/retro-weekly.service`, `systemd/retro-weekly.timer`, `systemd/retro-weekly-api.socket` and `systemd/retro-weekly-api.service` — the weekly
-  /retro (fleet-ops#9314, rebuilt in #9641): one Claude Code call on the
-  Anthropic API reads a week of sessions inside a bwrap jail with no gh login and
-  no GitHub token, and writes a private report to the vault. `prompts/retro-weekly.md`
-  is the job; `config/retro-public-deny.txt` is the check every follow-up issue
-  must pass before it is filed; `config/retro-weekly-claude.json` is the tool
-  list. [weekly-retro.md](weekly-retro.md) has the run, off and delete steps.
+  again, it would capture twice). A system unit and not a user one (fleet-ops#11089): it parses
+  Telegram text, and a unit the user manager starts gets no mount sandbox on this box
+  (`docs/user-unit-sandboxing.md`), so it runs as `User=nish` under `ProtectSystem=strict` and
+  `PrivateTmp=yes`. fleet-host-config installs the file and `ansible/tasks/services.yml` enables
+  and restarts it; `fleet-sync.service` step 2i stops and deletes the user link it replaces. Off
+  switch: delete the file and that task, then `systemctl disable --now beacon-hermes-poll.service`.
 - `systemd/fleet-cua-desk-check.service` and `.timer` — fail, and so page through
   `fleet-unit-failed@`, when `cua sandbox ls --local` does not list `local:desk`
   as `ready`, or when a routine's `lastOutcome` in `~/.cua/persistent/routines.json`
@@ -108,77 +103,77 @@
   with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
   enables the timer on every deploy. Off switch: remove that step and its enable
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
+- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
+  does not have is more than 35 min old, so a merge that reached no deploy is loud
+  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
+  min later, and the review job read a retired file out of the clone). It fetches
+  `main` itself into its own ref and only reads. Every 5 min;
+  `fleet-sync.service` step 2m links both and enables the timer on every deploy.
+  Off switch: remove that step and its enable line, then
+  `systemctl --user disable --now fleet-clone-lag.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.
   [provider-watch.md](provider-watch.md) has the run, off and delete steps.
-- `systemd/executor.service`, `syncthing.service`, `tigervnc.service` and the drop-in
-  `systemd/tincan-listen-claude-vps.service.d/10-nish-seat.conf` — stock vendor
-  binaries (Executor, Syncthing, TigerVNC) run under systemd, and the
-  env line that picks the Tincan listener's own Claude login. They were hand-placed on the
+- `systemd/syncthing.service` and `tigervnc.service` — stock vendor
+  binaries (Syncthing, TigerVNC) run under systemd. They were hand-placed on the
   host with no repo copy (fleet-ops#9645); they decide nothing and wrap
-  nothing. The live path under `~/.config/systemd/user` is a symlink into the
+  nothing. Syncthing's binary is a package now, from Syncthing's own apt
+  repository (`ansible/tasks/syncthing.yml`), so the daily dist-upgrade keeps it
+  current and `ExecStart` names `/usr/bin/syncthing`; the hand-placed copy under
+  `~/.local/bin` was retired (#10844). TigerVNC's binary is still hand-placed.
+  The live path under `~/.config/systemd/user` is a symlink into the
   deploy clone, so `fleet-sync.service` pulls every edit and LINK-GUARD checks
   the link. Install on a fresh host: `ln -s` each file from the deploy clone's
-  `systemd/` into `~/.config/systemd/user/` (the drop-in goes into
-  `tincan-listen-claude-vps.service.d/`), then `systemctl --user daemon-reload`
+  `systemd/` into `~/.config/systemd/user/`, then `systemctl --user daemon-reload`
   and `enable --now`. The files match what ran before, so adopting them
   restarted nothing: a unit edit applies at the unit's next restart (never restart
   `tigervnc.service` while a remote-desktop session is live). `ci.yml` runs
-  `systemd-analyze verify` on the three units; the drop-in is not a unit file,
-  so only its parent unit is verified. Switch one off with
+  `systemd-analyze verify` on the three units. Switch one off with
   `systemctl --user disable --now <unit>`; delete it by removing its file here
   and the live link, then `systemctl --user daemon-reload`.
-- `systemd/tincan-listen-command-code.service`,
-  `tincan-listen-cursor-vps.service`, `tincan-listen-devin-vps.service`,
-  `tincan-listen-fleet-worker.service`, `tincan-listen-opencode.service`,
-  `tincan-listen-pi.service` and
-  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the six Tincan wake services
-  and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service runs
-  `tincan listen` for one agent: command-code, Cursor, Devin, the free pi worker,
-  OpenCode and the paid pi seat, each reading its own
+- `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` — the live Agent Tincan
+  wake for claude-vps, a **root** unit (fleet-ops#9974): it runs as `nish` under
+  `ProtectSystem=strict` with an explicit bind list, and it sets its own
+  `Environment=CLAUDE_CONFIG_DIR=` line, so it needs no drop-in. The user-level
+  copy and its `10-nish-seat.conf` drop-in were deleted in fleet-ops#10125
+  because nothing linked or ran them.
+  - Run it now: `sudo systemctl start tincan-listen-claude-vps.service`, then
+    `sudo journalctl -u tincan-listen-claude-vps.service -f`.
+  - Switch it on: `sudo systemctl enable --now tincan-listen-claude-vps.service`.
+  - Switch it off: `sudo systemctl disable --now tincan-listen-claude-vps.service`
+    (requests to claude-vps then queue until a session checks its inbox).
+  - Delete it: switch it off, delete the file here, add
+    `/etc/systemd/system/tincan-listen-claude-vps.service` to the `retired`
+    list in `ansible/host.yml` (that task, not the file deletion, removes the
+    installed copy on the next config run), then `sudo systemctl daemon-reload`.
+- `rootfs/etc/systemd/system/tincan-listen-pi.service` and
+  `tincan-listen-fleet-worker.service` and
+  `rootfs/etc/systemd/user/cua-desk-daemon.service` — the two Tincan wake
+  services and the Cua desk daemon (fleet-ops#10133, #10140). Each wake service
+  runs `tincan listen` for one pi worker, reading its own
   `~/.config/tincan/<agent>.json` and prompt and writing its state under
-  `~/.local/state/tincan-listen-<agent>`. The OpenCode lane signs in to the
-  router with a virtual key of its own, kept in the fleet's local seat directory
-  (worker-cheap only, capped per day), minted with `POST /key/generate` like
-  every other consumer credential, because a prompt-injected message in that
-  lane could make the run print its environment. The router's master key is not
-  in any listener's environment (fleet-ops#10221). `cua-desk-daemon.service` is the Cua
-  daemon the desk agent runs on, with `CUA_MESH=prefer` and the seat b env file.
-  The six wake services were hand-placed regular files under
-  `~/.config/systemd/user` with no repo copy, so a git pull carried no edit to
-  them; the files here are the bytes that ran before, and `fleet-sync.service`
-  step 2j links each one on every deploy (the `default.target.wants` links
-  already point at these paths, so a hand disable stays off: step 2j has no
-  `enable` line). The desk daemon is
+  `~/.local/state/tincan-listen-<agent>`. Both are system units whose lock
+  contract is `config/agent-locks.json` (fleet-ops#9977). The Devin, Cursor,
+  OpenCode and command-code listeners were deleted when those lanes retired
+  (nish-vault#44 item 9). `cua-desk-daemon.service` is the Cua daemon the desk
+  agent runs on, with `CUA_MESH=prefer` and the seat b env file; it is
   root-owned, installed from `rootfs/etc/systemd/user/` by
   `fleet-host-config.service`, because `systemd-analyze verify` cannot stub the
-  bundled `cua` binary; step 2k retires its hand-placed copy once the installed
-  one is there, and repoints its wants link at the installed file so the link
-  does not dangle. Run one by hand with `systemctl --user start <unit>`: all seven
-  are enabled already (the wants link names the unit, and step 2j keeps the six
-  wake links pointed at the repo files). A unit edit applies at that unit's next
-  restart. The OpenCode lane will not start without its own key file, so mint
-  that lane's virtual key (`models` `["worker-cheap"]`, a daily cap and a rate
-  limit) into the fleet's seat directory before its first start, the way the
-  Cursor lane's seat file is provisioned: a missing file fails the unit and
-  pages, which is the point, because the lane has no fallback to the admin key.
+  bundled `cua` binary. Run one by hand with `systemctl --user start <unit>`: all
+  three are enabled already, and a unit edit applies at that unit's next restart.
   Off switch, one unit at a time:
-  `systemctl --user disable --now tincan-listen-command-code.service`
-  `systemctl --user disable --now tincan-listen-cursor-vps.service`
-  `systemctl --user disable --now tincan-listen-devin-vps.service`
   `systemctl --user disable --now tincan-listen-fleet-worker.service`
-  `systemctl --user disable --now tincan-listen-opencode.service`
   `systemctl --user disable --now tincan-listen-pi.service`
   `systemctl --user disable --now cua-desk-daemon.service`
-  Delete one of the six wake services by removing its name from
-  `fleet-sync.service` step 2j, its file here and the live link, then
+  Delete a wake service by deleting its file here and the installed copy, then
   `systemctl --user daemon-reload`. Delete the desk daemon with
   `systemctl --user disable --now cua-desk-daemon.service` (it removes the wants
   link), then remove its file under `rootfs/etc/systemd/user/` and step 2k, then
   `systemctl --user daemon-reload`.
 - `systemd/fleet-pr-sweep@.service` and `systemd/fleet-pr-sweep@.timer` — start
-  the agent-dispatch sweep in `Nishfleet/<instance>` every hour with one
+  the agent-dispatch sweep in `Nishfleet/<instance>` every 15 minutes with one
   `gh workflow run`, because GitHub fired the sweep's own cron only 4 to 5
   times a day (measured 2026-10-11). It runs on an Actions-only nishfleet-worker
   App token minted per start and revoked on stop, never the owner's personal
@@ -220,30 +215,18 @@
   Fix a BROKEN line with `hermes auth add xai-oauth --no-browser`. Switch off:
   `systemctl --user disable --now fleet-hermes-xai-login-check.timer
   fleet-hermes-xai-login-check.path` and delete the files.
-- `systemd/leviathan-index@.service` and `systemd/leviathan-index@.timer` —
-  the Leviathan session-log search index, refreshed every 15 minutes per
-  instance (`claude`, `pi`): an FTS5 index over the session JSONLs that
-  answers "what did an old session say about X" in milliseconds (fleet-ops#9313).
-  Config and index live in `~/.local/share/leviathan/` (0700), installed from
-  `config/leviathan/` by `fleet-sync.service`; the binary is installed by
-  `ansible/host.yml` from a pinned release. Off switch, under 2 minutes and
-  nothing re-enables it: `systemctl --user disable --now leviathan-index@claude.timer leviathan-index@pi.timer`,
-  then `rm ~/.local/bin/leviathan && rm -rf ~/.local/share/leviathan` —
-  `host.yml`/`update.yml` only install and version the binary and
-  `fleet-sync.service` only refreshes unit and config bytes, so no fleet unit
-  ever re-enables a timer. Wire new instances only after `fleet-sync.service`
-  has run once with the configs merged (the 15-minute tick pages on a missing
-  config). Each run rebuilds the index from the files on disk, so it mirrors
-  the logs and keeps the same retention; the index never holds more than the
-  logs do. The drop-in `systemd/leviathan-index@.service.d/20-umask.conf` sets
-  `UMask=0077` so `pi.db` and `claude.db` are owner-only (the user-manager
-  default is 0002). Link it once after the merge with the drop-in `ln -sfn`
-  idiom under "Install" (before the merge it would dangle), then
-  `systemctl --user daemon-reload`; it applies at the next index run.
-  The same `UMask=0077` drop-in sits in
-  `systemd/tincan-listen-devin-vps.service.d/20-umask.conf` for the Devin
-  Tincan listener, whose unit file moved into `systemd/` with fleet-ops#10133,
-  so the drop-in now applies on every deploy. Applies at the next restart.
+- Session output files stay owner-only. The retired Devin listener's own drop-in
+  went with its unit, but the audit it came from (W1a, `nish-vault#30`) still
+  applies: the vendor CLIs run under the `netcup-agent` runners at the units'
+  0022 and in nish's login shells at `pam_umask`'s 0002.
+  `rootfs/etc/systemd/system/actions.runner.Nishfleet.netcup-agent-.service.d/20-umask.conf`
+  sets `UMask=0077` for every `netcup-agent` runner — a prefix drop-in, because
+  their unit files come from the runner's own `svc.sh` — and
+  `rootfs/etc/zsh/zprofile` sets `umask 077` for nish's login shells, which is
+  how sshd and tmux start one. Both apply at the next runner restart and the
+  next login. The check after a fresh CLI run: `find ~/.local/state ~/.local/share
+  -not -type l \( -perm -g+w -o -perm -o+w \) | wc -l` must print 0 (a symlink
+  always shows mode 777, so it is excluded).
 - `systemd/tincan-listen-issue-desk.service` — wakes `issue-desk`, the Tincan
   teammate that turns one request into one queued issue (`needs-triage`, so the
   [admission job](triage-admission.md) decides whether a worker starts)
@@ -254,7 +237,14 @@
   by hand from the deploy clone (link, then `enable --now`): it is not enabled by
   `fleet-sync.service`.
 - `pi-extensions/` — Pi extensions the fleet's own agents load through stock Pi
-  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` is the only one so far.
+  (`-e <path>`), never a wrapper. `pi-extensions/issue-desk/` and
+  `pi-extensions/token-redact/` so far.
+- `pi-extensions/token-redact/` — a Pi extension that rewrites token-shaped strings out of
+  the session file before Pi writes them, so a raw token never reaches
+  `~/.pi/agent/sessions` (fleet-ops#10157, audit item W1c). Two `pi.on` handlers in
+  `index.ts`, no wrapper, no poller, no script. Load it with `pi -e <path>` or
+  `pi install`, and turn it off with `TOKEN_REDACT=off`. Its README has the six
+  shapes, the tests and the delete steps.
 - `rootfs/etc/systemd/user/gpg-agent.service.d/20-oom-omit.conf` — the OOM guard on
   `gpg-agent.service`, the stock GPG credential cache every signing unit loads
   (`ManagedOOMPreference=omit`, so systemd-oomd never selects it, and
@@ -275,7 +265,8 @@
   `BackupStale` (the nightly off-site backup timer has not fired for
   30 hours), `BackupFailed` (a backup unit stayed failed for an hour),
   `SiteDown` (a `site-*` blackbox probe failed, or could not run, for 10 minutes),
-  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours) and
+  `AISpendHigh` (LiteLLM paid spend over 40 USD in 24 hours, on the rows that
+  carry a dollar budget, so the flat-plan MiniMax rows are left out) and
   `AISpendMetricMissing` (that spend metric absent for a day). Every one but
   the first two pages. Alertmanager sends `Watchdog` every 5 minutes as a plain webhook to
   an outside healthchecks.io check, which alerts when the pings stop, and sends
@@ -311,8 +302,6 @@
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  and the leviathan index units, their configs and the tmpfiles rule to
-  `~/.local/share/leviathan/` and `~/.config/user-tmpfiles.d/`, fleet-ops#9313),
   and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead
