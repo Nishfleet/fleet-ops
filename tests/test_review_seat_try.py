@@ -139,8 +139,8 @@ def claude_retry(tmp_path, answers, backoff="0"):
     (tmp_path / "in").write_text("diff")
     (tmp_path / "bin/claude").write_text(f'#!/bin/bash\necho x >> "$CALLS"\n[ "$(wc -l < "$CALLS")" -le {answers} ] && exit 0\nprintf "no blocker lines\\nAPPROVE"\n')
     (tmp_path / "bin/claude").chmod(0o755)
-    script = claude_calls() + '\nout=$(ask_claude opus "$IN" "$ERR"); echo "rc=$?"; echo "calls=$(wc -l < "$CALLS")"; echo "out=$out"\n'
-    env = {"HOME": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "ERR": str(tmp_path / "err"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
+    script = claude_calls() + '\nout=$(ask_claude opus "$IN" "$ERR" "$ANS"); echo "rc=$?"; echo "calls=$(wc -l < "$CALLS")"; echo "out=$out"\n'
+    env = {"HOME": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "ERR": str(tmp_path / "err"), "ANS": str(tmp_path / "ans"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
 
 
