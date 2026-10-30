@@ -179,6 +179,42 @@ HERMES_FORBIDDEN = ("RestrictNamespaces", "SystemCallFilter", "MemoryDenyWriteEx
 HERMES_GH_DIR = "/run/fleet-hermes-github-token"
 HERMES_TOKEN = INSTALLED / "fleet-hermes-github-token.service"
 HERMES_TOKEN_TIMER = INSTALLED / "fleet-hermes-github-token.timer"
+HERMES_HIDDEN = (
+    "/home/nish/.config/fleet-ops",
+    "/home/nish/.config/fleet-worker",
+    "/home/nish/.config/gh",
+    "/home/nish/.config/cloudflare",
+    "/home/nish/.config/systemd",
+    "/home/nish/.ssh",
+    "/home/nish/.git-credentials",
+    "/home/nish/.claude",
+    "/home/nish/.claude-vps",
+    "/home/nish/.local/share/claude-seat-backup",
+    "/home/nish/.commandcode",
+    "/home/nish/.cursor",
+    "/home/nish/.devin",
+    "/home/nish/.config/opencode",
+    "/home/nish/.config/tincan/claude-vps.json",
+    "/home/nish/.config/tincan/command-code.json",
+    "/home/nish/.config/tincan/cursor-vps.json",
+    "/home/nish/.config/tincan/devin-vps.json",
+    "/home/nish/.config/tincan/fleet-worker.json",
+    "/home/nish/.config/tincan/issue-desk.json",
+    "/home/nish/.config/tincan/opencode.json",
+    "/home/nish/.config/tincan/pi.json",
+    "/home/nish/.config/tincan/agentmail.key",
+    "/run/user/1000",
+    "/run/docker.sock",
+)
+HERMES_READABLE = (
+    "/home/nish/.hermes",
+    "/home/nish/.local/state/hermes",
+    "/home/nish/.config/tincan",
+    "/home/nish/.config/tincan/hermes.json",
+    "/home/nish/.config/tincan/hermes-webhook.secret",
+    "/home/nish/.cua",
+    "/home/nish/.pi",
+)
 
 
 def _unit_keys_text(text: str) -> dict[str, list[str]]:
@@ -252,6 +288,16 @@ def test_hermes_sandbox_dropin_sits_in_the_prefix_dir_both_units_read() -> None:
     assert prefix != directory.name, f"{directory.name} is an ordinary drop-in dir: the shared file would cover no unit"
     assert [unit for unit in HERMES_UNITS if unit.startswith(prefix)] == list(HERMES_UNITS), prefix
     assert (directory / "sandbox.conf").is_file()
+    version = _systemd_version()
+    assert version >= 249, f"systemd {version} does not search the dash-truncated drop-in dir, so hermes-serve starts with no deny list"
+    for unit in HERMES_UNITS:
+        assert directory / "sandbox.conf" in _layers(unit), f"{unit} does not read the shared file, so it runs with no deny list (systemd {version})"
+
+
+def _systemd_version() -> int:
+    out = subprocess.run(["systemd-analyze", "--version"], capture_output=True, text=True, check=False)
+    fields = out.stdout.split()
+    return int(fields[1]) if out.returncode == 0 and len(fields) > 1 and fields[1].isdigit() else 0
 
 
 def _task_file(name: str) -> dict[str, dict]:
@@ -322,6 +368,7 @@ def test_the_deploy_mints_the_hermes_login_and_proves_it_before_restarting_herme
     when = str(restart["when"])
     assert "hermes_sandbox_dropin is changed" in when, "systemd reads the drop-in only at start, so a change to it without a restart leaves the old sandbox running"
     assert "hermes_login_file.stat.exists" in when, "a restart without a minted login leaves Hermes with no gh at all"
+    assert "hermes_login_proof is skipped or hermes_login_proof is succeeded" in when, "the restart waits on the proof too, or it moves Hermes onto a login nothing has proven"
     assert set(restart["loop"]) == {"hermes-gateway.service", "hermes-serve.service"}
     names = {handler["name"] for handler in _play_handlers()}
     assert "Restart the Hermes units" not in names, "a handler can flush before services.yml mints and proves the login (review of PR #11116)"
@@ -394,6 +441,83 @@ def test_no_hermes_layer_takes_what_the_children_need() -> None:
         keys = _unit_keys(path)
         for key in HERMES_FORBIDDEN:
             assert key not in keys, f"{path.relative_to(INSTALLED)}: {key} stops Chrome's sandbox zygote or node's JIT (measured 2026-10-22), and everything in this file reaches both units or the unit it names"
+
+
+def _hermes_hidden() -> set[PurePosixPath]:
+    hidden: set[PurePosixPath] = set()
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    hidden.add(PurePosixPath(entry.removeprefix("-")))
+    return hidden
+
+
+def test_the_hermes_lock_hides_the_credentials_no_chat_turn_reads() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_HIDDEN:
+        assert PurePosixPath(path) in hidden, f"the chat agent must not read {path}: no hermes layer hides it"
+
+
+def test_the_hermes_lock_keeps_what_hermes_and_its_children_measured_to_need() -> None:
+    hidden = _hermes_hidden()
+    for path in HERMES_READABLE:
+        covering = [hidden_path for hidden_path in hidden if path == str(hidden_path) or path.startswith(str(hidden_path) + "/")]
+        assert not covering, f"{path} is hidden by {covering}, so hermes or an MCP child breaks"
+    assert PurePosixPath("/home/nish") not in hidden, "hiding all of HOME undoes ProtectHome=read-only and the grants above"
+
+
+def test_every_hermes_hidden_path_survives_being_absent() -> None:
+    hidden = _hermes_hidden()
+    assert hidden, "no hermes layer hides anything"
+    assert not [str(path) for path in hidden if " " in str(path)], "a hidden path with a space is split by the shell grammar systemd reads these lines with, so this check would read half of it"
+    for unit in HERMES_UNITS:
+        for path in _layers(unit):
+            for value in _unit_keys(path).get("InaccessiblePaths", []):
+                for entry in shlex.split(value):
+                    assert entry.startswith("-"), f"{path.relative_to(INSTALLED)}: {entry} without the - prefix stops the unit from starting on a host that does not have it (fleet-ops#10081)"
+
+
+def _table_path(path: str, home: str) -> str:
+    return path.replace("~", home, 1) if path.startswith("~/") else path
+
+
+def test_no_hermes_hidden_path_undoes_a_write_grant() -> None:
+    hidden = _hermes_hidden()
+    for unit in HERMES_UNITS:
+        grants = {PurePosixPath(entry.removeprefix("-")) for entry in shlex.split(" ".join(_effective(unit)["ReadWritePaths"]))}
+        assert sum(1 for grant in grants if " " in str(grant)) == 1, (
+            f"{unit}: the vault inbox grant carries a space, so it reads quoted from the drop-in; "
+            "losing the quoting would let shlex split it and this check would pass on the fragments"
+        )
+        for grant in grants:
+            covering = [path for path in hidden if grant == path or str(grant).startswith(str(path) + "/")]
+            assert not covering, f"{unit}: {grant} is granted for writes and hidden by {covering}, a no-op that reads as a lock"
+
+
+def test_both_hermes_units_are_in_the_agent_lock_table() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    agents = table["agents"]
+    entries = []
+    for unit in HERMES_UNITS:
+        assert unit in agents, f"{unit} is missing from config/agent-locks.json"
+        entry = agents[unit]
+        assert entry["unit"] == f"rootfs/etc/systemd/system/{unit}.service", entry
+        entries.append(entry)
+    lists = [{_table_path(path, home) for path in entry["must_hide"]} for entry in entries]
+    assert lists[0] == lists[1], "hermes-gateway and hermes-serve read the same hermes-.service.d/sandbox.conf, so their must_hide lists cannot differ"
+    for entry in entries:
+        assert len(entry["must_hide"]) == len(lists[0]), f"{entry['unit']}: a path listed twice hides nothing twice"
+
+
+def test_the_table_accounts_for_every_path_the_hermes_lock_hides() -> None:
+    table = json.loads((ROOT / "config/agent-locks.json").read_text())
+    home = f"/home/{table['user']}"
+    named = {_table_path(path, home) for unit in HERMES_UNITS for path in table["agents"][unit]["must_hide"]}
+    hidden = {str(path) for path in _hermes_hidden()}
+    assert not hidden - named, f"a hermes layer hides these and the table accounts for none of them: {sorted(hidden - named)}"
+    assert not named - hidden, f"the table hides these and no hermes layer does: {sorted(named - hidden)}"
 
 
 def test_hermes_serve_unit_pins_its_program_bind_address_and_restart_policy() -> None:
@@ -1471,6 +1595,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user": "made at boot by systemd's shipped tmpfiles file (/usr/lib/tmpfiles.d/systemd.conf, d /run/user 0755 root root -), before the runners; nothing unprivileged recreates it (fleet-ops#11232)",
     "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/*": "entries of the user runtime dir; the dir itself comes from logind (linger)",
     "/run/podman-eval": "retired path, kept masked",

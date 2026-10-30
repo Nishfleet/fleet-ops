@@ -8,6 +8,7 @@ import shlex
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DROPINS = ROOT / "rootfs/etc/systemd/system"
+CRED_HIDE = '${CREDENTIALS_DIRECTORY:+--tmpfs "$CREDENTIALS_DIRECTORY" --tmpfs "${CREDENTIALS_DIRECTORY%/*}"}'
 HOME = "/home/nish"
 
 
@@ -18,6 +19,7 @@ def bound_paths(conf: pathlib.Path) -> list[str]:
         if key in ("BindPaths", "BindReadOnlyPaths"):
             out += [p.lstrip("-+") for p in shlex.split(value)]
     return out
+
 
 
 def test_no_runner_dropin_binds_the_gh_login():
@@ -52,13 +54,25 @@ def test_workflows_permission_is_minted_only_for_the_orchestrator_and_the_arm():
     assert minted == {"agent-dispatch.yml": {"orchestrate"}, "agent.yml": {"arm"}}
 
 
+def test_the_worker_jails_hide_the_credential_directory():
+    """The App key is a systemd credential, and its directory is readable by the unit's user, which is every jailed engine."""
+    wf = (ROOT / ".github/workflows/agent.yml").read_text()
+    assert f"cred_hide={CRED_HIDE}" in wf, "the hide is one parameter expansion over the directory systemd names: systemd sets $CREDENTIALS_DIRECTORY for every unit that loads a credential, and a hand-rolled test of the path could disagree with the unit that mounts the key"
+    assert "[ -d /run/credentials ]" not in wf, "the store path is a system-scope detail, and a user service keeps its credentials under /run/user"
+    jails = [line for line in wf.splitlines() if re.match(r'\s*(?:jail_base|claude_jail_[ab])="bwrap --dev-bind', line)]
+    assert len(jails) >= 4, jails
+    for line in jails:
+        assert "$cred_hide" in line, line
+
+
 def test_the_orchestrator_session_cannot_read_the_app_key():
     """The orchestrate job mints a workflows: write token; the session it starts must not see the key or the step-output files."""
     wf = (ROOT / ".github/workflows/agent-dispatch.yml").read_text()
     step = wf[wf.index("- name: Run the orchestrator session"):wf.index("- name: Clean up and mark a PR-less hand-off")]
     jail = next(line for line in step.splitlines() if line.strip().startswith("jail=(bwrap"))
-    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"', '"$CREDENTIALS_DIRECTORY"'):
+    for hidden in ('"$HOME/.config/fleet-worker"', '"$RUNNER_TEMP/_runner_file_commands"'):
         assert f"--tmpfs {hidden}" in jail, hidden
+    assert CRED_HIDE in jail, "the session reads the outsider comments it is handed; it must not see the App key's credential dir"
     starts = [line for line in step.splitlines() if re.search(r'"\$HOME/\.local/bin/(?:claude|pi)"', line)]
     assert starts and all('"${jail[@]}"' in line for line in starts), starts
 
