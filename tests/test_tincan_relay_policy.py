@@ -73,20 +73,17 @@ def test_the_roster_holds_one_clean_agent_name_per_line():
 def test_the_roster_is_the_relays_agent_list():
     # The live authority is `tincan agents --json --socket
     # ~/.local/state/tincan-relay/admin.sock`, which CI cannot reach (it runs on
-    # GitHub's runners, not the box). The list it answered on 2026-10-22 is
-    # pinned here, and ansible/the policy tasks check the live one on every playbook
+    # GitHub's runners, not the box). The list it answered on 2026-10-30 (amp, cursor-mac and droid-mac
+    # gone from the mesh) is pinned here, and ansible/the policy tasks check the live one on every playbook
     # run. A roster edit that is not a deliberate agent change fails here until
     # this list is re-captured with that command.
     assert roster() == [
-        "amp",
         "claude-mac",
         "claude-vps",
         "command-code",
-        "cursor-mac",
         "cursor-vps",
         "devin-mac",
         "devin-vps",
-        "droid-mac",
         "fleet-worker",
         "grok-cli-mac",
         "hermes",
