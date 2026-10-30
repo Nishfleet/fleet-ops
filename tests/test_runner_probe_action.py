@@ -43,11 +43,11 @@ def _stub(bindir: pathlib.Path, name: str, body: str) -> None:
 
 def _probe(tmp_path, masks=(), mounts=(), mount_points=(), require=False):
     """The probe's script here: `masks` is the unit's InaccessiblePaths, `mounts` its
-    TemporaryFileSystem, and `mount_points` is what the mountpoint command answers yes for.
+    TemporaryFileSystem (an entry keeps its own `:options`), and `mount_points` is what the
+    mountpoint command answers yes for.
 
-    The systemctl stub prints one value per property line, which is the contract
-    `systemctl show -p <keys> --value` holds, and it suffixes every mount with `:ro`, the way a
-    TemporaryFileSystem= entry carries its mount options.
+    The systemctl stub answers each property on its own call, which is the contract
+    `systemctl show -p <key> --value` holds, so a mount with no options is read as a mount.
     """
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
@@ -55,7 +55,11 @@ def _probe(tmp_path, masks=(), mounts=(), mount_points=(), require=False):
     _stub(
         bindir,
         "systemctl",
-        "#!/bin/sh\nprintf '%s\\n' '" + " ".join(masks) + "'\nprintf '%s\\n' '" + " ".join(f"{p}:ro" for p in mounts) + "'\n",
+        "#!/bin/sh\ncase \"$*\" in\n*TemporaryFileSystem*) printf '%s\\n' '"
+        + " ".join(mounts)
+        + "' ;;\n*InaccessiblePaths*) printf '%s\\n' '"
+        + " ".join(masks)
+        + "' ;;\nesac\n",
     )
     answers = " ".join(mount_points)
     _stub(bindir, "mountpoint", f"#!/bin/sh\ncase ' {answers} ' in *\" $2 \"*) exit 0 ;; esac\nexit 1\n")
@@ -71,7 +75,7 @@ def _probe(tmp_path, masks=(), mounts=(), mount_points=(), require=False):
 
 
 def test_the_probe_reads_both_lists_of_the_unit(tmp_path, paths) -> None:
-    code, out = _probe(tmp_path, masks=[f"-{paths['hidden']}"], mounts=[paths["covered"]], mount_points=[paths["covered"]])
+    code, out = _probe(tmp_path, masks=[f"-{paths['hidden']}"], mounts=[f"{paths['covered']}:ro"], mount_points=[paths["covered"]])
     assert code == 0, out
     assert "checked=2 readable=0" in out
     assert UNIT in out
@@ -92,13 +96,24 @@ def test_a_masked_path_that_does_not_read_passes(tmp_path, paths) -> None:
 
 
 def test_a_mount_that_is_no_mount_point_fails(tmp_path, paths) -> None:
-    code, out = _probe(tmp_path, mounts=[paths["bare"]])
+    code, out = _probe(tmp_path, mounts=[f"{paths['bare']}:ro"])
     assert code != 0
     assert f"::error::{paths['bare']} is a host path in this job, so nothing hides it" in out
 
 
+def test_a_mount_with_no_options_is_read_as_a_mount(tmp_path, paths) -> None:
+    """systemd prints TemporaryFileSystem= without a colon when the entry has no options, so a
+    probe that reads the colon as the mark of a mount would test it as a masked path and pass an
+    unmounted host directory (fleet-ops#10886)."""
+    code, out = _probe(tmp_path, mounts=[paths["bare"]])
+    assert code != 0
+    assert f"::error::{paths['bare']} is a host path in this job, so nothing hides it" in out
+    code, out = _probe(tmp_path, mounts=[paths["bare"]], mount_points=[paths["bare"]])
+    assert code == 0, out
+
+
 def test_a_mount_that_covers_the_path_passes(tmp_path, paths) -> None:
-    code, out = _probe(tmp_path, mounts=[paths["covered"]], mount_points=[paths["covered"]])
+    code, out = _probe(tmp_path, mounts=[f"{paths['covered']}:ro"], mount_points=[paths["covered"]])
     assert code == 0, out
 
 
@@ -106,7 +121,7 @@ def test_a_mount_over_a_readable_host_mount_point_passes_when_it_is_mounted(tmp_
     """An empty tmpfs reads, so the mount itself is the hide: this is why a mount is tested by its
     mount point and a masked path by what reads."""
     assert os.access(paths["covered"], os.R_OK)
-    code, out = _probe(tmp_path, mounts=[paths["covered"]], mount_points=[paths["covered"]])
+    code, out = _probe(tmp_path, mounts=[f"{paths['covered']}:ro"], mount_points=[paths["covered"]])
     assert code == 0, out
 
 

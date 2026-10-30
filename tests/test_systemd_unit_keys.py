@@ -1375,6 +1375,7 @@ RUNNER_DROPINS = sorted(INSTALLED.glob("actions.runner.*.service.d"))
 CREATING_TYPES = {"d", "D", "f", "F", "L"}
 RUN_PATH_ALLOWLIST = {
     "/run/docker.sock": "created by docker.socket (enabled, started at sockets.target, before the runners)",
+    "/run/user/1000": "the user runtime dir comes from logind (linger), before the runners",
     "/run/user/1000/bus": "made by the user manager (dbus activation), which the runners are ordered after",
     "/run/user/1000/systemd": "made by the user manager, which the runners are ordered after",
     "/run/user/1000/podman": "made by the user manager, which the runners are ordered after",
@@ -1396,6 +1397,24 @@ def tmpfiles_created(tmpfiles_dir: Path) -> set[str]:
             if len(fields) >= 2 and not line.lstrip().startswith("#") and fields[0].rstrip("+!-=~^") in CREATING_TYPES:
                 created.add(_run_norm(fields[1]))
     return created
+
+
+def install_created(dropin: Path) -> set[str]:
+    """Every path an `ExecStartPre=+/usr/bin/install -d` line of one drop-in makes.
+
+    A pre-start line without the "+" runs inside the unit's own mount namespace, so it cannot make
+    the host mount point the manager would otherwise make as root (fleet-ops#10886).
+    """
+    made = set()
+    for line in dropin.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("ExecStartPre=+"):
+            continue
+        tokens = shlex.split(line.split("=", 1)[1][1:])
+        if not tokens or Path(tokens[0]).name != "install" or "-d" not in tokens[1:]:
+            continue
+        made.update(token for token in tokens[1:] if token.startswith("/"))
+    return made
 
 
 def runner_listed_paths(dropin: Path, key: str) -> list[str]:
@@ -1437,16 +1456,17 @@ def runner_hidden_paths(dropin: Path) -> list[str]:
 
 
 def unguarded_run_paths(dropin_dirs: list[Path], tmpfiles_dir: Path, allowlist: dict[str, str]) -> list[str]:
-    """Hidden /run paths with neither a boot-time creator nor an allowlist entry; ValueError when a list is empty."""
+    """Hidden /run paths with neither a pre-start creator nor an allowlist entry; ValueError when a list is empty."""
     created = tmpfiles_created(tmpfiles_dir)
     bad = []
     for directory in dropin_dirs:
+        made = {path for conf in sorted(directory.glob("*.conf")) for path in install_created(conf)}
         paths = [path for conf in sorted(directory.glob("*.conf")) for path in runner_hidden_paths(conf)]
         if not paths:
             raise ValueError(f"{directory}: no InaccessiblePaths= or TemporaryFileSystem= entry in any drop-in")
         for path in paths:
             norm = _run_norm(path)
-            if (norm == "/run" or norm.startswith("/run/")) and norm not in created:
+            if (norm == "/run" or norm.startswith("/run/")) and norm not in created and norm not in made:
                 if not any(fnmatch.fnmatchcase(norm, pattern) for pattern in allowlist):
                     bad.append(f"{directory.name}: {path}")
     return bad
@@ -1461,7 +1481,7 @@ def test_every_hidden_run_path_has_a_boot_time_creator() -> None:
 
 def test_run_path_allowlist_has_no_stale_entry() -> None:
     hidden = {_run_norm(path) for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in runner_hidden_paths(conf)}
-    created = tmpfiles_created(TMPFILES)
+    created = tmpfiles_created(TMPFILES) | {path for d in RUNNER_DROPINS for conf in d.glob("*.conf") for path in install_created(conf)}
     for pattern, reason in RUN_PATH_ALLOWLIST.items():
         assert reason.strip()
         assert any(fnmatch.fnmatchcase(path, pattern) for path in hidden), f"{pattern} is hidden by no runner"
@@ -1508,7 +1528,12 @@ def test_run_path_check_covers_a_mounted_path_and_its_options(tmp_path: Path) ->
     dirs, tmpdir = _fixture(tmp_path, mask, "")
     assert runner_listed_paths(dirs[0] / "20-lockdown.conf", "TemporaryFileSystem") == ["/run/user/1000/fleet-worker-github-token"]
     assert unguarded_run_paths(dirs, tmpdir, {}) == ["actions.runner.X.service.d: /run/user/1000/fleet-worker-github-token"]
+    (dirs[0] / "20-lockdown.conf").write_text(
+        mask + "ExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700 /run/user/1000/fleet-worker-github-token\n"
+    )
+    assert unguarded_run_paths(dirs, tmpdir, {}) == []
     (tmpdir / "x.conf").write_text("d /run/user/1000/fleet-worker-github-token 0700 nish nish -\n")
+    (dirs[0] / "20-lockdown.conf").write_text(mask)
     assert unguarded_run_paths(dirs, tmpdir, {}) == []
 
 

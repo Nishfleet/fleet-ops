@@ -22,8 +22,10 @@ dir) are made by the user manager itself, so every runner drop-in is ordered aft
 (fleet-ops#10081).
 
 An absent mount point is made by the manager itself, as root mode 0755, before it mounts, and the
-token mints run as nish, so rootfs/etc/tmpfiles.d/fleet-runner-token-dirs.conf makes the user
-runtime dir and both token dirs nish-owned mode 0700 at boot, before any runner starts.
+token mints run as nish. Each drop-in that mounts a token dir therefore makes both dirs first
+with an `ExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700` line: a "+" command runs with
+full privileges and skips the file system namespacing options (systemd.service(5), "Command
+lines"), so it writes the host path instead of the tmpfs the unit mounts there.
 """
 
 import os
@@ -56,13 +58,8 @@ TOKEN_DIRS = (USER_RUN + "fleet-worker-github-token", USER_RUN + "fleet-grafana-
 IN_CI = bool(os.environ.get("GITHUB_ACTIONS"))
 SUDO = ["sudo", "-n"] if IN_CI else []
 SCOPE = [] if IN_CI else ["--user"]
-TMPFILES = ROOT / "rootfs/etc/tmpfiles.d"
 TOKEN_DIR_OWNER = "nish"
 TOKEN_DIR_MODE = "0700"
-# A `d` line makes the directory and adjusts its mode and owner; a `d-` line does not adjust a
-# directory that exists already, and a `D` line empties the directory, so neither keeps a
-# root-owned mount point usable.
-BOOT_DIR_TYPES = {"d"}
 
 
 def manager_usable() -> bool:
@@ -177,11 +174,15 @@ def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
     InaccessiblePaths= also applies to ExecStartPre= (same mount namespace), so a mkdir below a hidden
     parent fails with "Permission denied" and the runner never starts. A directory the unit covers
     with a mount hides its whole subtree too: a step under one writes into the empty tmpfs and never
-    reaches the host. Hiding the target itself is fine: the mount point exists already.
+    reaches the host. Hiding the target itself is fine: the mount point exists already. A "+" command
+    skips the file system namespacing options (systemd.service(5)), so it writes the host path and is
+    the one pre-start form that can make a mount point under a hidden parent (fleet-ops#10886).
     """
     hidden = merged_paths(dirs, "InaccessiblePaths") | merged_paths(dirs, "TemporaryFileSystem")
     bad = []
     for value in merged_values(dirs, "ExecStartPre"):
+        if value.startswith("+"):
+            continue
         for arg in shlex.split(value.lstrip("-@:!")):
             if arg.startswith("/") and hidden & {str(parent) for parent in Path(arg).parents}:
                 bad.append(f"ExecStartPre={value} needs {arg}, below hidden {sorted(hidden & {str(parent) for parent in Path(arg).parents})[0]}")
@@ -196,7 +197,7 @@ def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> N
     # fleet-ci-3 hides /run/user/1000 whole while the shared fleet-ci drop-in once made dirs in it (2026-10-23).
     ci3 = units["actions.runner.Nishfleet.netcup-fleet-ci-3.service.d"]
     assert FLEET_CI_DIR in ci3
-    assert merged_values(ci3, "ExecStartPre") == []
+    assert [v for v in merged_values(ci3, "ExecStartPre") if not v.startswith("+")] == []
     assert any("/run/user/1000" in [t.lstrip("-+") for t in v.split()] for v in merged_values(ci3, "InaccessiblePaths"))
 
 
@@ -210,6 +211,10 @@ def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: 
     assert pre_start_paths_under_hidden_dir([shared, own]) == [
         "ExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a needs /run/user/1000/a, below hidden /run/user/1000"
     ]
+    # A "+" command skips the namespace, so it can make a mount point under the hidden parent.
+    (shared / "10.conf").write_text("[Service]\nExecStartPre=+/usr/bin/install -d /run/user/1000/a\n")
+    assert pre_start_paths_under_hidden_dir([shared, own]) == []
+    (shared / "10.conf").write_text("[Service]\nExecStartPre=/usr/bin/mkdir -p -m 0700 /run/user/1000/a\n")
     # Hiding the target itself is fine (the mount point or the dir exists), and an empty ExecStartPre= clears the shared line.
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000/a\n")
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
@@ -247,61 +252,74 @@ def test_every_token_dir_is_covered_by_a_mount(start_conf: Path, lockdown_conf: 
         assert name in covered, f"{lockdown_conf.name}: {name} is masked by inode, not covered by a mount"
 
 
-def boot_dir_creators(tmpfiles_dir: Path) -> dict[str, tuple[str, str]]:
-    """Path -> (mode, owner) of every directory a tmpfiles.d `d` line makes at boot."""
-    created = {}
-    for conf in sorted(tmpfiles_dir.glob("*.conf")):
-        for line in conf.read_text().splitlines():
-            fields = line.split()
-            if len(fields) < 4 or line.lstrip().startswith("#") or fields[0] not in BOOT_DIR_TYPES:
-                continue
-            path = fields[1]
-            created["/run" + path[len("/var/run"):] if path.startswith("/var/run") else path] = (fields[2], fields[3])
-    return created
+def install_made(dirs: list[Path]) -> dict[str, tuple[str, str]]:
+    """Path -> (mode, owner) for every directory a privileged pre-start line makes.
+
+    Only an `ExecStartPre=+` line runs outside the unit's own namespace (systemd.service(5), "Command
+    lines"), so only that line can make the host directory the mount will cover; a line without the
+    "+" writes into the tmpfs instead and leaves the host mount point root-owned (fleet-ops#10886).
+    """
+    made: dict[str, tuple[str, str]] = {}
+    for value in merged_values(dirs, "ExecStartPre"):
+        if not value.startswith("+"):
+            continue
+        tokens = shlex.split(value[1:])
+        if not tokens or Path(tokens[0]).name != "install" or "-d" not in tokens[1:]:
+            continue
+        mode = owner = ""
+        args = tokens[1:]
+        for i, token in enumerate(args):
+            if token == "-m" and i + 1 < len(args):
+                mode = args[i + 1]
+            elif token == "-o" and i + 1 < len(args):
+                owner = args[i + 1]
+        for token in args:
+            if token.startswith("/"):
+                made[token] = (mode, owner)
+    return made
 
 
-def unguarded_run_mount_points(units: dict[str, list[Path]], tmpfiles_dir: Path) -> list[str]:
-    """A TemporaryFileSystem= entry under the user runtime dir whose mount point no boot-time creator
-    makes nish-owned mode 0700: the manager makes an absent mount point itself, as root, and the mint
-    that writes the token there runs as nish (fleet-ops#10886)."""
-    creators = boot_dir_creators(tmpfiles_dir)
+def unguarded_run_mount_points(units: dict[str, list[Path]]) -> list[str]:
+    """A TemporaryFileSystem= entry under the user runtime dir whose mount point no privileged
+    pre-start line makes nish-owned mode 0700: the manager makes an absent mount point itself, as
+    root, and the mint that writes the token there runs as nish (fleet-ops#10886)."""
     bad = []
     for name, dirs in units.items():
+        made = install_made(dirs)
         for path in sorted(merged_paths(dirs, "TemporaryFileSystem")):
             if not path.startswith(USER_RUN):
                 continue
-            creator = creators.get(path)
+            creator = made.get(path)
             if creator is None:
-                bad.append(f"{name}: {path} has no boot-time creator, so the manager makes the mount point as root")
+                bad.append(f"{name}: {path} has no privileged pre-start creator, so the manager makes the mount point as root")
             elif creator != (TOKEN_DIR_MODE, TOKEN_DIR_OWNER):
-                bad.append(f"{name}: {path} is made {' '.join(creator)}, so the token mint cannot write its token there")
+                bad.append(f"{name}: {path} is made mode {creator[0]} owner {creator[1]}, so the token mint cannot write its token there")
     return bad
 
 
 def test_every_run_mount_point_has_a_creator_the_mint_can_write() -> None:
     units = runner_units()
     assert len(units) >= 5, "the runner drop-in dirs were not found"
-    assert unguarded_run_mount_points(units, TMPFILES) == []
+    assert unguarded_run_mount_points(units) == []
 
 
 def test_gate_fails_when_a_run_mount_point_has_no_creator(tmp_path: Path) -> None:
     dirs = tmp_path / "x-.service.d"
     dirs.mkdir()
-    (dirs / "20.conf").write_text("[Service]\nTemporaryFileSystem=/run/user/1000/fleet-worker-github-token:ro\n")
-    tmpfiles = tmp_path / "tmpfiles.d"
-    tmpfiles.mkdir()
+    conf = dirs / "20.conf"
     units = {"x-.service.d": [dirs]}
     path = "/run/user/1000/fleet-worker-github-token"
-    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} has no boot-time creator, so the manager makes the mount point as root"]
-    # A `d-` line does not adjust a directory that exists already, so it does not fix a root-owned one.
-    (tmpfiles / "x.conf").write_text(f"d- {path} 0700 nish nish -\n")
-    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} has no boot-time creator, so the manager makes the mount point as root"]
-    (tmpfiles / "x.conf").write_text(f"d {path} 0700 root root -\n")
-    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} is made 0700 root, so the token mint cannot write its token there"]
-    (tmpfiles / "x.conf").write_text(f"d {path} 0755 nish nish -\n")
-    assert unguarded_run_mount_points(units, tmpfiles) == [f"x-.service.d: {path} is made 0755 nish, so the token mint cannot write its token there"]
-    (tmpfiles / "x.conf").write_text(f"d {path} 0700 nish nish -\n")
-    assert unguarded_run_mount_points(units, tmpfiles) == []
+    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\n")
+    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} has no privileged pre-start creator, so the manager makes the mount point as root"]
+    # Without the "+", the command runs inside the namespace the unit mounts, so the host point stays root-owned.
+    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=/usr/bin/install -d -o nish -g nish -m 0700 {path}\n")
+    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} has no privileged pre-start creator, so the manager makes the mount point as root"]
+    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o root -g root -m 0700 {path}\n")
+    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} is made mode 0700 owner root, so the token mint cannot write its token there"]
+    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0755 {path}\n")
+    assert unguarded_run_mount_points(units) == [f"x-.service.d: {path} is made mode 0755 owner nish, so the token mint cannot write its token there"]
+    conf.write_text(f"[Service]\nTemporaryFileSystem={path}:ro\nExecStartPre=+/usr/bin/install -d -o nish -g nish -m 0700 {path}\n")
+    assert unguarded_run_mount_points(units) == []
 
 
 def masked_paths_holding_a_colon(units: dict[str, list[Path]]) -> list[str]:
@@ -457,8 +475,9 @@ def test_systemd_makes_the_mount_point_when_the_path_is_absent_at_start(tmp_path
 def test_an_existing_mount_point_keeps_its_owner_and_mode(tmp_path: Path) -> None:
     """A mount point that exists already is not re-owned: systemd makes an absent one as root (fleet-ops#10886).
 
-    rootfs/etc/tmpfiles.d/fleet-runner-token-dirs.conf makes the two token dirs nish-owned mode 0700
-    at boot, so the mount point is there with the owner the mint needs and systemd never makes one.
+    The ExecStartPre=+install line makes the two token dirs nish-owned mode 0700 before the unit's
+    own namespace exists, so the mount point is there with the owner the mint needs and systemd
+    never makes one.
 
     The stat is on the host, not in the unit: systemd.exec(5) mounts a TemporaryFileSystem= tmpfs
     with mode=0755 and the root owner, so a unit reads the mount and not the mount point.
@@ -475,8 +494,37 @@ def test_an_existing_mount_point_keeps_its_owner_and_mode(tmp_path: Path) -> Non
 
 
 @needs_manager
+def test_a_privileged_pre_start_line_makes_the_mount_point_on_the_host(tmp_path: Path) -> None:
+    """The line that makes the token dirs: a "+" command skips the namespace, so it writes the host
+    path before systemd mounts over it (fleet-ops#10886).
+
+    Run without the "+" it would see the tmpfs systemd already mounted at the path, change that
+    instead, and leave the host mount point root-owned mode 0755, which the mint cannot write into.
+    """
+    point = tmp_path / "point"
+    assert not point.exists()
+    script = f"awk -v m={shlex.quote(str(point))} '$5 == m {{ f = 1 }} END {{ exit !f }}' /proc/self/mountinfo"
+    proc = subprocess.run(
+        transient_run(
+            [
+                f"ExecStartPre=+{shutil.which('install')} -d -o 65534 -g 65534 -m 0700 {point}",
+                f"TemporaryFileSystem={point}:ro",
+            ],
+            script,
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    stat = point.stat()
+    assert (stat.st_uid, stat.st_gid, stat.st_mode & 0o777) == (65534, 65534, 0o700), (
+        "the pre-start line wrote inside the unit's namespace, so the host mount point stays root-owned"
+    )
+
+
+@needs_manager
 def test_an_absent_mount_point_is_made_root_owned(tmp_path: Path) -> None:
-    """The cause a boot-time creator fixes: systemd makes the mount point itself, as root (fleet-ops#10886)."""
+    """The cause a privileged pre-start line prevents: systemd makes an absent mount point itself, as root (fleet-ops#10886)."""
     absent = tmp_path / "absent"
     assert not absent.exists()
     proc = subprocess.run(transient_run([f"TemporaryFileSystem={absent}:ro"], "true"), capture_output=True, text=True)
