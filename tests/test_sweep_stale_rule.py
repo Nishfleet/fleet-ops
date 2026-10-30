@@ -1,6 +1,7 @@
 """sweep-stale rule (fleet-ops#9278 item 5): the real SQL, read out with yq and run in
 sqlite, fires only when the newest finished agent-dispatch run is 3 hours old, and also
-when the read window holds no finished run at all."""
+when the read window holds no finished run at all. A read that returns no frame at all is
+NoData, which the rule treats as firing too, because a disabled workflow looks the same."""
 import json
 import pathlib
 import shutil
@@ -62,5 +63,5 @@ def test_it_reads_agent_dispatch_runs_and_warns_without_paging():
     assert query["model"]["queryType"] == "Workflow_Runs"
     assert query["model"]["options"]["workflow"] == "agent-dispatch.yml"
     assert rule["labels"] == {"severity": "warning", "signal": "sweep-stale"}
-    assert (rule["for"], rule["execErrState"], rule["noDataState"]) == ("30m", "Error", "OK")
+    assert (rule["for"], rule["execErrState"], rule["noDataState"]) == ("30m", "Error", "Alerting")
     assert "cannot read GitHub" in rule["annotations"]["summary"]

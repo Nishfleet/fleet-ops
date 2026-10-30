@@ -9,10 +9,15 @@
 #
 # Signal: the stock GitHub data source (fleet-github, read-only) lists the runs of
 # agent-dispatch.yml in fleet-ops in the last 3 days (Workflow_Runs). The SQL
-# expression reads 1 when no run finished in the last 3 hours, or when the window
-# holds no finished run at all. The sweep has two triggers, an hourly systemd timer
-# on the box (systemd/fleet-pr-sweep@.timer) and GitHub's own schedule, so a 3-hour
-# gap means both are down. for: 30m keeps one slow cycle from firing it.
+# expression reads 1 when no run finished in the last 3 hours. The sweep has two
+# triggers, an hourly systemd timer on the box (systemd/fleet-pr-sweep@.timer) and
+# GitHub's own schedule, so a 3-hour gap means both are down. for: 30m keeps one
+# slow cycle from firing it.
+#
+# NoData is Alerting on purpose: a read that returns no frame at all, which is what
+# a disabled workflow or a broken data source returns, is the same dead sweep this
+# rule exists to catch, and an empty frame is not proven to reach the expression. The
+# summary's else branch is the NoData wording.
 #
 # Route: severity warning and no route of its own, so it reaches the catch-all in
 # cloudflare-spend-contact.yaml and files one agent-ready fleet-ops issue. It does
@@ -52,7 +57,7 @@ groups:
                             THEN 1 ELSE 0 END AS stale
                 FROM A
                 WHERE status = 'completed'
-        noDataState: OK
+        noDataState: Alerting
         execErrState: Error
         for: 30m
         annotations:

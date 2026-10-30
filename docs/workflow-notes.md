@@ -308,8 +308,9 @@ reads that file when the arm raises `auto_merge_enabled`, labels the PR
 so a risky PR cannot merge unapproved. The step used to carry a second list beside
 the file, and the two drifted: a drive PR in `src/` was held while the file already
 called it safe, which took a patch to the step to fix (fleet-ops#9420, #11049).
-`ci.yml` fails when the list, or the `pulls/<n>/files` read it needed, comes back
-(fleet-ops#9278).
+`tests/test_agent_workflows.py` runs the step against a fake `gh` that fails on a
+`pulls/<n>/files` or `changedFiles` read, so a second list cannot come back
+unnoticed, and `ci.yml` runs that test (fleet-ops#9278).
 
 ### agent.yml: the 2026-10 diet audit (fleet-ops#11068)
 

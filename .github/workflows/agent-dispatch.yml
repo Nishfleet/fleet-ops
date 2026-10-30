@@ -969,12 +969,15 @@ jobs:
           # dependency gate skips an issue while it has an open blocker, but a close
           # does not remove a park label, so an agent-blocked dependent stayed parked
           # with no event left to free it (#10162, #9324: blocker closed, label still
-          # on). Requeue only when nothing else still blocks it, and only from
-          # agent-blocked: every other park label records a decision, not a wait.
+          # on). Requeue only when the dependency was the whole block: any park label
+          # that records a decision, or a worker's own park note, means a second
+          # reason is live and the label is not this close's to remove.
           deps=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE/dependencies/blocking" --jq '.[] | select(.state == "open") | .number') || echo "::warning::could not read the issues #$ISSUE blocks"
           for d in ${deps:-}; do
-            row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked"))"') || row=
-            [ "$row" = "0 true" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
+            row=$(gh api "repos/$GITHUB_REPOSITORY/issues/$d" --jq '"\(.issue_dependencies_summary.blocked_by) \(any(.labels[]; .name == "agent-blocked")) \(any(.labels[]; .name | IN("needs-split","needs-orchestrator","needs-nish-decision","needs-coordinator","handoff-ended","epic")))"') || row=
+            [ "$row" = "0 true false" ] || { [ -n "$row" ] || echo "::warning::could not read dependent #$d"; continue; }
+            notes=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$d/comments" --jq '[.[].body | select(test("(^|\\n)(proposal|blocked-on):"))] | length') || notes=
+            [ "$notes" = 0 ] || { [ -n "$notes" ] || echo "::warning::could not read dependent #$d park notes"; continue; }
             gh issue edit "$d" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked --add-label agent-ready || echo "::warning::could not requeue dependent #$d"
           done
           for pr in $(gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$ISSUE" --state open --json number --jq '.[].number'); do

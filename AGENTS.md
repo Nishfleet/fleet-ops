@@ -16,7 +16,8 @@ can hold lives in a check.
 - No secret expanded into an output command: `lint`.
 - A risky PR merges only with `coordinator-approval: <sha>` on its exact head: the `coordinator-approval` check.
 
-Every path is risky unless `agent.yml`'s arm step names it safe; `hold-risky` reads `config/risky-paths.json`. Never post that line yourself, and never ask a person to approve.
+Every path's risk comes from `config/risky-paths.json`; `hold-risky` reads it, and no
+second list exists in a workflow. Never post that line yourself, and never ask a person to approve.
 
 **Only these reach Nish:** money, a security action only he can take (owner login,
 2FA, passkeys, org keys), and a blocker no machine can fix. Every other

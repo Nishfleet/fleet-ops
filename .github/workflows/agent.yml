@@ -398,7 +398,9 @@ jobs:
             # source of what is risky: hold-risky reads it when this arm raises
             # auto_merge_enabled, labels the PR and disarms it. The allowlist that
             # used to live here disagreed with that file, so a risky PR could arm
-            # with no label and no hold (fleet-ops#9278 item 1).
+            # with no label and no hold (fleet-ops#9278 item 1). The label is
+            # created here because hold-risky adds it through the labels API, which
+            # fails in a repo that does not have it yet.
             gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "a path config/risky-paths.json marks risky: the coordinator approves and arms it"
             # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
             q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
