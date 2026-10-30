@@ -268,7 +268,7 @@ closed epic can block hundreds (fleet-ops#11010).
 A split parent never closed on its own, so everything blocked by it waited
 forever (0509, 2026-09-24: ~140 issues); the job closes each open ancestor
 whose sub-issues are all closed and releases what it blocked (a GITHUB_TOKEN
-close fires no event), while an epic parent carries its own
+close fires no event), while a critical-path or epic parent carries its own
 finish line and never closes here. CONFLICTING counts as stuck too: auto-merge
 stays armed on a PR that turns DIRTY after arming, so it never enters the
 queue and no event fires (0509#4384); the bulk list returns mergeable UNKNOWN

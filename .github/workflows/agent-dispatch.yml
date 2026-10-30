@@ -512,10 +512,10 @@ jobs:
           elif [ -n "$CLOSED" ]; then
             nums=$(gh api "repos/$GITHUB_REPOSITORY/issues/$CLOSED/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')
             # A split parent never closes on its own (0509, 2026-09-24: ~140 issues
-            # waited forever); an epic parent has its own finish line.
+            # waited forever); a critical-path or epic parent has its own finish line.
             c=$CLOSED
             while p=$(gh api "repos/$GITHUB_REPOSITORY/issues/$c/parent" --jq .number 2>/dev/null) &&
-              [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)\(if any(.labels[].name; . == "epic") then " own-finish-line" else "" end)"')" = "open 0" ]; do
+              [ "$(gh api "repos/$GITHUB_REPOSITORY/issues/$p" --jq '"\(.state) \(.sub_issues_summary.total - .sub_issues_summary.completed)\(if any(.labels[].name; . == "critical-path" or . == "epic") then " own-finish-line" else "" end)"')" = "open 0" ]; do
               gh issue close "$p" -R "$GITHUB_REPOSITORY" -r completed -c "every sub-issue is closed, the last was #$c; closing the parent"
               nums="$nums $(gh api "repos/$GITHUB_REPOSITORY/issues/$p/dependencies/blocking" --jq '.[]|select(.state=="open")|.number')"
               c=$p
@@ -1028,7 +1028,7 @@ jobs:
           EXCLUDE: |
             (.labels | map(.name)) as $l
             | ((.title // "") + "\n" + (.body // "") + "\n" + ($l | join("\n"))) as $t
-            | if ($l | any(. == "needs-nish-decision")) then "a reserved label"
+            | if ($l | any(. == "nish-reserved" or . == "needs-nish-decision")) then "a reserved label"
               elif ($t | test("\\b(secrets?|credentials?|passwords?|passphrases?|api[ _-]?keys?|private[ _-]?keys?|signing[ _-]?keys?|access[ _-]?tokens?|auth[ _-]?tokens?|bearer|oauth|service[ _-]?account)\\b|\\.env\\b"; "i")) then "secrets"
               elif ($t | test("\\b(payments?|billing|stripe|paypal|razorpay|invoices?|refunds?|payouts?|chargebacks?|checkout|subscriptions?|pricing|prices?|money|revenue|paywall|credit card|purchase)\\b"; "i")) then "money or payments"
               elif ($t | test("\\b(delet(e|es|ed|ing|ion)|remov(e|es|ed|ing|al)|scrub(s|bed|bing)?|purg(e|es|ed|ing)|wip(e|es|ed|ing)|eras(e|es|ed|ing)|erasure|drop(s|ped|ping)?|truncat(e|es|ed|ing)|destroy(s|ed|ing)?|clean(s|ed|ing|up)?|clear(s|ed|ing)?)\\b[^\\n]{0,60}\\b(customers?|users?|accounts?|persons?|personal|pii|records?|databases?|tables?|rows?)\\b|\\b(gdpr|right to be forgotten|data deletion|drop table|truncate table)\\b"; "i")) then "customer-data deletion"
