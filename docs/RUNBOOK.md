@@ -335,9 +335,10 @@ The monitor's target field is `url`, and a PUT body merges, so one PUT carries b
     {"url":"https://storagebun.com/api/health",
      "assertion":{"root":{"op":"status_code_check","value":200,"operator":{"cmp":"equals"}}}}
 
-Both are shapes already proven on this monitor: `url` is the field the GET returns, and
-`status_code_check` with `value` and `operator` is what was measured on 2026-10-24
-(`value: 999` failed, 302 passed).
+Both are shapes already proven on this project's uptime monitors: `url` is the field the GET
+returns, and `status_code_check` with `value` and `operator` is what was measured on
+2026-10-24 (`value: 999` failed, 302 passed). The retarget is not complete until the body
+assertion below is in too.
 
 A 200 is not yet the check the issue asked for, because a 200 HTML error page from the edge
 passes it. drive's `/api/health` answers `{"ok":true}` only when its three D1s, its asset
