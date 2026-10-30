@@ -17,7 +17,7 @@ jobs:
   # ci: the one required check. It runs no tests: it needs every other job here, so a red job turns it red.
   # `!cancelled()` so a failed need still runs it: a skipped required check would pass.
   ci:
-    needs: [lint, systemd-verify, unit, simulations, grafana-boot, cloudflare-tokens-tofu, ratchet]
+    needs: [lint, systemd-verify, unit, simulations, grafana-boot, cloudflare-tokens-tofu, host-plan, ratchet]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -183,24 +183,6 @@ jobs:
           if sudo journalctl -u fleet-token-ci.service --no-pager | grep -q 'ghs_stub\|eyJ'; then echo "::error::token or JWT reached the journal"; exit 1; fi
           cat "$d/log"
           pipx run --spec pytest==8.3.5 pytest -q -p no:cacheprovider tests/test_worker_github_token.py
-      - name: Grafana token wiring is consistent across unit, quadlet and contact points
-        # RuntimeDirectory, quadlet mount and $__file{} must name one directory.
-        if: always()
-        run: |
-          set -euo pipefail
-          u=systemd/fleet-grafana-github-token.service
-          q=containers/quadlet/fleet-grafana.container
-          c=config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml
-          rd=$(sed -n 's/^RuntimeDirectory=//p' "$u")
-          test -n "$rd"
-          mount=$(sed -n "s|^Volume=%t/$rd:\\(/[^:]*\\):ro\$|\\1|p" "$q")
-          test -n "$mount" || { echo "::error::$q does not mount %t/$rd read-only"; exit 1; }
-          grep -q '^Wants=fleet-grafana-github-token.service$' "$q" || { echo "::error::$q must Wants= the token unit"; exit 1; }
-          grep -q '^After=fleet-grafana-github-token.service$' "$q" || { echo "::error::$q must order After= the token unit"; exit 1; }
-          n=$(grep -c 'authorization_credentials:' "$c")
-          m=$(grep -c "authorization_credentials: \$__file{$mount/token}\$" "$c")
-          test "$n" -ge 2 && test "$n" = "$m" || { echo "::error::$c: $m of $n webhook contact points read \$__file{$mount/token}"; exit 1; }
-          echo "token wiring: %t/$rd -> $mount/token, $m contact points"
       - name: Only the urgent rules are critical and page Nish hourly, and every enrolled dispatch stub forwards every pull_request_target type (fleet-ops#9445, #9730)
         # Both read a repo file with python3-yaml and hold a contract written as prose: the alert
         # routes against docs/grafana-alerts.md, and each config/intake-repos.json repo's stub against
@@ -211,6 +193,40 @@ jobs:
         env: {GH_TOKEN: "${{ github.token }}", BASE_REF: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"}
         run: sudo apt-get install -y -q python3-yaml >/dev/null && python3 tests/alert_routes_check.py && python3 tests/intake_stub_check.py
 
+  host-plan:
+    # Plan before apply (fleet-ops#10931): for a merge-queue entry whose diff touches
+    # ansible/, rootfs/, systemd/ or containers/, start fleet-plan@<head sha>.service —
+    # the apply play's ansible-pull with --check --diff, run on the box the entry would
+    # change — and post the predicted changes as a PR comment. No checkout: the head
+    # sha is all the job needs and the paths come from the GitHub files API, so the
+    # job runs on fleet-ci and reads the box. The gate lives in
+    # rootfs/etc/systemd/system/fleet-plan@.service (the unit) and
+    # rootfs/etc/polkit-1/rules.d/50-fleet-plan.rules (start only, named 40-hex
+    # instances, which pins the gate to approved merge-queue heads); the reason
+    # comments live in those files. A failed plan or a refused unit drops the entry.
+    if: github.event_name == 'merge_group'
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: [self-hosted, fleet-ci]
+    timeout-minutes: 20
+    env: {GH_TOKEN: "${{ github.token }}", HEAD_SHA: "${{ github.event.merge_group.head_sha }}"}
+    steps:
+      - name: Plan the queue head on the box, comment the predicted diff (fleet-ops#10931)
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::HEAD_SHA is not a 40-hex sha"; exit 1; }
+          test -f /etc/systemd/system/fleet-plan@.service || { echo "host-plan: the unit template is not on the box yet (it ships with the first deploy after its own merge); planning nothing this entry"; exit 0; }
+          commit=$(curl -sfS -K <(jq -rn '"header = \"Authorization: Bearer " + env.GH_TOKEN + "\""') "https://api.github.com/repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA")
+          pr=$(jq -r '.commit.message | capture("Merge pull request #(?<n>[0-9]+)").n // empty' <<<"$commit")
+          grep -Eq '^(ansible/|rootfs/|systemd/|containers/)' <<<"$(jq -r '.files[].filename' <<<"$commit")" || { echo "host-plan: the entry changes nothing under ansible, rootfs, systemd or containers; planning nothing"; exit 0; }
+          [[ -n "$pr" ]] || exit 0
+          rc=0
+          systemctl start "fleet-plan@$HEAD_SHA.service" || rc=$?
+          [[ $rc -eq 0 ]] && banner=ok || banner=failed
+          { printf '# The host-config plan for %s: %s\n\n```log\n' "$HEAD_SHA" "$banner"; tail -c 48000 /var/lib/fleet-plan/plan.log; printf '\n```\n'; } | jq -Rs '{body: .}' | curl -sfS -K <(jq -rn '"header = \"Authorization: Bearer " + env.GH_TOKEN + "\""') --data-binary @- "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$pr/comments"
+          exit "$rc"
+
   unit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -218,20 +234,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 2}
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap ansible-core prometheus prometheus-alertmanager
-      - name: ansible/host.yml parses (ansible-playbook --syntax-check)
-        # fleet-host-config.service runs this playbook as root on every merge;
-        # a parse error would stop every root config change at deploy time.
-        if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/host.yml
-      - name: ansible/update.yml parses (fleet-ops#10075, #10079)
-        # fleet-update.service runs this playbook as root every day. Its test files were on no pytest list, so a stale one stayed red on main with no signal (fleet-ops#10073).
-        if: always()
-        run: ansible-playbook --syntax-check -i localhost, ansible/update.yml
-      - name: The report survives a skipped registration (fleet-ops#9340)
-        # Replays a skipped non-looped registration: the old (x | default({'results': []})).results
-        # pattern has no 'results' key to render and killed the run's last task.
-        if: always()
-        run: ansible-playbook -i localhost, ansible/tests/report-after-skipped-block.yml
       - name: Node 22 (>= 22.12) for the pi-extension vitest suites; they fail, never skip, on an older node
         if: always()
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

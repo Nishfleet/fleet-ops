@@ -369,6 +369,30 @@ over 15 minutes (STUCK)" step pins the wiring (`stuck-review:review_pr
 stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fails when the job
 is gone.
 
+### ci.yml: the three unit-job checks and the token-wiring check are pytest now
+
+The unit job's play syntax checks (host.yml, update.yml), the report
+replay (fleet-ops#9340) and the Grafana token wiring check (fleet-ops#9445,
+#9738) moved to `tests/test_ansible_syntax.py`, `tests/test_ansible_report_skip.py`
+and `tests/test_grafana_token_wiring.py`. Same checks, run twice maybe; the
+workflow files do not grow (the ratchet). Nothing else refers to the step names
+the grep-able tests pin, so a change there reads this note first.
+
+### ci.yml: host-plan, the plan-before-apply gate (fleet-ops#10931)
+
+The merge queue treats `host-plan` like any test: the job starts
+`fleet-plan@<head sha>.service` on a fleet-ci runner for entries whose diff
+touches ansible/, rootfs/, systemd/ or containers/, and the unit's --check
+--diff run of the apply play is the comment. The unit template and the polkit
+grant ship in rootfs (the bootstrap notes are in the unit's header comment), so
+the FIRST entry after the unit's own merge plans nothing (the job exits 0 with
+a reason line) and every later entry plans. The head sha is always an approved
+revision: the queue admits a head only after the reviews a risky path needs
+(config/risky-paths.json), so the plan reports exactly what the fleet is about
+to apply. Comment text is the unit's own log (the plan.log truncates per run,
+root:root 0644), not the CI job's journal read, so the fleet runner's journal
+police never gates the post.
+
 ### coordinator-approval.yml: the merge-queue gate
 
 The risky-change gate as a required check (fleet-ops#9383, #10292). Fleet-ops runs it on
