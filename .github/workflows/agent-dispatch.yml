@@ -1164,7 +1164,10 @@ jobs:
     concurrency:
       group: orchestrate-${{ github.repository }}-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
+    # Bounded concurrency (fleet-ops#11167): the `handoff` label is held by 5 runners, so a sixth hand-off
+    # waits for a free runner at GitHub, with no API calls. 5 is the plans' measured carry of 4 to 6 on
+    # 2026-10-30 (#11146, #11160). Raise it only when router capacity grows. Runner labels live at GitHub.
+    runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops","handoff"]') || fromJSON('["self-hosted","agent","handoff"]') }}  # fleet-ops#10717
     # Above the session step's wall and the cleanup after it. Measured on 40942864011: 9 seconds from
     # job start to the session step, 4 seconds from its kill to the job's last step, so the 10-minute
     # margin here is slack, not the budget the session runs in (fleet-ops#11059).
@@ -1264,42 +1267,6 @@ jobs:
           gh issue comment "$ISSUE" -R "$REPO" --body "orchestrator hand-off started: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" ||
             echo "::warning::orchestrate: the hand-off-started comment failed; today's daily cap count misses this run"
           echo "go=true" >> "$GITHUB_OUTPUT"
-      - name: Wait for a free hand-off slot
-        id: slot
-        if: steps.issue.outputs.go == 'true'
-        env:
-          SLOTS: 5
-        # GitHub has no fleet-wide cap and its expressions have no arithmetic,
-        # so the cap is a poll: other runs of this lane whose orchestrate job is
-        # not completed count against SLOTS, and a queued hand-off re-checks
-        # every 90 seconds instead of failing (fleet-ops#11167). The rate limit
-        # is a second ceiling (2026-10-30 technical lead note on #11167), so the
-        # poll makes no call unless the list call succeeds and fails closed: a
-        # hand-off keeps waiting on a brownout rather than spilling past five.
-        run: |
-          while :; do
-            if ! ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?status=in_progress&per_page=100" --jq '.workflow_runs[].id'); then
-              echo "::warning::orchestrate: the run list failed; keeping issue $ISSUE waiting for a slot"
-              sleep 90
-              continue
-            fi
-            in_flight=0
-            for id in $ids; do
-              [ "$id" = "$GITHUB_RUN_ID" ] && continue
-              if ! c=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '[.jobs[] | select(.status != "completed" and (.name | IN("orchestrate") or endswith(" / orchestrate")))] | length'); then
-                echo "::warning::orchestrate: the job read failed on run $id; keeping issue $ISSUE waiting for a slot"
-                in_flight=0
-                break
-              fi
-              in_flight=$((in_flight + c))
-            done
-            if [ "$in_flight" -ge "$SLOTS" ]; then
-              echo "orchestrate: $in_flight hand-offs in flight, $SLOTS planned capacity; issue $ISSUE waits"
-              sleep 90
-              continue
-            fi
-            break
-          done
       - name: Fresh worktree on origin/main
         id: worktree
         if: steps.issue.outputs.go == 'true'

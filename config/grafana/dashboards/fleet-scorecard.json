@@ -34,7 +34,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Fleet-ops#10711. Five tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, and the two at the bottom, head to review verdict and approval to merge (Fleet-ops#10887). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (fleet-ops#10966): Claude limit per merged PR. Five of the six numbers have a rule in `config/grafana/provisioning/alerting/fleet-scorecard.yaml`, and each files a fleet-ops issue when it misses its target two days running. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
+        "content": "Fleet-ops#10711. Six tables: merged per day, failed share of agent runs, idle agent-runner minutes while ready work waits, the two below it, head to review verdict and approval to merge (Fleet-ops#10887), and the hand-off to PR rate (fleet-ops#11167). The idle table counts runner-minutes with no agent run in flight, on days when an open `agent-ready` issue was waiting, against that day's mean count of online agent runners.\n\nThe two tables above bucket days with SUBSTRING, which the expression engine allows, and the merged table searches each repository on its own (Fleet-ops#10853). The failed share counts every non-success finished run, not only infra failures. The verdict and approval tables pair each merged fleet-ops PR with its reviews: the export carries no head commit timestamp, so the head clock starts at the PR opening or at the push that dismissed the previous approval, whichever is later.\n\nNo data source yet (fleet-ops#10966): Claude limit per merged PR. Five of the six numbers have a rule in `config/grafana/provisioning/alerting/fleet-scorecard.yaml`, and each files a fleet-ops issue when it misses its target two days running. Targets: idle 0 min/day, verdict p50 < 20 min and p90 < 60 min, infra failures < 2%, approval to merge < 15 min, products ahead of fleet-ops, Claude limit per PR cut 30%."
       }
     },
     {
@@ -494,7 +494,7 @@
       "type": "table",
       "id": 7,
       "title": "Hand-off to PR rate per day, last 14 days",
-      "description": "Orchestrate hand-off runs plus the same lane's admit runs (the runs feed carries no job-level field, so both count; the daily sweep's schedule event stays out) versus PRs opened that day from orch/ branches. Target: over 80%. Source: fleet-ops#11167.",
+      "description": "Hand-offs that opened a PR (PRs opened that day from orch/ branches) over those plus hand-offs that ended with no PR (issues labelled handoff-ended, by last update day). Target: over 80%. Source: fleet-ops#11167.",
       "gridPos": {
         "x": 0,
         "y": 51,
@@ -514,13 +514,12 @@
             "type": "grafana-github-datasource",
             "uid": "fleet-github"
           },
-          "queryType": "Workflow_Runs",
+          "queryType": "Issues",
           "owner": "Nishfleet",
-          "repository": "fleet-ops",
+          "repository": "",
           "options": {
-            "owner": "Nishfleet",
-            "repository": "fleet-ops",
-            "workflow": "agent-dispatch.yml"
+            "query": "is:issue label:handoff-ended repo:Nishfleet/fleet-ops",
+            "timeField": 1
           },
           "hide": true
         },
@@ -546,7 +545,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT r.d AS day, r.n AS handoffs, COALESCE(p.n, 0) AS prs, ROUND(100.0 * COALESCE(p.n, 0) / r.n, 1) AS pr_rate_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM A\n      WHERE event IN ('issues', 'workflow_dispatch') GROUP BY d) r\nLEFT JOIN (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM B GROUP BY d) p ON p.d = r.d\nORDER BY r.d"
+          "expression": "SELECT p.d AS day, p.n + COALESCE(e.n, 0) AS handoffs, p.n AS prs, ROUND(100.0 * p.n / (p.n + COALESCE(e.n, 0)), 1) AS pr_rate_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM B GROUP BY d) p\nLEFT JOIN (SELECT SUBSTRING(updated_at, 1, 10) AS d, COUNT(*) AS n FROM A GROUP BY d) e ON e.d = p.d\nORDER BY p.d"
         }
       ],
       "options": {
