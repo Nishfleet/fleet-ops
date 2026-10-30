@@ -118,32 +118,37 @@ def _changes(before: dict, after: dict) -> list[tuple[str, str, dict]]:
     return out
 
 
-def _section(base: str, rel: str) -> list[str]:
-    """The listing for one play file main's copy and the PR's tree hold differently."""
-    status = _git("diff", "--name-status", "--no-renames", f"{base}..HEAD", "--", rel).strip()
-    if not status:
+def _sections(base: str) -> list[str]:
+    """The listing for every play whose text the diff changes between main's copy and the PR's
+    tree, with the raw diff of each file under ansible/ that the diff touches."""
+    plays = sorted(set(_plays("HEAD")) | set(_plays(base)))
+    changed = sorted(row.split("\t")[1] for row in _git("diff", "--name-status", "--no-renames",
+                                                        f"{base}..HEAD", "--", "ansible").splitlines())
+    if not changed and not any(ansible_host.text(base, rel) != ansible_host.text("", rel)
+                               for rel in plays):
         return []
-    assert ansible_host.text(base, rel) != ansible_host.text("", rel), (
-        f"{rel} is {status}, but it reads the same at {base[:12]} and HEAD: the preview is not "
-        "reading main's copy")
-    lines = [f"{rel}:",
-             f" {_git('diff', '--no-color', f'{base}..HEAD', '--', rel).rstrip()}"]
-    before, after = _play(base, rel), _play("", rel)
-    for mark, name, entry in _changes(_entries(before), _entries(after)):
-        handlers = _handlers(after if mark in "+~" else before)
-        marks = {"+": "notifies", "-": "notified", "~": "notifies"}[mark]
-        lines.append(f"  {mark} {name}")
-        if _notifies(entry):
-            fires = [name for notify in _notifies(entry) for name in _fires(notify, handlers)] or ["nothing"]
-            lines.append(f"      {marks}: {', '.join(fires)}")
+    lines = ["files under ansible/:"]
+    for rel in changed:
+        lines.append(f"  {_git('diff', '--no-color', f'{base}..HEAD', '--', rel).rstrip()}")
+    for rel in plays:
+        if ansible_host.text(base, rel) == ansible_host.text("", rel):
+            continue
+        lines.append(f"{rel}: the play the PR puts on the box")
+        before, after = _play(base, rel), _play("", rel)
+        for mark, name, entry in _changes(_entries(before), _entries(after)):
+            handlers = _handlers(after if mark in "+~" else before)
+            word = {"+": "notifies", "-": "notified", "~": "notifies"}[mark]
+            lines.append(f"  {mark} {name}")
+            if _notifies(entry):
+                fired = [who for notify in _notifies(entry) for who in _fires(notify, handlers)] or ["nothing"]
+                lines.append(f"      {word}: {', '.join(fired)}")
     return lines
 
 
 def test_a_play_change_is_listed_with_its_task_names_and_the_handlers_they_notify():
     base = _base()
     lines = [f"ansible preview against main's copy ({base[:12]}):"]
-    for rel in sorted(set(_plays("HEAD")) | set(_plays(base))):
-        lines += _section(base, rel)
+    lines += _sections(base)
     if len(lines) == 1:
         lines.append("  no play change")
     print("\n".join(lines))
