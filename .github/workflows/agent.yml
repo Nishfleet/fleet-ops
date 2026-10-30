@@ -338,8 +338,9 @@ jobs:
           CLAUDE_MAX_TURNS: '200'
           # true for strong-only work; a judgment job that claude cannot take goes to pi.
           SENIOR: ${{ steps.gate.outputs.senior }}
-          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
-          FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
+          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015); the ref
+          # suffix separates a sweep matrix's calls, which share github.run_id (#9081).
+          FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.ref }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
