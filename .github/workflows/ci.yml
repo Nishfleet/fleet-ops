@@ -1005,6 +1005,7 @@ jobs:
           bad-ref|badref|Add x (#7)||||||1
           pr-read-fails|7|Add x (#7)|||||pulls/7$|1
           files-read-fails|7|Add x (#7)|||||/files\?|1
+          association-read-fails|8|a~7;b (#8)|7||7||commits/.*/pulls\?|1
           statuses-read-fails|7|Add x (#7)|7||7||/statuses\?|1
           comments-read-fails|7|Add x (#7)|7||7||/comments\?|1
           compare-read-fails|7|Add x (#7)|||||/compare/|1
