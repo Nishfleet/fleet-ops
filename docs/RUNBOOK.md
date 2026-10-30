@@ -365,7 +365,8 @@ that changed nothing running, because nothing read it (fleet-ops#9670).
 
 Warning: a green drive monitor does not mean drive works. The site sits behind Cloudflare
 Access until launch (Nish, 2026-10-01), so nothing outside can reach drive's own routes and
-the monitor below only proves the wall answered. The app-level check is fleet-ops#10226.
+the monitor below only proves the wall answered. The app-level check is decided
+(fleet-ops#10226, option 1) and lands at launch, not before: see "At launch" below.
 
 Sentry is the fleet's up/down detector for the product sites (fleet-ops#9014): no VPS probe,
 no agent in the loop. The token is in `~/.config/sentry/env` (0600, org read plus write on
@@ -409,7 +410,8 @@ included, and `/.well-known/cloudflare-access-protected-resource/...` is the one
 so no public monitor can reach drive's own routes. The "Drive health check" monitor (10494404)
 was deleted on 2026-10-24 for that reason: it pointed at `/api/health`, whose 404 the wall
 turned into a 302, so its last checks read green on the wall's answer rather than drive's.
-The app-level check it pretended to be is fleet-ops#10226.
+The app-level check it pretended to be is fleet-ops#10226, decided as option 1 on
+2026-10-29: it lands at launch, when the wall comes down, and not before.
 
 10494402 watches the wall instead, with a header only the Access login page sends. A PUT body
 merges into the monitor, so send only the fields you change:
@@ -424,6 +426,42 @@ stops sending that header, or if the hostname stops answering. Proven both ways 
 2026-10-24: the same assertion against `x-fleet-absent-header` failed the 07:43:47Z check
 with `assertionFailureData` naming that header, and `cf-access-domain` passed every check
 from 07:42:47Z on.
+
+### At launch: retarget the wall monitor at drive's own health endpoint
+
+Decided on 2026-10-29 (fleet-ops#10226, option 1): nothing to do before launch. When the
+Access wall comes down, drive's own routes become reachable from outside and the
+`cf-access-domain` assertion above starts failing, because that header exists only on the
+Access login page. That red is the trigger, so do not send the retarget before it fires.
+
+The monitor's target field is `url`, and a PUT body merges, so one PUT carries both fields:
+
+    PUT /api/0/projects/0509-gg/drive/uptime/10494402/
+    {"url":"https://storagebun.com/api/health",
+     "assertion":{"root":{"op":"status_code_check","value":200,"operator":{"cmp":"equals"}}}}
+
+Both are shapes already proven on this project's uptime monitors: `url` is the field the GET
+returns, and `status_code_check` with `value` and `operator` is what was measured on
+2026-10-24 (`value: 999` failed, 302 passed). The retarget is not complete until the body
+assertion below is in too.
+
+A 200 is not yet the check the issue asked for, because a 200 HTML error page from the edge
+passes it. drive's `/api/health` answers `{"ok":true}` only when its three D1s, its asset
+bucket, its nine rate limiters and its branch snapshots all answer, so the assertion has to
+reach the body with the `json_path` op. This runbook has not read that op's operand shape
+back from the API, so read it the way `header_check` was read on 2026-10-24: send the body
+and let the API's own 400 name the fields it wants.
+
+Probed on 2026-10-30 at 00:07Z, so the wall was still up and the retarget was not due:
+
+    $ curl -sSI --max-time 15 https://storagebun.com/api/health | grep -E '^HTTP|www-authenticate'
+    HTTP/2 302
+    www-authenticate: Cloudflare-Access resource_metadata="https://storagebun.com/.well-known/cloudflare-access-protected-resource/api/health"
+
+The same probe on `/` followed to a 200 carrying `cf-access-domain: storagebun.com`, which
+is what keeps the monitor green while the wall is up. The table row above is a 2026-10-24
+snapshot and names the workers.dev hostname drive later switched off; fleet-ops#10827 owns
+that row.
 
 ### The assertion shape
 
