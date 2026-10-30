@@ -1,4 +1,5 @@
 # Runs two systemd oneshots on the fleet runner; each exit code is a verdict. Reasons: docs/workflow-notes.md.
+# The probe runs last: its failure still fails the run, and it can no longer skip a deploy step (fleet-ops#10046).
 name: deploy-box
 
 on:
@@ -23,8 +24,8 @@ jobs:
     env:
       XDG_RUNTIME_DIR: /run/user/1000
     steps:
-      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - name: Start fleet-sync.service (user-scope deploy steps)
         run: /usr/bin/systemctl --user start fleet-sync.service || { /usr/bin/journalctl --user --no-pager -xeu fleet-sync.service --lines=60; exit 1; }
       - name: Start fleet-host-config.service (Ansible applies rootfs/ as root)
         run: /usr/bin/systemctl start fleet-host-config.service || { /usr/bin/journalctl --no-pager -xeu fleet-host-config.service --lines=60; exit 1; }
+      - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
