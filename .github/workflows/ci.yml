@@ -224,7 +224,7 @@ jobs:
           rc=0
           systemctl start "fleet-plan@$HEAD_SHA.service" || rc=$?
           [[ $rc -eq 0 ]] && banner=ok || banner=failed
-          { printf '# The host-config plan for %s: %s\n\n```log\n' "$HEAD_SHA" "$banner"; tail -c 48000 /var/lib/fleet-plan/plan.log; printf '\n```\n'; } | jq -Rs '{body: .}' | curl -sfS -K <(jq -rn '"header = \"Authorization: Bearer " + env.GH_TOKEN + "\""') --data-binary @- "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$pr/comments"
+          { printf '# The host-config plan for %s: %s\n\n```log\n' "$HEAD_SHA" "$banner"; tail -c 48000 "/var/lib/fleet-plan/plan-$HEAD_SHA.log"; printf '\n```\n'; } | jq -Rs '{body: .}' | curl -sfS -K <(jq -rn '"header = \"Authorization: Bearer " + env.GH_TOKEN + "\""') --data-binary @- "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$pr/comments"
           exit "$rc"
 
   unit:

@@ -12,8 +12,9 @@
 # 50-fleet-plan.rules), and --verify-commit refuses a head GitHub did not sign.
 #
 # --check and --diff make ansible predict and report, not write; the play's forced
-# tasks (check_mode: false) are read-only probes already (promtool check, amtool
-# check-config, nft -c, stat and git reads), and every module without check-mode
+# tasks (check_mode: false) are read-only probes already (the promtool,
+# nft -c, stat, find, and git reads tests/test_ansible_check_mode.py pins), and
+# every module without check-mode
 # support (systemctl, gpg --import, git) is skipped by --check itself. A failed plan
 # never leaves a broken unit behind: nothing was applied.
 #
@@ -40,7 +41,12 @@ After=network-online.target
 Type=oneshot
 StateDirectory=fleet-plan
 UMask=0022
-StandardOutput=append:/var/lib/fleet-plan/plan.log
-ExecStartPre=/usr/bin/truncate -s 0 /var/lib/fleet-plan/plan.log
+StandardOutput=append:/var/lib/fleet-plan/plan-%i.log
+# A per-instance log is also what stops a refused start posting the previous
+# head's plan under its own name (instances never share one file), and the
+# find keeps the old heads' logs from growing without bound. truncate creates
+# its target when the entry is this instance's first.
+ExecStartPre=/usr/bin/find /var/lib/fleet-plan -name 'plan-*.log' -mtime +14 -delete
+ExecStartPre=/usr/bin/truncate -s 0 /var/lib/fleet-plan/plan-%i.log
 ExecStart=/usr/bin/ansible-pull --url https://github.com/Nishfleet/fleet-ops.git --checkout %i --directory /var/lib/fleet-plan/repo --clean --verify-commit --diff --check --inventory localhost, ansible/host.yml
 TimeoutStartSec=600

@@ -372,8 +372,8 @@ is gone.
 ### ci.yml: the three unit-job checks and the token-wiring check are pytest now
 
 The unit job's play syntax checks (host.yml, update.yml), the report
-replay (fleet-ops#9340) and the Grafana token wiring check (fleet-ops#9445,
-#9738) moved to `tests/test_ansible_syntax.py`, `tests/test_ansible_report_skip.py`
+replay (fleet-ops#9340) and the Grafana token wiring check moved to
+`tests/test_ansible_syntax.py`, `tests/test_ansible_report_skip.py`
 and `tests/test_grafana_token_wiring.py`. Same checks, run twice maybe; the
 workflow files do not grow (the ratchet). Nothing else refers to the step names
 the grep-able tests pin, so a change there reads this note first.
@@ -383,15 +383,17 @@ the grep-able tests pin, so a change there reads this note first.
 The merge queue treats `host-plan` like any test: the job starts
 `fleet-plan@<head sha>.service` on a fleet-ci runner for entries whose diff
 touches ansible/, rootfs/, systemd/ or containers/, and the unit's --check
---diff run of the apply play is the comment. The unit template and the polkit
-grant ship in rootfs (the bootstrap notes are in the unit's header comment), so
+--diff run of the apply play is the comment. The comment under-reports what an
+apply would do on purpose: --check skips the modules it cannot simulate, so
+the apply plays' forced sites stay read-only by rule
+(tests/test_ansible_check_mode.py), and the unit's --verify-commit keeps the
+head invariant (the same web-flow key fleet-host-config.service already
+requires root to trust). The unit template and the polkit grant ship in
+rootfs (the bootstrap notes are in the unit's header comment), so
 the FIRST entry after the unit's own merge plans nothing (the job exits 0 with
-a reason line) and every later entry plans. The head sha is always an approved
-revision: the queue admits a head only after the reviews a risky path needs
-(config/risky-paths.json), so the plan reports exactly what the fleet is about
-to apply. Comment text is the unit's own log (the plan.log truncates per run,
-root:root 0644), not the CI job's journal read, so the fleet runner's journal
-police never gates the post.
+a reason line) and every later entry plans. The plan log is per instance
+(plan-<sha>.log, root:root 0644), so a refused start never posts the previous
+head's run under its own name: the job tails only its own instance log.
 
 ### coordinator-approval.yml: the merge-queue gate
 

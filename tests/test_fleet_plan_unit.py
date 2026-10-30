@@ -48,11 +48,12 @@ def test_the_pull_anonymously_from_the_named_head():
     assert "https://github.com/Nishfleet/fleet-ops.git" in _exec_start()
 
 
-def test_the_plan_log_is_the_run_log():
+def test_the_plan_log_is_the_run_log_of_that_head_alone():
     text = UNIT.read_text()
     assert "Type=oneshot" in text
-    assert "StandardOutput=append:/var/lib/fleet-plan/plan.log" in text
-    assert "ExecStartPre=/usr/bin/truncate -s 0 /var/lib/fleet-plan/plan.log" in text
+    assert "StandardOutput=append:/var/lib/fleet-plan/plan-%i.log" in text
+    assert "ExecStartPre=/usr/bin/truncate -s 0 /var/lib/fleet-plan/plan-%i.log" in text
+    assert "plan-*.log" in text and "-delete" in text, "old heads' logs age out"
 
 
 def test_a_plan_failure_is_not_paged_and_not_retried():
@@ -149,4 +150,6 @@ def test_the_ci_step_comments_the_plan_back_to_the_entry():
     ci = yaml.safe_load(CI.read_text())
     run = ci["jobs"]["host-plan"]["steps"][0]["run"]
     assert "issues/$pr/comments" in run
+    assert 'tail -c 48000 "/var/lib/fleet-plan/plan-$HEAD_SHA.log"' in run, \
+        "the comment tail reads the run's own instance log, not a shared file"
     assert 'exit "$rc"' in run, "the unit's exit code gates the merge queue"
