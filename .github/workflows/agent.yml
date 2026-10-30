@@ -57,9 +57,6 @@ jobs:
     if: inputs.ref
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 60
-    # Router wall and the strike step relabel with GITHUB_TOKEN, and nothing
-    # else here uses it. No job outputs: the strike runs in this job (below),
-    # so nothing reads them across jobs (fleet-ops#9275).
     permissions:
       issues: write
     concurrency:
@@ -97,19 +94,13 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
       - name: Gate
-        # The dispatch policy that the old intake prompt used to carry, now in one
-        # step: skip parked or blocked work, cap runs, then claim.
+        # Dispatch policy: skip parked or blocked work, cap runs, then claim.
         id: gate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          # Suffixed rework refs carry a -<tag> tail (claim/issue-<N>-<tag>);
-          # the issue number is the leading digits (fleet-ops#8793).
           i=${REF#claim/issue-}; i=${i%%-*}
           skip() { echo "gate: skip ($1)"; echo go=false >> "$GITHUB_OUTPUT"; exit 0; }
-          # A claim ref can name a number that is not an issue in the calling
-          # repo (fleet-ops#8772: inish-site dispatched fleet-ops' #8136): a
-          # 404 is a skip, any other gh failure still fails the step.
           err=$(gh api "repos/$REPO/issues/$i" --jq .number 2>&1 >/dev/null) ||
             { case $err in *"HTTP 404"*) skip missing-issue ;; *) echo "$err" >&2; exit 1 ;; esac; }
           issue=$(gh api "repos/$REPO/issues/$i")
@@ -117,7 +108,6 @@ jobs:
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
           [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
-          # A still-firing alert re-files every 24h (#10325). An older open twin already holds it: close this one, no model call (#10348).
           if jq -e '.title|startswith("alert: ")' <<<"$issue" >/dev/null; then
             t=$(jq -r .title <<<"$issue"); open=$(gh issue list -R "$REPO" --state open --search "in:title sort:created-asc ${t//\"/}" --limit 100 --json number,title)
             twin=$(jq -r --argjson i "$i" --arg t "$t" '[.[] | select(.title == $t and .number < $i)] | min_by(.number) | .number // empty' <<<"$open")
@@ -127,16 +117,7 @@ jobs:
             case $labels in *",$l,"*) skip "$l" ;; esac
           done
 
-          # A deliverable that edits .github/workflows/** is one no worker can ever land: the
-          # worker token is minted without the workflows permission, so every push is
-          # refused and two runs each burned their walls on it (fleet-ops #8877, #8861, #8902,
-          # #8990, #8995, #9211). Route it instead (fleet-ops#8900): the orchestrate job mints the
-          # App token with workflows: write (fleet-ops#10949), which CAN push them. The park loop above
-          # already skipped an issue with the label, so this only re-routes one a worker claimed
-          # by mistake. Substring, not a parse: a body that only mentions a workflow path in
-          # prose over-matches, which costs one orchestrator run, not a wrong push. fleet-ops
-          # issues also name workflows by bare file name ("fix agent.yml"; #9275 slipped onto a
-          # worker that way), so there a whole-word file name of its own workflows counts too.
+          # A worker token cannot push .github/workflows/**, so route that work to the orchestrator (fleet-ops#8900). Substring, not a parse: an over-match costs one orchestrator run, a "parse it properly" fix brings the wall burn back (#8877).
           fleet_ops=false
           case $REPO in */fleet-ops) fleet_ops=true ;; esac
           if jq -e --arg p '.github/workflows/' --argjson fo "$fleet_ops" '((.title // "") + "\n" + (.body // "")) as $t | ($t | contains($p)) or ($fo and ($t | test("(^|[^A-Za-z0-9_.-])(agent|agent-dispatch|ci|deploy-box|lighthouse|ratchet|secret-scan)\\.yml($|[^A-Za-z0-9_-])")))' <<<"$issue" >/dev/null; then
@@ -145,15 +126,7 @@ jobs:
             skip workflow-files
           fi
 
-          # Hard stop for loops where a run "succeeds" but CI stays red: 3 runs
-          # per issue since the newest park: comment (the old opus-vet: prefix still
-          # counts, so older issues keep their resets), counted from these comments.
-          # A run the provider refused (429, capacity) comments infra-failed and
-          # is not counted: the worker never got to try. An infra-failed cancels
-          # only the start that carries the same run URL, so a late one from a run
-          # begun before a reset cannot cancel a run begun after it. A comment that starts
-          # `attempt-cap reset: <why>` from an owner, member or collaborator
-          # restarts the count like a park: comment does; a comment from any other association counts for nothing.
+          # Cap: 3 runs per issue since the newest park: comment; an infra-failed run does not count.
           # shellcheck disable=SC2016 # $v is a jq variable
           runs=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] as $t | [$t[] | select(startswith("agent run infra-failed: ")) | ltrimstr("agent run infra-failed: ")] as $f | [$t[] | select(startswith("agent run started: ")) | ltrimstr("agent run started: ") | select(. as $u | $f | index($u) | not)] | length')
           if [ "$runs" -ge 3 ]; then
@@ -162,44 +135,14 @@ jobs:
             skip cap
           fi
 
-          # Engine (Nish, 2026-09-25). strong-only: Claude Code first, then pi while it has a
-          # free router slot; with both full they stay agent-ready. Any other issue: pi while it
-          # has a free router slot (first-try clean 85% tune, 5/5 held-out; fleet-ops#8975); full
-          # waits (lanes-full). Live count: distinct worker or pi session dirs on bwrap lines, host-wide.
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # pi has a free slot while its live workers are fewer than the router's
-          # worker-capable rows. No seat is ever counted out for failing (Nish
-          # 2026-09-28: no benching); a failed request re-picks another seat inside
-          # the router.
+          # Headroom is the worker-capable row count over the bwrap sessions live() counts: a safety valve, not a throttle (fleet-ops#10762).
           pi_free() {
-            # The worker-capable row count is the dispatch headroom. No row carries a slot
-            # count since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29
-            # rows. One lane per seat is a lower bound on the group's concurrency and sits
-            # above the 22 measured runners, so this stays a safety valve, not a throttle.
             slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
             [ "$(live pi)" -lt "$slots" ]
           }
-          # Claude does the judgment work, the free workers do the mechanical work,
-          # and Jev decides which is which. strong-only (senior) work always goes to
-          # Claude Code first. Any other issue is classified by Jev from its title
-          # and body: p >= 0.9 that completing it needs engineering judgment sends
-          # it to claude, p <= 0.1 (mechanical) sends it to the free lanes, and
-          # anything between, or a Jev call that fails, goes to the free lanes. The
-          # free order is pi, the one free harness. Claude is always Sonnet: Opus,
-          # Fable and Qwen are reviewer and judge models only, never a worker
-          # (#10750), and a packet that failed twice escalates to the
-          # worker-capable pool. The seat follows the issue number's parity
-          # (fleet-ops#9696):
-          # an odd issue runs seat a, an even issue the default login (seat b), so the jobs split across both seats and a job
-          # never changes seat (no clock, and the prompt cache holds). A seat at its usage limit shows up
-          # as a rate limit in the Worker, which falls through (below). There is no
-          # cap on live claude workers: nothing stock gives N slots, and
-          # agent.slice MemoryHigh/MemoryMax already govern the RAM they use.
+          # Seat by issue parity: odd = a, even = the default login, so a job never changes seat (fleet-ops#9696).
           jev_env=$HOME/.config/fleet-ops/seats/typesafe-jev.env # gitleaks:allow
-          # judgment_p: asks Jev whether the issue needs engineering judgment and sets
-          # jp to the probability of yes (empty when the call fails). The issue text
-          # is shown as data. Jev types the answer; the 0.9 and 0.1 lines are the
-          # only thing this shell decides.
           judgment_p() {
             local body resp choice p
             jp=
@@ -216,18 +159,15 @@ jobs:
             if [ "$choice" = judgment ]; then jp=$p; else jp=$(jq -rn --argjson p "$p" '((1 - $p) * 1000 | round) / 1000'); fi
           }
           claude_model=claude-sonnet-5-5
-          senior=false
           escalated=false
           # shellcheck disable=SC2016 # $v is a jq variable
           failed=$(gh issue view "$i" -R "$REPO" --json comments --jq '[.comments[] | if (.body | startswith("park:") or startswith("opus-vet:")) or ((.body | test("^attempt-cap reset: \\S")) and (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR"))) then "park:" elif (.body | startswith("agent run failed: ")) and ((.author.login == "nishfleet-worker") or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")) | not) then "untrusted" else .body end] | (map(startswith("park:")) | rindex(true) // -1) as $v | .[$v+1:] | map(select(startswith("agent run failed: "))) | length')
-          # Two failed runs escalate off the Claude lane to the worker-capable pool (#10750).
           [ "$failed" -lt 2 ] || escalated=true
-          # The audit line goes to the log and to the job summary.
           judged() { echo "judgment: p=$1 -> $2 ($3)" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
           want_claude=false
           case $labels in
             *,strong-only,*)
-              senior=true; want_claude=true
+              want_claude=true
               judged n/a claude "strong-only label" ;;
             *)
               judgment_p
@@ -250,12 +190,8 @@ jobs:
           else skip lanes-full
           fi
           gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-in-progress
-          # fleet-ops#9330 2x2 trial: the arm is a pure function of the issue number, so the pi lane below computes
-          # it from the same $id it already parses for the session dir, and nothing here records it: any reader
-          # recovers a run's arm from its issue number (odd -> no skills menu, (n/2) odd -> desk), the rule Note 14
-          # states. No comment carries a suffix, so the attempt cap above and the strike probe below are untouched.
           gh issue comment "$i" -R "$REPO" --body "agent run started: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          printf '%s\n' "engine=$engine" "claude_model=$claude_model" "senior=$senior" go=true >> "$GITHUB_OUTPUT"
+          printf '%s\n' "engine=$engine" "claude_model=$claude_model" go=true >> "$GITHUB_OUTPUT"
       - name: Branch
         if: steps.gate.outputs.go == 'true'
         env:
@@ -266,40 +202,26 @@ jobs:
       - name: Worker clock
         id: clock
         if: steps.gate.outputs.go == 'true'
-        # The Worker step's start time for the strike step's timeout test
-        # (fleet-ops#9291). A separate step, because a step killed at its
-        # timeout may not flush its own outputs.
+        # A separate step, because a step killed at its timeout may not flush its own outputs (fleet-ops#9291).
         run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Worker
         id: worker
         if: steps.gate.outputs.go == 'true'
-        # A step timeout fails the job, and the strike steps below (after
-        # Deliverable) strike it. A job timeout only cancels the job, which
-        # leaves the issue claimed with no strike (run 35900449636), so the
-        # step cap sits below the job's 60 minutes.
-        timeout-minutes: 55
-        # Logs are public on public repos. The full transcript stays on the
-        # VPS; only errors (stderr) reach the log. The Gate picks the engine.
+        timeout-minutes: 55 # Under the 60-minute job wall, so a cap death still reaches the strike step (run 35900449636).
         env:
           ENGINE: ${{ steps.gate.outputs.engine }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          # Claude lane: Sonnet always (the Gate decides). The other lanes have no
-          # turn cap, only the 55 minute step wall; this is a backstop under it.
           CLAUDE_MODEL: ${{ steps.gate.outputs.claude_model }}
           CLAUDE_MAX_TURNS: '200'
-          # true for strong-only work; a judgment job that claude cannot take goes to pi.
-          SENIOR: ${{ steps.gate.outputs.senior }}
-          # Pi sends this as x-litellm-session-id so the router keeps the whole run on one model (#9015).
+          # Pi sends this as x-litellm-session-id, so the router keeps the whole run on one model; without it the call exits 1 (fleet-ops#9015).
           FLEET_TASK_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
-          # The worker runs in its own PID namespace: when it exits (or this step is cancelled), the kernel kills every process it started, including ones that setsid/daemonize past the runner's snapshot-based orphan cleanup (actions/runner#4601). Before this, a headless Chrome outlived its job by 13h and a worker's gh-checks poller held node_modules so Clean workspace failed ENOTEMPTY (0509 run 36107401820). Same cgroup, so agent.slice memory limits still apply.
-          # The empty tmpfs mounts hide Nish's own gh login (admin:org, delete_repo, workflow; backups included) and every Cloudflare token from the worker, which reads outsider comments: a fooled model cannot read what the jail does not show (fleet-ops#9274). The worker's gh and git push use GH_TOKEN, the App token. ci.yml runs this exact line and fails if either path can be read.
-          # The Claude seats' logins are hidden the same way, from every engine but claude: seat a is the runner's CLAUDE_CONFIG_DIR (unset means one default login, and the already-hidden gh directory stands in so the line never names a path that is not there), seat b is the default login's credentials file and ~/.claude.json, which an empty bind replaces. The claude lane sees only the seat it runs on: claude_jail_a hides the default login, claude_jail_b hides seat a. ci.yml runs these three lines and fails if a hidden file can be read. A runner with no default login is fine: bwrap creates a missing bind target (checked 2026-10-10), so the line never refuses to start.
+          # --unshare-pid kills what the worker daemonized past the runner's orphan cleanup (actions/runner#4601; a Chrome ran 13h).
+          # Every engine but claude hides both seat logins; claude sees only its own seat.
+          # ci.yml runs these jail lines verbatim and fails if a hidden path is readable (fleet-ops#9274).
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
-          # The seats dir (every seat token file) and the App key dir are empty tmpfs mounts for every jailed engine: a worker reads outsider comments, so it holds no seat credential and no App private key, and the jail shows it neither (fleet-ops#10453). The unjailed steps read both through $HOME before their jail starts. ci.yml plants a file in each and fails if a jailed engine can read either.
-          # Credential backups, every other Claude config dir and the seats' one-year token files (seats/claude-seat-*.env, ~/.local/share/claude-seat-backup) sit beside the seats (a glob resolved now, not a list): a directory goes under an empty tmpfs, a plain file is bound to /dev/null, a symlink is resolved and its target hidden (bwrap follows a link in a mount path), a link that points nowhere is skipped. The one exception is the seat dir the claude lane runs on ($1); the lane reads its token file before the jail starts and hands the token to claude through the environment only.
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
           hide_but_a=$(claude_hides "$seat_a")
@@ -310,36 +232,21 @@ jobs:
           jail="$jail_base --"
           dir="$HOME/workspaces/agent-worktrees/issue-$id"
           mkdir -p "$dir"
-          # Plain git, local edits kept (no reset, clean or checkout -B); a failed switch fails the step.
           [ -e "$dir/.git" ] || git clone --reference-if-able "$HOME/workspaces/.mirrors/${REPO#*/}.git" "https://github.com/$REPO.git" "$dir"
           git -C "$dir" fetch -v origin
           git -C "$dir" switch "$REF"
-          # Static text, the marker line, then the target id: the id is the only
-          # per-run text, so the prompt-cache prefix is shared (fleet-ops#9363).
           nl=$'\n'
           packet="Fleet issue worker. Follow $HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/worker.md (read AGENTS.md beside it first); every \$1 there means the id after the marker.${nl}=== FLEET-DYNAMIC-BELOW ===${nl}Target: $id"
-          # Engines that actually start, for the builder-engine record the review
-          # reads (a fallthrough marks both).
           : > "$RUNNER_TEMP/engines-ran"
           mark() { echo "$1" >> "$RUNNER_TEMP/engines-ran"; }
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
           if [ "$ENGINE" = claude ]; then
-            # Claude Code on one of the two seats, chosen by the issue number's parity (fleet-ops#9696): an even $id
-            # unsets CLAUDE_CONFIG_DIR (seat b, the default login), an odd $id
-            # keeps it (seat a), a non-numeric id keeps seat a. The seat follows the issue, not the runner, so a retry
-            # lands on the same seat on any runner and a continued run finds the earlier session (a session
-            # lives in one seat's config dir). The seat never changes inside a job, except to the other seat when its
-            # own login is missing (below). A run that dies on a rate limit or a usage limit sends the same packet to
-            # pi, which continues from whatever the branch holds (worker.md step 2b). Other engines never see these
-            # seats' logins (the jail lines above); this one sees only the seat it runs on.
             fallback=pi
             seat_a_dir=${CLAUDE_CONFIG_DIR:-}
             case ${id##*-} in ''|*[!0-9]*) ;; *) [ $(( 10#${id##*-} % 2 )) -eq 0 ] && unset CLAUDE_CONFIG_DIR || : ;; esac
             if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then claude_seat=a; else claude_seat=b; fi
-            # A seat whose login file is missing or empty fails every job on it, so a missing login costs one seat, never both. Only the file's presence and size are tested, never its content. The other seat takes the job if it has a login; with neither, the lane is skipped and the job falls through as a refused seat does (below).
             seat_login() { if [ "$1" = a ]; then [ -n "$seat_a_dir" ] && [ -s "$seat_a_dir/.credentials.json" ]; else [ -s "$HOME/.claude/.credentials.json" ]; fi; }
             claude_other=a; [ "$claude_seat" = a ] && claude_other=b
-            # A seat with a one-year token file (`claude setup-token`, non-rotating) logs in with that token alone: claude gets it in its own environment and a fresh empty config dir under the job's temp dir (deleted when the lane ends), in the jail that hides every login, and no rotating login is read or written. The file is parsed, never sourced, and the token is masked and never exported in this shell, so a fallthrough engine does not inherit it. No file (or no token in it) keeps the login path below.
             unset CLAUDE_CODE_OAUTH_TOKEN
             claude_seats=$HOME/.config/fleet-ops/seats # gitleaks:allow
             claude_tok_of() { sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' "$claude_seats/claude-seat-$1.env" 2>/dev/null | head -n 1 | tr -d "\r \"'" || true; }
@@ -365,17 +272,15 @@ jobs:
             echo "claude lane: seat=$claude_seat auth=$claude_auth issue=${id##*-} runner=${RUNNER_NAME:-unknown}"
             mark claude
             rc=0
-            # A refused seat shows in the last lines the CLI prints. Earlier lines are
-            # the model's own text (an issue about rate limits mentions them), and a
-            # run that stopped on the turn cap is a failed run, not a refused seat.
+            # The last 3 lines only: the model's own text mentions rate limits, and a turn-cap stop is a failed run.
             refused() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'rate[ _-]?limit|\b429\b|usage limit|limit reached'; }
-            # One attempt; $1 is the token to log in with, empty for the seat's login. The token and a fresh empty config dir are exported inside a subshell, so they reach claude (bwrap passes the environment through) and nothing else.
             claude_cfg_root=
             claude_try() {
               local cfg=; rc=0
               if [ -n "$1" ]; then [ -n "$claude_cfg_root" ] || { claude_cfg_root=$(mktemp -d "$RUNNER_TEMP/claude-config.XXXXXX"); trap 'rm -rf "$claude_cfg_root"' EXIT; }; cfg=$(mktemp -d "$claude_cfg_root/c.XXXXXX"); fi
               (
                 if [ -n "$1" ]; then export CLAUDE_CODE_OAUTH_TOKEN="$1" CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1; fi
+                # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces the CLI to default permission mode, so --allowedTools is what keeps a token-mode run able to use a tool: without the list it answers in text and exits 0 with no PR (fleet-ops#10101).
                 echo "$packet" | $claude_jail --chdir "$dir" -- \
                   claude -p --continue --model "$CLAUDE_MODEL" --permission-mode bypassPermissions --allowedTools "Bash Read Edit Write Glob Grep WebFetch WebSearch TodoWrite NotebookEdit mcp__chrome-devtools" --max-turns "$CLAUDE_MAX_TURNS" \
                   --mcp-config "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/worker-mcp.json" \
@@ -384,10 +289,9 @@ jobs:
               ) >"$RUNNER_TEMP/try.out" 2>"$RUNNER_TEMP/try.err" || rc=$?
               [ -z "$cfg" ] || rm -rf "$cfg"
             }
+            # A revoked seat fails every job, so a 401 retries the other seat once, and only while nothing is pushed.
             authfail() { tail -q -n 3 "$RUNNER_TEMP/try.out" "$RUNNER_TEMP/try.err" | grep -qiE 'api error: 401|authentication[_ ]error|unauthorized|invalid (api key|bearer|token|authentication)|token (has )?(expired|been revoked|revoked)|please run /login|not logged in'; }
-            # --chdir puts the worker directory on the bwrap command line, which is what the Gate's lane count reads. --continue resumes this directory's session on the same seat; with none (first run, other seat) it starts fresh, rc 0, tested. The trim flags are the orchestrator session's: only the browser MCP server, no skills, no user settings; managed settings still apply. bypassPermissions is the same trust the pi lane gets (pi runs with its tools on): the bwrap jail is the boundary, not the permission prompt. The jail shows this lane only the seat it runs on. Project and local settings come from the worktree, which holds main's files plus what the model itself writes inside the same jail, so they add no reach; --settings turns every hook off, and --settings outranks project and local settings. CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 keeps the token out of the CLI's Bash tool environment. With that variable set the CLI forces permission mode to default and prints "Permission mode forced to default", so bypassPermissions alone does nothing in token mode: a headless run then cannot use a single tool, answers in text and exits 0 with no PR (fleet-ops#10101, tether#19, siterep-public#210). --allowedTools names every tool the worker needs, which is what the CLI's own message asks for; it widens nothing beyond what bypassPermissions granted, and the scrub stays on.
             claude_try "$claude_tok"
-            # A seat whose token was revoked or has expired fails every job on it, so one auth failure (not a rate limit; the CLI names it in its last lines) retries once with the other seat's token, before any fallthrough, and only while nothing is pushed (the model's own closing text can mention a 401; a run that did work is not redone). No token on the other seat, or a second failure, ends as a failed run.
             if [ "$rc" != 0 ] && [ "$claude_auth" = token ] && ! refused && authfail && [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ]; then
               claude_tok=$(claude_tok_of "$claude_other")
               if [ -n "$claude_tok" ]; then
@@ -409,16 +313,11 @@ jobs:
             fi
           fi
           if [ "$ENGINE" = pi ]; then
-            # Mobbin MCP via the pi-mcp-adapter package (Pi has no built-in MCP).
-            # OAuth tokens sit in ~/.pi/agent/mcp-oauth-encrypted/; this is their
-            # file key. Without it only the lazy mobbin server fails, never the run.
             set -a
             # shellcheck disable=SC1091 # constant seat file, not in the repo
             . "$HOME/.config/fleet-ops/seats/mobbin-mcp.env"
             set +a
-            # fleet-ops#9330 2x2 trial arm, from the issue number ($id is claim/issue-<n>, the same field the
-            # claude seat parity above reads): odd n -> no skills menu, (n/2) odd -> desk, the alias group with earlier
-            # compaction.
+            # fleet-ops#9330 2x2 trial arm from the issue number: odd n -> no skills menu, (n/2) odd -> desk.
             mark pi; pi_model=worker-capable; [ "$(gh api "repos/$REPO" --jq .private 2>/dev/null)" = false ] && pi_model=worker-public; arm_flags=(); [ $(( ${id##*-} % 2 )) = 1 ] && arm_flags+=(--no-skills)
             [ $(( ${id##*-} / 2 % 2 )) = 1 ] && pi_model=$pi_model-desk; cd "$dir" || { echo "no worktree $dir" >&2; exit 1; } # pi filters --continue by cwd; this dir is fixed per issue (fleet-ops#9326)
             echo "/worker $id" | $jail pi --print --no-context-files --continue \
@@ -431,10 +330,6 @@ jobs:
             exit 1
           fi
       - name: Record the builder engine
-        # The review job reads this; every first review is Opus 5.5, Claude-built
-        # or not (see the review job). Posted on the PR by
-        # the worker App, so only the App's own comment counts there. A PR with no such
-        # comment (the orchestrator's, a person's session) counts as Claude-built.
         if: always() && steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -445,13 +340,9 @@ jobs:
           ran=$(sort -u "$RUNNER_TEMP/engines-ran" 2>/dev/null | paste -sd, -) || ran=
           [ -n "$ran" ] || ran=$GATE_ENGINE
           gh pr comment "$pr" -R "$REPO" --body "builder-engine: $ran"
+      # Sample the host seconds after the death: the strike reads it to tell an infra kill from a code failure (fleet-ops#9291).
       - name: Host sample
         id: host
-        # fleet-ops#9291: the strike step classifies a Worker death as
-        # host-overload infra only if the host was overloaded at that moment,
-        # so sample NOW, seconds after the death. A step that never ran
-        # records no sample, and the strike step then treats the guard as
-        # unknown and strikes.
         if: failure() && steps.gate.outputs.go == 'true'
         run: |
           {
@@ -459,15 +350,11 @@ jobs:
             echo "load1=$(cut -d' ' -f1 /proc/loadavg)"
             echo "cores=$(nproc)"
             echo "swap_used_kb=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print t-f}' /proc/meminfo)"
-            # fleet-ops#9372: the Router wall pattern plus HTTP 500.
             if grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|\b429\b|http[ /0-9.]*500\b|status(code)?[\": ]*500\b|internal ?server ?error' "$RUNNER_TEMP/worker.err" 2>/dev/null; then echo router_err=true; else echo router_err=false; fi
           } >> "$GITHUB_OUTPUT"
       - name: App token for arm
         id: arm-token
         if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
-        # Scoped like app-token above. Router wall comments and relabels,
-        # Arm auto-merge edits the PR body and runs gh pr merge --auto (a
-        # squash needs contents), Deliverable reads the issue and PR list.
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: "4728578"
@@ -476,19 +363,16 @@ jobs:
           permission-checks: read
           permission-issues: write
           permission-pull-requests: write
+      # A router outage is not the issue's fault: comment infra-failed and requeue (fleet-ops#9372).
       - name: Router wall
         id: wall
-        # A router seat wall is infra, not a bad packet (fleet-ops#8543): no strike,
-        # back to agent-ready.
-        # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133, ~50 runs an issue).
         if: failure() && steps.gate.outputs.go == 'true'
         env:
+          # GITHUB_TOKEN on purpose: its label fires no workflow, so the issue waits for the next sweep (0509#6133).
           GH_TOKEN: ${{ github.token }}
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          # A 402/400 dead seat (fleet-ops#9007, #9011) is the
-          # provider, not the packet: the router cools only 401/404/408/429 of the 4xx, so a row that
-          # answers only these keeps its share. Bare 400 stays out: pi's own BadRequestError must strike.
+          # A 402/400 dead seat is the provider, not the packet (fleet-ops#9007, #9011). Bare 400 stays out: pi's own BadRequestError must strike.
           grep -qiE 'no deployments available|ratelimiterror|rate limit exceeded|insufficient balance|model is unavailable|\b429\b' "$RUNNER_TEMP/worker.err" 2>/dev/null || exit 0
           [ "$(gh api "repos/$REPO/compare/main...$REF" --jq .ahead_by)" = 0 ] || exit 0
           # shellcheck disable=SC2016 # $v is a jq variable
@@ -497,14 +381,13 @@ jobs:
           gh issue comment "$i" -R "$REPO" --body "agent run infra-failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           gh issue edit "$i" -R "$REPO" --add-label agent-ready --remove-label agent-in-progress
           echo wall=true >> "$GITHUB_OUTPUT"
+      # Close the issue through a keyword, then arm unless the diff leaves the safe allowlist (fleet-ops#9315);
+      # a red required check disarms and fails this step, which is what feeds the strike below.
       - name: Arm auto-merge as the App
         if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
-          # The merge closes the issue only through a closing keyword, and
-          # workers drop it often enough that merged work stayed claimed
-          # (0509 #4870 #4941 #4958 #5011 #5022 #5027 #5052, 2026-09-24).
           if gh pr view "$REF" -R "$REPO" --json state --jq .state | grep -qx OPEN; then
             i=${REF#claim/issue-}; i=${i%%-*}
             body=$(gh pr view "$REF" -R "$REPO" --json body --jq .body)
@@ -519,12 +402,7 @@ jobs:
               gh label create needs-coordinator -R "$REPO" --force --color B60205 --description "touches a path outside the arm allowlist: the coordinator reviews and arms it"
               gh pr edit "$REF" -R "$REPO" --add-label needs-coordinator
             else
-              # A head whose required checks are red is not armed, the test Deliverable fails
-              # on (fleet-ops#9315). The step disarms an arm left by an earlier run and fails, so
-              # the strike step requeues the issue and the next run arms the fixed head. Pending
-              # checks still arm (nothing re-arms a head that later goes green; the required checks
-              # hold the merge). No required checks judges all of them; an unreadable result is
-              # red. The App token reads the checks (checks: read, fleet-ops#10949).
+              # Pending required checks still arm: nothing re-arms a head that later goes green, and the required checks hold the merge (fleet-ops#9315).
               q='[.[] | select(.bucket == "fail") | .name] | join(", ")'
               red=$(gh pr checks "$n" -R "$REPO" --required --json name,bucket --jq "$q" 2>&1) || case $? in
                 8) ;; # gh's pending exit: --jq still printed any red names, empty if none
@@ -547,11 +425,6 @@ jobs:
           fi
       - name: Deliverable
         if: steps.gate.outputs.go == 'true'
-        # A worker that exits 0 with no PR and no park leaves the issue claimed
-        # and this job green, so the strike step never fires on it (fleet-ops#8461).
-        # Legit exit-0 paths in prompts/worker.md: closed (1b), parked with
-        # agent-blocked/needs-orchestrator/needs-nish-decision (2b, 4), a
-        # GitHub blocked_by dependency (4), or a PR on the claim branch.
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token }}
         run: |
@@ -570,12 +443,6 @@ jobs:
             echo "::error::worker exited 0 but #$i is still agent-in-progress with no open or merged PR and no park label"
             exit 1
           fi
-          # An open PR is not a delivery while its head is still red or conflicting: the run
-          # ended success and the issue kept agent-in-progress with nothing live (fleet-ops#9063).
-          # Fail it, so the strike step strikes and requeues it. Pending checks pass here. A red
-          # result from the workflow named CI fires rework (agent-dispatch's workflow_run lists
-          # only CI); a red check from another workflow fires nothing and holds the merge only if
-          # required (fleet-ops#9315). The App token reads the checks.
           pr=$(gh pr view "$REF" -R "$REPO" --json number,mergeable)
           n=$(jq -r .number <<<"$pr")
           if [ "$(jq -r .mergeable <<<"$pr")" = CONFLICTING ]; then
@@ -601,15 +468,7 @@ jobs:
             echo "::error::claim PR #$n head is still red after this run: $red"
             exit 1
           fi
-      # The strike used to be a separate `report` job on [self-hosted, agent] that queued
-      # behind busy runners for up to an hour with the issue claimed and nothing live
-      # (fleet-ops#9275, 0509 run 37258490012). It runs here now, on the runner this job holds.
-      # A run the concurrency group displaced never starts these steps, and the never-claimed
-      # guard below covers one that starts anyway. A runner that dies runs no further steps, so
-      # no strike or infra-failed comment is written: the sweep's stalled and orphans paths in
-      # agent-dispatch.yml find the issue agent-in-progress with a dead run and requeue it
-      # without a strike. App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow
-      # (fleet-ops#8552). Minted fresh: the first token is an hour old after a 55-minute Worker.
+      # App token, not GITHUB_TOKEN: a GITHUB_TOKEN label fires no workflow, so the relabel would start no next run (fleet-ops#8552). Minted fresh: the first token is an hour old after a 55-minute Worker.
       - name: App token for strike
         id: strike-token
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true'
@@ -618,20 +477,14 @@ jobs:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
+      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator. A cancelled
+      # run, a router 429/500 and an overload verdict requeue as infra instead, up to INFRA_REQUEUE_CAP.
       - name: Strike or requeue
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.strike-token.outputs.token }}
-          # GITHUB_TOKEN for the infra-failed comment and relabel below, for the
-          # same reason Router wall uses it: its label fires no workflow. Every
-          # other gh call here passes GH_TOKEN, which gh prefers.
+          # Same reason as Router wall: its label fires no workflow, so the issue waits for the next sweep.
           GITHUB_TOKEN: ${{ github.token }}
-          # fleet-ops#9291: the Worker step's outcome and clock (start from the Worker clock
-          # step, end from the Host sample taken at its death) and the guard constants. The
-          # Worker caps at 55 min, so 54 min (3240s) separates a cap death from an early failure.
-          # CPU guard: healthy load1 averages ~6 (fleet-ops#8860), the 2026-10-05 overload ran
-          # 50-374 (#9264), so 5x cores sits between. RAM guard: designed swap paging stays under
-          # ~4G (user-1000.slice MemoryHigh) and the overload crossed 7G of 8G.
           WORKER_OUTCOME: ${{ steps.worker.outcome }}
           STARTED: ${{ steps.clock.outputs.started }}
           ENDED: ${{ steps.host.outputs.ended }}
@@ -641,39 +494,19 @@ jobs:
           ROUTER_ERR: ${{ steps.host.outputs.router_err }}
           ENGINE: ${{ steps.gate.outputs.engine }}
           SHORT_RUN_SECS: '600'
+          # Guard baselines (fleet-ops#9291): 54 min separates the 55-minute cap death from an early failure; 5x cores sits between the healthy ~6 (fleet-ops#8860) and the 2026-10-05 overload's 50-374 (#9264); 4G swap is above designed paging and below that overload's 7G of 8G; 3 infra requeues is the cap a stuck host cannot exceed.
           WORKER_TIMEOUT_SECS: '3240'
           CPU_LOAD_FACTOR: '5'
           SWAP_GUARD_KB: '4194304'
-          # Infra requeues since the newest park before a death strikes anyway: a host stuck overloaded, or a pi loop, cannot requeue forever.
           INFRA_REQUEUE_CAP: '3'
-        # Two strikes, counted from these comments since the newest park: comment
-        # (opus-vet: still counts; a fresh one resets the count, same as the old claim-release prompt).
-        # First strike re-queues via agent-ready (fleet-ops#8552) with strong-only, so the retry
-        # goes to the Claude lane with the issue thread and pushed branch as its context,
-        # never to another worker model (Nish 2026-10-01, #9015); the second parks.
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
-          # A ref can name a number that is not an issue in the calling repo
-          # (fleet-ops#8772): nothing to comment or relabel, exit clean. Any
-          # other gh failure still fails the step.
           err=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json number 2>&1 >/dev/null) ||
             { case $err in *"Could not resolve"*) echo "strike: #$i does not resolve in $GITHUB_REPOSITORY; skip"; exit 0 ;; *) echo "$err" >&2; exit 1 ;; esac; }
-          # A run the concurrency group displaced never reached the Gate, so it
-          # never commented "agent run started:". Its cancelled job could still
-          # reach this step and strike and relabel the issue under the run that
-          # held the group (agent-in-progress and agent-ready together on 10 of
-          # 43 bare-branch issues in 0509).
           # shellcheck disable=SC2016 # $u is a jq variable
           comments=$(gh issue view "$i" -R "$GITHUB_REPOSITORY" --json comments)
           jq -e --arg u "/runs/$GITHUB_RUN_ID" '.comments | any(.body | startswith("agent run started:") and endswith($u))' <<<"$comments" >/dev/null ||
             { echo "strike: run $GITHUB_RUN_ID never claimed #$i; skip"; exit 0; }
-          # fleet-ops#9291: a Worker death under host overload is infra, not a bad packet (the
-          # 2026-10-05 overload struck 52 drive fixes into the strong-only lane while 93 pi
-          # slots sat free). Three signatures count as infra: a cancelled Worker (the runner's
-          # shutdown signal), a Worker that failed in under 10 minutes on a router 429/500
-          # (fleet-ops#9372), and one that failed at the 55-minute cap (>= 54 min) while load1
-          # was above 5x cores or swap above 4G, or at the cap on pi (#9955: --continue resumes it). A
-          # runner that died never gets here. Else strikes: an early failure, a timeout with no guard sample.
           verdict=strike
           if [ "$WORKER_OUTCOME" = cancelled ]; then
             verdict=infra
@@ -724,13 +557,6 @@ jobs:
           owner: Nishfleet  # zizmor: ignore[github-app] actions: write alone, to start the sweep in every enrolled repo
           permission-actions: write
       - name: Start the next ready issue
-        # A builder that finishes frees a lane, and GitHub sends no event for
-        # that, so ready work sat until the 6h sweep (fleet-ops#9063: drive
-        # idle 01:37-05:20Z on 2026-10-02 with 15 ready). Pull the next one:
-        # priority-now first, then oldest, unblocked, and only for a lane the
-        # Gate would admit, so a lanes-full skip never chains. Re-adding
-        # agent-ready as the App fires `issues: labeled`, the same event a
-        # person's label sends; the Gate still decides.
         if: always() && steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ steps.arm-token.outputs.token || steps.app-token.outputs.token }}
@@ -738,14 +564,9 @@ jobs:
         run: |
           i=${REF#claim/issue-}; i=${i%%-*}
           live() { pgrep -af -- "^bwrap .* -- $1 " | grep -oE 'agent-worktrees/issue-[^ ]*|sessions/agent-[^ ]*' | sort -u | wc -l; }
-          # The worker-capable row count is the dispatch headroom. No row carries a slot count
-          # since fleet-ops#10762, so a summed-cap number would ignore 24 of the 29 rows. One
-          # lane per seat is a lower bound on the group's concurrency and sits above the 22
-          # measured runners, so this stays a safety valve, not a throttle.
+          # Headroom is the worker-capable row count, not a summed cap: one lane per seat is a lower bound above the 22 measured runners (fleet-ops#10762).
           slots=$(yq '[.model_list[] | select(.model_name == "worker-capable")] | length' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/litellm-proxy.yaml")
           strong_free=false; regular_free=false
-          # The senior lane is always open: Claude has no cap, and a rate-limited Claude run
-          # falls through to pi in the Worker.
           strong_free=true
           if [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
           # An issue whose labeled run still waits for a runner must not be
@@ -762,7 +583,6 @@ jobs:
             [ "$n" = "$i" ] && continue
             issue=$(gh api "repos/$REPO/issues/$n")
             [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || continue
-            # Same park labels the Gate skips, so a parked issue cannot take the handoff (drive #14, 2026-10-02).
             jq -e 'any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic"))' <<<"$issue" >/dev/null && continue
             if jq -e 'any(.labels[]; .name == "strong-only")' <<<"$issue" >/dev/null; then $strong_free || continue
             else $regular_free || continue
@@ -1198,18 +1018,20 @@ jobs:
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"
           pool="$RUNNER_TEMP/pool"
-          basic=$(tr -d '\n' <<<"x-access-token:$GH_TOKEN" | base64 -w0)
-          echo "::add-mask::$basic"
           # Everything run through sys() (clone, fetch, build, tests) gets a system
           # PATH and no user git config: the jailed model can write under $HOME, so a shim in
           # ~/.local/bin or a line in ~/.gitconfig must not decide what gets
           # fetched, built or pushed. /usr/bin/node and python3 run the same two
           # suites `npm test` does; /usr/local/bin holds gh.
           sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
-          fresh_clone() {
-            rm -rf "$1"
-            sys git -c "http.extraheader=AUTHORIZATION: basic $basic" clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"
-          }
+          # inish-site is public, so the clone carries no credential. The job's only
+          # credential for it is a GitHub App installation token, and GitHub expires
+          # that after an hour (actions/create-github-app-token: "An installation access
+          # token expires after 1 hour"): this clone runs after the candidate fetch and
+          # up to two 40-minute model attempts, so a token minted at step start is dead
+          # by then. GitHub answers 401, git asks for a username a runner has no
+          # terminal for, and the attempt reports no valid edition (fleet-ops#10876).
+          fresh_clone() { rm -rf "$1"; sys git clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"; }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
           (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" X_BEARER_TOKEN="$x_key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
             || { echo "candidate fetch failed:"; tail -n 5 "$RUNNER_TEMP/fetch.out" | cut -c1-200; exit 1; }
@@ -1218,7 +1040,7 @@ jobs:
           mkdir -p "$src/data/candidates"
           cp -- "$pool/data/candidates/$today.json" "$src/data/candidates/$today.json"
           checked() {
-            fresh_clone "$dst" || return 1
+            fresh_clone "$dst" || { echo "the rebuild clone of inish-site main failed"; return 1; }
             mkdir -p "$dst/data/editions" "$dst/data/candidates"
             f="data/editions/$today.json"
             if [ -f "$src/$f" ] && [ ! -L "$src/$f" ] && [ "$(stat -c %s "$src/$f")" -lt 3000000 ]; then

@@ -17,6 +17,7 @@ FIXTURED_RULES = [
     ("paid-plan-idle.yaml", "ppi-commandcode", "paid-plan-idle.test.rules.yml", "CommandCodeIdle"),
     ("paid-plan-idle.yaml", "ppi-minimax", "paid-plan-idle.test.rules.yml", "MiniMaxIdle"),
     ("router-dead-row.yaml", "router-dead-row", "router-dead-row.test.rules.yml", "RouterRowAnswers402403404"),
+    ("router-dead-row.yaml", "router-dead-key", "router-dead-key.test.rules.yml", "RouterRowParkedOn401"),
 ]
 GUARD = (
     "prompt-cache-share-guard.yaml",

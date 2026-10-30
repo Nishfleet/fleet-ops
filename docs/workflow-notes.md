@@ -158,7 +158,10 @@ the `fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as roo
 is a verdict. polkit lets this runner's user start that one system unit, so no step uses sudo, and
 the unit's own guards still gate every step (fleet-ops#8519). The unit allows
 `TimeoutStartSec=300` for the steps alone, so the job's `timeout-minutes: 10` leaves headroom
-without letting a hung step park a runner.
+without letting a hung step park a runner. The security probe is the job's last step, not its
+first: a red probe still fails the run, and it can no longer mark the two deploy steps `skipped`,
+which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10046;
+`tests/test_deploy_box_trigger.py` locks the order).
 
 ### ratchet.yml: how the rule reaches every repo
 
@@ -169,6 +172,17 @@ declares `pull_request`, `pull_request_target` or `merge_group`: `pull_request` 
 `merge_group` so a merge-queue entry reports the check. This repo already calls it from `ci.yml`,
 so the job skips the ruleset's own run here: one run per PR. That run reports `ratchet`, not
 `ratchet / ratchet`.
+
+### ci.yml: the enrolled-stub check shares the python3-yaml step with the alert routes
+
+`ci.yml`'s `systemd-verify` job runs `tests/alert_routes_check.py` and
+`tests/intake_stub_check.py` in one step, because the ratchet above allows no net new
+workflow code line: a step of its own costs four lines (its name, `if: always()`, the
+`env` map and the `run` line), which is exactly the four that step already spent on the
+alert routes. Both checks read a repo file with python3-yaml and hold a contract written
+as prose, so they share the one install. The alert-route check still runs first, so its
+failure is reported before the stub check's, and `if: always()` is what keeps the stub
+check reporting when an earlier step of the job failed.
 
 ### agent-dispatch.yml: hold-risky, review-risky and list
 
@@ -306,6 +320,54 @@ data inside `src/` from its own list: `config/risky-paths.json` carries
 a block of its own because the workflow may not grow (the ratchet).
 `tests/test_arm_allowlist.py` runs the step against a fake `gh` for each layout and
 control, and pins the review job's `FLEET_TASK_ID` (#9428) in the same file.
+
+### agent.yml: the 2026-10 diet audit (fleet-ops#11068)
+
+Issue #11068 asked for four cuts to agent.yml. All four are live, so the audit
+deleted nothing and records why, with a run that shows each one working.
+
+Counting agent.yml's own runs does not count `work`. A called workflow's jobs
+run inside the caller's run, named `<caller job> / work`, so agent.yml's run
+list holds only its own runs: 58 in the 30 days to 2026-10-30, 38 `schedule`
+and 20 `workflow_dispatch`. Run 40880205007 (2026-10-29T13:15:02Z) shows
+`unblocked (claim/issue-10900) / work` success and
+`unblocked (claim/issue-10913) / work` success. agent-dispatch.yml holds ten
+`uses: agent.yml@main` lines. Six pass a `ref` and so start `work` (new,
+rework, remerge, ejected, unblocked, stuck-rework), two start `review`
+(review-risky, stuck-review), `stuck-arm` starts `arm` and `stuck-file` starts
+`stuck`. No dispatch input is needed.
+
+`report` is already deleted (fleet-ops#9336, commit 0d572d6ca, 2026-10-15).
+Before that every run skipped it (run 38545447452: `report` skipped), so the
+issue's "0 of 16" counts skips of a job that no step reached, not a job that
+ran. The `Strike or requeue` step in `work` does its work, and ci.yml's
+"Infra-wall classifier (fake gh)" step fails a PR that adds the job back.
+
+`review`'s rework block stays. The orchestrator starts on the
+`needs-orchestrator` label, and `GITHUB_TOKEN` fires no event on a label or a
+comment, so this block is the only route that sends a blocked `orch/issue-N`
+PR back, and it must post as the worker App. The 3-round cap lives in the same
+step. tests/test_orch_rework.py runs it.
+
+`inish-daily`'s runner-probe is not a copy of ci.yml's jail step. The job runs
+one step for it, `.github/actions/runner-probe` (fleet-ops#9989), and no
+planted-file step sits beside it today. ci.yml's "Worker jail hides the gh
+login" step plants fake logins on a throwaway GitHub-hosted runner and runs
+bwrap's mounts. The probe reads the live `actions.runner.*` unit's
+`InaccessiblePaths` as its own user and fails when a hidden path is readable,
+and only the box has that unit, so neither check covers the other's case. The
+`work` job runs the same probe on the same runner group, but every
+agent-dispatch.yml job that reaches `work` carries
+`vars.FLEET_DISPATCH_PAUSED != 'true'`, while `inish-daily`'s own `if:` has no
+pause term and fires at 02:00 and 05:00 UTC. On a paused fleet its probe is the
+only one left.
+
+`stuck` stays. agent-dispatch.yml's `stuck-file` job (line 905) passes all four
+inputs (`stuck_pr`, `stuck_sha`, `stuck_reason`, `stuck_url`): run 40957777296
+shows `stuck-file (11052, …) / stuck` success. ci.yml's "Sweep moves PRs waiting
+over 15 minutes (STUCK)" step pins the wiring (`stuck-review:review_pr
+stuck-arm:arm_pr stuck-rework:ref stuck-file:stuck_pr`) and fails when the job
+is gone.
 
 ### coordinator-approval.yml: the merge-queue gate
 
