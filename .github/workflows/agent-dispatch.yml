@@ -1028,7 +1028,7 @@ jobs:
           EXCLUDE: |
             (.labels | map(.name)) as $l
             | ((.title // "") + "\n" + (.body // "") + "\n" + ($l | join("\n"))) as $t
-            | if ($l | any(. == "nish-reserved" or . == "needs-nish-decision")) then "a reserved label"
+            | if ($l | any(. == "blocked-on: nish-decision" or . == "nish-reserved" or . == "needs-nish-decision")) then "a reserved label"
               elif ($t | test("\\b(secrets?|credentials?|passwords?|passphrases?|api[ _-]?keys?|private[ _-]?keys?|signing[ _-]?keys?|access[ _-]?tokens?|auth[ _-]?tokens?|bearer|oauth|service[ _-]?account)\\b|\\.env\\b"; "i")) then "secrets"
               elif ($t | test("\\b(payments?|billing|stripe|paypal|razorpay|invoices?|refunds?|payouts?|chargebacks?|checkout|subscriptions?|pricing|prices?|money|revenue|paywall|credit card|purchase)\\b"; "i")) then "money or payments"
               elif ($t | test("\\b(delet(e|es|ed|ing|ion)|remov(e|es|ed|ing|al)|scrub(s|bed|bing)?|purg(e|es|ed|ing)|wip(e|es|ed|ing)|eras(e|es|ed|ing)|erasure|drop(s|ped|ping)?|truncat(e|es|ed|ing)|destroy(s|ed|ing)?|clean(s|ed|ing|up)?|clear(s|ed|ing)?)\\b[^\\n]{0,60}\\b(customers?|users?|accounts?|persons?|personal|pii|records?|databases?|tables?|rows?)\\b|\\b(gdpr|right to be forgotten|data deletion|drop table|truncate table)\\b"; "i")) then "customer-data deletion"
