@@ -22,6 +22,7 @@ FAKE_GH = r"""#!/usr/bin/env bash
 q=.; for ((i = 1; i <= $#; i++)); do [ "${!i}" = --jq ] && { j=$((i + 1)); q=${!j}; }; done
 case "$*" in
   "issue edit"*) echo "$*|token=${GH_TOKEN:-none}" >> "$FAKE_DIR/writes.log" ;;
+  "label create"*) echo "label create $3|token=${GH_TOKEN:-none}" >> "$FAKE_DIR/writes.log" ;;
   "issue view"*) jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *"/dependencies/blocking"*) jq -r "$q" "$FAKE_DIR/blocking.json" ;;
   *"/parent"*) exit 1 ;;
@@ -31,7 +32,6 @@ case "$*" in
   *"no:label"* | *agent-in-progress*) echo '[]' ;;
   "pr list"*) echo '[]' ;;
   "issue list"*) [ -f "$FAKE_DIR/list.json" ] && jq -r "$q" "$FAKE_DIR/list.json" ;;
-  "label create"*) ;;
   "api repos/o/r/issues/"*) n=${2##*/}; jq -r "$q" "$FAKE_DIR/issue-$n.json" 2>/dev/null || jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -127,8 +127,8 @@ def test_dependency_blocked_ready_issues_carry_the_dep_label_the_alert_excludes(
                          3: (["agent-ready", "agent-blocked-dep"], 1),
                          4: (["agent-ready", "agent-blocked-dep"], 0),
                          5: (["agent-ready"], None)})
-    raw = [l for l in w if "agent-blocked-dep" in l]
-    sync = [l.split("|")[0] for l in raw]
+    raw = [l for l in w if "agent-blocked-dep" in l and (l.startswith("issue edit") or l.startswith("label create"))]
+    sync = [l.split("|")[0] for l in raw if l.startswith("issue edit")]
     assert sync == [
         "issue edit 2 -R o/r --add-label agent-blocked-dep",
         "issue edit 4 -R o/r --remove-label agent-blocked-dep"]
@@ -147,9 +147,17 @@ def test_the_syncs_no_event_claim_is_a_property_of_the_workflow():
 
 def test_scheduled_sweep_syncs_the_dep_label_without_gating_the_queue(tmp_path):
     w = sweep(tmp_path, {2: (["agent-ready"], 1), 3: (["agent-ready", "agent-blocked-dep"], 0)})
-    raw = [l for l in w if "agent-blocked-dep" in l]
-    assert [l.split("|")[0] for l in raw] == [
+    raw = [l for l in w if "agent-blocked-dep" in l and (l.startswith("issue edit") or l.startswith("label create"))]
+    sync = [l.split("|")[0] for l in raw if l.startswith("issue edit")]
+    assert sync == [
         "issue edit 2 -R o/r --add-label agent-blocked-dep",
         "issue edit 3 -R o/r --remove-label agent-blocked-dep"]
     assert all(l.endswith("token=x") for l in raw), "the sync write is the job token: it fires no run"
     assert "claim/issue-3" in (tmp_path / "out").read_text(), "the label never gates the queue; blocked_by does"
+
+
+def test_the_dep_label_create_runs_at_most_once_a_sweep(tmp_path):
+    w = sweep(tmp_path, {2: (["agent-ready"], 1), 3: (["agent-ready"], 2), 4: (["agent-ready"], 3)})
+    creates = [l.split("|")[0] for l in w if l.startswith("label create")]
+    assert creates == ["label create agent-blocked-dep"], \
+        "one create a sweep, not one per changed issue"
