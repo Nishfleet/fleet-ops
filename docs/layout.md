@@ -297,7 +297,8 @@
   user-scope `install -C` copies (`config/pi-models.json` to
   `~/.pi/agent/models.json`, `config/litellm-proxy.yaml` to
   `~/.config/fleet-ops/litellm-proxy.yaml` behind a `cmp` guard,
-  and a LINK-GUARD pass
+  a jq merge of `config/pi-packages.json` into the `packages` key of
+  `~/.pi/agent/settings.json` (fleet-ops#9302), and a LINK-GUARD pass
   that fails the unit on a throwaway-target live symlink, and on a dangling
   one outside the `~/.pi/agent/skills` mirror, which logs instead
   (fleet-ops#7743, #9967). Root-owned files (`/etc/**`, `agent.slice`, everything under
