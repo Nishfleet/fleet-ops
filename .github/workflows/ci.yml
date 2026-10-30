@@ -600,19 +600,19 @@ jobs:
           ! grep -E '^WorkingDirectory=(/home/nish/?|~|%h/?)$' "$u" || { echo "$u: WorkingDirectory must not be the home dir"; exit 1; }
           grep -qx 'Environment=CLAUDE_CONFIG_DIR=/home/nish/.claude-vps' "$u" || { echo "$u: CLAUDE_CONFIG_DIR is not set inline"; exit 1; } # gitleaks:allow
       - name: Sweep re-sends red claim PRs (RED_REWORK)
-        # Runs the list job's own RED_REWORK program, read out of the workflow
-        # with the CHECK_DEFS it shares with the missing-checks case, against
-        # every case in config/sweep-rework-cases.json. The grep lines pin the
-        # wiring: the program's verdict feeds the sweep's pick list, and a
+        # Runs the re-dispatch step's own RED_REWORK program, read out of the
+        # workflow with the CHECK_DEFS it shares with the missing-checks case,
+        # against every case in config/sweep-rework-cases.json. The grep lines pin
+        # the wiring: the program's verdict feeds the sweep's pick list, and a
         # live newest run is still skipped.
         if: always()
         run: |
           set -euo pipefail
           f=.github/workflows/agent-dispatch.yml
-          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
-          run=$(yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f")
+          run=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .run' "$f")
           # shellcheck disable=SC2016 # the needles are literal workflow text
           for n in '"$CHECK_DEFS $RED_REWORK"' '--argjson d "$red"' '$o[], $d[]' 'run live, skip'; do
             grep -F -- "$n" <<<"$run" >/dev/null || { echo "missing sweep wiring: $n"; exit 1; }
@@ -665,10 +665,9 @@ jobs:
           f=.github/workflows/agent-dispatch.yml
           t=$RUNNER_TEMP/sweep-deleted-issue
           mkdir -p "$t/bin" "$t/data"
-          yq '.jobs.list.steps[] | select(.id == "list") | .run' "$f" > "$t/list.sh"
-          [ -s "$t/list.sh" ] && ! grep -qx null "$t/list.sh"
-          defs=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.CHECK_DEFS' "$f")
-          prog=$(yq '.jobs.list.steps[] | select(.id == "list") | .env.RED_REWORK' "$f")
+          for s in redispatch list; do yq ".jobs.list.steps[] | select(.id == \"$s\") | .run" "$f" > "$t/$s.sh"; [ -s "$t/$s.sh" ] && ! grep -qx null "$t/$s.sh" || exit 1; done
+          defs=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.CHECK_DEFS' "$f")
+          prog=$(yq '.jobs.list.steps[] | select(.id == "redispatch") | .env.RED_REWORK' "$f")
           [ -n "$defs" ] && [ "$defs" != null ] && [ -n "$prog" ] && [ "$prog" != null ]
           cat > "$t/bin/gh" <<'MOCK'
           #!/usr/bin/env bash
@@ -692,7 +691,7 @@ jobs:
               exit 1 ;;
             "issue view"*) jq -n --arg n "${args#view }" '{comments: (if $n | startswith("7003") then [range(0; 3) | {body: ("x" * 60000)}] else [] end)}' | emit ;;
             "pr list "*--head*) echo '0' | emit ;;
-            "pr list"*) serve "$d/prs.json" ;;
+            "pr list"*) [ -z "${FAIL_PR_LIST:-}" ] || { echo 'gh: HTTP 502 (pr list)' >&2; exit 1; }; serve "$d/prs.json" ;;
             "pr view"*) n=${args#view }; serve "$d/pr-${n%% *}.json" ;;
             "run view"*) echo '"completed"' | emit ;;
             "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
@@ -720,9 +719,12 @@ jobs:
           jq -c --argjson r "$red" 'map(select(.number==8002))[0] | {headRefName,mergeStateStatus:"CLEAN",statusCheckRollup:$r}' "$t/data/prs.json" > "$t/data/pr-8002.json"
           for body in 1 0; do
             : > "$t/out"
+            env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
+              CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err" 2>&1 || { echo "the claim-PR re-dispatch exited $? on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
+            prs=$(sed -n 's/^prs=//p' "$t/out"); : > "$t/out"
             rc=0
             env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x BODY_ON_STDOUT=$body \
-              ISSUE='' CLOSED='' CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/list.sh" > "$t/err" 2>&1 || rc=$?
+              ISSUE='' CLOSED='' PRS="$prs" bash -eo pipefail "$t/list.sh" >> "$t/err" 2>&1 || rc=$?
             cat "$t/err"
             [ "$rc" -eq 0 ] || { echo "the sweep exited $rc on a deleted issue (BODY_ON_STDOUT=$body)"; exit 1; }
             want='["claim/issue-7001","claim/issue-7002","claim/issue-7003"]'
@@ -730,6 +732,18 @@ jobs:
             [ "$got" = "$want" ] || { echo "refs: got $got, want $want (BODY_ON_STDOUT=$body)"; exit 1; }
             grep -F '#9502: issue gone' "$t/err" >/dev/null || { echo "the skipped issue was not reported (BODY_ON_STDOUT=$body)"; exit 1; }
           done
+          # A read fault in the re-dispatch no longer costs the hour (fleet-ops#9368): the step is
+          # continue-on-error, so GitHub hands the pick empty outputs and outcome=failure. The pick
+          # must still exit 0 with the queued issues, and say why no claim PRs were appended.
+          : > "$t/out"; rc=0
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 CHECK_DEFS="$defs" RED_REWORK="$prog" \
+            bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] && [ ! -s "$t/out" ] || { echo "the re-dispatch did not fail clean on a pr list fault (rc=$rc, outputs: $(cat "$t/out"))"; exit 1; }
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x ISSUE='' CLOSED='' PRS='' REDISPATCH=failure \
+            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || { echo "the sweep exited $? after a failed re-dispatch"; exit 1; }
+          cat "$t/err2"
+          grep -F 'claim-PR re-dispatch failed; this run appends no claim PRs' "$t/err2" >/dev/null || { echo "the pick did not warn about the failed re-dispatch"; exit 1; }
+          [ "$(sed -n 's/^refs=//p' "$t/out")" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $(sed -n 's/^refs=//p' "$t/out")"; exit 1; }
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
