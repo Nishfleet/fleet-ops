@@ -1124,6 +1124,18 @@ def test_glue_sweep_user_config_debris_is_retired() -> None:
     assert not missing, f"host.yml does not delete these glue-sweep leftovers: {missing}"
 
 
+GLUE_SWEEP_CHECKOUT_CACHES = (
+    "{{ nish_home }}/workspaces/tooling/last30days-skill/.pytest_cache",
+)
+
+
+def test_glue_sweep_checkout_caches_are_retired() -> None:
+    """The one entry in G9's checkouts that is scratch stays named for deletion."""
+    entries = retired_paths()
+    missing = [path for path in GLUE_SWEEP_CHECKOUT_CACHES if path not in entries]
+    assert not missing, f"host.yml does not delete these checkout caches: {missing}"
+
+
 def test_the_retired_file_removal_reloads_nish_user_manager() -> None:
     """A user unit deleted while the user manager holds it stays listed by
     list-unit-files until that manager reloads, which is half of #10544's check."""
@@ -1169,6 +1181,37 @@ def test_prometheus_config_installs_world_readable() -> None:
     assert 'src: "{{ rootfs }}/etc/prometheus/"' in task
     assert re.search(r'^ +mode: "0644"$', task, re.M)
     assert "mode: preserve" not in task
+
+
+ROOT_OWNED_COPIES = (
+    "rootfs/etc/prometheus/prometheus.yml",
+    "rootfs/etc/systemd/system/agent.slice",
+)
+
+
+@pytest.mark.parametrize("shipped", ROOT_OWNED_COPIES)
+def test_root_owned_copies_are_shipped_and_installed_as_root(shipped: str) -> None:
+    live = PurePosixPath("/" + shipped.removeprefix("rootfs/"))
+    assert (ROOT / shipped).is_file(), (
+        f"the repo ships no {shipped}, so {live} keeps whatever value it was built with "
+        "and a reviewed change to it never reaches the host (fleet-ops#8862)"
+    )
+    source = "{{ rootfs }}" + str(live.parent) + "/"
+    copy = next(
+        (
+            task["ansible.builtin.copy"]
+            for task in ansible_host.play()["tasks"]
+            if "ansible.builtin.copy" in task
+            and task["ansible.builtin.copy"].get("src") == source
+            and task["ansible.builtin.copy"].get("dest", "").rstrip("/") == str(live.parent)
+        ),
+        None,
+    )
+    assert copy is not None, f"no ansible/host.yml task copies {source} to {live.parent}, so {live} is never installed"
+    assert (copy.get("owner"), copy.get("group")) == ("root", "root"), (
+        f"the task that installs {live} does not declare owner: root and group: root, "
+        "so a copy that runs as root can still leave it owned by the source"
+    )
 
 
 def test_the_severity_nish_routes_wait_the_right_time_before_they_text_nish() -> None:
@@ -1721,7 +1764,7 @@ number=""
 status=${FAKE_GH_EDIT_STATUS:-0}
 while [ $# -gt 0 ]; do
     case "$1" in
-        list|edit) sub=$1 ;;
+        list|edit|workflow) sub=$1 ;;
         -R) repo=$2; shift ;;
         --jq) prog=$2; shift ;;
         --add-label) shift ;;
@@ -1732,6 +1775,7 @@ while [ $# -gt 0 ]; do
 done
 case $sub in
     list) printf '%s' "$FAKE_GH_PAYLOAD" | jq -r "$prog" ;;
+    workflow) [ -z "$FAKE_GH_DISPATCH" ] || { echo "$FAKE_GH_DISPATCH" >&2; exit 1; } ;;
     edit) if [ "$status" -eq 0 ]; then printf '%s#%s\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"
           else printf '%s#%s FAILED\\n' "${repo#Nishfleet/}" "$number" >>"$FAKE_GH_LOG"; fi
           exit "$status" ;;
@@ -1751,14 +1795,18 @@ def fake_gh_dir(tmp_path: Path) -> Path:
 def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> None:
     keys = effective_directives(PR_SWEEP)
     starts = keys["ExecStart"]
-    assert len(starts) == 2, "the dispatch line plus the failure check; deleting the second line is the documented off switch"
-    assert starts[0] == "/usr/bin/env gh workflow run agent-dispatch.yml -R Nishfleet/%i"
-    assert "gh run list" in starts[1] and "-w agent-dispatch.yml" in starts[1]
-    assert "-s completed -L 1" in starts[1], "the newest completed run only, so the previous cycle's startup_failure is caught"
-    assert "conclusion,url" in starts[1]
+    assert len(starts) == 1, (
+        "one line, because a skipped dispatch must not run the failure check either, and systemd skips the rest of a multi-command ExecStart only on failure; deleting it is the documented off switch"
+    )
+    assert "gh workflow run agent-dispatch.yml -R Nishfleet/%i" in starts[0]
+    assert "gh run list" in starts[0] and "-w agent-dispatch.yml" in starts[0]
+    assert "-s completed -L 1" in starts[0], "the newest completed run only, so the previous cycle's startup_failure is caught"
+    assert "conclusion,url" in starts[0]
     assert keys["Type"] == ["oneshot"]
     assert keys["Restart"] == ["on-failure"] and keys["RestartSec"] == ["60"]
-    assert keys["StartLimitIntervalSec"] == ["1h"] and keys["StartLimitBurst"] == ["3"]
+    assert keys["StartLimitIntervalSec"] == ["15min"] and keys["StartLimitBurst"] == ["3"], (
+        "one timer period: each 15-minute timer start counts against the budget, so 1h with burst 3 failed every fourth sweep"
+    )
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"]
     assert keys["TimeoutStartSec"] == ["120"]
     assert keys["EnvironmentFile"] == ["%t/fleet-worker-github-token/actions:%i.env"], (
@@ -1779,7 +1827,7 @@ def test_fleet_pr_sweep_asks_github_for_one_sweep_and_reads_the_last_run() -> No
 
 
 def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: Path) -> None:
-    command = specifier_expanded(unit_directives(PR_SWEEP)["ExecStart"][1], tmp_path)
+    command = sh_script(PR_SWEEP, tmp_path).replace("%i", "fleet-ops")
     env = {**os.environ, "PATH": f"{fake_gh_dir(tmp_path)}{os.pathsep}{os.environ['PATH']}"}
     url = "https://github.com/Nishfleet/fleet-ops/actions/runs/1"
 
@@ -1799,6 +1847,48 @@ def test_fleet_pr_sweep_failure_check_fails_only_on_a_startup_failure(tmp_path: 
         assert check(json.dumps([{"conclusion": conclusion, "url": url}])).returncode == 0, conclusion
     assert check("[]").returncode == 0, "a repo with no completed run yet passes"
     assert check("null").returncode == 0
+
+
+DISABLED_WORKFLOW = (
+    "could not create workflow dispatch event: HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow "
+    "(https://api.github.com/repos/Nishfleet/drive/actions/workflows/1/dispatches)"
+)
+
+
+def sweep_dispatch(tmp_path: Path, failure: str) -> subprocess.CompletedProcess:
+    """The unit's one ExecStart, with a fake gh that fails the dispatch when asked."""
+    bindir = fake_gh_dir(tmp_path)
+    return subprocess.run(
+        ["/bin/sh", "-c", sh_script(PR_SWEEP, tmp_path).replace("%i", "drive")],
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_DISPATCH": failure,
+            "FAKE_GH_PAYLOAD": json.dumps(
+                [{"conclusion": "startup_failure", "url": "https://github.com/Nishfleet/drive/actions/runs/1"}]
+            ),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_fleet_pr_sweep_skips_a_repo_whose_agent_dispatch_is_disabled(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, DISABLED_WORKFLOW)
+    assert proc.returncode == 0, (
+        "a disabled workflow never fixes itself, so the hourly timer would page for ever (fleet-ops#9631); "
+        "the fake's newest run is a startup_failure, so a pass also proves the failure check was skipped"
+    )
+    assert proc.stdout.splitlines() == [
+        "skip: Nishfleet/drive disabled agent-dispatch (HTTP 422), so there is no sweep to start"
+    ]
+    assert proc.stderr == "", "one journal line, not the 422 text"
+
+
+def test_fleet_pr_sweep_keeps_every_other_dispatch_failure_loud(tmp_path: Path) -> None:
+    proc = sweep_dispatch(tmp_path, "could not create workflow dispatch event: HTTP 500: Internal Server Error")
+    assert proc.returncode != 0, "only the disabled-workflow answer is a permanent state; anything else retries and pages"
+    assert "HTTP 500: Internal Server Error" in proc.stdout
 
 
 def _later_sweep_run(tmp_path: Path, repos: list[str], payload: str, edit_status: int = 0) -> tuple[int, list[str], list[str]]:
@@ -1841,19 +1931,21 @@ LATER_SWEEP_ISSUES = [
     {"number": 17, "author": {"login": "nish3451"}, "labels": [], "body": "no due line at all"},
     {"number": 18, "author": {"login": "nish3451"}, "labels": [{"name": "agent-blocked"}], "body": "due: 2020-01-01 09:15 IST"},
     {"number": 19, "author": {"login": "nish3451"}, "labels": [], "body": "due: 2020-01-01 09:15 ist\nmixed case in the IST word"},
+    {"number": 21, "author": {"login": "nish3451"}, "labels": [{"name": "on-hold"}], "body": "due: 2020-01-01 09:15 IST\nthe label a future-dated hand-off parks on (fleet-ops#11014)"},
 ]
 
 
 def test_later_sweep_promotes_only_overdue_trusted_issues_with_no_park_label(tmp_path: Path) -> None:
     code, lines, edits = _later_sweep_run(tmp_path, ["fleet-ops"], json.dumps(LATER_SWEEP_ISSUES))
     assert code == 0
-    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19"], edits
+    assert edits == ["fleet-ops#11", "fleet-ops#14", "fleet-ops#19", "fleet-ops#21"], edits
     assert [line for line in lines if line.startswith("later-sweep: promoted")] == [
         "later-sweep: promoted Nishfleet/fleet-ops#11",
         "later-sweep: promoted Nishfleet/fleet-ops#14",
         "later-sweep: promoted Nishfleet/fleet-ops#19",
+        "later-sweep: promoted Nishfleet/fleet-ops#21",
     ]
-    assert "later-sweep: verdict promoted=3 failed=0" in lines
+    assert "later-sweep: verdict promoted=4 failed=0" in lines
     assert not [line for line in lines if "WARN" in line]
 
 
@@ -2444,24 +2536,58 @@ def test_daily_host_config_timer_is_retired() -> None:
     assert (INSTALLED / "fleet-host-config-boot.timer").exists(), "the boot run stays"
 
 
-def test_grafana_provisioning_reload_retries_through_a_grafana_restart() -> None:
-    """fleet-ops#10171: the provisioning reload unit carries the keys a Grafana restart needs."""
+def test_grafana_provisioning_reload_never_spends_its_start_limit() -> None:
+    """fleet-ops#10848: a .path unit dies with unit-start-limit-hit the moment the unit it
+    triggers spends its start limit (systemd 255, src/core/path.c,
+    path_trigger_notify_impl), and a .path unit cannot restart itself, so the reload
+    service must never spend its burst. 2026-10-29 six Restart=on-failure starts spent
+    StartLimitBurst=6 and fleet-grafana-provisioning.path stayed failed until 14:39.
+    """
     keys = _unit_keys(GRAFANA_PROVISIONING)
-    assert keys["Restart"] == ["on-failure"], "a clean exit must not restart, and a failure restarts only inside the start limit"
-    assert keys["RestartMode"] == ["direct"], "systemd 254+ restarts without the failed state, so the token unit's start waits the retries out instead of failing with them, and OnFailure= fires once"
+    assert not {"Restart", "RestartSec", "RestartMode"} & keys.keys(), "a restart loop spends the burst, and a spent burst kills fleet-grafana-provisioning.path"
     assert keys["OnFailure"] == ["fleet-unit-failed@%N.service"], "a real outage must still page"
     assert "fleet-grafana.service" not in keys.get("After", []), "fleet-grafana.service has After= on the token unit that starts this one, so an ordering edge back would hold a Grafana start until its timeout"
-    interval = int(keys["StartLimitIntervalSec"][0])
+    assert "--retry-max-time 60" in keys["ExecStart"][0], "the one start has to outlast the 30 s a Grafana restart holds the reload out (fleet-ops#10038)"
+    interval = _seconds("StartLimitIntervalSec", keys["StartLimitIntervalSec"][0])
     burst = int(keys["StartLimitBurst"][0])
-    restart = int(keys["RestartSec"][0])
-    attempt = int(keys["TimeoutStartSec"][0])
     assert interval > 0 and burst > 0, "a zero interval disables the start limit"
-    assert burst >= 3, "one retry does not outlast a Grafana start"
-    assert burst * restart < interval, "the limit must be reachable inside its interval"
-    assert (burst - 1) * restart >= 60, "the 2026-10-23 Grafana restart held the reload out for 30 s"
+    path = _unit_keys(ROOT / "systemd/fleet-grafana-provisioning.path")
+    window = _seconds("TriggerLimitIntervalSec", path["TriggerLimitIntervalSec"][0])
+    windows = -(-interval // window)
+    deliverable = windows * int(path["TriggerLimitBurst"][0]) + 2
+    assert burst > deliverable, "the path unit delivers TriggerLimitBurst starts a trigger window and the token unit adds its timer and one per Grafana start, so the service's own burst must sit above what one interval of trigger rate can deliver"
+    attempt = int(keys["TimeoutStartSec"][0])
+    flags = keys["ExecStart"][0]
+    retry_window = int(re.search(r"--retry-max-time (\d+)", flags).group(1))
+    one_attempt = int(re.search(r"--max-time (\d+)", flags).group(1))
+    assert attempt >= 5 + 2 * (retry_window + one_attempt), (
+        "curl retries until --retry-max-time and then lets the attempt in flight run to --max-time "
+        "(man curl, --retry-max-time), so one endpoint holds --retry-max-time + --max-time and the "
+        "sleep 5 plus two endpoints must fit inside TimeoutStartSec, or systemd kills the reload "
+        "half-loaded"
+    )
     token = _unit_keys(GRAFANA_TOKEN)
-    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost, which is what failed with it"
-    assert int(token["TimeoutStartSec"][0]) > (burst - 1) * restart + attempt, "the token unit waits on the retries from its ExecStartPost, so its own timeout must cover the retry spacing plus one attempt at the reload unit's own TimeoutStartSec ceiling"
+    assert int(token["TimeoutStartSec"][0]) > attempt, "the token unit waits on the reload from its ExecStartPost, so its own timeout must cover the reload unit's ceiling"
+    assert token["ExecStartPost"][0].startswith("-"), "a reload that cannot get through pages through the reload unit's own OnFailure=, so it must not fail the mint with it"
+    assert "fleet-grafana-provisioning.service" in token["ExecStartPost"][0], "the reload is started from the token unit's ExecStartPost"
+
+
+def test_grafana_provisioning_reload_fails_loud_without_a_password(tmp_path: Path) -> None:
+    """The reload unit's own ExecStart, run the way systemd runs it: a missing or empty
+    admin password file fails the unit before either reload call, so a provisioning
+    change is never half-loaded (fleet-ops#10848).
+    """
+    keys = _unit_keys(GRAFANA_PROVISIONING)
+    command = keys["ExecStart"][0].replace("%h", str(tmp_path)).replace("$$", "$")
+    target = tmp_path / ".config" / "fleet-ops" / "grafana-admin-password"
+    target.parent.mkdir(parents=True)
+    for body in (None, ""):
+        target.unlink(missing_ok=True)
+        if body is not None:
+            target.write_text(body)
+        proc = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, timeout=30)
+        assert proc.returncode == 1, f"a {body!r} password file must fail the unit: {proc.stdout} {proc.stderr}"
+        assert "grafana admin password file missing or empty" in proc.stderr
 
 
 RESTART_POLICIES = {"always", "on-success", "on-failure", "on-abnormal", "on-abort", "on-watchdog"}

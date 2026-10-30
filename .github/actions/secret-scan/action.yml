@@ -1,0 +1,41 @@
+# The scan steps, shared by both jobs. Reasons and the pin-bump procedure: docs/workflow-notes.md.
+name: secret-scan
+description: Verify the authorized checkout, install the pinned gitleaks release, and scan.
+inputs:
+  sha: {description: "The one commit this job may read. Empty skips the check.", default: ""}
+  config: {description: "Rule file. Empty uses gitleaks' own default rules.", default: ""}
+  base-sha: {description: "Range start. Empty with head-sha walks the full ancestry of HEAD.", default: ""}
+  head-sha: {description: "Range end.", default: ""}
+runs:
+  using: composite
+  steps:
+    - name: Verify the checkout is the authorized commit
+      shell: bash
+      env: {AUTHORIZED_SHA: "${{ inputs.sha }}"}
+      run: |
+        set -euo pipefail
+        [ -z "$AUTHORIZED_SHA" ] || { test "$(git rev-parse --verify HEAD)" = "$AUTHORIZED_SHA" && ! git symbolic-ref --quiet HEAD; }
+    - name: Install the pinned gitleaks release and scan
+      shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        CONFIG: ${{ inputs.config }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+      run: |
+        set -euo pipefail
+        d="${RUNNER_TEMP:?}/gitleaks"; rm -rf -- "$d"; mkdir -p -- "$d"
+        curl -fsSL --retry 5 --retry-all-errors --max-time 180 -o "$d/g.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        printf '%s  %s\n' "$GITLEAKS_SHA256" "$d/g.tgz" | sha256sum --check --strict -
+        tar -xzf "$d/g.tgz" -C "$d" gitleaks; rm -f -- "$d/g.tgz"
+        test "$("$d/gitleaks" version)" = "$GITLEAKS_VERSION"
+        case "$BASE_SHA:$HEAD_SHA" in
+          :) log="--full-history HEAD" ;;
+          *:) echo "::error::base-sha needs head-sha"; exit 1 ;;
+          :*) echo "::error::head-sha needs base-sha"; exit 1 ;;
+          *) log="$BASE_SHA..$HEAD_SHA" ;;
+        esac
+        set -- --log-opts "$log" --redact --exit-code 2 --verbose --no-banner
+        [ -z "$CONFIG" ] || set -- --config "$CONFIG" "$@"
+        "$d/gitleaks" git . "$@"

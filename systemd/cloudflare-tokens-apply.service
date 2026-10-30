@@ -17,6 +17,15 @@
 # argv, never GitHub). GitHub secrets are written by the nishfleet-secrets App
 # (see the ExecStart below), which can write secrets on the listed repos and nothing else.
 #
+# Addresses: the VPS token (`vps-grafana`) is IP-locked to this host, and
+# `vps_cidrs` defaults to [] because the addresses are not kept in git
+# (infra/cloudflare-tokens/variables.tf). Every tofu run therefore reads them
+# from the gitignored %h/.config/cloudflare/vps-cidrs.tfvars, which holds one
+# line -- vps_cidrs = ["<ipv4>/32", "<ipv6>/128"], from `curl -4 -s
+# ifconfig.me` and `curl -6 -s ifconfig.me`. A tfvars file rather than an
+# EnvironmentFile because the value is HCL (a quoted list), and an env file
+# would put a second quoting layer in front of it.
+#
 # Failure is loud: OnFailure= fires the healthchecks.io fail ping
 # (fleet-unit-failed@.service, fleet-ops#9033), and `systemctl --user
 # list-units --state=failed` shows the unit.
@@ -40,6 +49,20 @@ Environment=TF_IN_AUTOMATION=1
 ExecStartPre=%h/.local/bin/tofu -chdir=infra/cloudflare-tokens init -input=false
 # GitHub: the nishfleet-secrets App, not the owner's personal login (fleet-ops#10601). The key file is 0600 in a
 # 0700 directory; its contents go to the provider through the environment of this one process only.
-ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfleet-secrets.private-key.pem) && export TF_VAR_github_app_pem && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false'
+ExecStart=/bin/sh -c 'TF_VAR_github_app_pem=$$(cat %h/.config/cloudflare/nishfleet-secrets.private-key.pem) && export TF_VAR_github_app_pem && exec %h/.local/bin/tofu -chdir=infra/cloudflare-tokens apply -auto-approve -input=false -var-file=%h/.config/cloudflare/vps-cidrs.tfvars'
+# Grafana does not read deploy-ci.env: it mounts a copy of it as the
+# grafana-cloudflare-api-token Podman secret (containers/quadlet/
+# fleet-grafana.container), and ansible/tasks/secrets.yml refreshes that copy on
+# a host-config run. A rotation here would otherwise leave Grafana holding the
+# token this apply just deleted until the next host-config run, and the
+# Cloudflare spend watch (fleet-ops#9355) would read nothing meanwhile. There is
+# no host-config timer (deploy-box.yml starts fleet-host-config.service only on a
+# push to main, or at boot), so the window has no other bound. So the apply asks
+# that existing writer to run rather than writing the secret a second time: it
+# already reads this file, trims the value, replaces the secret only when it
+# differs and restarts Grafana. polkit grants nish `start` on that unit and
+# nothing else (rootfs/etc/polkit-1/rules.d/50-fleet-host-config.rules), and
+# --no-block keeps a long playbook from holding this oneshot.
+ExecStartPost=/usr/bin/systemctl start --no-block fleet-host-config.service
 TimeoutStartSec=900
 UMask=0077

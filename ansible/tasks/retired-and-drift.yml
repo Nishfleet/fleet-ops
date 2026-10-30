@@ -137,6 +137,94 @@
   notify:
     - Reload nish's user manager
 
+# A retired path that is a git working tree of its own gets the alertmanager
+# treatment above: read at delete time, not once when the list was written, and
+# refused while it holds work that exists nowhere else (fleet-ops#10540). The
+# checkout, its uncommitted edits, its stash, whether a ref no remote carries
+# holds a commit, and whether origin/main carries its HEAD. The reads run as
+# nish, like every other read of a nish tree in this play, because git refuses a
+# repository whose owner is not the caller and the play runs as root. A path that
+# is already gone is the state the delete leaves behind, so it passes. Reads are
+# check_mode-proof, so a --check run refuses the same delete, and a read that
+# fails says why in the refusal instead of ending the play on a raw git error.
+- name: Stat the retired git checkouts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ retired_git_checkouts }}"
+  register: retired_checkout_paths
+
+- name: Note which retired git checkouts are still on the box
+  ansible.builtin.set_fact:
+    retired_checkouts_present: >-
+      {{ retired_checkout_paths.results
+         | selectattr('stat.isdir', 'defined') | selectattr('stat.isdir')
+         | map(attribute='item') | list }}
+
+- name: Read the uncommitted work of each retired git checkout
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", status, --porcelain]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_dirty
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Read the stash of each retired git checkout
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", stash, list]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_stash
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Read whether a ref no remote carries holds a commit
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", log, --all, --not, --remotes, --oneline]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_unpushed
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Read whether origin/main carries each retired git checkout's HEAD
+  become: true
+  become_user: nish
+  ansible.builtin.command:
+    argv: [git, -C, "{{ item }}", merge-base, --is-ancestor, HEAD, origin/main]
+  loop: "{{ retired_checkouts_present }}"
+  register: retired_checkout_merged
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Note which retired git checkouts hold work that exists nowhere else
+  ansible.builtin.set_fact:
+    retired_checkouts_holding_work: >-
+      {{ ((retired_checkout_dirty.results + retired_checkout_stash.results
+           + retired_checkout_unpushed.results + retired_checkout_merged.results)
+          | selectattr('stdout') | map(attribute='item') | list
+          + (retired_checkout_dirty.results + retired_checkout_stash.results
+             + retired_checkout_unpushed.results + retired_checkout_merged.results)
+            | rejectattr('rc', 'equalto', 0) | map(attribute='item') | list)
+         | unique | sort }}
+
+- name: Refuse to delete a retired git checkout that holds work nothing else has
+  ansible.builtin.assert:
+    that:
+      - retired_checkouts_holding_work | length == 0
+    fail_msg: >-
+      Refusing to delete retired checkouts that hold work origin/main does not
+      carry, or that git cannot read: {{ retired_checkouts_holding_work | join(', ') }}.
+      Push, commit or discard that work, or fetch the clone and rerun; the paths
+      stay in place until then.
+
 # Files the repo used to leave live and now removes, and files a session
 # hand-installed that the repo or a product repo now owns. Each path is named,
 # so a deletion is always a reviewed line in this file. system.control
@@ -189,6 +277,46 @@
          | reject('search', package_files | join('|'))
          | reject('search', '^(' ~ (retired | map('regex_escape') | join('|')) ~ ')(/|$)')
          | sort }}
+
+# G1 of the 2026-10-28 glue sweep (#10540): an env override in a user settings
+# file made every agent load five plugins straight out of working-tree
+# checkouts, so a pull in one changed what every agent loaded with no pin or
+# review. The checkouts are retired above and none of the five is enabled from a
+# working tree. That user file is not repo-managed, so the repo cannot delete a
+# later line from it: this reads the files that can carry one and refuses the
+# deploy while a line names the variable again. A file that is not on the box is
+# skipped; grep exits 1 when nothing matches, which is the state this holds. One
+# of the four is a symlink on this box, so the stat follows it: a link skipped as
+# "not a file" would be the one file nothing reads.
+- name: Stat the agent settings files that may carry a plugin override
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+  loop: "{{ agent_settings_files }}"
+  register: agent_settings_paths
+
+- name: Read each agent settings file still on the box for the retired plugin override
+  ansible.builtin.command:
+    argv: [grep, -H, -n, CLAUDE_CODE_PLUGIN_DIRS, "{{ item }}"]
+  loop: "{{ agent_settings_paths.results
+           | selectattr('stat.isreg', 'defined') | selectattr('stat.isreg')
+           | map(attribute='item') | list }}"
+  register: plugin_dirs_override
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Refuse the deploy while an agent settings file loads plugins from a working tree
+  ansible.builtin.assert:
+    that:
+      - plugin_dirs_override.results | selectattr('rc', 'equalto', 0) | list | length == 0
+    fail_msg: >-
+      Refusing: an agent settings file names CLAUDE_CODE_PLUGIN_DIRS, which loads
+      plugins from working-tree checkouts with no pin or review (fleet-ops#10540).
+      Delete that line from
+      {{ plugin_dirs_override.results | selectattr('rc', 'equalto', 0) | map(attribute='stdout') | list | join('; ') }}
+      and rerun; the deploy stays held until then.
+    quiet: true
 
 # Last on purpose: the handlers run first, so a missing credential file
 # fails this run without holding back the reloads above.

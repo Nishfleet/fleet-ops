@@ -60,5 +60,9 @@ ExecStart=/bin/bash -c 'set -euo pipefail; umask 077; \
   echo "minted a GitHub App token for Nishfleet/fleet-ops issues:write, valid one hour"'
 # Grafana picks the new file up on a provisioning reload. The service skips
 # itself when Grafana is stopped (a starting Grafana reads the file anyway).
-ExecStartPost=/usr/bin/systemctl --user start fleet-grafana-provisioning.service
+# The `-` prefix: the token is minted and the file is in place, and a reload
+# that cannot get through pages through the reload unit's own OnFailure=, so
+# failing the mint with it only adds a second failed unit. On 2026-10-29 the
+# reload failed for 2.5 h and this unit failed four times with it.
+ExecStartPost=-/usr/bin/systemctl --user start fleet-grafana-provisioning.service
 TimeoutStartSec=300
