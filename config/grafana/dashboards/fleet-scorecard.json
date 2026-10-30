@@ -316,7 +316,7 @@
           "owner": "Nishfleet",
           "repository": "",
           "options": {
-            "query": "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
+            "query": "org:Nishfleet is:issue label:agent-ready -is:blocked -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false",
             "timeField": 2
           },
           "hide": true
