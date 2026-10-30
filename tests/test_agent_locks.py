@@ -176,8 +176,15 @@ def test_a_locked_agent_has_no_user_unit_left_behind(name: str) -> None:
 
 
 def exec_start_values(unit: Path) -> list[str]:
-    text = unit.read_text().replace("\\\n", " ")
-    return [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("ExecStart")]
+    files = [unit]
+    for dropins in dropin_dirs(unit):
+        if dropins.is_dir():
+            files += sorted(dropins.iterdir())
+    values = []
+    for path in files:
+        text = path.read_text().replace("\\\n", " ")
+        values += [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("ExecStart")]
+    return values
 
 
 def runs_an_agent(unit: Path) -> bool:
