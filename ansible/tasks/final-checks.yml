@@ -56,8 +56,8 @@
 
 - name: Fail when a jailed-job config dir is not owned by nish
   ansible.builtin.assert:
-    that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish'
-    fail_msg: "{{ item.item }} is missing or not owned nish:nish (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }}), and a root-owned one stops every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles.d entry and the file task in tasks/system.yml own the repair; rerun host-config once they are in place."
+    that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish' and item.stat.wusr and item.stat.xusr
+    fail_msg: "{{ item.item }} is missing, not owned nish:nish or not writable by its owner (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }} mode {{ item.stat.mode | default('none') }}), and a root-owned one stops every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles.d entry and the file task in tasks/system.yml own the repair; rerun host-config once they are in place."
     quiet: true
   loop: "{{ config_dir_stats.results }}"
   loop_control:
