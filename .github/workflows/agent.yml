@@ -106,7 +106,13 @@ jobs:
           issue=$(gh api "repos/$REPO/issues/$i")
           labels=,$(jq -r '[.labels[].name]|join(",")' <<<"$issue"),
           [ "$(jq -r .state <<<"$issue")" = open ] || skip closed
-          [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" = 0 ] || skip blocked
+          # A dispatched agent-ready issue that dependencies still block must say so on its labels, or the ready lane starves in silence between sweeps (fleet-ops#11143).
+          if [ "$(jq -r '.issue_dependencies_summary.blocked_by // 0' <<<"$issue")" != 0 ]; then
+            if jq -e 'any(.labels[].name; . == "agent-ready") and (any(.labels[].name; . == "agent-blocked") | not)' <<<"$issue" >/dev/null; then
+              gh issue edit "$i" -R "$REPO" --remove-label agent-ready --add-label agent-blocked || echo "::warning::#$i: blocked rename refused"
+            fi
+            skip blocked
+          fi
           if jq -e '.title|startswith("__scout_probe_")' <<<"$issue" >/dev/null; then skip probe; fi
           # One list: every contact point that files an issue writes one of these
           # title prefixes, and tests/alert_routes_check.py holds the list against

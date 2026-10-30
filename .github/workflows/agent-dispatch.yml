@@ -551,6 +551,14 @@ jobs:
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
               released=$((${released:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
             fi
+            # A ready issue that dependencies still block is admitted by nothing, so it sat agent-ready for weeks while nothing could run it (fleet-ops#11143): rename the label to agent-blocked; at most 12 a sweep.
+            if [ "${renamed:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by > 0 and any(.labels[].name; . == "agent-ready")' <<<"$i" >/dev/null; then
+              renamed=$((${renamed:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label "$([ "$op" = remove ] && echo agent-ready || echo agent-blocked)" || echo "::warning::#$n: rename refused"; done
+            fi
+            # A closed blocker also releases the agent-blocked slice it held, the same re-fire (fleet-ops#11143); at most 12 a sweep.
+            if [ -n "$CLOSED" ] && [ "${readied:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "agent-blocked")' <<<"$i" >/dev/null; then
+              readied=$((${readied:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label "$([ "$op" = remove ] && echo agent-blocked || echo agent-ready)" || echo "::warning::#$n: release refused"; done
+            fi
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
           refs=$(printf '%s' "$pages" |
