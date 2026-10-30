@@ -256,7 +256,7 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: ''
-              options: {query: "org:Nishfleet is:issue label:agent-ready -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
+              options: {query: "org:Nishfleet is:issue label:agent-ready -is:blocked -label:agent-blocked -label:needs-orchestrator -label:needs-nish-decision NOT \"grafana alert:\" in:title archived:false", timeField: 2}
               refId: B
           - refId: P
             relativeTimeRange: {from: 259200, to: 0}
