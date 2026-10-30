@@ -35,9 +35,11 @@
 # JSON that is not a gate (no non-empty gate map, no string notify or
 # hold_ttl, or a gate value without an `unless` list). `| string` keeps the
 # registered result's newlines when it is written.
+# Root writes the file and owner/group hand it to nish. Becoming nish here fails: the copy's
+# staged source is root's, and an unprivileged become cannot chmod it (Ansible docs, "Risks of
+# becoming an unprivileged user"); host-config failed on every run from #11176 on.
 - name: Install the rendered tincan relay approval policy
   become: true
-  become_user: nish
   ansible.builtin.copy:
     content: "{{ tincan_relay_policy.stdout | string }}"
     dest: "{{ tincan_relay_policy_path }}"
