@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from intake_registry import product_names
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/fleet-scorecard.yaml"
 ALERTING = ROOT / "config/grafana/provisioning/alerting"
@@ -69,7 +71,6 @@ def test_products_behind_fires_only_when_both_days_miss(args, missed):
 
 
 DASHBOARD = ROOT / "config/grafana/dashboards/fleet-scorecard.json"
-INTAKE = ROOT / "config/intake-repos.json"
 GRAFANA_SQL_FUNCTIONS = {"sum", "count", "round", "substring", "unix_timestamp", "coalesce", "if", "ifnull", "floor", "ceil", "date_format", "from_unixtime", "min", "max", "avg", "abs", "row_number"}
 
 
@@ -109,7 +110,7 @@ def _grouped_select_lists(sql):
 
 
 def _declared_products():
-    return {r["name"] for r in json.loads(INTAKE.read_text())["repos"] if r.get("product") is True}
+    return product_names()
 
 
 def _rule_products_expression():

@@ -1,10 +1,11 @@
 import json
 import pathlib
 
+from intake_registry import product_names
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PANELS = json.loads((ROOT / "config/grafana/dashboards/fleet.json").read_text())["panels"]
-REGISTRY = json.loads((ROOT / "config/intake-repos.json").read_text())
-PRODUCTS = {r["name"] for r in REGISTRY["repos"] if r.get("product") is True}
+PRODUCTS = product_names()
 
 
 def test_product_prs_per_repo_leads_the_dashboard():
