@@ -95,6 +95,15 @@
   with no page). Hourly; it only reads. `fleet-sync.service` step 2h links both and
   enables the timer on every deploy. Off switch: remove that step and its enable
   line, then `systemctl --user disable --now fleet-cua-desk-check.timer`.
+- `systemd/fleet-clone-lag.service` and `.timer` — fail, and so page through
+  `fleet-unit-failed@`, when the oldest commit on `origin/main` the deploy clone
+  does not have is more than 35 min old, so a merge that reached no deploy is loud
+  instead of silent (2026-10-22: two merges at 14:14Z were still not on the box 40
+  min later, and the review job read a retired file out of the clone). It fetches
+  `main` itself into its own ref and only reads. Every 5 min;
+  `fleet-sync.service` step 2m links both and enables the timer on every deploy.
+  Off switch: remove that step and its enable line, then
+  `systemctl --user disable --now fleet-clone-lag.timer`.
 - `systemd/fleet-provider-watch.service` and `systemd/fleet-provider-watch.timer` — the
   daily provider watch: each router provider's model list is compared with
   the host snapshot, and a change files one fleet-ops issue with no model id in it.
