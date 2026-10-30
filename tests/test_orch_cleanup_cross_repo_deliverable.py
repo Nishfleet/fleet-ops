@@ -85,7 +85,22 @@ def test_marker_comment_is_accepted_and_nothing_is_marked(tmp_path):
     env = _setup(tmp_path, [_comment(MARKER)])
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
-    assert "deliverable filed in another repo: https://github.com/Nishfleet/rera-report-card/issues/42" in r.stdout
+    assert (
+        "orchestrate: #10275 deliverable filed in another repo: "
+        "https://github.com/Nishfleet/rera-report-card/issues/42; nothing to mark"
+    ) in r.stdout.splitlines()
+    assert not (tmp_path / "writes.log").exists()
+
+
+def test_last_marker_wins(tmp_path):
+    older = _comment(
+        "orchestrator: deliverable filed in https://github.com/Nishfleet/old/issues/1; superseded."
+    )
+    env = _setup(tmp_path, [older, _comment(MARKER)])
+    r = _cleanup(env)
+    assert r.returncode == 0, r.stderr
+    assert "another repo: https://github.com/Nishfleet/rera-report-card/issues/42" in r.stdout
+    assert "Nishfleet/old/issues/1" not in r.stdout
     assert not (tmp_path / "writes.log").exists()
 
 
