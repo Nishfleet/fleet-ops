@@ -10,8 +10,12 @@ DROPINS = ROOT / "rootfs/etc/systemd/system"
 
 
 def test_no_runner_dropin_binds_the_gh_login():
+    # A TemporaryFileSystem mount point at the path hides it (an empty read-only tmpfs,
+    # fleet-ops#11120); a bind would show or copy the login.
     for conf in DROPINS.glob("actions.runner.*.service.d/*.conf"):
-        assert ".config/gh" not in conf.read_text(), conf.name
+        for line in conf.read_text().splitlines():
+            if line.startswith(("BindReadOnlyPaths=", "BindPaths=")):
+                assert ".config/gh" not in line, (conf.name, line)
 
 
 def test_no_workflow_step_falls_back_to_the_runner_login():

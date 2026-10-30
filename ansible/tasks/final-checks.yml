@@ -44,6 +44,25 @@
 - name: Apply pending handlers before the Grafana credential check
   ansible.builtin.meta: flush_handlers
 
+# After the flush, so the Create tmpfiles handler has applied the nish-ownership lines
+# first: a root-owned config dir stops every jailed job at bwrap startup (fleet-ops#11120).
+- name: Look up the jailed-job config dir ownership
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ nish_home }}/.config"
+    - "{{ nish_home }}/.config/cloudflare"
+  register: config_dir_stats
+
+- name: Fail when a jailed-job config dir is not owned by nish
+  ansible.builtin.assert:
+    that: item.stat.exists and item.stat.isdir and item.stat.pw_name == 'nish' and item.stat.gr_name == 'nish'
+    fail_msg: "{{ item.item }} is missing or not owned nish:nish (stat says {{ item.stat.pw_name | default('none') }}:{{ item.stat.gr_name | default('none') }}), and a root-owned one stops every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles.d entry and the file task in tasks/system.yml own the repair; rerun host-config once they are in place."
+    quiet: true
+  loop: "{{ config_dir_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 # After the handlers, so a missing source never stops them. A missing or empty credential
 # fails the run here, naming the secret, key and file and never a value.
 - name: Work out which Grafana credentials could not be read

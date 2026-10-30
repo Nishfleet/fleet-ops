@@ -49,6 +49,21 @@
     mode: preserve
   notify: Create tmpfiles
 
+# The runner drop-ins bind and mask subpaths of ~/.config, and a root-owned one stops
+# every jailed job at bwrap startup (fleet-ops#11120). The tmpfiles entry recreates it
+# nish-owned at boot; this repairs it on every config apply, because the Create tmpfiles
+# handler runs only when a tmpfiles.d file changes.
+- name: Keep the config dir and its Cloudflare dir owned by nish
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: nish
+    group: nish
+    mode: "0755"
+  loop:
+    - "{{ nish_home }}/.config"
+    - "{{ nish_home }}/.config/cloudflare"
+
 # The rootless Docker engine for the drive eval (fleet-ops#9983) reads this
 # config instead of the host's /etc/docker/daemon.json, which sets the runsc
 # runtime. rootlesskit comes from apt: the unit runs dockerd under it.
