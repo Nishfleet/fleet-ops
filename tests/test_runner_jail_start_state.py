@@ -353,7 +353,7 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
     # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
     mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
-    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro"]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
     # pi's library tree and the seat token files the unjailed steps read. The App key
     # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
