@@ -67,9 +67,13 @@
   `fleet-sync.service` copies into `~/.claude/agents` ([remote-control.md](remote-control.md) "Subagents on
   the Max config dir").
 - `config/user-tmpfiles.d/agent-worktrees.conf` — the `systemd-tmpfiles`
-  age-out rules `fleet-sync.service` applies on every sync: an
-  `agent-worktrees/` dir untouched for 3 days goes, and so do the dated files
-  under `.pi/agent/sessions` and `.local/state/pi-issues`.
+  age-out rule `fleet-sync.service` installs on every deploy and
+  `systemd-tmpfiles --user --create` applies there: an `agent-worktrees/` dir
+  whose own stamps (b/ctime/mtime, age-by bcmBCM) are 3 days old goes whole;
+  `.orch-mirror` and the parked `orch-damaged-*` save-dirs are x-spared.
+- `config/user-tmpfiles.d/pi-state.conf` — the held, uninstalled 7-day
+  age-out rules for `.pi/agent/sessions` and `.local/state/pi-issues`. No
+  issue assigned them, so no unit installs this file yet.
 - `credentials/` — `app-manifest.json`, the worker GitHub App manifest
   (`.github/workflows/agent.yml` cites it for the App's grant).
 - `.agents/skills/verify-fleet/` — the verify-fleet skill. `SKILL.md` says how
