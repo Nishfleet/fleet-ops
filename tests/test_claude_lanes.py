@@ -913,7 +913,7 @@ case "$1 $2" in "issue list") [ -z "$LIST_FAIL" ] || exit 1; echo "$OPEN_JSON" ;
 def _dup_gate(tmp_path, title, open_issues, list_fail=""):
     """Runs the Gate's duplicate-alert block (fleet-ops#10348) for issue 50 against a fake gh."""
     script = _step("work", "Gate")
-    start = script.index("if jq -e '.title|startswith(\"alert: \")'")
+    start = script.index("if jq -e --argjson titles")
     end = script.index("skip duplicate-alert; fi\n", start)
     end = script.index("fi\n", end + len("skip duplicate-alert; fi\n")) + 3
     b = tmp_path / "bin"
@@ -948,9 +948,27 @@ def test_alert_without_an_open_twin_proceeds(tmp_path):
 
 
 def test_non_alert_title_skips_the_lookup(tmp_path):
-    out, log = _dup_gate(tmp_path, "grafana alert: DatasourceError", [{"number": 41, "title": "grafana alert: DatasourceError"}])
+    out, log = _dup_gate(tmp_path, "feat: add a thing", [{"number": 41, "title": "feat: add a thing"}])
     assert out == "PROCEED"
     assert log == ""
+
+
+@pytest.mark.parametrize("prefix", ["alert: ", "cost alarm: ", "grafana alert: ", "router dead row: ", "router dead key: "])
+def test_every_issue_filing_prefix_reaches_the_twin_lookup(tmp_path, prefix):
+    """Each prefix a contact point writes, not just "alert: " (fleet-ops#11086):
+    the other three filed one issue per firing and closed nothing."""
+    title = prefix + "SystemUnitFailed restic-r2-size-guard.service"
+    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 41, "title": title}])
+    assert out == "SKIP duplicate-alert"
+    assert "gh issue close 50 -R o/r --duplicate-of 41" in log
+
+
+@pytest.mark.parametrize("prefix", ["cost alarm: ", "router dead row: ", "router dead key: ", "grafana alert: "])
+def test_a_new_prefix_with_no_older_twin_proceeds(tmp_path, prefix):
+    title = prefix + "DatasourceError"
+    out, log = _dup_gate(tmp_path, title, [{"number": 50, "title": title}, {"number": 60, "title": title + " x"}])
+    assert out == "PROCEED"
+    assert "issue close" not in log
 
 
 def test_a_failed_twin_lookup_fails_the_gate_loud(tmp_path):
