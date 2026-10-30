@@ -371,19 +371,24 @@ is gone.
 
 ### agent.yml: the comment diet (fleet-ops#10946)
 
-The issue's comment bullet — comments one short line or none — applied to 38
-multi-line blocks. Count: `awk '/^[[:space:]]*#/{c++; next} {if(c>=2) print
-NR-c": "c; c=0}' .github/workflows/agent.yml`, which lists each block of two or
-more consecutive comment lines; summing its second field over the base commit
-gives 38 blocks totalling 149 lines. Each collapses to one line. The prose that
-does not fit a short line lives here, and the one-liner keeps the issue ref
-that finds it:
+The issue's comment bullet — comments one short line or none — collapsed 37 of
+the base file's 38 multi-line comment blocks. Count: `awk '/^[[:space:]]*#/{c++;
+next} {if(c>=2) print NR-c": "c; c=0}' .github/workflows/agent.yml`, which lists
+each block of two or more consecutive comment lines — 38 blocks totalling 149
+lines on the base commit (the same awk over the PR diff shows 37 of them
+replaced). The one left is the cap comment sitting beside the functional
+`# shellcheck disable=SC2016` pragma line, which a comment collapse cannot join.
+The prose that does not fit a short line lives here, and the one-liner keeps
+the issue ref that finds it:
 
 - Labeled-run wait (fleet-ops#9269): a labeled run still waiting for a runner
   must not be poked; the new run displaces the waiting one in the
   `agent-<repo>-<ref>` group and GitHub cancels it (0509#7005 re-labeled six
   times in 28 min, 258 cancelled drive runs in 3 days). An issues-event run's
-  title is the issue title, which is why the compare is `display_title`.
+  title is the issue title, which is why the compare is `display_title`. The
+  sweep token (actions: write) reads runs too, because the worker App token
+  carries no actions permission. Its concurrency group keeps one waiting sweep
+  at most per repo.
 - Review scope (fleet-ops#10681): an approval follows the change, not the
   commit. A head whose own diff (merge-base to head) is unchanged since an
   approved head carries that approval; a head whose own diff changed is
@@ -391,13 +396,47 @@ that finds it:
   when the branch merged main, its output is the same whether the conflict
   resolution kept the PR's own line or changed it. tests/test_review_carry.py
   holds that case and the moved-line case. Anything else is a full review.
+- Only a real verdict counts as reviewed. The older hold comment and the
+  "could not be judged" verdict carry none, so there is one review per head.
+  A carry candidate must START a line of an unedited github-actions[bot]
+  comment, because a hold comment quotes the approval line inside its body.
+- The carry candidate's approval is double-keyed: any workflow on a branch of
+  this repo posts as the same bot, so only an approval of another head can
+  carry, and it must also be approve()'s review on that head, whose commit_id
+  is that head (a push can dismiss it, so DISMISSED counts too). Without that
+  review, or when the read fails, the head gets a full review; so does an
+  approved head that no longer exists, since carry()'s fetch fails. It fails
+  closed.
 - carry(): the approved head's own diff, replayed onto this head's merge-base
   with union merge (so a line main added beside it in a conflict is kept), must
   give this head's tree exactly, and the two own diffs must read the same apart
-  from the line each hunk sits on. Compared as text, which is stricter than a
-  patch id (a patch id ignores the path a hunk is in). merge-tree --write-tree
-  arrived in git 2.40, so an older runner makes every carry fail and a full
-  review follows: it fails closed.
+  from the line each hunk sits on (so no whitespace change, no file added or
+  dropped); otherwise what differs is the interdiff to review. Compared as
+  text, which is stricter than a patch id (a patch id ignores the path a hunk
+  is in). The `+` forces refs/prior, so a rerun cannot be refused, and
+  --no-renames lists a guard path this head renamed away under its old name
+  too. merge-tree --write-tree arrived in git 2.40, so an older runner makes
+  every carry fail and a full review follows: it fails closed.
+- The third reviewer is called directly because the answering row is only in
+  the response headers (x-litellm-model-id). The key goes in the curl config,
+  never argv (#8403), and the body in a file: an argv over 128 KiB cannot start
+  curl.
+- A blocked `orch/issue-N` PR goes back to the orchestrator only through the
+  rework block (fleet-ops#10435): its reads run on the job's token, not the
+  runner login's, whose core quota other work exhausted once and reddened an
+  approved head (fleet-ops#10970). The label and comment post as the worker
+  App, because GITHUB_TOKEN fires no workflow event, so the orchestrator is
+  never dispatched. No step reads a login file, so the step runs on the review
+  runners, whose user has none (fleet-ops#10950). A PR from a fork never
+  reaches here at all.
+- The arm job re-reads the PR after the token is minted, and --match-head-commit
+  makes the arm itself refuse a moved head; hold-risky checks the approval
+  again when the arm fires auto_merge_enabled.
+- `stuck` files one orchestrator issue for a PR that has waited over an hour
+  and that no worker owns: a session's own branch, or a claim PR whose issue is
+  closed or deleted (40 of 53 waiting fleet PRs on 2026-10-11). The App token
+  files it so the needs-orchestrator label fires the orchestrate job. One open
+  issue per PR: a new head comments on it, the same head does nothing.
 - The review call: `--tools ""` because a tool could open the runner's key files
   and the review posts publicly (claude honors an empty --tools, checked
   2026-10-10). No fallback to another family, no approval without this review;
@@ -405,6 +444,9 @@ that finds it:
   retry. Fable is not a default reviewer because it burned 44% of a seat's
   weekly limit in about two days when defaulted (Nish 2026-10-28, #10608); it
   is the second reviewer of guard heads only.
+- The sweep's lane counts are host-wide but the listing is this repo's only, so
+  the sweep covers every other enrolled repo too, whose own Gate admits only a
+  lane that is free; .repos[] and .sweep_only[] (fleet-ops#10638).
 - Blocker lines: a line starting with blocker(s), with or without markup (not
   the echoed header "blocker/risk/nit"), unless only a none-variant follows
   (none, no blockers, n/a, a dash, then markup or a sentence). The grammar is
@@ -419,6 +461,9 @@ that finds it:
   the pristine candidate file are dropped in, and the builder and the whole
   test suite run there. The publish step pushes from that clone, so
   model-written code, git hooks and .git state never reach the push.
+- sys() runs clone, fetch, build and tests with a system PATH and no user git
+  config; /usr/bin/node and python3 run the same two suites `npm test` does;
+  /usr/local/bin holds gh.
 
 ### coordinator-approval.yml: the merge-queue gate
 

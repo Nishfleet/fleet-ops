@@ -44,7 +44,7 @@ on:
         options: [inish-daily]
         default: inish-daily
         required: true
-      # By hand when agent-dispatch cannot start review-risky: gh workflow run agent.yml -f review_pr=<N> -f review_sha=<sha> (fleet-ops#10199); needs actions: write, so never a worker App token.
+      # By hand when agent-dispatch cannot start review-risky: gh workflow run agent.yml -f review_pr=<N> -f review_sha=<sha> (fleet-ops#10199); never a worker App token.
       review_pr: {description: "risky PR number to review by hand, when agent-dispatch cannot start it", type: string}
       review_sha: {description: "its head sha, the one the review approves or blocks", type: string}
 permissions: {}
@@ -210,7 +210,7 @@ jobs:
         run: |
           exec 2> >(tee "$RUNNER_TEMP/worker.err" >&2)
           id=${REF#claim/issue-}; id=${REPO#*/}-${id%%-*}
-          # --unshare-pid kills what the worker daemonized past orphan cleanup (actions/runner#4601); every engine but claude hides both seat logins; ci.yml runs these jail lines verbatim (fleet-ops#9274).
+          # --unshare-pid kills daemonized strays (actions/runner#4601); only claude sees its own seat; ci.yml runs these jail lines verbatim (fleet-ops#9274).
           seat_a=${CLAUDE_CONFIG_DIR:-$HOME/.config/gh}
           claude_hides() { local d t out=; for d in "$HOME"/.claude-* "$HOME"/backups-claude-* "$HOME"/.config/fleet-ops/seats/claude-seat-*.env "$HOME"/.local/share/claude-seat-backup*; do t=$d; if [ -L "$d" ]; then t=$(readlink -f "$d") || continue; fi; { [ "$d" = "$1" ] || [ "$t" = "$1" ]; } && continue; if [ -d "$t" ]; then out="$out --tmpfs $t"; elif [ -f "$t" ]; then out="$out --ro-bind /dev/null $t"; fi; done; echo "$out"; } # gitleaks:allow
           hide_all=$(claude_hides "")
@@ -465,7 +465,7 @@ jobs:
           app-id: "4728578"
           private-key: ${{ steps.app-key.outputs.pem }}
           permission-issues: write
-      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator; a cancelled run, a router 429/500 and an overload verdict requeue as infra, up to INFRA_REQUEUE_CAP.
+      # First failure requeues as agent-ready with strong-only; the second parks for the orchestrator; infra verdicts requeue as infra, up to INFRA_REQUEUE_CAP.
       - name: Strike or requeue
         if: (failure() || cancelled()) && steps.wall.outputs.wall != 'true' && steps.strike-token.outcome == 'success'
         env:
@@ -551,7 +551,7 @@ jobs:
           strong_free=false; regular_free=false
           strong_free=true
           if [ "$(live pi)" -lt "$slots" ]; then regular_free=true; fi
-          # A labeled run still waiting for a runner must not be poked: the new run displaces it in the agent-<repo>-<ref> group and GitHub cancels it (fleet-ops#9269); an issues-event run's title is the issue title (display_title, compared below); the sweep token (actions: write) reads runs too.
+          # A run still waiting for a runner must not be poked: the new run displaces and cancels it (fleet-ops#9269); run title = issue title (display_title).
           waiting=$(for s in queued pending waiting requested in_progress; do
             GH_TOKEN=$SWEEP_TOKEN gh api "repos/$REPO/actions/workflows/agent-dispatch.yml/runs?event=issues&status=$s&per_page=100" --jq '.workflow_runs[].display_title'
           done) || { echo "::warning::could not list waiting dispatch runs"; waiting=; }
@@ -573,7 +573,7 @@ jobs:
           echo "next: none ready for a free lane"
           # An issue left agent-in-progress with a red or conflicting claim PR sends no event, so run the sweep now (drive #106 #117 #298); it starts no worker when nothing is stuck.
           GH_TOKEN=$SWEEP_TOKEN gh workflow run agent-dispatch.yml -R "$REPO" || echo "::warning::sweep dispatch failed"
-          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too; its Gate admits only a free lane; .repos[] and .sweep_only[] (fleet-ops#10638).
+          # Lane counts are host-wide but the listing is this repo's only, so sweep every other enrolled repo too (fleet-ops#10638).
           others=$(jq -r '.repos[].name, .sweep_only[]?.name' "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json") || others=
           [ -n "$others" ] || echo "::warning::intake-repos.json lists no repos"
           for other in $others; do
@@ -594,7 +594,7 @@ jobs:
     if: inputs.review_pr != '' && inputs.review_sha != '' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     runs-on: [self-hosted, review]  # netcup-agent-9 and -10 only, no agent label: a review never waits behind a build (#10587)
     timeout-minutes: 150  # worst case 107 min: three passes (both reviewers in parallel, then a fallback for each), each 4 calls of 480 s plus 210 s of backoff (#10447)
-    # The approval is a github-actions[bot] PR comment; this job runs from agent.yml@main, so the PR cannot change its reviewer; guard heads (money, secrets, data, .github/, review rules) need three independent reviews; arming is the arm job's.
+    # The approval is a github-actions[bot] PR comment; this job runs from agent.yml@main, so the PR cannot change its reviewer; guard heads need three reviews; arming is the arm job's.
     permissions: {pull-requests: write, contents: read, issues: write}  # issues: write files the loud issue when every retry fails (#10447); contents: read fetches the held head's diff: a private repo refuses an anonymous fetch, and every agent-dispatch stub already grants contents: write
     outputs:
       approved_sha: ${{ steps.review.outputs.approved_sha }}
@@ -639,7 +639,7 @@ jobs:
           approve() { gh api -X POST "repos/$REPO/pulls/$PR/reviews" -f event=APPROVE -f commit_id="$SHA" -f body="reviewer: $SHA approved." --silent; }  # the ruleset counts this review, a push dismisses it; it goes before the verdict comment so a failed call is re-run
           # An infrastructure failure is retry-able: the comment avoids the "reviewer: <sha>" phrase the already-reviewed check looks for, and the job goes red for a re-run.
           retry() { say "review of $SHA did not finish: $1. Nothing was approved or blocked. Re-run the review-risky job, or push a new head, to try again."; exit 1; }
-          # A line starting with blocker(s) blocks, unless only a none-variant follows (none, no blockers, n/a, a dash); blk_re/none_re are the only copies (grep here, jq in the already-reviewed check); only none_re is anchored at both ends, so "blocker: none of the callers check the token" still blocks (tests/test_review_scan.py holds the cases).
+          # A line starting with blocker(s) blocks unless only a none-variant follows; only none_re is end-anchored; grammar: tests/test_review_scan.py; why: docs/workflow-notes.md.
           tick=$(printf '\140')
           blk_re="^[[:space:]*_#>${tick}-]*blockers?([^[:alnum:]_/]|\$)"
           none_re="^[[:space:]*_#>${tick}-]*blockers?([[:space:]*_${tick}:-]|—|–)*(no(ne|thing|[[:space:]]+blockers?)([[:space:]]+(found|identified|detected))?|n/a|nil|-+|—|–)([[:space:]*_${tick}.!;,]*|[[:space:]*_${tick}]*(\.|!|;|:|—|–)([[:space:]].*)?)\$"
@@ -647,7 +647,7 @@ jobs:
           # $1 = the review text. A review is posted whole up to a cap; past it the blocker lines go first, because they are the part the author acts on and a byte cut would drop them.
           cut_text() { t=$(printf '%s' "$1" | head -c 3500); b=$(printf '%s' "$1" | wc -c); [ "$b" -le 3500 ] || t=$(printf 'The review is %s bytes and this comment is cut at 3500 (truncated). Blocker lines first:\n%s\n\n%s' "$b" "$(blockers_of "$1")" "$t"); printf '%s' "$t"; }
           pr=$(gh api "repos/$REPO/pulls/$PR"); [ "$(jq -r .state <<<"$pr")" = open ] && [ "$(jq -r .head.sha <<<"$pr")" = "$SHA" ] || { echo "head moved or PR closed; the newer event reviews it"; exit 0; }
-          # Only a real verdict counts as reviewed (the older hold comment and "could not be judged" carry none), one review per head; each phrase must START a line of a github-actions[bot] comment: the hold comment quotes the approval line.
+          # Only a real verdict counts as reviewed (one per head); it must START a github-actions[bot] comment body: a hold comment quotes the approval line.
           seen=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -s --arg sha "$SHA" --arg none "$none_re" --arg blk "$blk_re" '
             def blockers: [.[] | select(test($blk; "i"))];
             [.[][] | select(.user.login == "github-actions[bot]") | (.body | split("\n")) as $l
@@ -664,15 +664,15 @@ jobs:
           base=$(jq -r .base.sha <<<"$pr"); bt="$RUNNER_TEMP/base"; rm -rf "$bt"; git init -q "$bt" || retry "the diff checkout could not be created"
           # gh is a git credential helper: it hands git this run's own token, so no header is built here.
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "$base:refs/base" "$SHA:refs/head" || retry "the git fetch of $base and $SHA failed"; git -C "$bt" diff --no-color "refs/base...refs/head" > "$RUNNER_TEMP/diff.txt" || retry "the git diff of $base against $SHA failed"
-          # Review scope (#10681): an approval follows the change, not the commit; git range-diff cannot decide it, because when the branch merged main its output is the same whether the conflict resolution kept the PR's own line or changed it (tests/test_review_carry.py holds that case); a workflow a PR adds could post the approval as the same bot, so a guard or workflow head is a full review on both sides.
+          # Review scope (#10681): an approval follows the change, not the commit; why and the carry test: docs/workflow-notes.md, tests/test_review_carry.py.
           guard_hits() { jq -Rsc --argjson cfg "$cfg" '(split("\n") | map(select(length > 0))) as $f | $cfg.guard as $g | [$f[] | . as $x | select(any($g[]; . as $re | $x | test($re; "i")))] | unique | length'; }
           guard=false; [ "$(guard_hits < "$RUNNER_TEMP/files.txt")" = 0 ] || guard=true
-          # Only an approval of another head can carry: any workflow on a branch posts as this bot, so the approval must also be approve()'s review on that head; a failed read means a full review, and it fails closed.
+          # Only an approval of another head can carry, double-keyed with approve()'s review on that head; a failed read or missing head means a full review (docs/workflow-notes.md).
           prior=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs --arg sha "$SHA" '[.[][] | select(.user.login == "github-actions[bot]" and .created_at == .updated_at) | .body | split("\n")[0] | select(test("^coordinator-approval: [0-9a-f]{40}$|^reviewer: [0-9a-f]{40} (blocked|not approved)\\."))] | last // "" | (capture("^coordinator-approval: (?<s>[0-9a-f]{40})$").s // empty) | select(. != $sha)') || prior=; [ -z "$prior" ] || gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" | jq -e -s --arg sha "$prior" 'any(.[][]; .user.login == "github-actions[bot]" and .commit_id == $sha and (.state == "APPROVED" or .state == "DISMISSED") and ((.body // "") | startswith("reviewer: " + $sha + " approved.")))' >/dev/null || prior=
-          # A head's own diff is compared as text (stricter than a patch id), hunk header dropped; merge-tree --write-tree needs git 2.40, so an older runner fails every carry into a full review.
+          # A head's own diff is compared as text (stricter than a patch id), hunk header dropped; merge-tree needs git 2.40, else a full review: it fails closed.
           own() { git -C "$bt" diff --no-color --binary --full-index -U0 "$1" "$2" | sed -E '/^index /d'; }
           nopos() { sed -E 's/^@@ -[0-9,]+ \+[0-9,]+ @@.*/@@/' <<<"$1"; }
-          # carry: the approved head's own diff replayed onto this merge-base with union merge must give this tree exactly, and the two own diffs must read the same apart from hunk positions; `+` forces refs/prior so a rerun cannot be refused.
+          # carry: the approved diff replayed with union merge must give this tree exactly, apart from hunk positions (docs/workflow-notes.md).
           carry() { local omb nmb a b t pg rc=0; git -c credential.helper= -c 'credential.helper=!gh auth git-credential' -C "$bt" fetch -q "https://github.com/$REPO.git" "+$prior:refs/prior" || return 1; omb=$(git -C "$bt" merge-base refs/base refs/prior) && nmb=$(git -C "$bt" merge-base refs/base refs/head) || return 1; pg=$(git -C "$bt" diff --name-only --no-renames "$omb" refs/prior | guard_hits) && [ "$pg" = 0 ] || return 1; a=$(own "$omb" refs/prior) && b=$(own "$nmb" refs/head) && [ -n "$a" ] && [ -n "$b" ] && mkdir -p "$bt/.git/info" && echo '* merge=union' > "$bt/.git/info/attributes" || return 1
             if [ "$(nopos "$a")" = "$(nopos "$b")" ] && t=$(git -C "$bt" merge-tree --write-tree --merge-base="$omb" "$nmb" refs/prior) && [ "$t" = "$(git -C "$bt" rev-parse 'refs/head^{tree}')" ]; then rm -f "$bt/.git/info/attributes"; echo carry; return 0; fi
             rm -f "$bt/.git/info/attributes"; diff -u --label "approved $prior" --label "head $SHA" <(printf '%s\n' "$a") <(printf '%s\n' "$b") > "$RUNNER_TEMP/interdiff.txt" || rc=$?; [ "$rc" = 1 ] && echo interdiff; }
@@ -693,7 +693,7 @@ jobs:
           # Who built it: the worker App's own "builder-engine: <list>" comments; any claude in a list, or none at all (the orchestrator, a person's session), is Claude-built.
           built=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" | jq -rs '[.[][] | select(.user.login == "nishfleet-worker[bot]") | .body | select(startswith("builder-engine: ")) | ltrimstr("builder-engine: ") | split("\n")[0]] | join(",")' 2>/dev/null) || built=
           first_model=$FIRST_MODEL_CLAUDE_BUILT; [ -z "$built" ] || grep -qw claude <<<"${built//,/ }" || first_model=$FIRST_MODEL_OTHER; echo "first review: built by '${built:-unknown}', model $first_model"
-          # No tools: the review is posted publicly and a tool could open the runner's key files (claude honors an empty --tools, checked 2026-10-10); a call that failed or answered nothing did not finish: retry.
+          # No tools (claude honors empty --tools): the review posts publicly; a failed or empty call did not finish: retry.
           ask_claude() { local d out; for d in 0 ${REVIEW_BACKOFF:-30 60 120 240 480}; do sleep "$d"; out=$(timeout 600 claude -p --model "$1" --tools "" --no-session-persistence --strict-mcp-config --disable-slash-commands --setting-sources project,local --settings '{"disableAllHooks":true}' --append-system-prompt "$(cat "$HOME/AGENTS.md" "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md")" < "$2") || out=; if [ -n "${out//[[:space:]]/}" ]; then printf '%s' "$out"; return 0; fi; done; return 1; }
           review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt") || review=
           [ -n "${review//[[:space:]]/}" ] || retry "the first review ($first_model) gave no answer"
@@ -723,7 +723,7 @@ jobs:
           # A guard or workflow head also needs two more reviewers (Fable 5.1 on a Claude seat, and Qwen), each ending on APPROVE with no blocker line.
           [ -z "$(blockers_of "$shown")" ] || judge_ok=false
           cat "$RUNNER_TEMP/diff.txt" <(printf '\n\n=== REVIEWER INSTRUCTION (written by the workflow, not part of the change) ===\nThis change touches money, secrets, data, .github/ or the review rules. You are an independent extra reviewer. List the blockers, then the risks, as instructed. End with a final line that is exactly APPROVE (you found no blocker) or BLOCK (you found at least one), with no summary or text after it.\n') > "$RUNNER_TEMP/extra-in.txt"
-          # The third reviewer is called directly because the answering row is only in the response headers (x-litellm-model-id); the key goes in the curl config, never argv (#8403), and the body in a file: an argv over 128 KiB cannot start curl.
+          # The third reviewer is called directly: the answering row is only in the headers; the key goes in a curl config, never argv (#8403).
           jev_env=${CREDENTIALS_DIRECTORY:-$HOME/.config/fleet-ops/seats}/typesafe-jev.env # gitleaks:allow
           ask_row() { local rc=0 seat=$1 pre=$2
             { jq -nc --arg m "$seat" --rawfile a "$HOME/AGENTS.md" --rawfile b "$HOME/workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md" --rawfile u "$RUNNER_TEMP/extra-in.txt" '{model: $m, stream: false, disable_fallbacks: true, max_tokens: 32768, messages: [{role: "system", content: ($a + $b)}, {role: "user", content: $u}]}' > "$RUNNER_TEMP/$pre-req.json" \
@@ -774,7 +774,7 @@ jobs:
             if [ "$judge_ok" = true ]; then j='approved'; elif [ "$choice" != approve ]; then j='blocked'; elif [ -n "$(blockers_of "$shown")" ]; then j='not approved (the review lists a blocker line)'; else j="not approved (only ${pct}% sure; approval needs 90%)"; fi
             say "$(printf 'reviewer: %s blocked. This change touches money, secrets, data, .github/ or the review rules, so it needs all three reviews to approve. Fix the items below (a review that approved is not repeated) and push; a new head gets a fresh review.\n\nJudge (%s): %s\n%s%s' "$SHA" "$JUDGE_FAMILY" "$j" "$([ "$judge_ok" = true ] || printf '%s' "$text")" "$blk")"
           fi
-      # A blocked orch PR goes back to the orchestrator (fleet-ops#10435); reads run on the job's token, not the runner login's, whose quota other work exhausted once (fleet-ops#10970); the label and comment post as the worker App because GITHUB_TOKEN fires no workflow event; a fork never reaches here (fleet-ops#10950).
+      # A blocked orch PR goes back to the orchestrator (fleet-ops#10435); the label posts as the worker App because GITHUB_TOKEN fires no workflow event (docs/workflow-notes.md).
       - name: Read App private key for the rework label
         id: rework-key
         uses: Nishfleet/fleet-ops/.github/actions/app-key@main
@@ -799,7 +799,7 @@ jobs:
             GH_TOKEN=$ISSUE_TOKEN gh issue edit "$n" -R "$REPO" --add-label needs-orchestrator --remove-label handoff-ended
             GH_TOKEN=$ISSUE_TOKEN gh issue comment "$n" -R "$REPO" --body "orchestrator rework: the review of PR #$PR blocked head $SHA. Continue on orch/issue-$n and push a fix. Findings: $GITHUB_SERVER_URL/$REPO/pull/$PR"
           fi
-  # Arms an approved head as the worker App and re-reads the PR, so a moved head or a closed PR is left alone; --match-head-commit refuses a moved head; hold-risky re-checks the approval when the arm fires auto_merge_enabled.
+  # Arms an approved head as the worker App, re-reading the PR, so a moved head or a closed PR is left alone (fleet-ops#10435).
   arm:
     needs: review
     if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ((inputs.arm_pr != '' && inputs.arm_sha != '') || needs.review.outputs.approved_sha != '') }}
@@ -842,7 +842,7 @@ jobs:
           # The workflows permission lets a PR that edits .github/workflows/** arm like any other: no gh login of the runner user, no file listing (fleet-ops#10949, #10950).
           GH_TOKEN=$ARM_TOKEN gh pr merge "$PR" -R "$REPO" --auto --squash --match-head-commit "$SHA"  # a merge queue overrides the method; repos without one need it
           echo "armed #$PR at $SHA"
-  # Files one orchestrator issue for a PR that has waited over an hour and that no worker owns; the App token files it so the needs-orchestrator label fires the orchestrate job; one open issue per PR: a new head comments on it, the same head does nothing.
+  # Files one orchestrator issue for a PR that has waited over an hour and no worker owns; one open issue per PR.
   stuck:
     if: inputs.stuck_pr != '' && inputs.stuck_sha != ''
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
@@ -859,7 +859,7 @@ jobs:
       - uses: Nishfleet/fleet-ops/.github/actions/runner-probe@main
       - uses: Nishfleet/fleet-ops/.github/actions/stuck@main
   inish-daily:
-    # The Daily (nish.sh/daily): editorial standard is inish-site's automation/HERMES_DAILY.md, the mechanical contract prompts/inish-daily.md here; jailed, untrusted output rebuilt and tested on a fresh clone; the 05:00 UTC cron is the catch-up for a runner down at 02:00; a review summons publishes nothing.
+    # The Daily (nish.sh/daily): standards in HERMES_DAILY.md (inish-site) and prompts/inish-daily.md here; jailed, output rebuilt in a fresh clone; a review summons publishes nothing.
     if: ${{ !inputs.ref && !inputs.review_pr && github.ref == 'refs/heads/main' && (github.event.schedule == '0 2 * * *' || github.event.schedule == '0 5 * * *' || inputs.job == 'inish-daily') }}
     runs-on: ${{ github.repository == 'Nishfleet/fleet-ops' && fromJSON('["self-hosted","fleet-ops"]') || fromJSON('["self-hosted","agent"]') }}  # fleet-ops#10717
     timeout-minutes: 150
@@ -906,7 +906,7 @@ jobs:
       - name: Compile today's edition (candidates fetched here, model jailed, result rebuilt in a clean clone)
         id: compile
         if: steps.live.outputs.done != 'true'
-        # The fetch (Jev key, GitHub search token, optional X key from seats/x-api.env) runs outside the jail before the model starts; the jail hides the keys and seats (fleet-ops#9274); pi reads a virtual worker-capable-only key, 3h, $5, revoked on exit (fleet-ops#9634); nothing the model leaves is trusted: only its size-capped edition JSON, a regular file, is taken and rebuilt in a fresh clone that publish pushes from, so model-written code, git hooks and .git state never reach the push.
+        # The fetch runs outside the jail; nothing the model leaves is trusted: rebuild and test in a fresh clone that publish pushes from; the boundary in full: docs/workflow-notes.md.
         env:
           GH_TOKEN: ${{ steps.read-token.outputs.token }}
         run: |
@@ -924,9 +924,9 @@ jobs:
           src="$GITHUB_WORKSPACE/inish-site"
           dst="$RUNNER_TEMP/publish"
           pool="$RUNNER_TEMP/pool"
-          # sys() gives a system PATH and no user git config: the jailed model can write under $HOME, so a shim in ~/.local/bin or a ~/.gitconfig line must not decide what gets fetched, built or pushed; /usr/local/bin holds gh.
+          # sys() gives a system PATH and no user git config: the model can write under $HOME, so a shim or ~/.gitconfig line must not decide what runs.
           sys() { /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@"; }
-          # Fresh clone per rebuild: the App installation token expires after an hour (actions/create-github-app-token: "An installation access token expires after 1 hour"), before the second 40-minute attempt ends, and 401 from a dead token surfaced as "no valid edition" (fleet-ops#10876).
+          # Fresh clone per rebuild: an App token expires after an hour (actions/create-github-app-token), so a token minted at step start is dead by the second attempt (fleet-ops#10876).
           fresh_clone() { rm -rf "$1"; sys git clone -q --depth 1 https://github.com/Nishfleet/inish-site.git "$1"; }
           fresh_clone "$pool" || { echo "clone for the candidate fetch failed"; exit 1; }
           (cd "$pool" && JEV_URL=http://127.0.0.1:4000/jev TYPESAFE_API_KEY="$key" X_BEARER_TOKEN="$x_key" sys python3 -m inish_daily.fetch_candidates --date "$today") > "$RUNNER_TEMP/fetch.out" 2>&1 \
