@@ -1,9 +1,9 @@
 name: agent-dispatch
 on:
+  # issue_comment fired ≈7,000 all-skipped runs in 30 days here and no job
+  # consumes it, so the trigger is gone; fleet-ops#10944.
   issues:
     types: [labeled, closed, reopened]
-  issue_comment:
-    types: [created]
   # issue=<number> dispatches only that issue's ref, for a caller that
   # relabels or closes with GITHUB_TOKEN: that fires no workflow, and
   # workflow_dispatch is the documented trigger GITHUB_TOKEN may start.
@@ -36,7 +36,9 @@ on:
   # conflict. Invariant: nothing in this file checks out PR code. ejected runs only for
   # same-repo heads; hold-risky only calls the API and never runs the head.
   pull_request_target:
-    types: [dequeued, auto_merge_disabled, closed, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
+    # closed and auto_merge_disabled consume nothing below (ejected and hold-risky
+    # are the only pull_request_target consumers; fleet-ops#10944).
+    types: [dequeued, auto_merge_enabled, synchronize, labeled, opened, reopened, ready_for_review]
   workflow_run: {workflows: [CI], types: [completed], branches: ['claim/issue-*']}
   # GitHub emits no event when a job queued for a self-hosted runner expires
   # after 24h, or when a claim PR turns DIRTY outside the merge queue (0509#4373).
