@@ -87,6 +87,12 @@
       HOME: /home/nish
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: /home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # One directory per agent runner. A runner updates itself in place: it
+    # unpacks bin.<version>/ and externals.<version> beside the pair it runs from
+    # and repoints the bin and externals symlinks at them, and it never removes
+    # the pair it moved off, so this tree grows by about 680 MB per runner per
+    # update with nothing to stop it (fleet-ops#10632: 60 stale pairs, 20.3 GB).
+    agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
     # tincan has no default relay: it reads one from a config file named by
     # this variable. Any joined agent's config carries the same relay.
     tincan_env_config: "{{ nish_env.HOME }}/.config/tincan/claude-vps.json"
@@ -396,6 +402,64 @@
                 argv: [uv, cache, prune]
               changed_when: false
 
+            - name: List the runner version each runner's bin and externals symlink points at
+              ansible.builtin.find:
+                paths: ["{{ agent_runner_root | realpath }}"]
+                patterns: [bin, externals]
+                file_type: link
+                recurse: true
+                depth: 2
+              register: runner_version_links
+
+            # stat reports a link's target as a realpath, and both find tasks
+            # resolve the root the same way, so a relative link, an absolute one
+            # and a symlinked path component in the root all compare equal to
+            # the candidate paths below.
+            - name: Read the version directory each of those symlinks points at
+              ansible.builtin.stat:
+                path: "{{ item }}"
+              loop: "{{ runner_version_links.files | map(attribute='path') | list }}"
+              register: runner_version_targets
+
+            # The stop above is what makes the prune safe: no runner is
+            # running, so no self-update can unpack a version mid-prune.
+            # age=1h is the second belt for a runner that was stopped
+            # mid-self-update, before it repointed its links: its fresh
+            # directory is younger than the hour and survives this run. A
+            # directory unpacked from an archive can carry the archive's mtime
+            # and look older than it is, so the hour is a loose belt, not a
+            # precise window.
+            - name: List the runner version directories older than a self-update
+              ansible.builtin.find:
+                paths: ["{{ agent_runner_root | realpath }}"]
+                patterns: ["bin.*", "externals.*"]
+                file_type: directory
+                recurse: true
+                depth: 2
+                age: 1h
+              register: runner_version_dirs
+
+            # Every link's target is kept, not just bin's: bin and externals name
+            # the same version in two directories, so keeping only the bin target
+            # would delete the version externals runs from. An empty keep set means
+            # the links could not be read, and then nothing is a candidate: the
+            # whole task skips rather than deleting every version on the host. A
+            # delete that fails (a root-owned file left inside a version
+            # directory by an earlier run) is recorded and reported at the end,
+            # so one unreadable file cannot skip the apt upgrade that follows
+            # this block.
+            - name: Remove the runner version directories no runner points at
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: absent
+              loop: >-
+                {{ runner_version_dirs.files | map(attribute='path')
+                   | reject('in', runner_version_targets.results | map(attribute='stat.lnk_source') | list)
+                   | list }}
+              when: (runner_version_targets.results | default([])) | length > 0
+              register: runner_version_prune
+              ignore_errors: true
+
         - name: Upgrade every Ubuntu package (security and regular updates)
           ansible.builtin.apt:
             update_cache: true
@@ -448,6 +512,8 @@
         # servers run as `npm exec @modelcontextprotocol/server-filesystem ...`, so
         # matching every npm made this check fail the 2026-10-23 runs and aborted
         # the rest of the block with it.
+        # The pattern takes a flag before the subcommand too (`npm -g install`,
+        # `npm --global update`) and names `rebuild` and `prune` (fleet-ops#10082).
         - name: Find stale npm staging dirs a stopped self-update left behind
           ansible.builtin.find:
             paths: "{{ npm_global_root.stdout }}"
@@ -460,7 +526,7 @@
           become: true
           become_user: nish
           ansible.builtin.command:
-            argv: [pgrep, -u, nish, -f, '(^|/)npm (i|install|ci|update)( |$)|npm-cli\.js (i|install|ci|update)( |$)']
+            argv: [pgrep, -u, nish, -f, '((^|/)npm|npm-cli\.js)( +-[^ ]+( +[^ -][^ ]*)?)* +(install|i|ci|update|rebuild|prune)( |$)']
           register: npm_running
           failed_when: npm_running.rc not in [0, 1]
           changed_when: false
@@ -916,6 +982,11 @@
         # Plugins loaded with --plugin-dir (scope "session") or from
         # ~/.claude/skills/ have no marketplace, and `claude plugin update`
         # refuses them by design.
+        # `claude plugin list --json` already merges the user and managed settings
+        # into `enabled` (docs/claude-plugin-drop-ins.md). A plugin it reports off
+        # is left out: Claude Code refuses to update a plugin the managed settings
+        # switch off and exits 1, which the assert below turns into a red run for a
+        # plugin no session loads.
         - name: Update every installed Claude Code plugin
           become: true
           become_user: nish
@@ -923,7 +994,8 @@
           ansible.builtin.shell:
             cmd: >-
               set -o pipefail;
-              claude plugin list --json | jq -r '.[] | select(.installedAt != null) | .id' |
+              claude plugin list --json |
+              jq -r 'if any(.[]; .installedAt != null and ((.enabled | type) != "boolean")) then error("a plugin with no enabled flag cannot be updated safely") else .[] | select(.installedAt != null and .enabled) | .id end' |
               xargs -r -n1 claude plugin update
             executable: /bin/bash
           timeout: 600
@@ -1301,6 +1373,14 @@
                 containers: "{{ (prune_containers | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 images: "{{ (prune_images | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
                 build_cache: "{{ (prune_builder | default({})).stdout_lines | default([]) | select('match', '^Total') | list }}"
+              # Which runner version directories the prune removed, one path per line.
+              runner_version_dirs_removed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('changed') | map(attribute='item') | list }}"
+              # Which candidate directories could not be deleted, one path per line.
+              runner_version_dirs_failed: "{{ (runner_version_prune | default({})).results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='item') | list }}"
+              # false means no runner's link could be read, so the prune had no
+              # keep set and skipped. An empty candidate list does not land
+              # here: the prune ran and removed nothing.
+              runner_version_prune_ran: "{{ (runner_version_targets | default({})).results | default([]) | length > 0 }}"
               podman_autoupdate_before: "{{ (podman_autoupdate_before | default({})).stdout_lines | default([]) }}"
               podman_autoupdate: "{{ (podman_autoupdate | default({})).stdout_lines | default([]) }}"
               podman_autoupdate_after: "{{ (podman_autoupdate_after | default({})).stdout_lines | default([]) }}"
