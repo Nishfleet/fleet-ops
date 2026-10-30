@@ -265,7 +265,7 @@ def test_hermes_reads_a_minted_login_while_nishes_admin_login_is_hidden() -> Non
         assert "/home/nish/.config/gh" in hidden, f"{unit}: nish's admin gh login is still readable, and this unit reads text from strangers (fleet-ops#10267)"  # gitleaks:allow
         env = {name: value for values in keys["Environment"] for name, value in (item.split("=", 1) for item in shlex.split(values))}
         assert env.get("GH_CONFIG_DIR") == HERMES_GH_DIR, f"{unit}: gh must read the minted login, not ~/.config/gh: {env.get('GH_CONFIG_DIR')}"
-        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Wants"])), f"{unit}: nothing mints the login this unit points at"
+        assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["Requires"])), f"{unit}: nothing makes the minted login exist before this unit starts"
         assert "fleet-hermes-github-token.service" in shlex.split(" ".join(keys["After"])), f"{unit}: a restart could start before the token directory is written"
 
 
@@ -273,12 +273,16 @@ def test_the_hermes_login_oneshot_mints_the_narrow_token_gh_needs() -> None:
     keys = _unit_keys(HERMES_TOKEN)
     assert _last(keys, "Type") == "oneshot"
     assert _last(keys, "User") == "nish", "the App key and the token directory are nish's, not root's"
+    assert int(_last(keys, "StartLimitIntervalSec").removesuffix("min")) * 60 >= 60, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
+    assert int(_last(keys, "StartLimitBurst")) > 0, "no cap on how fast the pull-ins can mint spends the worker runs' installation-token quota"
     assert _last(keys, "RuntimeDirectory") == HERMES_GH_DIR.rsplit("/", 1)[1]
     assert _last(keys, "RuntimeDirectoryMode") == "0700", "gh's hosts.yml carries a live token"
     assert _last(keys, "RuntimeDirectoryPreserve") == "yes", "gh reads the file between mints, so it may not vanish when the oneshot exits"
     assert _last(keys, "OnFailure") == "fleet-unit-failed@%n.service"  # _last() lowercases, so %N reads back as %n
     assert not (INSTALLED / f"{HERMES_TOKEN.name}.d").is_dir(), "the deploy restarts Hermes on a change to the shared drop-in, not to a per-unit layer here"
     script = " ".join(keys["ExecStart"]).replace("%%", "%").replace("$$", "$").replace("\\\\", "\\")
+    assert "$((now - $(stat -c %Y \"$RUNTIME_DIRECTORY/hosts.yml\")))" in script, "a pull-in must skip a still-fresh token file: every Hermes restart would otherwise spend the worker runs' installation-token quota"
+    assert "lt 900" in script, "the skip window must be shorter than the timer's refresh interval, or the token could age past its one-hour expiry"
     assert '-d "{\\"permissions\\":{\\"actions\\":\\"read\\",\\"issues\\":\\"write\\",\\"pull_requests\\":\\"read\\"}}"' in script, (
         "the token must grant only what config/hermes/ calls: issue reads and comments, pull request and workflow-run reads"
     )
@@ -331,13 +335,14 @@ def test_the_deploy_restarts_hermes_when_the_dropin_that_hides_the_login_changes
 
 
 def test_the_hermes_login_unit_names_an_absolute_key_path() -> None:
-    # A system unit's %h is /root whatever User= says (systemd.unit, "Specifiers"),
-    # so `%h/.config/...` would read a key that does not exist (review of PR #11116).
-    # %u is the unit's own user, so the path is absolute and names no home.
+    # Or %u: the system manager user name, "root" in a system unit, not User=
+    # (systemd.unit 255, "Specifiers", fleet-ops#10267 review of the /home/%u
+    # spelling). Only the spelled-out path reads the key the mint signs with.
     keys = _unit_keys(HERMES_TOKEN)
     key = [value for value in keys["Environment"] if value.startswith("APP_KEY=")][-1].split("=", 1)[1]
-    assert key == "/home/%u/.config/fleet-worker/nishfleet-worker.private-key.pem"  # gitleaks:allow
+    assert key == "/home/nish/.config/fleet-worker/nishfleet-worker.private-key.pem"  # gitleaks:allow
     assert "%h" not in str(keys["Environment"]), "%h expands to /root in a system unit"
+    assert "%u" not in str(keys["Environment"]), "%u expands to root in a system unit"
 
 
 def test_hermes_units_confine_writes_to_the_paths_hermes_uses() -> None:

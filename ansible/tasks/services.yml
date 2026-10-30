@@ -113,8 +113,9 @@
 #
 # A GitHub outage must not turn the rest of the host config red, so neither the
 # mint nor the proof stops this play: each is reported below, and the restart
-# is gated on the login file itself, so Hermes moves onto the new login only
-# once that file exists. The unit's OnFailure= pages and the timer retries in
+# is gated on the login file itself and on a gh call through it, so Hermes
+# moves onto the new login only once that login has read the issue it was
+# built for. The unit's OnFailure= pages and the timer retries in
 # 20 minutes, so a box left on the old login is not silent.
 - name: Enable the Hermes GitHub login refresh
   ansible.builtin.systemd_service:
@@ -172,8 +173,10 @@
   when: hermes_login_proof is failed
 
 # The drop-in is what hides nish's admin login, so it must not take effect on a
-# box that has no minted login to replace it: a restart in that state would
-# leave Hermes with no gh at all, and both units run Restart=always.
+# box that has no minted login to replace it, or one that failed to read an
+# issue: a restart in that state would leave Hermes with no gh at all, or with
+# a login nothing has proven, and both units run Restart=always. The proof is
+# skipped in check mode, so the gate also accepts that skip.
 - name: Restart Hermes onto the minted login
   ansible.builtin.systemd_service:
     name: "{{ item }}"
@@ -184,3 +187,4 @@
   when:
     - hermes_sandbox_dropin is changed
     - hermes_login_file.stat.exists
+    - hermes_login_proof is skipped or hermes_login_proof is succeeded
