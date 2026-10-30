@@ -17,7 +17,7 @@ CFG = json.loads((ROOT / "config" / "intake-repos.json").read_text())
 EXPECTED = {r["name"] for r in CFG["repos"]} | {r["name"] for r in CFG["sweep_only"]}
 ENABLE_LINE = re.compile(
     r"^ExecStart=/usr/bin/systemctl --user enable --now"
-    r"(.*\bfleet-pr-sweep@(?P<first>[^ ]+)\.timer\b.*)$"
+    r"(.*\bfleet-pr-sweep@[^ ]+\.timer\b.*)$"
 )
 TIMER = re.compile(r"\bfleet-pr-sweep@([^ ]+)\.timer\b")
 
@@ -26,8 +26,10 @@ def live_timer_names() -> set[str]:
     """Every fleet-pr-sweep timer the step 2a enable line switches on."""
     text = (ROOT / "systemd" / "fleet-sync.service").read_text()
     lines = [line for line in text.splitlines() if ENABLE_LINE.match(line)]
-    assert lines, "no step 2a enable line for fleet-pr-sweep timers in systemd/fleet-sync.service"
-    return {name for line in lines for name in TIMER.findall(line)}
+    assert len(lines) == 1, (
+        f"expected exactly one fleet-pr-sweep enable line in systemd/fleet-sync.service, got {len(lines)}"
+    )
+    return set(TIMER.findall(lines[0]))
 
 
 def test_every_enrolled_and_sweep_only_repo_has_a_timer_instance():
@@ -36,5 +38,10 @@ def test_every_enrolled_and_sweep_only_repo_has_a_timer_instance():
 
 
 def test_no_timer_instance_for_a_repo_out_of_the_config():
-    agents = live_timer_names() - EXPECTED
-    assert not agents, f"timer for a repo not in intake-repos.json: {sorted(agents)}"
+    extra = live_timer_names() - EXPECTED
+    assert not extra, f"timer for a repo not in intake-repos.json: {sorted(extra)}"
+
+
+def test_the_template_pair_the_enable_line_needs_exists():
+    for unit in ("systemd/fleet-pr-sweep@.service", "systemd/fleet-pr-sweep@.timer"):
+        assert (ROOT / unit).is_file(), unit
