@@ -1,5 +1,14 @@
-# All agent runners together. A single job may peak at ~3G (tests);
-# the slice throttles the group before it can starve the host.
+# All agent runners together. A single job may peak at ~3G (tests).
+# No MemoryHigh here (fleet-ops#11160, 2026-10-30 16:46 IST): with a 26G
+# high on the slice, one job's spike put the kernel's charge throttle on
+# every descendant cgroup at once, all 29 runners read past 80% memory
+# pressure in the same minute (Avg10 91.33), and oomd killed all of them
+# in the same second. A cap on the parent throttles the whole group, so
+# the slice carries no MemoryHigh. What enforces now: the per-runner
+# MemoryHigh=4G and oomd rule in the runner drop-in (#9091's guarantee is
+# unchanged), and MemoryMax=28G below — at it the kernel ends an overflow
+# in seconds by killing the single biggest task inside the slice, instead
+# of holding every runner in a throttle.
 # Size (2026-10-05, host upgraded to netcup RS 4000: 12 vCPU, 31.3G RAM, 8G
 # swap): 10G/11G -> 26G/28G. The runners get all RAM except a measured
 # reserve, and the reserve is held by protection, not by a low cap here:
@@ -13,8 +22,8 @@
 # never take. With the old 10G cap the slice was throttled 5643144 times
 # (memory.events high) in those 5h, and the runners themselves only held
 # 1176M anon; the rest was page cache.
-# MemorySwapMax is the swap half of that bargain (fleet-ops#8638): the two
-# RAM caps above say nothing about swap, so on 2026-09-24/25 32 runners
+# MemorySwapMax is the swap half of that bargain (fleet-ops#8638): the RAM
+# cap above says nothing about swap, so on 2026-09-24/25 32 runners
 # filled all 8G of host swap (1000-2500 pages/s in and out, 14.6% iowait,
 # 12 OOM kills) and the rest of the box paid for it. Capped at 1G, runner
 # overflow is killed inside agent.slice instead of being swapped onto the
@@ -35,7 +44,6 @@
 [Slice]
 CPUWeight=20
 IOWeight=20
-MemoryHigh=26G
 MemoryMax=28G
 MemorySwapMax=1G
 ManagedOOMMemoryPressure=kill
