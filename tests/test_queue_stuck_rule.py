@@ -18,6 +18,7 @@ ALERTING = ROOT / "config/grafana/provisioning/alerting"
 RULES = ALERTING / "queue-stuck.yaml"
 YQ = shutil.which("yq")
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+BASE = {"severity": "warning", "signal": "queue-stuck"}
 AGE = {
     "queue-stuck-pr-unmerged": 2,
     "queue-stuck-pr-blocked": 2,
@@ -95,7 +96,7 @@ def test_queries_scope_the_org_wide_search_to_unarchived_repos_with_their_own_ti
 def test_every_org_wide_github_search_in_the_alerting_rules_excludes_archived_repositories():
     for path in sorted(ALERTING.glob("*.yaml")):
         for query in _github_queries(path):
-            if query.startswith("org:Nishfleet"):
+            if "org:Nishfleet" in query.split():
                 assert "archived:false" in query.split(), (path.name, query)
 
 
@@ -104,6 +105,33 @@ def test_the_annotation_search_links_exclude_archived_repositories():
         for link in re.findall(r"https://github\.com/search\?[^\s]+", rule["annotations"]["description"]):
             assert "org%3ANishfleet" in link, (uid, link)
             assert "archived%3Afalse" in link, (uid, link)
+
+
+def test_every_org_wide_issue_search_leaves_the_fleets_own_alert_issues_out():
+    for path in sorted(ALERTING.glob("*.yaml")):
+        for query in _github_queries(path):
+            if "org:Nishfleet" in query.split() and "is:issue" in query.split():
+                assert 'NOT "grafana alert:" in:title' in query, (path.name, query)
+
+
+def test_the_annotation_search_links_leave_the_fleets_own_alert_issues_out():
+    for uid, rule in _rules().items():
+        for link in re.findall(r"https://github\.com/search\?[^\s]+", rule["annotations"]["description"]):
+            if "type=issues" in link:
+                assert "NOT+%22grafana+alert%3A%22+in%3Atitle" in link, (uid, link)
+
+
+def test_every_issue_query_in_a_rule_has_its_own_list_link():
+    for uid, rule in _rules().items():
+        links = re.findall(r"https://github\.com/search\?type=issues&q=[^\s]+", rule["annotations"]["description"])
+        queries = [
+            d["model"]["options"]["query"]
+            for d in rule["data"]
+            if d.get("datasourceUid") == "fleet-github" and d["model"].get("queryType") == "Issues"
+        ]
+        for query in queries:
+            for label in (t for t in query.split() if t.startswith("label:")):
+                assert any(f"label%3A{label.removeprefix('label:')}" in link for link in links), (uid, label, links)
 
 
 def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
@@ -116,12 +144,45 @@ def test_rules_are_warnings_on_their_own_signal_with_a_read_error_text():
         "the ask rule must read the nish-ask board and leave the trackers out"
     )
     for r in rules.values():
-        assert r["labels"] == {"severity": "warning", "signal": "queue-stuck"}
         assert (r["for"], r["execErrState"], r["noDataState"]) == ("0s", "Error", "OK")
         assert "cannot read GitHub" in r["annotations"]["summary"]
         assert "notification_settings" not in r
+    assert {r["labels"]["signal"] for r in rules.values()} == {"queue-stuck"}
+    assert {r["labels"]["severity"] for r in rules.values()} == {"warning"}
+    assert {uid: r["labels"] for uid, r in rules.items() if set(r["labels"]) != set(BASE)} == {
+        "queue-stuck-ask-noslip": {"severity": "warning", "signal": "queue-stuck", "audience": "nish"},
+    }
+
+
+def test_ask_rule_reads_the_private_board_and_names_the_token_that_cannot():
+    ask = _rules()["queue-stuck-ask-noslip"]
+    (search,) = (d for d in ask["data"] if d["refId"] == "A")
+    assert search["model"]["repository"] == "nish-vault", (
+        "the ask rule must read the private nish-vault board, which is what no worker token can reach")
+    body = ask["annotations"]["description"]
+    assert "fleet-worker-github-token@.service" in body, (
+        "the ask rule reads the one board no worker token can reach, so its text must name who can act on an ask")
+    assert "linked:pr" in body, "an ask's PR link lives in its own repository, so a fleet-ops PR never clears it"
+    assert "Find why the ask has no PR" not in body, "that instruction sends a worker to a board it gets 404 on"
+    assert "needs-nish-decision" in body, (
+        "a read error the fleet cannot repair must file for the account owner, not park a worker")
 
 
 def test_needs_split_rule_reads_open_prs_with_that_label():
     (a,) = [d for d in _rules()["queue-stuck-pr-needs-split"]["data"] if d["refId"] != "C"]
     assert a["model"]["options"]["query"] == "org:Nishfleet is:pr is:open label:needs-split archived:false"
+
+
+def test_a_pr_waiting_for_the_coordinator_is_left_out_of_both_pr_rules():
+    rules = _rules()
+    for uid in ("queue-stuck-pr-unmerged", "queue-stuck-pr-blocked"):
+        for d in (d for d in rules[uid]["data"] if d["refId"] != "C"):
+            query = d["model"]["options"]["query"]
+            assert "-label:needs-coordinator" in query, (
+                f"{uid} {d['refId']}: a risky PR's review-risky and coordinator-approval checks are red until "
+                "an approver posts one, so counting it files a duplicate issue a day for work that waits on "
+                "purpose; the stuck-prs sweep in agent-dispatch.yml owns that class (fleet-ops#10522)"
+            )
+        assert "needs-coordinator" in rules[uid]["annotations"]["description"], (
+            f"{uid}: the issue this rule files must say why a needs-coordinator PR is left out"
+        )

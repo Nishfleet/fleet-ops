@@ -37,6 +37,14 @@
 # catch-all in cloudflare-spend-contact.yaml and file a fleet-ops issue at once. Not paging is a
 # choice: the page for a dead loop is Alertmanager's (GrafanaDown, GrafanaNotificationsFailing).
 # Provisioned alert rules do not expand $VAR, so every dollar here is a single one.
+#
+# The ask rule below is the one exception to that route. It carries audience: nish, so the policy
+# tree sends its issue to nish-ask-dispatch and labels it needs-nish-decision instead of putting it
+# in the worker queue. systemd/fleet-worker-github-token@.service mints every worker token with a
+# body that names one repository, so a worker running a fleet-ops issue gets 404 on the private
+# Nishfleet/nish-vault board this rule reads and no worker lane can work an ask on it
+# (fleet-ops#10881). Its read errors stay the fleet's: the audience route excludes
+# DatasourceError and DatasourceNoData, so those fall through to the catch-all.
 apiVersion: 1
 
 groups:
@@ -79,6 +87,15 @@ groups:
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
 
+      # A PR labelled needs-coordinator is risky and waits for the coordinator approval on
+      # purpose: its review-risky and coordinator-approval checks stay red until an approver
+      # posts one, so it can never clear a "failing checks" read by itself. Counting it filed a
+      # duplicate fleet-ops issue a day for work nothing could rework: on 2026-10-29 every hit
+      # in the read window carried the label and the count with the exclusion was zero
+      # (fleet-ops#10522). The stuck-prs sweep in agent-dispatch.yml is the owner of that class:
+      # it reads required checks, conflicts and review verdicts per head and files one Stuck PR
+      # issue for a head that is really stuck. The green rule above has left the label out since
+      # it was written.
       - uid: queue-stuck-pr-blocked
         title: PR blocked with no new push for 2h
         condition: C
@@ -91,7 +108,7 @@ groups:
               queryType: Pull_Requests
               owner: Nishfleet
               repository: fleet-ops
-              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot status:failure archived:false", timeField: 3}
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot status:failure -label:needs-coordinator archived:false", timeField: 3}
               refId: A
           - refId: B
             relativeTimeRange: {from: 2592000, to: 0}
@@ -101,7 +118,7 @@ groups:
               queryType: Pull_Requests
               owner: Nishfleet
               repository: fleet-ops
-              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot review:changes_requested archived:false", timeField: 3}
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:pr is:open draft:false -author:app/dependabot review:changes_requested -label:needs-coordinator archived:false", timeField: 3}
               refId: B
           - refId: C
             datasourceUid: __expr__
@@ -119,7 +136,7 @@ groups:
         for: 0s
         annotations:
           summary: '{{ if $values }}A pull request has failing checks or a requested change and no update for 2 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "PR blocked with no new push for 2h", so it is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}No rework started on it (fleet-ops#10306: PRs 10351 and 10356 sat blocked with no alert). Rework fires only for a red CI run on a claim/issue-* branch and stops at 3 runs, when the issue is parked needs-orchestrator; an orch/* or person branch gets none. Find which of those it is, fix that, and prove the PR moved. Dependabot PRs are left out; Dependabot rebases its own. An archived repository is left out too: it rejects every merge, so no rework can move a pull request in one. A reviewer block that the reviewer wrote as a comment, not a GitHub review, is not seen here (fleet-ops#10361).{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+-author%3Aapp%2Fdependabot+status%3Afailure+archived%3Afalse+sort%3Aupdated-asc'
+          description: '{{ if $values }}No rework started on it (fleet-ops#10306: PRs 10351 and 10356 sat blocked with no alert). Rework fires only for a red CI run on a claim/issue-* branch and stops at 3 runs, when the issue is parked needs-orchestrator; an orch/* or person branch gets none. Find which of those it is, fix that, and prove the PR moved. Dependabot PRs are left out; Dependabot rebases its own. A PR labelled needs-coordinator is left out too: it is risky and waits for the coordinator approval on purpose, and the stuck-prs sweep in agent-dispatch.yml already files one Stuck PR issue per stuck head for it (fleet-ops#10522). An archived repository is left out too: it rejects every merge, so no rework can move a pull request in one. A reviewer block that the reviewer wrote as a comment, not a GitHub review, is not seen here (fleet-ops#10361).{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=pullrequests&q=org%3ANishfleet+is%3Apr+is%3Aopen+draft%3Afalse+-author%3Aapp%2Fdependabot+status%3Afailure+-label%3Aneeds-coordinator+archived%3Afalse+sort%3Aupdated-asc'
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
 
@@ -153,8 +170,8 @@ groups:
         for: 0s
         annotations:
           summary: '{{ if $values }}A nish-ask issue on the nish-vault board has no pull request and no update for 4 hours.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "Nish ask sits open with no PR for 4h", so it is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}Nothing on the ask board is moving, and the ask could be slipping past the 4h no-slip guarantee: a worker lane the rule cannot see, a plan that was never started, or one that ended without a closing PR. Find why the ask has no PR, fix that, and prove a PR opened. Trackers (label nish-ask-tracker) are left out; they hold asks and are never merged.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on the Nishfleet/nish-vault issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Anish-ask+-label%3Anish-ask-tracker+-linked%3Apr+archived%3Afalse+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
-        labels: {severity: warning, signal: queue-stuck}
+          description: '{{ if $values }}An ask on the private Nishfleet/nish-vault board has no pull request and no update for 4 hours, so it is slipping past the 4h no-slip guarantee. This issue is filed for Nish, not for a worker. systemd/fleet-worker-github-token@.service mints every worker token with a body that names one repository, so a worker running a fleet-ops issue gets 404 on that board, and no worker lane can work an ask on it. GitHub also links an issue to a pull request only inside one repository, so an ask delivered by a fleet-ops pull request never reads as linked:pr, and the count cannot fall to zero that way. What moves the board: give the board read to the fleet so a lane can work an ask on it, or answer the asks and close them with a link to the work that answered them. Trackers (label nish-ask-tracker) are left out; they hold asks and are never merged.{{ else }}Check the GitHub data source in Grafana: it is not answering for the private Nishfleet/nish-vault board. Repair the token or the nishfleet-worker App installation. If the data source answers and only a worker token cannot read the board, granting read on a private repository belongs to the account owner, so file that part needs-nish-decision with the evidence instead of parking.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Anish-ask+-label%3Anish-ask-tracker+-linked%3Apr+archived%3Afalse+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
+        labels: {severity: warning, signal: queue-stuck, audience: nish}
         isPaused: false
 
       - uid: queue-stuck-issue-no-pr
@@ -179,7 +196,7 @@ groups:
               queryType: Issues
               owner: Nishfleet
               repository: fleet-ops
-              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:needs-orchestrator -label:orchestrator-tried -label:agent-blocked -label:needs-nish-decision -linked:pr archived:false", timeField: 2}
+              options: {owner: Nishfleet, repository: fleet-ops, query: "org:Nishfleet is:issue is:open label:needs-orchestrator -label:handoff-ended -label:agent-blocked -label:needs-nish-decision -linked:pr NOT \"grafana alert:\" in:title archived:false", timeField: 2}
               refId: B
           - refId: C
             datasourceUid: __expr__
@@ -196,8 +213,8 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          summary: '{{ if $values }}An issue has been agent-in-progress, or parked on needs-orchestrator with no orchestrator-tried, agent-blocked or needs-nish-decision label, for 3 hours with no pull request.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "Issue claimed or handed off for 3h with no PR", so it is blind until the read is fixed.{{ end }}'
-          description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the list: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+archived%3Afalse+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
+          summary: '{{ if $values }}An issue has been agent-in-progress, or parked on needs-orchestrator with no handoff-ended, agent-blocked or needs-nish-decision label, for 3 hours with no pull request.{{ else }}The fleet cannot read GitHub for the queue-stuck rule "Issue claimed or handed off for 3h with no PR", so it is blind until the read is fixed.{{ end }}'
+          description: '{{ if $values }}A worker lane is out of quota or hung, or the orchestrator hand-off never ran (fleet-ops#10306). Find why the issue has no PR, fix that, and prove a PR opened. This is the one queue-stuck detector; fleet-ops#10245 drops its copy.{{ else }}Check the GitHub data source in Grafana: the nishfleet-worker App installation needs read on issues and pull requests.{{ end }} Open the lists: https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aagent-in-progress+-linked%3Apr+archived%3Afalse+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc and https://github.com/search?type=issues&q=org%3ANishfleet+is%3Aissue+is%3Aopen+label%3Aneeds-orchestrator+-label%3Ahandoff-ended+-label%3Aagent-blocked+-label%3Aneeds-nish-decision+-linked%3Apr+archived%3Afalse+NOT+%22grafana+alert%3A%22+in%3Atitle+sort%3Aupdated-asc'
         labels: {severity: warning, signal: queue-stuck}
         isPaused: false
 

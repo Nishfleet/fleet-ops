@@ -4,7 +4,7 @@ The hand-off never writes to another repo: it files an issue in the product repo
 comments the marker the prompt pins (`orchestrator: deliverable filed in <url>`), with
 `gh pr list` empty in fleet-ops and the deliverable present only in the product repo.
 The cleanup step then marks nothing, while an issue without a trusted marker, or with
-one from a stranger, still gets orchestrator-tried. This test runs the real `run:`
+one from a stranger, still gets handoff-ended. This test runs the real `run:`
 block of "Clean up and mark a PR-less hand-off" from agent-dispatch.yml against a fake
 gh, as test_sweep_requeue.py does; the --jq program the step carries is evaluated by
 real jq, so the marker match itself is under test.
@@ -104,20 +104,20 @@ def test_last_marker_wins(tmp_path):
     assert not (tmp_path / "writes.log").exists()
 
 
-def test_no_marker_still_marks_tried(tmp_path):
+def test_no_marker_still_marks_ended(tmp_path):
     env = _setup(tmp_path, [_comment("orchestrator: picked up, PR https://github.test/Nishfleet/fleet-ops/pull/1")])
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
     writes = (tmp_path / "writes.log").read_text()
-    assert "--add-label orchestrator-tried --remove-label needs-orchestrator" in writes
+    assert "--add-label handoff-ended --remove-label needs-orchestrator" in writes
     assert "orchestrator hand-off ended without a PR:" in writes
 
 
-def test_marker_from_a_stranger_still_marks_tried(tmp_path):
+def test_marker_from_a_stranger_still_marks_ended(tmp_path):
     env = _setup(tmp_path, [_comment(MARKER, association="NONE", login="stranger")])
     r = _cleanup(env)
     assert r.returncode == 0, r.stderr
-    assert "--add-label orchestrator-tried --remove-label needs-orchestrator" in (tmp_path / "writes.log").read_text()
+    assert "--add-label handoff-ended --remove-label needs-orchestrator" in (tmp_path / "writes.log").read_text()
 
 
 def test_comment_read_failure_marks_nothing(tmp_path):

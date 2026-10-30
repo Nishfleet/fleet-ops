@@ -24,9 +24,11 @@
     rootfs: "{{ (playbook_dir ~ '/../rootfs') | realpath }}"
     tether_off_marker: /etc/fleet-ops/tether-off
     # Agent runners 1-10 stay. 11-36 are retired (fleet-ops#10480): 40 services
-    # on a 12-core, 31 GB box ran at load 1. Their directories stay on disk: the
-    # runner's registration lives at GitHub and removing it needs an org admin
-    # token that the VPS key does not carry.
+    # on a 12-core, 31 GB box ran at load 1. A directory goes only once its
+    # registration is gone (fleet-ops#10632): the registration lives at GitHub
+    # and removing it needs an org admin token that the VPS key does not carry,
+    # so until `config.sh remove` has taken .runner and .credentials away, the
+    # directory is the only thing left that can still deregister the runner.
     agent_runner_retired_ids: "{{ range(31, 37) | list }}"
     # Node for tether: one exact 22.x LTS release, downloaded from nodejs.org and
     # checked against the hash pinned here. The hash is the tar.xz line of that
@@ -151,6 +153,13 @@
       - "{{ nish_home }}/.config/systemd/user/amp-runner-rajeev.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-nish.service"
       - "{{ nish_home }}/.config/systemd/user/default.target.wants/amp-runner-rajeev.service"
+      # The Beacon Hermes poll watcher became a system unit (fleet-ops#11089): it
+      # reads Telegram-derived text, so it needs the mount sandbox a user unit
+      # does not get on this box. fleet-sync.service step 2i stops it and drops
+      # the link on every deploy; these entries drop it too, because a boot run
+      # of this playbook does not wait for that step.
+      - "{{ nish_home }}/.config/systemd/user/beacon-hermes-poll.service"
+      - "{{ nish_home }}/.config/systemd/user/default.target.wants/beacon-hermes-poll.service"
       # The Leviathan session-log index and the Executor MCP hub (#10625):
       # removed from the repo, and Nish's runtime cut stopped and disabled them
       # on 2026-10-28. Stop and disable does not remove a hand `ln -s` link or
@@ -331,6 +340,7 @@
       HOME: "{{ nish_home }}"
       XDG_RUNTIME_DIR: /run/user/1000
       PATH: "{{ nish_home }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    agent_runner_root: "{{ nish_env.HOME }}/.local/share/agent-runner"
     digest_prompts:
       - digest-morning
       - digest-evening
@@ -387,6 +397,11 @@
       - {name: grafana-postgres-password, src: "{{ nish_home }}/.config/fleet-ops/grafana-postgres-password.env", key: GRAFANA_POSTGRES_PASSWORD}
 
   tasks:
+    # The review runners' user and registration exist before install-config.yml copies their
+    # drop-ins: a drop-in names a credential the deploy may not have, and a unit whose
+    # LoadCredential= is unreadable does not start.
+    - ansible.builtin.import_tasks: tasks/review-runners.yml
+
     - ansible.builtin.import_tasks: tasks/install-config.yml
 
     - ansible.builtin.import_tasks: tasks/agent-lock.yml

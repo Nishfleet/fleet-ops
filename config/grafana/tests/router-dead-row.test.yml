@@ -100,3 +100,12 @@ tests:
     exp_samples:
     - labels: '{requested_model="jev-latest"}'
       value: 30
+- interval: 1m
+  name: a 429 quota wall is a resting row, not a dead one
+  input_series:
+  - series: 'litellm_deployment_cooled_down_total{model_id="zai-glm53flashc-worker-capable",litellm_model_name="worker-capable",api_base="https://api.z.ai/api/coding/paas/v4",api_provider="openai",exception_status="429"}'
+    values: '0+1x120'
+  alert_rule_test:
+  - alertname: RouterRowAnswers402403404
+    eval_time: 60m
+    exp_alerts: []

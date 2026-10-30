@@ -124,3 +124,39 @@ def test_a_failed_call_is_retried_until_a_review_lands(tmp_path):
     assert "rc=0" in out and out.endswith("alibaba-qwen38max-judge")
     assert len((tmp_path / "calls").read_text().splitlines()) == 2
     assert (tmp_path / "third.txt").read_text() == "APPROVE"
+
+
+def claude_calls():
+    run = next(s["run"] for j in yaml.safe_load(WF.read_text())["jobs"].values() for s in j.get("steps", []) if s.get("id") == "review")
+    return run[run.index("ask_claude() {"):run.index("\n", run.index("ask_claude() {"))]
+
+
+def claude_retry(tmp_path, answers, backoff="0"):
+    for d in ("workspaces/tooling/fleet-ops-deploy-clone/prompts", "bin"):
+        (tmp_path / d).mkdir(parents=True)
+    (tmp_path / "workspaces/tooling/fleet-ops-deploy-clone/prompts/risky-review.md").write_text("")
+    (tmp_path / "AGENTS.md").write_text("")
+    (tmp_path / "in").write_text("diff")
+    (tmp_path / "bin/claude").write_text(f'#!/bin/bash\necho x >> "$CALLS"\n[ "$(wc -l < "$CALLS")" -le {answers} ] && exit 0\nprintf "no blocker lines\\nAPPROVE"\n')
+    (tmp_path / "bin/claude").chmod(0o755)
+    script = claude_calls() + '\nout=$(ask_claude opus "$IN"); echo "rc=$?"; echo "calls=$(wc -l < "$CALLS")"; echo "out=$out"\n'
+    env = {"HOME": str(tmp_path), "REVIEW_BACKOFF": backoff, "IN": str(tmp_path / "in"), "CALLS": str(tmp_path / "calls"), "PATH": f"{tmp_path}/bin:/usr/bin:/bin"}
+    return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True).stdout
+
+
+def test_an_empty_claude_answer_is_asked_again(tmp_path):
+    out = claude_retry(tmp_path, answers=1, backoff="0 0")
+    assert "rc=0" in out and "calls=2" in out and "APPROVE" in out
+
+
+def test_a_claude_seat_that_never_answers_uses_every_delay(tmp_path):
+    n = len(delays())
+    out = claude_retry(tmp_path, answers=99, backoff=" ".join(["0"] * n))
+    assert "rc=1" in out and f"calls={n + 1}" in out
+
+
+def test_both_claude_reviews_are_asked_again():
+    text = WF.read_text()
+    assert "for d in 0 ${REVIEW_BACKOFF" in claude_calls()
+    assert 'review=$(ask_claude "$first_model" "$RUNNER_TEMP/diff.txt")' in text
+    assert 'r2=$(ask_claude "$SECOND_MODEL" "$RUNNER_TEMP/extra-in.txt")' in text

@@ -36,19 +36,9 @@
       "enrolled_by": "Nish, 2026-10-15 (Site Rep; the launch push to 2026-10-29 ended 2026-10-28 with 0 paying workspaces: the numbers and Nish's continue/adjust/stop call are Nishfleet/siterep-public#232; normal intake order from 2026-10-28)"
     },
     {
-      "name": "tether",
-      "product": true,
-      "enrolled_by": "Nish, 2026-10-23 (long work moves off Claude Desktop sessions to VPS workers)"
-    },
-    {
       "name": "seo-fix-kit",
       "product": true,
       "enrolled_by": "Nish, 2026-10-15 (SEO Fix Kit; enrolled 2026-10-28 after the repo moved into Nishfleet on 2026-10-16; the launch push to 2026-10-29 ended 2026-10-28 with 0 paid Fix Packs: the numbers and Nish's continue/adjust/stop call are Nishfleet/seo-fix-kit#317; normal intake order from 2026-10-28)"
-    },
-    {
-      "name": "mailbox",
-      "product": true,
-      "enrolled_by": "orchestrator, 2026-10-28 (fleet-ops#10653; a product repo, Team mailbox, whose CI runs on GitHub-hosted ubuntu-latest so PR code never reaches a self-hosted runner; measured 2026-10-29: the stub PR is on main, the six labels and the checkout are in place; inert until Nish sets AGENT_MODE=live, which the hand-off lane may not do)"
     }
   ],
   "sweep_only": [
