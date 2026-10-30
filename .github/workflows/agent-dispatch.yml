@@ -526,13 +526,22 @@ jobs:
             for n in $(gh issue list -R "$GITHUB_REPOSITORY" -l agent-in-progress -L 1000 --json number --jq '.[].number'); do
               gh pr list -R "$GITHUB_REPOSITORY" --head "claim/issue-$n" --state open --json isDraft --jq '[.[] | select(.isDraft | not)] | length' | grep -qx 0 || continue
               body=$(gh issue view "$n" -R "$GITHUB_REPOSITORY" --json comments --jq '[.comments[].body | select(startswith("agent run started:"))] | last // ""')
-              [[ $body =~ actions/runs/([0-9]+) ]] || continue
-              # A failed read is not proof the run died: skip, never requeue a live worker.
-              rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
-              if [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ]; then
-                gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
-                echo "requeued #$n: claimed with no live run and no claim PR"
+              if [[ $body =~ actions/runs/([0-9]+) ]]; then
+                # A failed read is not proof the run died: skip, never requeue a live worker.
+                rv=$(gh run view "${BASH_REMATCH[1]}" -R "$GITHUB_REPOSITORY" --json status,jobs) || { echo "::warning::#$n: run read failed, skip"; continue; }
+                [ "$(jq -r --arg ref "claim/issue-$n" "$RUN_LIVE_JQ" <<<"$rv")" = false ] || continue
+              else
+                # agent.yml's Gate labels the issue and posts "agent run started:" one line apart, so
+                # a live worker carries the comment within seconds and a label without one is a run
+                # that died between the two lines (fleet-ops#10903: 0509#7070 held the label 24 days
+                # with no branch, no PR and no comment). The label's own age is then the proof, read
+                # at the 15-minute idle cutoff stuck-prs uses; no label event at all is no proof
+                # either way, so it is skipped.
+                labelled=$(gh api "repos/$GITHUB_REPOSITORY/issues/$n/events?per_page=100" --paginate --jq '.[] | select(.event == "labeled" and .label.name == "agent-in-progress") | .created_at' | tail -n1) || { echo "::warning::#$n: label event read failed, skip"; continue; }
+                [ -n "$labelled" ] && [ "$(date -u -d "$labelled" +%s)" -lt "$(( $(date +%s) - 900 ))" ] || { echo "::warning::#$n: no agent-in-progress label event over 15 minutes old, skip"; continue; }
               fi
+              gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-in-progress --add-label agent-ready
+              echo "requeued #$n: claimed with no live run and no claim PR"
             done
             nums=$(gh issue list -R "$GITHUB_REPOSITORY" -l agent-ready -L 1000 --json number --jq '.[].number')
           fi
@@ -540,11 +549,7 @@ jobs:
           pages=''
           for n in $nums; do
             rc=0; i=$(issue_json "$n") || rc=$?
-            case $rc in
-              0) ;;
-              3) echo "#$n: issue gone, skipping" >&2; continue ;;
-              *) exit 1 ;;
-            esac
+            case $rc in 0) ;; 3) echo "#$n: issue gone, skipping" >&2; continue ;; *) exit 1 ;; esac
             pages="$pages$i"$'\n'
             # A closed blocker releases a parked hand-off: re-label it as the worker App so the label event starts it (fleet-ops#10489, #10949); at most 12 a sweep (fleet-ops#11010).
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
