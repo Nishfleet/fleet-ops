@@ -10,6 +10,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RULES = ROOT / "config/grafana/provisioning/alerting/deploy-failed.yaml"
 POLICY = ROOT / "config/grafana/provisioning/alerting/cloudflare-spend-contact.yaml"
+REGISTRY = json.loads((ROOT / "config/intake-repos.json").read_text())
 YQ = shutil.which("yq")
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
 DATASOURCE = {"Nishfleet": "fleet-github"}
@@ -66,6 +67,18 @@ def _red_for_a_day(runs):
 
 def _query(rule):
     return next(d for d in rule["data"] if d["refId"] == "A")
+
+
+def test_no_rule_reads_a_repo_the_registry_does_not_name():
+    """A deleted repo still answers every evaluation with a blind read (fleet-ops#11131).
+
+    The registry is the one list of live repos in this repo. A repo it names
+    in no section at all was deleted, and a rule for it watches nothing.
+    """
+    named = {r["name"] for section in ("repos", "deferred", "sweep_only", "excluded") for r in REGISTRY[section]}
+    for r in _all_rules():
+        repo = r["labels"]["repo"].split("/", 1)[1]
+        assert repo in named, f"{r['uid']} reads {repo}, which the registry names in no section"
 
 
 def test_a_uid_in_delete_rules_is_not_also_a_live_rule():
