@@ -138,6 +138,14 @@ def test_failed_fetch_on_an_intact_mirror_is_not_rebuilt(tmp_path):
     assert keep.exists(), "an intact mirror must survive a failed fetch"
 
 
+def test_fleet_sync_installs_the_age_out():
+    unit = (ROOT / "systemd/fleet-sync.service").read_text()
+    assert "config/user-tmpfiles.d/agent-worktrees.conf" in unit
+    assert "%h/.config/user-tmpfiles.d/agent-worktrees.conf" in unit
+    assert (ROOT / "config/user-tmpfiles.d/agent-worktrees.conf").is_file()
+    assert unit.index("ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf") < unit.index("ExecStart=/usr/bin/systemd-tmpfiles --user --create")
+
+
 def test_tmpfiles_age_out_keeps_the_mirror(tmp_path):
     if not shutil.which("systemd-tmpfiles"):
         pytest.skip("systemd-tmpfiles not installed")

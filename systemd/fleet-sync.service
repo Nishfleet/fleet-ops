@@ -121,6 +121,19 @@ ExecStart=-/bin/rm -rf %h/.config/systemd/user/executor.service.d
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/helper.md %h/.claude/agents/helper.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/claude-agents/scout.md %h/.claude/agents/scout.md
 ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/claude-max-agents.conf %h/.config/user-tmpfiles.d/claude-max-agents.conf
+# 2d'. The worktree age-out (fleet-ops#10945): agent-worktrees.conf has held
+#      the 3-day rule for the checkout dirs next to the mirror x line since
+#      Nish 2026-09-19, but no task installed it, so ~734 worktree dirs
+#      (88 GB, 2026-10-31) never aged out. Install it beside
+#      the claude-max one (COPY class, same as 2c/2d/2f/6/7); step 5 below
+#      (`systemd-tmpfiles --user --create`) applies it on every sync. Safe
+#      because the fleet rule makes every worktree landed or discarded before
+#      its run ends, so nothing uncommitted survives 3d (fleet-ops#10632: the
+#      armed age-out was held back only until `orch-0509-7744`'s staged work
+#      was recorded, which 0509#7813 delivered).
+#      Off switch: delete this step first, then
+#      `rm %h/.config/user-tmpfiles.d/agent-worktrees.conf` by hand.
+ExecStart=/usr/bin/install -C -D -m 0644 %h/workspaces/tooling/fleet-ops-deploy-clone/config/user-tmpfiles.d/agent-worktrees.conf %h/.config/user-tmpfiles.d/agent-worktrees.conf
 # 2f. The overdue-issue sweep (later-sweep.timer, fleet-ops#9758): install the
 #     repo list the unit reads, then link the unit pair, so every deploy carries
 #     edits to it. The install is a user-scope COPY, same class as 2c/6/7:
