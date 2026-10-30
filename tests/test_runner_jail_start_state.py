@@ -17,6 +17,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM = ROOT / "rootfs/etc/systemd/system"
+AGENT_WORKFLOW = ROOT / ".github/workflows/agent.yml"
+DISPATCH_WORKFLOW = ROOT / ".github/workflows/agent-dispatch.yml"
+HOME = "/home/nish"
 AGENT_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-agent-.service.d"
 FLEET_CI_DIR = SYSTEM / "actions.runner.Nishfleet.netcup-fleet-ci-.service.d"
 VAULT_DIR = SYSTEM / "actions.runner.nish3451-nish-vault.netcup-vault-1.service.d"
@@ -30,6 +33,7 @@ POOLS = {
 pool = pytest.mark.parametrize("start_conf,lockdown_conf", POOLS.values(), ids=POOLS.keys())
 USER_UNIT_DIRS = [ROOT / "systemd", ROOT / "rootfs/etc/systemd/user"]
 USER_RUN = "/run/user/1000/"
+KEY = "nishfleet-worker.private-key.pem"
 
 
 def values(text: str, key: str) -> list[str]:
@@ -166,6 +170,38 @@ def pre_start_paths_under_hidden_dir(dirs: list[Path]) -> list[str]:
     return bad
 
 
+def jailed_home_paths(workflow_text: str) -> set[Path]:
+    """Every `$HOME/...` path a workflow's jails mask with an empty tmpfs, as an absolute path."""
+    masked = set()
+    for line in workflow_text.splitlines():
+        if not line.strip().startswith(("jail_base=", "claude_jail_a=", "claude_jail_b=", "jail=(bwrap")):
+            continue
+        for rel in re.findall(r'--tmpfs "?\$HOME/([^\s"]+)', line):
+            masked.add(Path(HOME) / rel)
+    return masked
+
+
+def created_on_start(lockdown_text: str) -> set[Path]:
+    """Paths the runner's own drop-in makes exist at unit start: bind mount points and tmpfs mounts."""
+    made = set()
+    for key in ("BindPaths", "BindReadOnlyPaths", "TemporaryFileSystem"):
+        for value in values(lockdown_text, key):
+            for token in shlex.split(value):
+                made.add(Path(token.lstrip("-+").split(":")[0]))
+    return made
+
+
+def unmountable_jail_paths(lockdown_text: str, masked: set[Path]) -> list[str]:
+    """Jailed home paths that do not exist when the runner starts, so bwrap's --tmpfs cannot mkdir them.
+
+    The runner's home is an empty tmpfs and every path systemd creates in it for its own mounts is
+    root-owned, so the jailed user cannot make a directory beside them (fleet-ops#11097). Ownership is
+    not modelled: a writable tmpfs at a parent of the masked path counts as unmountable, which errs safe.
+    """
+    made = created_on_start(lockdown_text)
+    return [str(p) for p in sorted(masked) if not any(m == p or p in m.parents for m in made)]
+
+
 def test_no_runner_pre_start_step_runs_under_a_directory_the_runner_hides() -> None:
     units = runner_units()
     assert len(units) >= 5, "the runner drop-in dirs were not found"
@@ -193,6 +229,22 @@ def test_gate_fails_when_a_pre_start_mkdir_sits_under_a_hidden_parent(tmp_path: 
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
     (own / "30.conf").write_text("[Service]\nInaccessiblePaths=-/run/user/1000\nExecStartPre=\n")
     assert pre_start_paths_under_hidden_dir([shared, own]) == []
+
+
+def test_every_home_path_the_agent_jails_mask_can_be_mounted() -> None:
+    jails = jailed_home_paths(AGENT_WORKFLOW.read_text()) | jailed_home_paths(DISPATCH_WORKFLOW.read_text())
+    # A parser that reads no line would leave the gate green with nothing checked, so pin what it reads.
+    assert {Path(HOME, ".config", "gh"), Path(HOME, ".config", "cloudflare")} <= jails
+    assert unmountable_jail_paths((AGENT_DIR / "20-lockdown.conf").read_text(), jails) == []
+
+
+def test_gate_fails_when_the_jail_masks_a_path_the_runner_does_not_create() -> None:
+    jail = 'jail_base="bwrap --tmpfs $HOME/.config/gh --tmpfs $HOME/.config/cloudflare --"\n'
+    masked = jailed_home_paths(jail)
+    assert masked == {Path(HOME, ".config", "gh"), Path(HOME, ".config", "cloudflare")}
+    lock = f"[Service]\nTemporaryFileSystem={HOME}/.config/cloudflare:ro\nBindReadOnlyPaths=-{HOME}/.config/fleet-worker\n"
+    assert unmountable_jail_paths(lock, masked) == [f"{HOME}/.config/gh"]
+    assert unmountable_jail_paths(lock + f"BindPaths=-{HOME}/.config/gh/x\n", masked) == []
 
 
 @pool
@@ -299,8 +351,150 @@ def test_runner_jails_are_allowlists_that_hide_no_home_path() -> None:
         assert [p for p in hidden if p.startswith("/home/")] == [], name
         assert "/etc/restic" in hidden, name
     agent = units["actions.runner.Nishfleet.netcup-agent-.service.d"]
-    assert [v for v in merged_values(agent, "TemporaryFileSystem")] == ["/home/nish:mode=0700,uid=1000,gid=1000,size=512M"]
+    # The empty mount points the worker jail masks (#10934, #11097), named by their tail under the home tmpfs.
+    mounts = [v.removeprefix(HOME) for v in merged_values(agent, "TemporaryFileSystem")]
+    assert mounts == [":mode=0700,uid=1000,gid=1000,size=512M", "/.config/cloudflare:ro", "/.config/gh:ro", "/.config/fleet-worker:ro"]
     bound = " " + " ".join(merged_values(agent, "BindReadOnlyPaths")) + " " + " ".join(merged_values(agent, "BindPaths")) + " "
-    # pi's library tree, the App key dir and the seat token files the unjailed steps read.
-    for tail in ("/.local/lib", "/.config/fleet-worker", "/seats", "/.local/bin"):
+    # pi's library tree and the seat token files the unjailed steps read. The App key
+    # arrives as a credential, so the key dir is not bound (fleet-ops#10957).
+    for tail in ("/.local/lib", "/seats", "/.local/bin"):
         assert tail in bound, tail
+    assert [token for token in bound.split() if "/.config/fleet-worker" in token] == []
+    loaded = merged_values(agent, "LoadCredential")
+    assert len(loaded) == 1, loaded
+    name, _, source = loaded[0].partition(":")
+    # A wrong name, directory or file is a unit that fails at start, so the whole value
+    # is checked here, and by its tail: an absolute home path in a test is the public
+    # detail this issue takes out of the repo.
+    assert name == KEY and source.endswith(f"/.config/fleet-worker/{KEY}"), loaded
+
+
+FLEET_CONFIG_READ = re.compile(r"(?:\$\{?HOME\}?[\"']?|%h|~|/home/[^/\"' ]+)/\.config/fleet-ops/([A-Za-z0-9_.*/-]+)")
+
+
+def fleet_config_read_names(text: str) -> set[str]:
+    """Names a text reads under the fleet config dir, with no absolute path spelled out.
+
+    A pattern match on purpose, not a parser: it covers the reads this repo makes and it does not
+    follow a `cd` or a repo script, so a read no pattern matches is a gap for the run's own tests.
+    """
+    return set(FLEET_CONFIG_READ.findall(text))
+
+
+def fleet_config_bind_names(dirs: list[Path]) -> set[str]:
+    """Names the runner binds under the fleet config dir, with no absolute path spelled out."""
+    names: set[str] = set()
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                match = re.fullmatch(r"/home/[^/]+/\.config/fleet-ops/(.+)", token.lstrip("-+"))
+                if match:
+                    names.add(match.group(1))
+    return names
+
+
+def runner_workflows() -> dict[str, str]:
+    """Workflow name -> text, for the workflows whose jobs run on the runners.
+
+    The other workflows run on GitHub's own runners, where no fleet config dir exists, and ci.yml
+    plants a path under a simulated home to prove the engine jail hides it.
+    """
+    out = {}
+    for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+        lines = path.read_text().splitlines()
+        if any("self-hosted" in line for line in lines if line.lstrip().startswith("runs-on:")):
+            out[path.name] = "\n".join(lines)
+    return out
+
+
+def same_branch(a: str, b: str) -> bool:
+    """True when two names sit on one path branch, so a narrower bind and a wider read match."""
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def test_the_agent_pool_binds_no_fleet_config_path_no_job_reads() -> None:
+    """A runner bind with no reader is exposure for nothing (fleet-ops#10826).
+
+    A path under the fleet config dir is bound because a job reads it before the engine jail
+    starts. Only a workflow that runs on a runner can read it, so a hosted workflow's text never
+    justifies a bind. The eval pool's one bind is not checked: the drive eval container reads it,
+    not a step, and cutting it needs a credential moved (#10957).
+    """
+    readers: set[str] = set()
+    for text in runner_workflows().values():
+        readers |= fleet_config_read_names(text)
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    unread = sorted(name for name in bound if not any(same_branch(name, reader) for reader in readers))
+    assert not unread, f"bound with no job reading it: {unread}"
+
+
+def fleet_config_dir(dirs: list[Path]) -> str:
+    """The fleet config dir as the drop-in spells it, read off a bind inside it.
+
+    Read rather than written out: a literal home path in this file is a private detail, and the
+    check then follows the path the drop-in binds, not the home this host happens to have.
+    """
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                head, sep, _ = token.lstrip("-+").partition("/.config/fleet-ops/")
+                if sep:
+                    return head + "/.config/fleet-ops"
+    raise AssertionError("the agent pool binds nothing under the fleet config dir")
+
+
+def test_the_agent_pool_binds_no_directory_that_holds_the_fleet_config() -> None:
+    """A bind of the config dir or a parent of it exposes every credential in it (fleet-ops#10826).
+
+    #10956 made this change by binding the whole directory, which took the two repo files off the
+    named-path line instead of cutting them. The name scan cannot see that bind, because it matches
+    a path inside the directory, so the regression gets its own check.
+    """
+    dirs = runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"]
+    config = fleet_config_dir(dirs)
+    wide: set[str] = set()
+    for key in ("BindReadOnlyPaths", "BindPaths"):
+        for value in merged_values(dirs, key):
+            for token in shlex.split(value):
+                token = token.lstrip("-+")
+                if config == token or config.startswith(token + "/"):
+                    wide.add(token)
+    assert not wide, f"binds a directory that holds the fleet config: {sorted(wide)}"
+
+
+def test_the_read_scan_sees_each_home_spelling_the_workflows_use() -> None:
+    """`"$HOME"/.config/...` is a read like any other, and the scan has to see it (fleet-ops#10826).
+
+    agent.yml quotes the variable on its `claude_hides` line. A pattern that expects the path right
+    after `$HOME` misses that spelling, so a future read written that way passes the tripwire.
+    """
+    assert fleet_config_read_names('"$HOME"/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
+    assert fleet_config_read_names('$HOME/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
+    assert fleet_config_read_names('${HOME}/.config/fleet-ops/intake-repos.json') == {"intake-repos.json"}
+    assert fleet_config_read_names('%h/.config/fleet-ops/litellm-proxy.yaml') == {"litellm-proxy.yaml"}
+
+
+def test_no_runner_job_reads_a_fleet_config_path_the_agent_pool_does_not_bind() -> None:
+    """A read of a path the jail does not bind fails the job when it runs, not here (fleet-ops#10826).
+
+    The two places that count router slots read config/litellm-proxy.yaml from the deploy clone,
+    which the jail binds whole. Reading the host copy instead names a path the jail no longer
+    carries, and the job dies on "No such file or directory" on a runner, so the read side needs
+    its own tripwire: this is the check a revert of that move fails.
+    """
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    for name, text in runner_workflows().items():
+        unbound = sorted(read for read in fleet_config_read_names(text) if not any(same_branch(read, b) for b in bound))
+        assert not unbound, f"{name} reads a fleet config path the agent pool does not bind: {unbound}"
+
+
+def test_the_agent_pool_binds_no_file_the_repo_ships() -> None:
+    """A file the repo ships is read from the deploy clone, not from the host config dir (fleet-ops#10826).
+
+    The clone is bound whole, so a job that needs config/litellm-proxy.yaml or config/intake-repos.json
+    has the file already. Binding the host copy as well puts a repo file inside the credential-named
+    directory, which is what made a whole-directory bind look like the smaller change.
+    """
+    bound = fleet_config_bind_names(runner_units()["actions.runner.Nishfleet.netcup-agent-.service.d"])
+    shipped = sorted(name for name in bound if (ROOT / "config" / name).is_file())
+    assert not shipped, f"read from the deploy clone instead: {shipped}"

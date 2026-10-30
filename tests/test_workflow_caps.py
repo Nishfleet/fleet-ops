@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / ".github/workflows/agent-dispatch.yml"
 AGENT = ROOT / ".github/workflows/agent.yml"
 ROUTER = ROOT / "config/litellm-proxy.yaml"
-SWEEP_MATRICES = ("unblocked", "remerge", "stuck-rework", "miss-stalled")
+SWEEP_MATRICES = ("unblocked", "stuck-rework")
 AGENT_RUNNERS_MEASURED_2026_10_23 = 22
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
 WORKFLOWS = ROOT / ".github/workflows"
@@ -82,14 +82,14 @@ def test_sweep_drops_exactly_the_gate_park_labels():
 
 def test_the_pi_lane_has_one_cap_and_both_sides_read_it():
     text = AGENT.read_text()
-    # The Gate (queue pull), the Worker fall-through and miss-review all compare the live pi
-    # count against the same worker-capable seat sum, so the three cannot drift apart
-    # (the removed opencode and devin lanes each had a hand-written constant instead).
+    # The Gate (queue pull) and the Worker fall-through both compare the live pi
+    # count against the same worker-capable seat sum, so the two cannot drift apart
+    # (the removed opencode, devin and miss-review lanes each had a hand-written constant).
     caps = re.findall(r'live pi\)"\s+-lt\s+(\S+)', text)
-    assert len(caps) == 3, f"the pi lane has {len(caps)} comparisons, not the Gate, the Worker fall-through and miss-review: {caps}"
+    assert len(caps) == 2, f"the pi lane has {len(caps)} comparisons, not the Gate and the Worker fall-through: {caps}"
     assert set(caps) == {chr(34) + "$slots" + chr(34)}, f"every pi comparison must use the worker-capable seat sum: {sorted(set(caps))}"
     sum_line = "slots=" + chr(36) + "(yq"
-    assert text.count(sum_line) == 3, "the seat sum is computed the same way in the Gate, the Worker and the queue pull"
+    assert text.count(sum_line) == 2, "the seat sum is computed the same way in the Gate and the queue pull"
 
 
 def permissions_block(block, where):
@@ -172,6 +172,16 @@ def test_hand_summons_reaches_the_orchestrate_job():
     assert "inputs.issue != ''" in orchestrate, "the orchestrate job's if: does not read inputs.issue"
 
 
+def test_every_task_a_condition_excludes_is_one_a_job_starts():
+    text = DISPATCH.read_text()
+    started = set(re.findall(r"inputs\.task == '([^']+)'", text))
+    excluded = set(re.findall(r"inputs\.task != '([^']+)'", text))
+    assert excluded <= started, (
+        f"agent-dispatch.yml excludes {sorted(excluded - started)} from a job's if:, and no job starts that task, "
+        "so the comparison can never be false and the job runs where its author meant to skip it"
+    )
+
+
 def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
     text = AGENT.read_text()
     assert "arm: menu=" not in text and "sub(\" · arm: " not in text, (
@@ -187,15 +197,17 @@ def test_the_trial_arm_is_a_pure_function_of_the_issue_number():
             "recoverable from its issue id and the trial cannot be read out of the threads"
         )
     lane = text[text.index('if [ "$ENGINE" = pi ]; then'):]
-    miss = lane[lane.index('if [ "$MISS" = true ]; then'):lane.index("else", lane.index('if [ "$MISS" = true ]; then'))]
-    plain = lane[lane.index("else", lane.index('if [ "$MISS" = true ]; then')):lane.index('elif [ "$ENGINE" != claude ]')]
-    assert "arm_flags" not in miss and "-desk" not in miss, (
-        "miss-review now carries an arm: it is not a trial lane, and both arms would silently change the review "
-        "prompt under the trial's numbers"
+    pi_body = lane[:lane.index('elif [ "$ENGINE" != claude ]')]
+    assert '"${arm_flags[@]}"' in pi_body and "pi_model=$pi_model-desk" in pi_body, (
+        "the pi invocation no longer receives the arm flags or the desk group"
     )
-    assert '"${arm_flags[@]}"' in plain and "pi_model=$pi_model-desk" in plain, (
-        "the plain pi invocation no longer receives the arm flags or the desk group"
-    )
+
+
+def test_the_miss_review_lane_stays_deleted():
+    text = AGENT.read_text()
+    assert "MISS_REVIEW" not in text, "agent.yml reads the retired MISS_REVIEW variable again"
+    assert "miss-review" not in text, "the miss-review ref and packet are back in agent.yml"
+    assert not (ROOT / "prompts/miss-review.md").exists(), "the miss-review packet is back"
 
 
 def test_every_desk_alias_falls_exactly_where_its_group_falls():
@@ -232,4 +244,83 @@ def test_every_group_the_pi_lane_picks_has_a_desk_alias():
     }
     assert set(aliases) <= offered, (
         f"config/pi-models.json does not offer {sorted(set(aliases) - offered)}, so Pi cannot select the desk arm"
+    )
+
+
+def test_the_orchestrate_session_books_its_wall_for_landing():
+    job = yaml_json(DISPATCH)["jobs"]["orchestrate"]
+    step = next(s for s in job["steps"] if s.get("name") == "Run the orchestrator session")
+    wall = int(step["timeout-minutes"])
+    text = (ROOT / "prompts/orchestrator-handoff.md").read_text()
+    booked = re.search(r"cuts it off at (\d+) minutes", text)
+    stop = re.search(r"At (\d+) minutes, stop starting new work", text)
+    land = re.search(r"At (\d+) minutes, land what you have", text)
+    missing = [name for name, m in (("cut off", booked), ("stop", stop), ("land", land)) if not m]
+    assert not missing, f"prompts/orchestrator-handoff.md no longer states its {missing} minute: this gate is blind"
+    booked, stop, land = (int(m.group(1)) for m in (booked, stop, land))
+    assert booked == wall, (
+        f"prompts/orchestrator-handoff.md says the session is cut off at {booked} minutes and the step's wall "
+        f"is {wall}: a session that plans against the wrong number runs into the kill (fleet-ops#11059)"
+    )
+    assert 0 < stop < land < wall, (
+        f"the budget reads stop={stop}, land={land}, wall={wall}: the session has to stop starting work, then "
+        "land it, then be cut off, in that order"
+    )
+    assert wall - land == 15, (
+        f"the session lands at {land} minutes of a {wall}-minute wall: the landing window is 15 minutes, so a "
+        "change of wall moves the landing line with it"
+    )
+    assert int(job["timeout-minutes"]) - wall >= 10, (
+        f"the orchestrate job's {job['timeout-minutes']}-minute timeout leaves {int(job['timeout-minutes']) - wall} "
+        f"minutes around a {wall}-minute session step and its cleanup (9 s before the step and 4 s after it on "
+        "40942864011): at under 10 the job kills a run where the always() cleanup never runs"
+    )
+    clock = re.search(r"date -u \+%s > /tmp/orch-session-start", text)
+    assert clock, (
+        "prompts/orchestrator-handoff.md no longer writes the start of the session to a file, so its minute "
+        "lines are unmeasurable by the model and the extra wall only lengthens a run that cannot land"
+    )
+    assert "$(cat /tmp/orch-session-start)" in text, (
+        "the prompt writes the session start but never reads it back: the budget needs the elapsed-minutes command"
+    )
+
+
+def inish_daily_run():
+    steps = yaml_json(AGENT)["jobs"]["inish-daily"]["steps"]
+    step = next((s for s in steps if s.get("id") == "compile"), None)
+    assert isinstance(step, dict) and isinstance(step.get("run"), str), (
+        "agent.yml's inish-daily job has no compile step that runs shell, so this gate would pass vacuously"
+    )
+    return step["run"]
+
+
+def fresh_clone(run):
+    match = re.search(r"fresh_clone\(\) \{.*?\}", run, re.S)
+    assert match, "agent.yml's inish-daily job has no fresh_clone() helper"
+    clone = match.group(0)
+    assert clone.count("{") == clone.count("}"), (
+        f"this gate's regex cut the fresh_clone() body short at a brace inside it, so the "
+        f"credential check below would read a partial body: {clone}"
+    )
+    return clone
+
+
+CREDENTIAL_FORMS = ("extraheader", "authorization", "credential.", "x-access-token", "github.com@")
+
+
+def test_the_daily_clone_carries_no_credential_that_can_expire_mid_run():
+    clone = fresh_clone(inish_daily_run())
+    assert "inish-site.git" in clone, f"fresh_clone no longer clones inish-site: {clone}"
+    lowered = clone.lower()
+    for form in CREDENTIAL_FORMS:
+        assert form not in lowered, (
+            f"fresh_clone sends a credential with the clone ({form}), and the only one this job has "
+            f"expires after an hour: {clone}"
+        )
+
+
+def test_the_daily_names_a_failed_rebuild_clone():
+    assert re.search(r'fresh_clone "\$dst" \|\| \{ echo "[^"]+"; return 1; \}', inish_daily_run()), (
+        "checked() returns 1 with no message when the rebuild clone fails, so the only line the log has is "
+        "'left no valid edition' and the reader looks for an edition file the model wrote (fleet-ops#10876)"
     )

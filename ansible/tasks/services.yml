@@ -40,6 +40,50 @@
     daemon_reload: true
   ignore_errors: "{{ ansible_check_mode }}"
 
+# The Beacon Hermes poll watcher (fleet-ops#11089) is a system unit now. It parses
+# Telegram text, so it needs a mount sandbox that holds, and a unit the user
+# manager starts gets none on this box (docs/user-unit-sandboxing.md). Its file is
+# under rootfs/etc/systemd/system/, which the copy above installed, and it runs as
+# User=nish. The user-scope unit it replaces is stopped first, so the two never
+# poll the same cursor and log; fleet-sync.service deletes that link and its
+# wants link, and `retired` below covers a run that skips that step. A restarted
+# service, not a started one, so an edit to the sandbox lands on this deploy.
+- name: Stop the retired user-scope Beacon Hermes poll watcher
+  ansible.builtin.command: /usr/bin/systemctl --user --machine=nish@.host stop beacon-hermes-poll.service
+  register: beacon_user_unit_stop
+  changed_when: false
+  # A unit the host already dropped answers "not loaded", which is not a
+  # failure. Every other error, a user bus this run cannot reach above all, must
+  # stop the play: it would leave two pollers on one cursor and one log.
+  failed_when:
+    - beacon_user_unit_stop.rc != 0
+    - "'not loaded' not in (beacon_user_unit_stop.stderr | lower)"
+
+- name: Enable the Beacon Hermes poll watcher
+  ansible.builtin.systemd_service:
+    name: beacon-hermes-poll.service
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The monthly full restore drill (fleet-ops#9770). Its units are shipped under
+# rootfs/, so the copy above installed them; this starts the timer once. The
+# first drill runs at the first 1st after this deploy: a timer with no stored
+# trigger replays nothing, so Persistent=true does not pull the first run
+# forward, and it instead replays a later month the box spent switched off at
+# the next boot. It takes the restic lock like every other restic job, so a
+# drill that collides with the nightly backup waits up to 15 minutes and then
+# fails: SystemUnitFailed reports it as a warning, the drill never delays the
+# backup, and the backup never waits on it longer than its own lock timeout.
+- name: Enable the monthly restore drill
+  ansible.builtin.systemd_service:
+    name: restic-r2-restore-drill.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  ignore_errors: "{{ ansible_check_mode }}"
+
 # The rootless Docker engine for drive's agent eval (fleet-ops#9983); the
 # fleet-ci-3 runner reaches it through DOCKER_HOST (its 30-eval.conf). Started
 # once; a later edit to the unit file is staged until the next restart. It
@@ -76,3 +120,13 @@
     - podman_eval_off.failed | default(false)
     - "'Could not find' not in (podman_eval_off.msg | default(''))"
   ignore_errors: "{{ ansible_check_mode }}"
+
+# The system podman API socket: every podman call in this repo and in update.yml
+# runs as nish against the user manager's socket, and rootful podman needs no
+# daemon, so nothing on this box uses it. Masked, so the listener cannot return at
+# boot or on a package upgrade; `systemctl unmask podman.socket` puts it back.
+- name: Mask the unused root podman API socket
+  ansible.builtin.systemd_service:
+    name: podman.socket
+    state: stopped
+    masked: true

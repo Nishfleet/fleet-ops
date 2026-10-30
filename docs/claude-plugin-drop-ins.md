@@ -12,6 +12,22 @@ user scope and the drop-in only overrides that entry with `false`. Both marketpl
 are `github` sources, so Claude Code loads the plugins from its plugin cache and no
 path into a working tree is involved (fleet-ops#10823).
 
+The five plugins an env override used to load from working-tree checkouts are
+gone (G1 of the 2026-10-28 glue sweep, fleet-ops#10540). `CLAUDE_CODE_PLUGIN_DIRS`
+is the override: it took plugin paths, not a marketplace, so nothing pinned,
+tested or reviewed a checkout and a pull in one changed what every agent loaded.
+Four of the five were mods that no `enabledPlugins` list ever named, and their
+checkouts are on `retired` in `ansible/host.yml`; `auto-handoff` stays enabled,
+because it resolves from its plugin cache like any marketplace plugin. A managed
+drop-in for it waits on a pinnable source (fleet-ops#10832). The three checkouts
+are also in `retired_git_checkouts`, so the delete refuses while one holds a
+commit, a stash or an edit that `origin/main` does not carry. A settings file that
+names the variable again is a finding, not a setting: `retired-and-drift.yml`
+refuses the deploy while a user settings file does, and
+`tests/test_claude_managed_settings.py` fails the pull request when a drop-in
+does. The box's own `~/.claude/settings.json` is not repo-managed, so the repo
+cannot delete a later line from it.
+
 - `60-nish-mods.json` registers the nish-mods marketplace (`Nishfleet/claude-mods`;
   the repo has no tags, so no `ref`) and enables
   `model-lanes` (every subagent goes to the fleet workers) and `wake-check` (a
@@ -34,6 +50,10 @@ naming the same id with the same value is a no-op merge.
 
 - Verify: `claude -p hi --output-format stream-json --verbose` prints an init
   line whose plugin list carries every enabled id, and no switched-off one.
+- A plugin that resolves from a working tree is a finding: every plugin the init
+  line lists resolves out of the plugin cache or is `builtin`, so a
+  `CLAUDE_CODE_PLUGIN_DIRS` line that comes back shows up as a
+  `/workspaces/` path in that list.
 - Switch one plugin off: set its id to `false` in the drop-in and merge.
 - Switch a drop-in off: a PR that deletes the file from `rootfs/` and adds its
   `/etc` path to `retired` in `ansible/host.yml`.

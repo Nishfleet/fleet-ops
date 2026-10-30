@@ -1,0 +1,63 @@
+#!/bin/sh
+# The deploy clone deploys main, and nothing else (fleet-ops#9437).
+#
+# git runs this hook in the `prepared` phase of every ref update (githooks(5),
+# git >= 2.28) and a non-zero exit aborts the command, so a ref update that would
+# put a branch or a detached HEAD into this clone fails before it happens.
+# fleet-sync.service step 0b installs this file into the clone's .git/hooks on
+# every sync, so an install needs no root and no hand step, and the hook is always
+# the copy main carries.
+#
+# git 2.43 (this box) and 2.56 (CI) both run it for `git update-ref`, `git
+# checkout -b`, `git switch --detach`, a fetch from a local path, and a merge
+# that fast-forwards main. A fast-forward of main sends two lines, one for
+# `refs/heads/main` and a reflog-only one for `HEAD` that carries the same new
+# commit, so that pair is allowed; a detach sends the `HEAD` line alone and is
+# refused.
+#
+# A symref switch (`git checkout <a branch that already exists>`) is not covered
+# on 2.43: git rewrites HEAD's symref without a ref transaction, and githooks(5)
+# has no hook that can abort that. That is the 2026-10-08 shape exactly.
+# fleet-sync.service step 0a is the layer for it: it runs before the fetch on
+# every sync and fails the deploy while HEAD is off main, so an off-main clone is
+# a loud failed deploy that pages instead of 11 minutes of live files from an
+# unmerged branch. Where a git does send a `HEAD` line with a `ref:` value for
+# such a switch, the case below refuses it.
+#
+# Allowed: `git fetch ... :refs/remotes/origin/main`, `git merge --ff-only`,
+# `git commit` on main, `git checkout main`, `git branch -D <a stray branch>`.
+#
+# It is a guard against accidents, not against a deliberate bypass: `git -c
+# core.hooksPath=...`, and any process that writes .git/refs behind git's back
+# are not covered. A linked worktree of this clone keeps its own HEAD and is
+# skipped, and a worktree of any other repo never loads this file at all.
+[ "$1" = prepared ] || exit 0
+[ "$(git rev-parse --absolute-git-dir)" = "$(git rev-parse --path-format=absolute --git-common-dir)" ] || exit 0
+tx=$(cat)
+main_new=$(printf '%s\n' "$tx" | while read -r _ new ref; do
+  [ "$ref" = refs/heads/main ] && { printf '%s' "$new"; break; }
+done)
+verdict=$(printf '%s\n' "$tx" | {
+  blocked=0
+  while read -r _ new ref; do
+    case "$ref" in
+      HEAD)
+        [ "$new" = "ref:refs/heads/main" ] && continue
+        [ -n "$main_new" ] && [ "$new" = "$main_new" ] && continue
+        echo "DEPLOY-BLOCKED: this clone deploys main, so HEAD cannot move to $new." >&2 ;;
+      refs/heads/main)
+        continue ;;
+      refs/heads/*)
+        case "$new" in
+          0000000000000000000000000000000000000000) continue ;;
+        esac
+        echo "DEPLOY-BLOCKED: this clone deploys main, so it cannot hold $ref." >&2 ;;
+      *)
+        continue ;;
+    esac
+    echo "  Review from the diff, or in a fresh worktree of ~/workspaces/.mirrors/fleet-ops.git: git worktree add ~/workspaces/agent-worktrees/<name> <ref>" >&2
+    blocked=1
+  done
+  echo "$blocked"
+})
+exit "${verdict:-0}"

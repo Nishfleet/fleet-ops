@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -34,3 +35,31 @@ def test_every_alias_renames_a_real_group():
     assert not dangling, f"model_group_alias renames a group that has no row: {dangling}"
     shadowing = sorted(set(aliases) & groups)
     assert not shadowing, f"an alias name is also a model_name, so the alias is dead config: {shadowing}"
+
+
+NO_ROW = {
+    "litellm": "the passthrough provider: pi calls the router itself, so no row can serve it",
+    "xai-oauth": "Nish's own SuperGrok login, billed to his subscription and not to a router row",
+}
+
+
+def _router_providers():
+    assert YQ, "yq must be on PATH to read the router config"
+    out = subprocess.run([YQ, "-o=json", ".model_list", str(ROOT / "config/litellm-proxy.yaml")], capture_output=True, text=True, check=True).stdout
+    providers = set()
+    for row in json.loads(out):
+        key = str(row["litellm_params"].get("api_key", ""))
+        if key.startswith("os.environ/"):
+            providers.add(re.sub(r"-api-key", "", key.split("/", 1)[1].lower().replace("_", "-")))
+    return providers
+
+
+def test_every_provider_pi_offers_has_a_live_router_row():
+    pi = json.loads((ROOT / "config/pi-models.json").read_text())
+    dead = sorted(p for p in pi["providers"] if p not in _router_providers() and p not in NO_ROW)
+    assert not dead, (
+        f"config/pi-models.json lists providers that no row in config/litellm-proxy.yaml serves: {dead}. "
+        "Delete the provider, add it to NO_ROW above with the reason it needs no row, or make a row's key "
+        "derive this name (PARETO_API_KEY derives pareto)."
+    )
+    assert set(NO_ROW) <= set(pi["providers"]), sorted(set(NO_ROW) - set(pi["providers"]))

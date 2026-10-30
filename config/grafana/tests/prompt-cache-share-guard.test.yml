@@ -33,6 +33,15 @@
 #    the big row at 0.90 reads 0.861 and fires. Case 1 carries the silent
 #    half, the last case the firing half.
 #
+# 8. minimax on the two shapes #10955 turned on. Its two capable rows at their
+#    baseline-window shares, 0.9434 on 50.8M and 0.9084 on 22.8M, read 0.9325 and
+#    stay silent, so the 0.9259 floor still passes the rows that carried the window
+#    it was cut from. That window also held cheap rows at 0.95 on 54% of its
+#    tokens, which the case leaves out. The mix that fired on 2026-10-29, 0.9172
+#    on 160.2M and 0.9130 on 159.6M with the cheap rows down to 3% of the tokens,
+#    reads 0.9151 and fires. That second case is the fixture the #11011 re-cut is
+#    measured against.
+#
 # The alert name, `for` and labels here are the deployed ones, so a case that
 # fires here is a case Grafana calls Alerting.
 evaluation_interval: 12h
@@ -128,7 +137,7 @@ tests:
               or label_replace(vector(0.9241), "vendor", "opencodego2", "", "")
               or label_replace(vector(0.8800), "vendor", "opencodego", "", "")
               or label_replace(vector(0.9259), "vendor", "minimax", "", "")
-              or label_replace(vector(0.9098), "vendor", "commandcode", "", "")
+              or label_replace(vector(0.8660), "vendor", "commandcode", "", "")
               or label_replace(vector(0.9056), "vendor", "zai", "", "")
               or label_replace(vector(0.7700), "vendor", "synthetic", "", "")
               or label_replace(vector(0.8231), "vendor", "straitly", "", "")
@@ -166,6 +175,61 @@ tests:
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
         values: '0+0x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              grafana_folder: fleet
+              severity: warning
+              signal: prompt-cache-share-guard
+              vendor: minimax
+
+  # The two minimax capable rows on their baseline-window shares stay silent:
+  # 0.9434 on 50.8M and 0.9084 on 22.8M read 0.9325 for the vendor, above the
+  # 0.9259 floor, so the floor passes the rows that carried the window it was cut
+  # from. That window also held cheap rows at 0.95 on 54% of its tokens, which
+  # this case leaves out: it shows the capable rows alone clear the floor, not the
+  # whole baseline mix.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+94340000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31b-worker-capable"}'
+        values: '0+45000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31b-worker-capable"}'
+        values: '0+40878000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
+        values: '0+96875000x14'
+    alert_rule_test:
+      - eval_time: 7d
+        alertname: PromptCacheShareBelowBaseline
+        exp_alerts: []
+
+  # The mix that fired on 2026-10-29: the same two rows at 0.9172 on 160.2M and
+  # 0.9130 on 159.6M, with the cheap rows down from 54% of the tokens to 3% so
+  # the vendor now reads them, gives 0.9151 and fires. It is the shape #10955
+  # was filed on and the fixture the #11011 re-cut is measured against, so a
+  # later floor move that this case no longer fires on reads as the decision it
+  # is.
+  - interval: 12h
+    input_series:
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31-worker-capable"}'
+        values: '0+91720000x14'
+      - series: 'litellm_input_tokens_metric_total{model_id="minimax-m31b-worker-capable"}'
+        values: '0+100000000x14'
+      - series: 'litellm_input_cached_tokens_metric_total{model_id="minimax-m31b-worker-capable"}'
+        values: '0+91300000x14'
       - series: 'litellm_input_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
         values: '0+100000000x14'
       - series: 'litellm_input_cached_tokens_metric_total{model_id="stepfun-step5preview-worker-capable"}'
