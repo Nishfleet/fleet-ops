@@ -736,18 +736,14 @@ jobs:
           # continue-on-error, so GitHub hands the pick empty outputs and outcome=failure. The pick
           # must still exit 0 with the queued issues, and say why no claim PRs were appended.
           : > "$t/out"; rc=0
-          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 \
-            CHECK_DEFS="$defs" RED_REWORK="$prog" bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
-          [ "$rc" -ne 0 ] || { echo "the re-dispatch did not fail on a pr list fault"; exit 1; }
-          [ ! -s "$t/out" ] || { echo "the failed re-dispatch still wrote outputs: $(cat "$t/out")"; exit 1; }
-          : > "$t/out"; rc=0
+          env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x FAIL_PR_LIST=1 CHECK_DEFS="$defs" RED_REWORK="$prog" \
+            bash -eo pipefail "$t/redispatch.sh" > "$t/err2" 2>&1 || rc=$?
+          [ "$rc" -ne 0 ] && [ ! -s "$t/out" ] || { echo "the re-dispatch did not fail clean on a pr list fault (rc=$rc, outputs: $(cat "$t/out"))"; exit 1; }
           env PATH="$t/bin:$PATH" FAKE_DIR="$t/data" GITHUB_OUTPUT="$t/out" GITHUB_REPOSITORY=o/r GH_TOKEN=x ISSUE='' CLOSED='' PRS='' REDISPATCH=failure \
-            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || rc=$?
+            bash -eo pipefail "$t/list.sh" >> "$t/err2" 2>&1 || { echo "the sweep exited $? after a failed re-dispatch"; exit 1; }
           cat "$t/err2"
-          [ "$rc" -eq 0 ] || { echo "the sweep exited $rc after a failed re-dispatch"; exit 1; }
           grep -F 'claim-PR re-dispatch failed; this run appends no claim PRs' "$t/err2" >/dev/null || { echo "the pick did not warn about the failed re-dispatch"; exit 1; }
-          got=$(sed -n 's/^refs=//p' "$t/out")
-          [ "$got" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $got"; exit 1; }
+          [ "$(sed -n 's/^refs=//p' "$t/out")" = '["claim/issue-7001","claim/issue-7002"]' ] || { echo "refs after a failed re-dispatch: got $(sed -n 's/^refs=//p' "$t/out")"; exit 1; }
       - name: Dispatch pause flag skips dispatch, never the guards
         # A paused queue must still hold risky PRs: the weekly update once
         # disabled agent-dispatch, and hold-risky could not run in that window
