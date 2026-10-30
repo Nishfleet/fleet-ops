@@ -49,8 +49,9 @@ case "$cmd $args" in
   "api graphql"*) echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[]}}}}}' | emit ;;
   "api "*"/issues/9502")
     # Real gh 2.93.0 (measured 2026-10-12 on this issue): body on
-    # stdout, "(HTTP 410)" on stderr, exit 1. BODY_ON_STDOUT=0 drops
-    # the body, so the stderr path is proven on its own too.
+    # stdout, "(HTTP 410)" on stderr, exit 1 — gh's api error contract
+    # (https://cli.github.com/). BODY_ON_STDOUT=0 drops the body, so the
+    # stderr path is proven on its own too.
     echo 'gh: This issue was deleted (HTTP 410)' >&2
     [ "${BODY_ON_STDOUT:-1}" = 0 ] || echo '{"message":"This issue was deleted","documentation_url":"https://docs.github.com/rest","status":"410"}'
     exit 1 ;;
