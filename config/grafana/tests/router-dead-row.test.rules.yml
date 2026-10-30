@@ -10,6 +10,10 @@
 #
 # tests/test_grafana_fixture_drift.py holds this expr and its `for` to the deployed
 # rule, so promtool cannot pass on a copy that drifted from it.
+#
+# The 401 case has its own rule and fixture (fleet-ops#11081): it reads
+# litellm_deployment_cooled_down_total, not failure_responses, and fires above 2 parks
+# in 6 hours instead of 5 failures in an hour.
 groups:
 - interval: 5m
   name: router-dead-row
