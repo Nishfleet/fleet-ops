@@ -158,7 +158,10 @@ the `fleet-host-config.service` system oneshot (Ansible applies `rootfs/` as roo
 is a verdict. polkit lets this runner's user start that one system unit, so no step uses sudo, and
 the unit's own guards still gate every step (fleet-ops#8519). The unit allows
 `TimeoutStartSec=300` for the steps alone, so the job's `timeout-minutes: 10` leaves headroom
-without letting a hung step park a runner.
+without letting a hung step park a runner. The security probe is the job's last step, not its
+first: a red probe still fails the run, and it can no longer mark the two deploy steps `skipped`,
+which is how two merges on 2026-10-22 reached no deploy for 40 min (fleet-ops#10046;
+`tests/test_deploy_box_trigger.py` locks the order).
 
 ### ratchet.yml: how the rule reaches every repo
 

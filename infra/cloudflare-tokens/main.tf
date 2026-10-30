@@ -74,7 +74,7 @@ locals {
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
-      account     = ["Workers Scripts Write", "Account Settings Read"]
+      account     = ["Workers Scripts Write", "D1 Write", "Account Settings Read"]
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
     }
@@ -83,7 +83,7 @@ locals {
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
-      account     = ["Workers Scripts Write", "Workers R2 Storage Write", "Account Settings Read"]
+      account     = ["Workers Scripts Write", "Workers R2 Storage Write", "D1 Write", "Account Settings Read"]
       zone        = ["Zone Read", "Workers Routes Write"]
       vps_only    = false
     }
@@ -101,7 +101,7 @@ locals {
       environment = null
       secret_name = "CLOUDFLARE_API_TOKEN"
       file        = null
-      account     = ["Pages Write", "Account Settings Read"]
+      account     = ["Pages Write", "D1 Write", "Account Settings Read"]
       zone        = []
       vps_only    = false
     }
