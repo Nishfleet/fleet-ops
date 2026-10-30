@@ -26,6 +26,7 @@ EXPECTED = {
     "2026-10-29": (4, 2, 50.0),
     "2026-10-28": (2, 1, 50.0),
     "2026-10-27": (1, 1, 100.0),
+    "2026-10-26": (1, 0, 0.0),
 }
 
 
@@ -69,7 +70,3 @@ def test_expression_calls_only_functions_the_engine_allows():
 @pytest.mark.parametrize("day,expected", sorted(EXPECTED.items()))
 def test_hand_off_to_pr_rate_per_day(day, expected):
     assert _rate()[day] == expected
-
-
-def test_a_day_with_only_ended_hand_offs_has_no_row():
-    assert "2026-10-26" not in _rate()

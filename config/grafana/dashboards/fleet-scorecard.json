@@ -494,7 +494,7 @@
       "type": "table",
       "id": 7,
       "title": "Hand-off to PR rate per day, last 14 days",
-      "description": "Hand-offs that opened a PR (PRs opened that day from orch/ branches) over those plus hand-offs that ended with no PR (issues labelled handoff-ended, by last update day). Target: over 80%. Source: fleet-ops#11167.",
+      "description": "Hand-offs that opened a PR (PRs opened that day from orch/ branches) over those plus hand-offs that ended with no PR (issues labelled handoff-ended, by last update day; a later comment on such an issue moves it to a later day). Target: over 80%. Source: fleet-ops#11167.",
       "gridPos": {
         "x": 0,
         "y": 51,
@@ -545,7 +545,7 @@
             "uid": "__expr__"
           },
           "type": "sql",
-          "expression": "SELECT p.d AS day, p.n + COALESCE(e.n, 0) AS handoffs, p.n AS prs, ROUND(100.0 * p.n / (p.n + COALESCE(e.n, 0)), 1) AS pr_rate_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM B GROUP BY d) p\nLEFT JOIN (SELECT SUBSTRING(updated_at, 1, 10) AS d, COUNT(*) AS n FROM A GROUP BY d) e ON e.d = p.d\nORDER BY p.d"
+          "expression": "SELECT x.d AS day, COALESCE(p.n, 0) + COALESCE(e.n, 0) AS handoffs, COALESCE(p.n, 0) AS prs, ROUND(100.0 * COALESCE(p.n, 0) / (COALESCE(p.n, 0) + COALESCE(e.n, 0)), 1) AS pr_rate_percent\nFROM (SELECT SUBSTRING(created_at, 1, 10) AS d FROM B UNION SELECT SUBSTRING(updated_at, 1, 10) AS d FROM A) x\nLEFT JOIN (SELECT SUBSTRING(created_at, 1, 10) AS d, COUNT(*) AS n FROM B GROUP BY d) p ON p.d = x.d\nLEFT JOIN (SELECT SUBSTRING(updated_at, 1, 10) AS d, COUNT(*) AS n FROM A GROUP BY d) e ON e.d = x.d\nORDER BY x.d"
         }
       ],
       "options": {
