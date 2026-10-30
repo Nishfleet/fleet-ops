@@ -3,7 +3,7 @@
 The policy was written by hand on the relay host (fleet-ops#9979), so nothing in
 the repo said what the gate was and a new agent silently reached every other
 agent. config/tincan-relay/policy.jq now renders it from
-config/tincan-relay/agents.txt and ansible/host.yml installs the result. These
+config/tincan-relay/agents.txt and ansible/tasks/tincan-relay-policy.yml installs the result. These
 checks read the roster, the jq program and the two playbooks.
 """
 import json
@@ -43,9 +43,9 @@ def render() -> dict:
 
 
 def check_expression() -> str:
-    """The jq -e expression host.yml uses to fail loudly on a bad policy."""
-    found = re.findall(r"jq\n\s+- -e\n\s+- '([^']+)'\n", HOST_PLAYBOOK)
-    assert len(found) == 1, f"expected one jq -e check in host.yml, found {len(found)}"
+    """The jq -e expression the relay-policy tasks use to fail loudly on a bad policy."""
+    found = re.findall(r"validate: jq -e '([^']+)' %s\n", HOST_PLAYBOOK)
+    assert len(found) == 1, f"expected one validate: jq -e check in the policy tasks, found {len(found)}"
     return found[0]
 
 
@@ -74,7 +74,7 @@ def test_the_roster_is_the_relays_agent_list():
     # The live authority is `tincan agents --json --socket
     # ~/.local/state/tincan-relay/admin.sock`, which CI cannot reach (it runs on
     # GitHub's runners, not the box). The list it answered on 2026-10-22 is
-    # pinned here, and ansible/host.yml checks the live one on every playbook
+    # pinned here, and ansible/the policy tasks check the live one on every playbook
     # run. A roster edit that is not a deliberate agent change fails here until
     # this list is re-captured with that command.
     assert roster() == [
@@ -158,7 +158,7 @@ def test_the_host_playbook_renders_installs_and_checks_the_policy():
         r"\s+- -f\n"
         r"\s+- \"\{\{ tincan_relay_policy_program \}\}\"\n",
         HOST_PLAYBOOK,
-    ), "host.yml does not render the policy from the roster file with the repo's jq program"
+    ), "the policy tasks do not render the policy from the roster file with the repo's jq program"
     assert re.search(
         r"- name: Install the rendered tincan relay approval policy\n"
         r"(?:.*\n)*?"
@@ -166,10 +166,10 @@ def test_the_host_playbook_renders_installs_and_checks_the_policy():
         r"\s+dest: \"\{\{ tincan_relay_policy_path \}\}\"\n"
         r"\s+owner: nish\n"
         r"\s+group: nish\n"
-        r"\s+mode: \"0600\"\n",
+        r"\s+mode: \"0600\"\n"
+        r"\s+validate: jq -e '[^']+' %s\n",
         HOST_PLAYBOOK,
-    ), "host.yml does not install the rendered policy 0600 in the relay's state directory"
-    assert "- name: Fail when the tincan relay approval policy is missing or malformed\n" in HOST_PLAYBOOK
+    ), "the policy tasks do not install the rendered policy 0600 in the relay's state directory"
     assert "- name: Fail when the roster names an agent the relay does not have\n" in HOST_PLAYBOOK
 
 

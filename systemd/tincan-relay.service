@@ -1,7 +1,7 @@
 # Agent Tincan relay on the VPS. Before this, the relay ran on the Mac (LaunchDaemon, tsnet node
 # `tincan-relay`), so every Tincan message stopped whenever the Mac was down (fleet-ops#9455).
 # The Mac was chosen only so VPS agents could not approve held requests. Nish dropped that gate on
-# 2026-10-04 (no approval.json), so the reason is gone.
+# 2026-10-04; the gate below (2026-10-22) is a different one: it holds requests from outsiders.
 #
 # Stock only, no glue: the vendor's own `tincan relay` in its default mode, as its own tailnet node
 # (tsnet, hostname tincan-relay-vps, port 80). Not `--listen`: with --listen the relay binds the

@@ -1424,7 +1424,7 @@
               pre_update_backup_rc: "{{ (pre_update_backup | default({})).rc | default('not run') }}"
               tincan_listeners_restarted: "{{ (tincan_listeners | default({})).results | default([]) | map(attribute='item') | list }}"
               tincan_listeners_busy: "{{ tincan_busy }}"
-              tincan_system_listener: "{{ 'restarted' if (tincan_listener_system | default({})).changed | default(false) else ('busy' if (tincan_system_procs.content | default('') | length > 0) else 'no upgrade') }}"
+              tincan_system_listener: "{{ 'restarted' if (tincan_listener_system | default({})).changed | default(false) else ('failed' if (tincan_listener_system | default({})).failed | default(false) else ('busy' if (tincan_system_procs.content | default('') | length > 0) else 'no upgrade')) }}"
               sweeps: "{{ (sweep_result | default({})).results | default([]) | map(attribute='stdout') | list }}"
               runners_online: "{{ (online | default({})).results | default([]) | map(attribute='stdout_lines') | map('length') | list }}"
               runner_jobs_running: "{{ busy_after.stdout }}"

@@ -405,8 +405,7 @@
     tincan_relay_roster_file: "{{ playbook_dir }}/../config/tincan-relay/agents.txt"
     tincan_relay_policy_program: "{{ playbook_dir }}/../config/tincan-relay/policy.jq"
     tincan_relay_roster: >-
-      {{ (lookup('ansible.builtin.file', tincan_relay_roster_file, errors='ignore')
-         | default('', true)).splitlines() | map('trim')
+      {{ (lookup('ansible.builtin.file', tincan_relay_roster_file)).splitlines() | map('trim')
          | reject('match', '^(#|$)') | unique | list }}
 
   tasks:

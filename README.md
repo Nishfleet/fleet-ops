@@ -47,11 +47,13 @@ is one line and updates every gate at once.
   renders the policy from it with stock `jq`: every roster agent gets a gate whose `unless` list
   is the roster plus the relay, so a request whose chain names any other agent is held for 24 hours
   and reported to Hermes. The render has no secrets (agent names, a notify target, a ttl).
-- `ansible/tasks/tincan-relay-policy.yml` (run by `ansible/host.yml`) renders the file, installs it at
-  `~/.local/state/tincan-relay/approval.json` (0600), reads it back, and fails the run when it is
-  missing, not JSON, or not a gate: a missing file turns the gate off and a malformed one makes the
-  relay refuse new sends. It also fails when the roster names an agent the relay does not have.
-- The daily update (`ansible/update.yml`) restarts the system-unit `tincan-listen-claude-vps.service`
+- `ansible/tasks/tincan-relay-policy.yml` (run by `ansible/host.yml`) renders the file and installs it at
+  `~/.local/state/tincan-relay/approval.json` (0600) through the copy module's `validate:`, so a
+  render that is not JSON or not a gate fails the run before it replaces the live file (an empty
+  gate turns the gate off and a malformed one makes the relay refuse new sends). It also fails when the roster names an agent the relay does not have.
+- The locked listener unit itself is already in the repo and installed by the host playbook:
+  `rootfs/etc/systemd/system/tincan-listen-claude-vps.service` (fleet-ops#9985).
+- The daily update (`ansible/update.yml`) restarts that system unit
   after a tincan upgrade once its control group holds only its own process, as root.
 - Install or re-run: `sudo systemctl start fleet-host-config.service`. Read it:
   `jq . ~/.local/state/tincan-relay/approval.json`. Live agents:
