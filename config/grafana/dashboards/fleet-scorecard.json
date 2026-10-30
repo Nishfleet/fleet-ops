@@ -560,6 +560,195 @@
         },
         "overrides": []
       }
+    },
+    {
+      "type": "table",
+      "id": 8,
+      "title": "Goal boxes of #10935, with sources",
+      "description": "One row per #10935 goal box so its number shows every day (fleet-ops#11168). Each row names its source; the target column is the goal's number for that box. Rows marked 7d cover the last seven days; the streak row counts within the 60-day window; the workflow-YAML row appears once tonight's update run first writes its gauge.",
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 24,
+        "h": 9
+      },
+      "timeFrom": "60d",
+      "hideTimeOverride": true,
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "",
+          "options": {
+            "query": "org:Nishfleet is:issue is:open archived:false",
+            "timeField": 2
+          }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:issue label:handoff-ended repo:Nishfleet/fleet-ops",
+            "timeField": 1
+          }
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:pr head:orch/ repo:Nishfleet/fleet-ops",
+            "timeField": 1
+          }
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Issues",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:issue label:orchestrator-tried repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          }
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Pull_Requests",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": 2
+          }
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Pull_Request_Reviews",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "query": "is:merged repo:Nishfleet/fleet-ops",
+            "timeField": null
+          }
+        },
+        {
+          "refId": "G",
+          "datasource": {
+            "type": "grafana-github-datasource",
+            "uid": "fleet-github"
+          },
+          "hide": true,
+          "queryType": "Commits",
+          "owner": "Nishfleet",
+          "repository": "fleet-ops",
+          "options": {
+            "gitRef": "main",
+            "includeFiles": false
+          }
+        },
+        {
+          "refId": "I",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "hide": true,
+          "expr": "max(node_systemd_unit_state{name=~\"fleet-(update|host-config)\\.service\",state=\"failed\"}) == bool 1",
+          "instant": false
+        },
+        {
+          "refId": "J",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "hide": true,
+          "expr": "last_over_time((count(node_systemd_unit_state{state=\"failed\"} == 1) or vector(0))[1h:1m])",
+          "instant": false
+        },
+        {
+          "refId": "K",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fleet-prometheus"
+          },
+          "hide": true,
+          "expr": "last_over_time(fleet_workflow_yaml_lines[25h])",
+          "instant": false
+        },
+        {
+          "refId": "L",
+          "datasource": {
+            "type": "__expr__",
+            "uid": "__expr__"
+          },
+          "type": "sql",
+          "expression": "SELECT ord, goal_box, number, value, target, source FROM (\n  SELECT 1 AS ord, '1. Preview before apply' AS goal_box, 'merges undone by a revert, 7d' AS number, COUNT(*) AS value, '0' AS target, 'commits on main whose message starts with Revert, GitHub commits, fleet-ops' AS source FROM G WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(committed_at) < 604800\n  UNION ALL SELECT 2, '2. No home-made plumbing', 'workflow YAML lines', MAX(K.__value__), 'under 2,000', 'fleet_workflow_yaml_lines, written nightly by fleet-update.service, node_exporter textfile' FROM K\n  UNION ALL SELECT 3, '3. Approvals cannot be forged', 'approving reviews from outside the reviewer App or the owner, 7d', COUNT(*), '0', 'APPROVED reviews on PRs merged in 7d, GitHub reviews, fleet-ops' FROM F JOIN E ON F.pull_request_number = E.number WHERE F.review_state = 'APPROVED' AND F.review_author_login NOT IN ('github-actions[bot]', 'nish3451') AND UNIX_TIMESTAMP() - UNIX_TIMESTAMP(E.merged_at) < 604800\n  UNION ALL SELECT 5, '5. Only the owner decides', 'open needs-nish-decision issues', COUNT(*), 'at most 3', 'open issues labelled needs-nish-decision, GitHub issues, org-wide' FROM A WHERE labels LIKE '%needs-nish-decision%'\n  UNION ALL SELECT 6, '6. Small work, high success', 'hand-off to PR rate, 7d', IF(c.n + e.n = 0, NULL, ROUND(100.0 * c.n / (c.n + e.n), 1)), 'over 80%', 'orch-branch PRs created over hand-offs ended, GitHub PRs and issues, fleet-ops' FROM (SELECT COALESCE(SUM(CASE WHEN UNIX_TIMESTAMP(created_at) >= UNIX_TIMESTAMP() - 604800 THEN 1 ELSE 0 END), 0) AS n FROM C) c, (SELECT COALESCE(SUM(CASE WHEN UNIX_TIMESTAMP(updated_at) >= UNIX_TIMESTAMP() - 604800 THEN 1 ELSE 0 END), 0) AS n FROM B) e\n  UNION ALL SELECT 7, '6. Small work, high success', 'hand-offs that hit the wall, 7d', COUNT(*), '0', 'issues labelled orchestrator-tried, GitHub issues, fleet-ops' FROM D WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) < 604800\n  UNION ALL SELECT 9, '9. Clean board', 'work-state labels in use on open issues', MAX(CASE WHEN labels LIKE '%agent-ready%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%agent-blocked%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%agent-in-progress%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%agent-failed%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%handoff-ended%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%orchestrator-tried%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%needs-orchestrator%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%needs-coordinator%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%needs-nish-decision%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%needs-split%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%on-hold%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%review-retry%' THEN 1 ELSE 0 END) + MAX(CASE WHEN labels LIKE '%provider-watch%' THEN 1 ELSE 0 END), 'at most 5', 'the work-state label set the worker and hand-off prompts define, GitHub issues, org-wide' FROM A\n  UNION ALL SELECT 10, '9. Clean board', 'open issues in the org', COUNT(*), 'under 60', 'open issues org-wide, GitHub issues' FROM A\n  UNION ALL SELECT 11, '9. Clean board', 'open issues stale over 14 days with no assignee', COUNT(*), '0', 'open issues org-wide, GitHub issues' FROM A WHERE UNIX_TIMESTAMP() - UNIX_TIMESTAMP(updated_at) > 1209600 AND COALESCE(assignees, '[]') = '[]'\n  UNION ALL SELECT 12, '10. Green nights', 'green nights in a row, update + host config', COALESCE(FLOOR((UNIX_TIMESTAMP() - MAX(CASE WHEN I.__value__ >= 0.5 THEN UNIX_TIMESTAMP(I.time) END)) / 86400), 60), 'at least 7', 'failed state of fleet-update.service and fleet-host-config.service, Prometheus node_systemd_unit_state' FROM I\n  UNION ALL SELECT 13, '10. Green nights', 'failed units on the box', MAX(J.__value__), '0', 'units in a failed state now, Prometheus node_systemd_unit_state' FROM J\n) x ORDER BY ord"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ord"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
