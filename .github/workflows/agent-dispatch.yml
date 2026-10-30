@@ -607,7 +607,7 @@ jobs:
   orchestrate:
     if: >-
       vars.FLEET_DISPATCH_PAUSED != 'true' && (
-        (github.repository != 'Nishfleet/fleet-ops' && github.event_name == 'issues' && github.event.label.name == 'needs-orchestrator') ||
+        (github.repository != 'Nishfleet/fleet-ops' && github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'needs-orchestrator') ||
         (github.event_name == 'workflow_dispatch' && inputs.task == 'orchestrate' && inputs.issue != ''))
     permissions: {issues: read, contents: read, pull-requests: read}
     uses: Nishfleet/fleet-ops/.github/workflows/orchestrate.yml@main
