@@ -386,8 +386,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # The App token, for the writes that must fire a workflow event.
           LABEL_TOKEN: ${{ steps.app-token.outputs.token }}
-          # A second pin on the job token, for the sync writes that must fire none even if the ambient GH_TOKEN above is ever repointed.
-          SYNC_TOKEN: ${{ github.token }}
           CLOSED: ${{ github.event.issue.number }}
           ISSUE: ${{ inputs.issue }}
           # jq defs shared by the missing-checks and red-PR cases below.
@@ -553,22 +551,14 @@ jobs:
             if [ -n "$CLOSED" ] && [ "${released:-0}" -lt 12 ] && jq -e '.issue_dependencies_summary.blocked_by == 0 and any(.labels[].name; . == "needs-orchestrator")' <<<"$i" >/dev/null; then
               released=$((${released:-0} + 1)); for op in remove add; do GH_TOKEN="${LABEL_TOKEN:-}" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --$op-label needs-orchestrator || echo "::warning::#$n: re-fire refused"; done
             fi
-            # The idle-runners scorecard alert counts agent-ready issues GitHub search cannot see are dependency-blocked (fleet-ops#11094): no search qualifier reaches issue_dependencies_summary, the gate the refs filter below applies. Carry the gate on a label that alert excludes, and clear it the sweep after the blocker closes. The writes pin SYNC_TOKEN, not the App token: they must fire no run, because a blocked issue admits nothing to fire for, and the blocker's own close event is what re-admits it. The first add hides stderr because its expected failure (label not yet created) is handled below; every other fault resurfaces on the retried add or the ::warning.
-            if jq -e 'any(.labels[].name; . == "agent-ready") and ((.issue_dependencies_summary.blocked_by // 1) != 0) and (any(.labels[].name; . == "agent-blocked-dep") | not)' <<<"$i" >/dev/null; then
-              GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked-dep 2>/dev/null || {
-                GH_TOKEN="$SYNC_TOKEN" gh label create agent-blocked-dep -R "$GITHUB_REPOSITORY" --color F9D0C4 --description "Blocked by an open issue dependency; the queue waits for the blocker" >/dev/null || true
-                GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --add-label agent-blocked-dep || echo "::warning::#$n: agent-blocked-dep label refused"
-              }
-            elif jq -e 'any(.labels[].name; . == "agent-blocked-dep") and ((.issue_dependencies_summary.blocked_by // 1) == 0)' <<<"$i" >/dev/null; then
-              GH_TOKEN="$SYNC_TOKEN" gh issue edit "$n" -R "$GITHUB_REPOSITORY" --remove-label agent-blocked-dep 2>/dev/null || echo "::warning::#$n: agent-blocked-dep unlabel refused"
-            fi
+            # The idle-runners scorecard alert counts agent-ready issues GitHub search cannot see are dependency-blocked (fleet-ops#11094): no search qualifier reaches issue_dependencies_summary, the gate the refs filter below applies. Carry that gate on a label the alert excludes, and clear it the sweep after the blocker closes. A missing summary counts as unblocked, the same `// 0` the Gate and RED_REWORK read, so an unread issue never hides behind the label: the alert keeps counting it. The write is the job token: it fires no event, and the blocker's own close event is what re-admits the issue. The create hides stderr because its expected failure (label already exists) is swallowed; the edit's fault surfaces on the ::warning.
+            want=$(jq -r 'if any(.labels[].name; . == "agent-ready") and ((.issue_dependencies_summary.blocked_by // 0) != 0) and (any(.labels[].name; . == "agent-blocked-dep") | not) then "add" elif any(.labels[].name; . == "agent-blocked-dep") and ((.issue_dependencies_summary.blocked_by // 0) == 0) then "remove" else empty end' <<<"$i")
+            [ -z "$want" ] || { gh label create agent-blocked-dep -R "$GITHUB_REPOSITORY" --color F9D0C4 --description "Blocked by an open issue dependency; the queue waits for the blocker" >/dev/null 2>&1 || true; gh issue edit "$n" -R "$GITHUB_REPOSITORY" --"$want"-label agent-blocked-dep || echo "::warning::#$n: agent-blocked-dep $want refused"; }
           done
           # agent.yml's Gate skips these five labels (a ref with one wastes a slot); ci.yml keeps the sets equal.
           refs=$(printf '%s' "$pages" |
-            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready"))]
-              | map(select(any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))
-              | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at)
-              | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
+            jq -sc --argjson prs "${prs:-[]}" '[.[] | select(.issue_dependencies_summary.blocked_by == 0 and any(.labels[]; .name == "agent-ready") and (any(.labels[].name; IN("agent-blocked","needs-split","needs-orchestrator","needs-nish-decision","epic")) | not))]
+              | sort_by((if any(.labels[]; .name == "priority-now") then 0 else 1 end), .created_at) | map("claim/issue-\(.number)") | . + ($prs - .) | .[:256]')
           echo "refs=${refs:-[]}" >> "$GITHUB_OUTPUT"
       # Parked hand-offs restart (fleet-ops#10420, #10475): idle 6 h, then re-label or dispatch; 3 ended or re-fired, then needs-nish-decision.
       # A priority-now issue waits 30 min instead (#10716: #10681 carried the label and nothing ran

@@ -5,6 +5,8 @@ The orchestrate issue step skips a blocked issue. When an issue closes, the list
 re-labels each unblocked needs-orchestrator dependent (remove, then add, on the runner login).
 The list job also carries the blocked_by gate on an agent-blocked-dep label the idle-runners
 scorecard alert excludes (fleet-ops#11094): no search qualifier reaches the dependency summary.
+A missing summary counts as unblocked (the Gate's `// 0`), so the alert keeps counting an
+unread issue; the sync writes run on the job token, so they fire no event.
 """
 import json
 import os
@@ -26,6 +28,10 @@ case "$*" in
   *git/ref/heads/*) exit 1 ;;
   "issue comment"*) ;;
   *issues/comments*) echo '[]' | jq -c "$q" ;;
+  *"no:label"* | *agent-in-progress*) echo '[]' ;;
+  "pr list"*) echo '[]' ;;
+  "issue list"*) jq -r "$q" "$FAKE_DIR/list.json" 2>/dev/null || echo '[]' ;;
+  "label create"*) ;;
   "api repos/o/r/issues/"*) n=${2##*/}; jq -r "$q" "$FAKE_DIR/issue-$n.json" 2>/dev/null || jq -r "$q" "$FAKE_DIR/issue.json" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -66,23 +72,41 @@ def test_unblocked_issue_still_goes(tmp_path):
     assert "go=true" in out
 
 
-def close(tmp_path, dependents):
-    """Run the list step for a closed issue 1 that blocks `dependents` ({n: (labels, blocked_by)})."""
-    (tmp_path / "blocking.json").write_text(json.dumps([{"number": n, "state": "open"} for n in dependents]))
+def _issues(tmp_path, dependents):
     for n, (labels, blocked_by) in dependents.items():
         issue = {"number": n, "state": "open", "created_at": "2026-10-27T00:00:00Z",
                  "labels": [{"name": l} for l in labels]}
         if blocked_by is not None:
             issue["issue_dependencies_summary"] = {"blocked_by": blocked_by}
         (tmp_path / f"issue-{n}.json").write_text(json.dumps(issue))
-    (tmp_path / "out").write_text("")
-    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "SYNC_TOKEN": "sync", "CLOSED": "1", "ISSUE": "",
-           "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": ""}
+
+
+def _run_list(tmp_path, env):
     r = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", _y(f"{LIST_STEP} | .run")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     log = tmp_path / "writes.log"
     return log.read_text().splitlines() if log.exists() else []
+
+
+def close(tmp_path, dependents):
+    """Run the list step for a closed issue 1 that blocks `dependents` ({n: (labels, blocked_by)})."""
+    (tmp_path / "blocking.json").write_text(json.dumps([{"number": n, "state": "open"} for n in dependents]))
+    _issues(tmp_path, dependents)
+    (tmp_path / "out").write_text("")
+    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "CLOSED": "1", "ISSUE": "",
+           "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": ""}
+    return _run_list(tmp_path, env)
+
+
+def sweep(tmp_path, dependents):
+    """Run the list step as the scheduled sweep over `dependents` ({n: (labels, blocked_by)})."""
+    (tmp_path / "list.json").write_text(json.dumps([{"number": n} for n in dependents]))
+    _issues(tmp_path, dependents)
+    (tmp_path / "out").write_text("")
+    env = {**_fake(tmp_path), "GITHUB_REPOSITORY": "o/r", "GH_TOKEN": "x", "CLOSED": "", "ISSUE": "",
+           "GITHUB_OUTPUT": str(tmp_path / "out"), "CHECK_DEFS": "", "RUN_LIVE_JQ": ""}
+    return _run_list(tmp_path, env)
 
 
 def test_closing_a_blocker_refires_the_unblocked_dependent(tmp_path):
@@ -107,6 +131,15 @@ def test_dependency_blocked_ready_issues_carry_the_dep_label_the_alert_excludes(
     sync = [l.split("|")[0] for l in raw]
     assert sync == [
         "issue edit 2 -R o/r --add-label agent-blocked-dep",
-        "issue edit 4 -R o/r --remove-label agent-blocked-dep",
-        "issue edit 5 -R o/r --add-label agent-blocked-dep"]
-    assert all(l.endswith("token=sync") for l in raw), "the sync write must be the pinned job token: it must fire no run"
+        "issue edit 4 -R o/r --remove-label agent-blocked-dep"]
+    assert all(l.endswith("token=x") for l in raw), "the sync write is the job token: it fires no run"
+
+
+def test_scheduled_sweep_syncs_the_dep_label_without_gating_the_queue(tmp_path):
+    w = sweep(tmp_path, {2: (["agent-ready"], 1), 3: (["agent-ready", "agent-blocked-dep"], 0)})
+    raw = [l for l in w if "agent-blocked-dep" in l]
+    assert [l.split("|")[0] for l in raw] == [
+        "issue edit 2 -R o/r --add-label agent-blocked-dep",
+        "issue edit 3 -R o/r --remove-label agent-blocked-dep"]
+    assert all(l.endswith("token=x") for l in raw), "the sync write is the job token: it fires no run"
+    assert "claim/issue-3" in (tmp_path / "out").read_text(), "the label never gates the queue; blocked_by does"
