@@ -1378,13 +1378,15 @@
 
         - name: Write the workflow YAML line count for the scorecard
           ansible.builtin.shell:
+            executable: /bin/bash
             cmd: >
-              find {{ playbook_dir }}/../.github/workflows \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} +
-              | wc -l | awk '{print "fleet_workflow_yaml_lines " $1}'
+              set -o pipefail;
+              n=$(find {{ playbook_dir }}/../.github/workflows \( -name '*.yml' -o -name '*.yaml' \) -exec cat {} + | wc -l)
+              || { echo "could not count the workflow YAML lines"; exit 1; }
+              ; { echo "# TYPE fleet_workflow_yaml_lines gauge"; echo "fleet_workflow_yaml_lines $n"; }
               > /var/lib/prometheus/node-exporter/fleet-workflow-yaml-lines.prom
           register: workflow_yaml_lines
           changed_when: false
-          failed_when: false
 
         - name: Report the run
           vars:

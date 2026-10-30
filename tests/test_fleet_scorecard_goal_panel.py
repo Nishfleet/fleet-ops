@@ -1,7 +1,8 @@
-"""Fleet scorecard goal-box panel (fleet-ops#11168): one row per #10935 goal box, each row naming the
-stock source it reads and the goal's target, with the seven-day rows bounded in SQL, the board rows
-read from one org-wide open-issues frame, the streak row reading the two nightly units' failed state,
-and the workflow-YAML row waiting for the nightly gauge instead of inventing a zero."""
+"""Fleet scorecard goal-box panel (fleet-ops#11168): one row per #10935 goal box the issue lists, each
+row naming the stock source it reads and the goal's target, with the seven-day rows bounded in SQL, the
+board rows read from one org-wide open-issues frame, the nightly row reading the two nightly units'
+failed state over the 60-day window, and the workflow-YAML row waiting for the nightly gauge instead of
+inventing a zero."""
 import json
 import pathlib
 import re
@@ -24,6 +25,8 @@ ALLOWED = {
     "MAX",
     "FROM",
     "IN",
+    "CONCAT",
+    "LOWER",
 }
 NOW = datetime(2026, 10, 29, 6, 0, tzinfo=timezone.utc)
 
@@ -60,19 +63,22 @@ def _rows(
     db.create_function("UNIX_TIMESTAMP", 0, lambda: int(NOW.timestamp()))
     db.create_function("UNIX_TIMESTAMP", 1, lambda ms: None if ms is None else ms // 1000)
     db.create_function("IF", 3, lambda cond, a, b: a if cond else b)
+    db.create_function("CONCAT", -1, lambda *a: "".join(str(x) for x in a))
     db.execute("CREATE TABLE A (labels TEXT, assignees TEXT, updated_at INTEGER)")
     db.execute("CREATE TABLE B (updated_at INTEGER)")
     db.execute("CREATE TABLE C (created_at INTEGER)")
     db.execute("CREATE TABLE D (updated_at INTEGER)")
     db.execute("CREATE TABLE E (number INTEGER, merged_at INTEGER)")
     db.execute("CREATE TABLE F (pull_request_number INTEGER, review_state TEXT, review_author_login TEXT)")
-    db.execute("CREATE TABLE G (committed_at INTEGER)")
+    db.execute("CREATE TABLE G (committed_at INTEGER, message TEXT)")
     db.execute("CREATE TABLE I (time INTEGER, __value__ REAL)")
     db.execute("CREATE TABLE J (__value__ REAL)")
     db.execute("CREATE TABLE K (__value__ REAL)")
     db.executemany("INSERT INTO A VALUES (?, ?, ?)", issues)
     for table, rows in (("B", ended), ("C", orch_prs), ("D", tried), ("G", commits), ("J", nightly), ("K", yaml_lines)):
-        db.executemany(f"INSERT INTO {table} VALUES (?)", [(v,) if not isinstance(v, tuple) else v for v in rows])
+        if not rows:
+            continue
+        db.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' for _ in db.execute(f'PRAGMA table_info({table})'))})", [(v,) if not isinstance(v, tuple) else v for v in rows])
     db.executemany("INSERT INTO E VALUES (?, ?)", merged)
     db.executemany("INSERT INTO F VALUES (?, ?, ?)", reviews)
     db.executemany("INSERT INTO I VALUES (?, ?)", units)
@@ -141,7 +147,7 @@ def test_rows_come_in_goal_box_order():
         tried=[_at(1), _at(10)],
         merged=[(1, _at(2)), (2, _at(9)), (3, _at(2))],
         reviews=[(1, "APPROVED", "untrusted-dev"), (1, "APPROVED", "github-actions[bot]"), (2, "APPROVED", "untrusted-dev"), (3, "APPROVED", "nish3451"), (3, "CHANGES_REQUESTED", "untrusted-dev")],
-        commits=[_at(2), _at(10)],
+        commits=[(_at(2), 'Revert "feat: x"'), (_at(10), 'Revert "old: y"')],
         units=[(_at(1, 6), 1.0), (_at(0, 20), 0.0), (_at(0, 1), 0.0)],
         nightly=[(2.0,)],
         yaml_lines=[(4490.0,)],
@@ -168,12 +174,18 @@ def test_rows_come_in_goal_box_order():
     assert rows[("9. Clean board", "work-state labels in use on open issues")] == 5
     assert rows[("9. Clean board", "open issues in the org")] == 5
     assert rows[("9. Clean board", "open issues stale over 14 days with no assignee")] == 1
-    assert rows[("10. Green nights", "green nights in a row, update + host config")] == 1
+    assert rows[("10. Green nights", "nights since the last failed nightly, update + host config")] == 1
     assert rows[("10. Green nights", "failed units on the box")] == 2
 
 
 def test_a_revert_older_than_a_week_does_not_count():
-    assert _rows(commits=[_at(10)])[
+    assert _rows(commits=[(_at(10), 'Revert "x"')])[
+        ("1. Preview before apply", "merges undone by a revert, 7d")
+    ] == 0
+
+
+def test_a_plain_commit_is_not_a_revert():
+    assert _rows(commits=[(_at(2), "feat: add a thing")])[
         ("1. Preview before apply", "merges undone by a revert, 7d")
     ] == 0
 
@@ -187,6 +199,15 @@ def test_only_an_approval_outside_the_two_trusted_logins_on_a_week_old_merge_cou
     ] == 0
 
 
+def test_trusted_logins_match_case_insensitively_and_one_login_counts_once_per_pr():
+    assert _rows(merged=[(1, _at(2))], reviews=[(1, "APPROVED", "Nish3451"), (1, "APPROVED", "GitHub-Actions[Bot]")])[
+        ("3. Approvals cannot be forged", "approving reviews from outside the reviewer App or the owner, 7d")
+    ] == 0
+    assert _rows(merged=[(1, _at(2))], reviews=[(1, "APPROVED", "untrusted-dev"), (1, "APPROVED", "untrusted-dev"), (1, "APPROVED", "Untrusted-Dev")])[
+        ("3. Approvals cannot be forged", "approving reviews from outside the reviewer App or the owner, 7d")
+    ] == 1
+
+
 def test_the_rate_row_stays_blank_when_nothing_handed_off():
     assert _rows(ended=[], orch_prs=[])["6. Small work, high success", "hand-off to PR rate, 7d"] is None
 
@@ -197,13 +218,19 @@ def test_the_rate_row_counts_a_side_with_no_handoffs_at_all():
 
 def test_a_fully_green_window_shows_the_window_cap_not_a_lie():
     assert _rows(units=[(_at(0, 1), 0.0)])[
-        ("10. Green nights", "green nights in a row, update + host config")
+        ("10. Green nights", "nights since the last failed nightly, update + host config")
     ] == 60
+
+
+def test_the_nightly_row_is_blank_when_prometheus_has_no_points():
+    assert _rows()[
+        ("10. Green nights", "nights since the last failed nightly, update + host config")
+    ] is None
 
 
 def test_a_unit_failing_right_now_shows_zero_nights():
     assert _rows(units=[(_at(0, 0), 1.0), (_at(0, 1), 1.0)])[
-        ("10. Green nights", "green nights in a row, update + host config")
+        ("10. Green nights", "nights since the last failed nightly, update + host config")
     ] == 0
 
 
