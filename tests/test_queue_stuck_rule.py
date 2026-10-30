@@ -164,6 +164,8 @@ def test_ask_rule_reads_the_private_board_and_names_the_token_that_cannot():
         "the ask rule reads the one board no worker token can reach, so its text must name who can act on an ask")
     assert "linked:pr" in body, "an ask's PR link lives in its own repository, so a fleet-ops PR never clears it"
     assert "Find why the ask has no PR" not in body, "that instruction sends a worker to a board it gets 404 on"
+    assert "needs-nish-decision" in body, (
+        "a read error the fleet cannot repair must file for the account owner, not park a worker")
 
 
 def test_needs_split_rule_reads_open_prs_with_that_label():

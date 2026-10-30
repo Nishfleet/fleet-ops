@@ -225,7 +225,11 @@ policies:
       # no ask reachable. Its issue goes to Nish instead, who can read the board and
       # grant the read. DatasourceError and DatasourceNoData are excluded, so a read
       # error on the ask rule still reaches the catch-all below and the fleet fixes the
-      # data source. This route is terminal, so an ask alert stops here.
+      # data source. This route is terminal, so an ask alert stops here. It re-files
+      # every 24h, the catch-all's cadence: a needs-nish-decision issue starts no
+      # worker run, so the plan route's weekly rule against re-filing the same
+      # decision does not apply, and the ask rule keeps the daily pressure its 4h
+      # no-slip guarantee needs.
       - receiver: nish-ask-dispatch
         object_matchers:
           - [audience, "=", nish]
@@ -233,7 +237,7 @@ policies:
         group_by: ['...']
         group_wait: 0s
         group_interval: 5m
-        repeat_interval: 7d
+        repeat_interval: 24h
       - receiver: fleet-alert-dispatch
         object_matchers:
           - [alertname, "=~", ".+"]

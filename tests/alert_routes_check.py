@@ -334,6 +334,13 @@ def selftest():
     audience_check(unlabelled, audience_policy, good_sink, audience_bad)
     assert audience_bad == ["Nish ask sits open with no PR for 4h: reads ['nish-vault'], which no worker token "
                             "can reach, so it must carry an audience label naming a seat"], audience_bad
+    query_only = [{"title": "Nish ask sits open with no PR for 4h", "labels": {},
+                   "data": [{"model": {"repository": "fleet-ops",
+                                       "options": {"query": "org:Nishfleet repository:nish-vault is:issue"}}}]}]
+    audience_bad = []
+    audience_check(query_only, audience_policy, good_sink, audience_bad)
+    assert audience_bad == ["Nish ask sits open with no PR for 4h: reads ['nish-vault'], which no worker token "
+                            "can reach, so it must carry an audience label naming a seat"], audience_bad
     wrong_seat = [{"title": "Nish ask sits open with no PR for 4h", "labels": {"audience": "fleet"},
                    "data": [{"model": {"repository": "fleet-ops"}}]}]
     audience_bad = []
@@ -630,7 +637,10 @@ def audience_check(rules, policy, points, bad):
     and only for it, and no more often than a day."""
     for r in rules:
         title, labels = r["title"], r.get("labels") or {}
-        reads = {d.get("model", {}).get("repository") for d in r.get("data") or []}
+        models = [d.get("model") or {} for d in r.get("data") or []]
+        reads = {m.get("repository") for m in models}
+        reads |= {repo for m in models for repo in WORKER_UNREADABLE
+                  if repo in str((m.get("options") or {}).get("query", ""))}
         if reads & WORKER_UNREADABLE and labels.get("audience") not in AUDIENCE_SINKS:
             bad.append(f"{title}: reads {sorted(reads & WORKER_UNREADABLE)}, which no worker token can reach, "
                        f"so it must carry an audience label naming a seat")
