@@ -244,8 +244,11 @@ stays green. When the check fails, refresh the file in one command and start
 the unit again:
 
 ```sh
-printf 'vps_cidrs = ["%s/32", "%s/128"]\n' "$(curl -4 -s ifconfig.me)" "$(curl -6 -s ifconfig.me)" > ~/.config/cloudflare/vps-cidrs.tfvars
+v4=$(curl -4 -fsS --max-time 15 ifconfig.me); v6=$(curl -6 -fsS --max-time 15 ifconfig.me); [ -n "$v4" ] && [ -n "$v6" ] && printf 'vps_cidrs = ["%s/32", "%s/128"]\n' "$v4" "$v6" > ~/.config/cloudflare/vps-cidrs.tfvars
 ```
+
+The guard writes nothing when an address does not fetch, so a network blip
+cannot replace a good file with one holding an empty address.
 
 If the host's egress address changes for good, this one command is the whole
 fix: a changed `vps_cidrs` is a change to the token resource, so the next apply

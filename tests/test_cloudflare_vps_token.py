@@ -9,6 +9,7 @@ reads.
 """
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +82,40 @@ def test_the_apply_fails_when_the_address_file_does_not_match_the_host():
         "no documented one-command refresh to fix the file when the check fails"
     )
     assert "ExecStartPre=" in UNIT.read_text().split("[Service]")[1], "the check runs inside the apply unit"
+
+
+def test_the_check_runs_and_separates_a_fresh_file_from_a_stale_one(tmp_path):
+    """The ExecStartPre command itself runs, and compares for real.
+
+    A string-only test would pass with the comparison inverted or dead, so this
+    runs the command the unit carries with the curl reads replaced by echo
+    constants and the tfvars path pointed at a temp file: a file holding the
+    echoed addresses must exit 0 and a file not holding them must exit 1.
+    """
+    line = next(
+        l for l in UNIT.read_text().splitlines() if l.startswith("ExecStartPre=") and "vps-cidrs" in l
+    )
+    raw = line[line.index("'") + 1 : line.rindex("'")]
+    raw = raw.replace('\\"', '"').replace("$$", "$")
+    raw = raw.replace("%h/.config/cloudflare/vps-cidrs.tfvars", str(tmp_path / "vps.tfvars"))
+    raw = re.sub(r"curl\ -4\ .*?https://ifconfig\.me", "echo 192.0.2.14", raw)
+    raw = re.sub(r"curl\ -6\ .*?https://ifconfig\.me", "echo 2001:db8::14", raw)
+    assert "vps.tfvars" in raw and "echo 192.0.2.14" in raw and "echo 2001:db8::14" in raw, (
+        "the substitution must reach the path and both reads, or the check is not the one tested"
+    )
+
+    (tmp_path / "vps.tfvars").write_text(
+        'vps_cidrs = ["192.0.2.14/32", "2001:db8::14/128"]\n'
+    )
+    assert subprocess.run(["/bin/sh", "-c", raw], capture_output=True).returncode == 0
+
+    (tmp_path / "vps.tfvars").write_text(
+        '# vps_cidrs = ["192.0.2.14/32", "2001:db8::14/128"] (old addresses)\n'
+        'vps_cidrs = ["198.51.100.7/32", "2001:db8::7/128"]\n'
+    )
+    r = subprocess.run(["/bin/sh", "-c", raw], capture_output=True, text=True)
+    assert r.returncode == 1
+    assert "192.0.2.14/32" in r.stderr, "the failure names the addresses to place"
 
 
 def test_the_apply_hands_the_rotation_to_the_existing_writer():
